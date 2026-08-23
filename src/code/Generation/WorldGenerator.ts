@@ -8,6 +8,7 @@ import {
 	createFastNoise3DWithInstance,
 } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
+import { GenerationParams } from "./NoiseAndParameters/GenerationParams";
 import { getPRNGBySeed } from "./NoiseAndParameters/Squirrel13";
 import { OreGenerator } from "./OreGenerator";
 import { SurfaceGenerator } from "./SurfaceGenerator";
@@ -30,6 +31,13 @@ const IS_ORE = new Uint8Array(128);
 for (const id of [16, 21, 79, 80, 96, 97, 98, 99]) {
 	IS_ORE[id] = 1;
 }
+
+// Module scratch for the per-column underground band-noise rows (one sample
+// per localZ). Generation runs synchronously per worker thread, so sharing
+// one buffer across calls is safe.
+const _undergroundRowNoiseScratch = new Float32Array(
+	GenerationParams.CHUNK_SIZE,
+);
 
 // ---------------------------------------------------------------------------
 // Smoothing constants — mirror the same values as UndergroundGenerator.
@@ -222,15 +230,29 @@ export class WorldGenerator {
 		 * Memory layout:
 		 *   index = localX + localY * chunkSize + localZ * chunkSizeSq
 		 */
+
+		// PERF: The band noise is 2D — independent of Y. Sampling it once per
+		// column (32 wasm crossings) instead of once per (y, z) cell (up to
+		// 1024 crossings per fully-underground chunk) removes the dominant
+		// cost of this pass on deep chunks.
+		const rowNoise = _undergroundRowNoiseScratch;
+		for (let localZ = 0; localZ < chunkSize; localZ++) {
+			rowNoise[localZ] = selector.sampleBiomeNoise(
+				chunkWorldX,
+				chunkWorldZ + localZ,
+			);
+		}
+
 		for (let localY = 0; localY < maxLocalYExclusive; localY++) {
 			const worldY = chunkWorldY + localY;
 			const yOffset = localY * chunkSize;
 
 			for (let localZ = 0; localZ < chunkSize; localZ++) {
-				const biome = selector.getBiome(
+				const biome = selector.getBiomeWithNoise(
 					chunkWorldX,
 					worldY,
 					chunkWorldZ + localZ,
+					rowNoise[localZ],
 				);
 
 				// If this biome uses default stone, replacement may still be needed

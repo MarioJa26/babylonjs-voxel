@@ -35,6 +35,11 @@ const DIRS: Array<[number, number, number]> = [
 export function installLightDebugTool(
 	getPlayerPos: () => Vec3Like | undefined,
 ): () => void {
+	// Seed-length tracking in the worker pool is off by default (it costs a
+	// BigInt-keyed Map insert per generated chunk); turn it on for this tool.
+	const pool = ChunkWorkerPool.getInstance();
+	pool.enableDebugLightSeedTracking();
+
 	const onKeyDown = (e: KeyboardEvent): void => {
 		if (e.key !== "F8") return;
 		const pos = getPlayerPos();

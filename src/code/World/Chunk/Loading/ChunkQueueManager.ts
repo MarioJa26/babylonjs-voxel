@@ -53,7 +53,11 @@ export class ChunkQueueManager {
 	private loadQueueHead = 0;
 	private loadQueueHoleCount = 0;
 
-	private readonly loadQueueSet = new Set<bigint>();
+	// PERF: id -> slot index into loadQueue. removeChunk() used to linear-scan
+	// the sparse array per removed chunk (O(n·m) during disposal storms over
+	// large queues); the slot map makes it O(1) with an identity guard. Slot
+	// values are rebuilt during compaction, which already walks every entry.
+	private readonly loadQueueSet = new Map<bigint, number>();
 	private readonly unloadQueueSet = new Set<Chunk>();
 
 	public constructor(private readonly adapter: ChunkQueueManagerAdapter = {}) {}
@@ -102,8 +106,8 @@ export class ChunkQueueManager {
 			return false;
 		}
 
+		this.loadQueueSet.set(chunk.id, this.loadQueue.length);
 		this.loadQueue.push(chunk);
-		this.loadQueueSet.add(chunk.id);
 
 		// If a chunk is scheduled for load again, cancel pending unload.
 		this.unloadQueueSet.delete(chunk);
@@ -221,14 +225,24 @@ export class ChunkQueueManager {
 	}
 
 	public removeChunk(chunk: Chunk): void {
-		if (this.loadQueueSet.delete(chunk.id)) {
-			for (let i = this.loadQueueHead; i < this.loadQueue.length; i++) {
-				const queuedChunk = this.loadQueue[i];
+		const slot = this.loadQueueSet.get(chunk.id);
+		if (slot !== undefined) {
+			this.loadQueueSet.delete(chunk.id);
 
-				if (queuedChunk !== undefined && queuedChunk.id === chunk.id) {
-					this.loadQueue[i] = undefined;
-					this.loadQueueHoleCount++;
-					break;
+			// Identity guard: a stale slot (bookkeeping drift) falls back to
+			// the old linear scan instead of punching the wrong hole.
+			const queuedChunk = this.loadQueue[slot];
+			if (queuedChunk !== undefined && queuedChunk.id === chunk.id) {
+				this.loadQueue[slot] = undefined;
+				this.loadQueueHoleCount++;
+			} else {
+				for (let i = this.loadQueueHead; i < this.loadQueue.length; i++) {
+					const scan = this.loadQueue[i];
+					if (scan !== undefined && scan.id === chunk.id) {
+						this.loadQueue[i] = undefined;
+						this.loadQueueHoleCount++;
+						break;
+					}
 				}
 			}
 
@@ -324,7 +338,9 @@ export class ChunkQueueManager {
 			const chunk = this.loadQueue[readIndex];
 
 			if (chunk !== undefined && this.loadQueueSet.has(chunk.id)) {
-				this.loadQueue[writeIndex++] = chunk;
+				this.loadQueue[writeIndex] = chunk;
+				this.loadQueueSet.set(chunk.id, writeIndex);
+				writeIndex++;
 			}
 		}
 

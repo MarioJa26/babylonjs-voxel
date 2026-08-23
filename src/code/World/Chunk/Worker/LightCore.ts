@@ -133,7 +133,12 @@ const LIGHT_DIR_COUNT = 6;
 // LightQueue — flat, interleaved typed arrays; no per-node heap allocation.
 // ---------------------------------------------------------------------------
 
-const BFS_CAPACITY = 32768;
+// PERF: 64k nodes ≈ 768 KiB per queue pair — cheap insurance. The previous
+// 32k ring had no fullness check at all: wide removal cascades (ceiling placed
+// over a large cave) could wrap and silently overwrite unprocessed nodes,
+// leaving light stuck too high/low until some later reconcile happened to
+// revisit the area.
+const BFS_CAPACITY = 65536;
 
 class LightQueue {
 	// Queue nodes store the dense header slot, not the chunkId — the BFS
@@ -145,12 +150,23 @@ class LightQueue {
 
 	head = 0;
 	tail = 0;
+	// Nodes dropped because the ring was full — surfaced (once per phase) by
+	// clear() so overflow degrades observably instead of silently.
+	dropped = 0;
 
 	get length(): number {
 		return (this.tail - this.head + BFS_CAPACITY) & (BFS_CAPACITY - 1);
 	}
 
 	clear(): void {
+		if (this.dropped > 0) {
+			console.warn(
+				`[LightCore] light BFS queue overflow: ${this.dropped} node(s) dropped ` +
+					`(capacity ${BFS_CAPACITY}). Light may be incomplete until the next ` +
+					`reconcile pass.`,
+			);
+			this.dropped = 0;
+		}
 		this.head = this.tail = 0;
 	}
 
@@ -161,6 +177,13 @@ class LightQueue {
 		z: number,
 		level: number,
 	): void {
+		if (this.length >= BFS_CAPACITY - 1) {
+			// Full: drop the NEW node rather than overwrite an unread one.
+			// Losing a fresh propagation delays an update; overwriting a queued
+			// removal corrupts already-computed state.
+			this.dropped++;
+			return;
+		}
 		const slot = this.tail & (BFS_CAPACITY - 1);
 		this.slots[slot] = headerSlot;
 		this.coords[slot] = x | (y << 5) | (z << 10);
@@ -174,10 +197,36 @@ const Q_B = new LightQueue();
 
 // Reusable seed buffers for lightSkyReconcile — hoisted to module level to
 // avoid per-call allocation (safe: single worker thread).
-const SEED_CAPACITY = 6144;
-const seedSlots = new Int32Array(SEED_CAPACITY);
-const seedCoords = new Int32Array(SEED_CAPACITY * 3);
-const seedLevels = new Uint8Array(SEED_CAPACITY);
+//
+// PERF/CORRECTNESS: these used to be fixed at 6144 entries with silent
+// truncation — the border scans even returned early WITHOUT propagating the
+// seeds already collected, so open-sky chunks adjacent to fresh terrain lost
+// reconciliation work and relied on a later full-volume pass to heal. They now
+// grow geometrically on demand.
+const SEED_CAPACITY_INITIAL = 6144;
+let seedCapacity = SEED_CAPACITY_INITIAL;
+let seedSlots = new Int32Array(seedCapacity);
+let seedCoords = new Int32Array(seedCapacity * 3);
+let seedLevels = new Uint8Array(seedCapacity);
+
+function ensureSeedCapacity(min: number): void {
+	if (min <= seedCapacity) return;
+
+	let next = seedCapacity;
+	while (next < min) next *= 2;
+
+	const slots = new Int32Array(next);
+	slots.set(seedSlots);
+	const coords = new Int32Array(next * 3);
+	coords.set(seedCoords);
+	const levels = new Uint8Array(next);
+	levels.set(seedLevels);
+
+	seedSlots = slots;
+	seedCoords = coords;
+	seedLevels = levels;
+	seedCapacity = next;
+}
 
 // ---------------------------------------------------------------------------
 // Face / transparency tables
@@ -686,9 +735,12 @@ function processSkyQueue(
 			const tidx = tx + (ty << 5) + (tz << 10);
 			const tSlot = targetView.headerSlot;
 			const targetPacked = getViewBlockPackedAt(targetView, tidx);
+			// Single decode per direction visit — the full-sun filter below
+			// and the preserves-full-sun test both need the block id.
+			const targetBlockId = unpackBlockId(targetPacked);
 
 			if (isDown !== 1 && srcFiltersFullSun) {
-				if (!filtersFullSunlight(unpackBlockId(targetPacked))) continue;
+				if (!filtersFullSunlight(targetBlockId)) continue;
 			} else if (!isTransparent(sourcePacked, axis, dir)) {
 				continue;
 			}
@@ -698,7 +750,6 @@ function processSkyQueue(
 			const tLight = targetView.light_array;
 			const curLight = tLight[tidx];
 			const currentLevel = (curLight >> skyShift) & 0xf;
-			const targetBlockId = unpackBlockId(targetPacked);
 
 			const preservesFullSun =
 				isDown === 1 &&
@@ -1443,8 +1494,8 @@ export function lightSkyReconcile(
 
 	let seedCount = 0;
 
-	for (let x = 0; x < size && seedCount < 6144; x++) {
-		for (let z = 0; z < size && seedCount < 6144; z++) {
+	for (let x = 0; x < size; x++) {
+		for (let z = 0; z < size; z++) {
 			for (let y = 0; y < size; y++) {
 				// OPTIMIZATION: Bitwise shift instead of multiplication
 				const idx = x + (y << 5) + (z << 10);
@@ -1482,13 +1533,13 @@ export function lightSkyReconcile(
 					}
 				}
 				if (!seed) continue;
+				ensureSeedCapacity(seedCount + 1);
 				seedSlots[seedCount] = view.headerSlot;
 				seedCoords[seedCount * 3] = x;
 				seedCoords[seedCount * 3 + 1] = y;
 				seedCoords[seedCount * 3 + 2] = z;
 				seedLevels[seedCount] = sky;
 				seedCount++;
-				if (seedCount >= 6144) break;
 			}
 		}
 	}
@@ -1514,14 +1565,14 @@ export function lightSkyReconcile(
 					const neighborSky =
 						(neighbor.light_array[nidx] >> LIGHT_SKY_SHIFT) & 0xf;
 					if (selfSky === neighborSky) continue;
-					if (seedCount >= 6144) return dirtySlots;
+					ensureSeedCapacity(seedCount + 1);
 					const selfHigher = selfSky > neighborSky;
 					seedSlots[seedCount] = selfHigher
 						? view.headerSlot
 						: neighbor.headerSlot;
 					seedCoords[seedCount * 3] = selfHigher ? selfX : nbrX;
-					seedCoords[seedCount * 3 + 1] = selfHigher ? u : u;
-					seedCoords[seedCount * 3 + 2] = selfHigher ? v : v;
+					seedCoords[seedCount * 3 + 1] = u;
+					seedCoords[seedCount * 3 + 2] = v;
 					seedLevels[seedCount] = selfHigher ? selfSky : neighborSky;
 					seedCount++;
 				}
@@ -1537,14 +1588,14 @@ export function lightSkyReconcile(
 					const neighborSky =
 						(neighbor.light_array[nidx] >> LIGHT_SKY_SHIFT) & 0xf;
 					if (selfSky === neighborSky) continue;
-					if (seedCount >= 6144) return dirtySlots;
+					ensureSeedCapacity(seedCount + 1);
 					const selfHigher = selfSky > neighborSky;
 					seedSlots[seedCount] = selfHigher
 						? view.headerSlot
 						: neighbor.headerSlot;
-					seedCoords[seedCount * 3] = selfHigher ? u : u;
+					seedCoords[seedCount * 3] = u;
 					seedCoords[seedCount * 3 + 1] = selfHigher ? selfY : nbrY;
-					seedCoords[seedCount * 3 + 2] = selfHigher ? v : v;
+					seedCoords[seedCount * 3 + 2] = v;
 					seedLevels[seedCount] = selfHigher ? selfSky : neighborSky;
 					seedCount++;
 				}
@@ -1560,13 +1611,13 @@ export function lightSkyReconcile(
 					const neighborSky =
 						(neighbor.light_array[nidx] >> LIGHT_SKY_SHIFT) & 0xf;
 					if (selfSky === neighborSky) continue;
-					if (seedCount >= 6144) return dirtySlots;
+					ensureSeedCapacity(seedCount + 1);
 					const selfHigher = selfSky > neighborSky;
 					seedSlots[seedCount] = selfHigher
 						? view.headerSlot
 						: neighbor.headerSlot;
-					seedCoords[seedCount * 3] = selfHigher ? u : u;
-					seedCoords[seedCount * 3 + 1] = selfHigher ? v : v;
+					seedCoords[seedCount * 3] = u;
+					seedCoords[seedCount * 3 + 1] = v;
 					seedCoords[seedCount * 3 + 2] = selfHigher ? selfZ : nbrZ;
 					seedLevels[seedCount] = selfHigher ? selfSky : neighborSky;
 					seedCount++;

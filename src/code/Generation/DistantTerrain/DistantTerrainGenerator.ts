@@ -28,26 +28,13 @@ let gridStep = 1;
 let radius = 0;
 let usingSharedBuffers = false;
 
-const HEIGHT_CACHE_SIZE = 131072;
-const HEIGHT_CACHE_MASK = HEIGHT_CACHE_SIZE - 1;
-const HEIGHT_CACHE_EMPTY = 0x7fffffff;
-
-const _heightCache = new Float32Array(HEIGHT_CACHE_SIZE);
-const _heightCacheKeys = new Int32Array(HEIGHT_CACHE_SIZE);
-_heightCacheKeys.fill(HEIGHT_CACHE_EMPTY);
-
+// PERF/CORRECTNESS: the old local direct-mapped cache here packed (wx & 0x3fff)
+// into 14 bits per axis — beyond ±8192 blocks two different columns aliased to
+// the same slot and silently returned WRONG heights. getFinalTerrainHeight
+// already maintains an exact-key column cache (fhc in TerrainHeightMap) on this
+// thread, so the duplicate cache is simply gone.
 function cachedHeight(wx: number, wz: number): number {
-	const key = (wx & 0x3fff) | ((wz & 0x3fff) << 14);
-	const slot = key & HEIGHT_CACHE_MASK;
-
-	if (_heightCacheKeys[slot] === key) {
-		return _heightCache[slot];
-	}
-
-	const h = getFinalTerrainHeight(wx, wz);
-	_heightCacheKeys[slot] = key;
-	_heightCache[slot] = h;
-	return h;
+	return getFinalTerrainHeight(wx, wz);
 }
 
 // =====================================================================
@@ -260,13 +247,11 @@ function resetTracking() {
 }
 
 /**
- * Clear the local height cache and reset grid tracking so the next generate()
- * call performs a full rebuild. Must be called when the world seed changes
- * (SetWorldSeed) so stale heights from the old seed are not reused.
+ * Reset grid tracking so the next generate() call performs a full rebuild.
+ * Must be called when the world seed changes (SetWorldSeed) — height caches
+ * live in TerrainHeightMap, whose setTerrainSeed() clears them.
  */
 export function resetCacheAndTracking(): void {
-	_heightCache.fill(0);
-	_heightCacheKeys.fill(HEIGHT_CACHE_EMPTY);
 	resetTracking();
 }
 

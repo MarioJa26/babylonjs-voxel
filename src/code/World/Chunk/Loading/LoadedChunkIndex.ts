@@ -1,6 +1,11 @@
 import type { Chunk } from "../Chunk";
 
-const CELL_SHIFT = 5;
+// PERF: 8-chunk cells instead of 32-chunk ones. With 32-chunk cells a
+// radius query's AABB covered only 1-2 cells per axis, so unload scans and
+// LOD refreshes collected essentially EVERY loaded chunk regardless of the
+// actual radius. Smaller cells multiply the number of Map probes (cheap)
+// while cutting the collected-set noise dramatically.
+const CELL_SHIFT = 3;
 
 const HASH_X = 73856093;
 const HASH_Y = 19349663;
@@ -15,8 +20,8 @@ type LoadedChunkCell = {
 };
 
 function chunkCoordToCell(coord: number): number {
-	// Same as Math.floor(coord / 32) for signed 32-bit integer coordinates.
-	// Important: arithmetic shift correctly floors negative coordinates.
+	// Same as Math.floor(coord / 2^CELL_SHIFT) for signed 32-bit coordinates.
+	// Arithmetic shift correctly floors negative coordinates.
 	return coord >> CELL_SHIFT;
 }
 

@@ -17,7 +17,7 @@ export class InfernalPitFeature implements IWorldFeature {
 
 	public generate(
 		chunkX: number,
-		_chunkY: number,
+		chunkY: number,
 		chunkZ: number,
 		_biome: Biome,
 		placeBlock: PlaceBlockFn,
@@ -64,8 +64,22 @@ export class InfernalPitFeature implements IWorldFeature {
 		const pitSq = pitRadius * pitRadius;
 		const rimSq = rimRadius * rimRadius;
 
-		for (let x = bounds.minX; x < bounds.maxX; x++) {
-			for (let z = bounds.minZ; z < bounds.maxZ; z++) {
+		// Clamp walks to the generating chunk's Y slice and the pit's column
+		// footprint: placeBlock drops every out-of-range write anyway, so the
+		// old full-footprint × fill-to-Y=0 loops burned hundreds of discarded
+		// placeBlock calls per column. Output is bit-identical.
+		const chunkMinY = chunkY * chunkSize;
+		const chunkMaxY = chunkMinY + chunkSize - 1;
+		const yTop = Math.min(0, chunkMaxY);
+		if (chunkMinY > yTop) return;
+
+		const minX = Math.max(bounds.minX, px - r);
+		const maxX = Math.min(bounds.maxX - 1, px + r) + 1;
+		const minZ = Math.max(bounds.minZ, pz - r);
+		const maxZ = Math.min(bounds.maxZ - 1, pz + r) + 1;
+
+		for (let x = minX; x < maxX; x++) {
+			for (let z = minZ; z < maxZ; z++) {
 				const dx = x - px;
 				const dz = z - pz;
 				const distSq = dx * dx + dz * dz;
@@ -73,17 +87,17 @@ export class InfernalPitFeature implements IWorldFeature {
 
 				// bowl bottom: deepest at the centre
 				const bowl = Math.floor(depth * (1 - distSq / rimSq));
-				const bottomY = pitTopY - bowl;
+				const bottomY = Math.max(pitTopY - bowl, chunkMinY);
 
 				if (distSq <= pitSq) {
 					// inner crater: lava pool at the bottom, air above
 					const lavaTop = bottomY + 3;
-					for (let y = bottomY; y <= 0; y++) {
+					for (let y = bottomY; y <= yTop; y++) {
 						placeBlock(x, y, z, y <= lavaTop ? LAVA : 0, true);
 					}
 				} else {
 					// basalt crater rim wall
-					for (let y = bottomY; y <= 0; y++) {
+					for (let y = bottomY; y <= yTop; y++) {
 						placeBlock(x, y, z, BASALT, true);
 					}
 				}

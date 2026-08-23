@@ -18,6 +18,7 @@ import {
 	unregisterChunkBoundEntity,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
+	_voxelResolveScratch,
 	Axis,
 	createVoxelColliderBlockSampler,
 	VoxelAabbCollider,
@@ -104,6 +105,20 @@ export abstract class NeutralMob {
 	static #observerRegistered = false;
 	static readonly #allMobs = new Set<NeutralMob>();
 
+	// PERF: Pathfinding searches are budgeted globally (1500 expansions per
+	// 40ms in Pathfinding.ts). When several mobs search on the same frame they
+	// exhaust the window together, fail together, and retry together 0.5s
+	// later — a synchronized spike. Cap the number of searches that may START
+	// per tick; denied mobs simply re-attempt next frame as slots free up.
+	static #pathSlotsRemaining = 0;
+	private static readonly PATH_SLOTS_PER_TICK = 2;
+
+	private static tryClaimPathSlot(): boolean {
+		if (NeutralMob.#pathSlotsRemaining <= 0) return false;
+		NeutralMob.#pathSlotsRemaining--;
+		return true;
+	}
+
 	static #ensureObserver(): void {
 		if (NeutralMob.#observerRegistered) return;
 
@@ -112,6 +127,8 @@ export abstract class NeutralMob {
 		onBeforeRender(Map1.mainScene, (deltaMs: number) => {
 			const dt = deltaMs * 0.001;
 			if (dt <= 0 || isUiOpen()) return;
+
+			NeutralMob.#pathSlotsRemaining = NeutralMob.PATH_SLOTS_PER_TICK;
 
 			for (const mob of NeutralMob.#allMobs) {
 				const mesh = mob.#bodyMesh;
@@ -152,10 +169,14 @@ export abstract class NeutralMob {
 					const blockId = getBlockByWorldCoords(wx, wy, wz);
 					if (!isCollidableBlock(blockId)) return null;
 
-					return {
-						blockId,
-						blockState: getBlockStateByWorldCoords(wx, wy, wz),
-					};
+					// Shared scratch — consumed immediately by the sampler.
+					_voxelResolveScratch.blockId = blockId;
+					_voxelResolveScratch.blockState = getBlockStateByWorldCoords(
+						wx,
+						wy,
+						wz,
+					);
+					return _voxelResolveScratch;
 				},
 				{
 					getFenceDynamicShape,
@@ -365,11 +386,12 @@ export abstract class NeutralMob {
 					velocity.z = 0;
 					this.#path.length = 0;
 					this.#pathIndex = 0;
-				} else {
+				} else if (NeutralMob.tryClaimPathSlot()) {
 					this.#state = NeutralMobState.Wander;
 					this.#stateTimer = 1 + Math.random() * 4;
 					this.#pickWanderTarget(pos);
 				}
+				// Slot denied: timer stays <= 0, retry next frame.
 			}
 		}
 
@@ -384,11 +406,14 @@ export abstract class NeutralMob {
 				this.#pathIndex = 0;
 				this.#shoreSearchTimer -= dt;
 
-				if (this.#shoreSearchTimer <= 0) {
+				if (this.#shoreSearchTimer <= 0 && NeutralMob.tryClaimPathSlot()) {
 					this.#findNearestShore(pos);
 
 					if (this.#path.length === 0) {
-						this.#shoreSearchTimer = 0.5;
+						// Jittered retry: a fixed 0.5s cadence re-synchronizes
+						// beached mobs into a herd that hammers the shared
+						// pathfinding budget every half second.
+						this.#shoreSearchTimer = 0.4 + Math.random() * 0.4;
 					}
 				}
 

@@ -1,6 +1,5 @@
 import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
 import type {
-	RemoteChunkData,
 	RemoteChunkProvider,
 	RemoteChunkResult,
 } from "../../Network/chunk/RemoteChunkProvider";
@@ -108,6 +107,9 @@ export type ChunkWorkerPoolDebugStats = {
 	meshStaleDroppedTotal: number;
 	meshUnknownChunkDroppedTotal: number;
 	meshLodSkippedDroppedTotal: number;
+	// Overflow discards whose owner was re-queued for a fresh build instead of
+	// silently missing its update (backpressure drop policy).
+	meshOverflowRequeuedTotal: number;
 	meshRecycledBuffersTotal: number;
 	meshRecycledBytesTotal: number;
 	totalTerrainDispatches: number;
@@ -252,8 +254,14 @@ export class ChunkWorkerPool {
 	private deferredLightingPumpScheduled = false;
 
 	// Debug: deferred-light seed length received at generation time, keyed by
-	// chunk id.  Only populated while the in-game LightDebugTool is installed.
+	// chunk id.  Only populated while the in-game LightDebugTool is installed
+	// (tracking costs a Map insert/delete per generated chunk otherwise).
+	private debugLightSeedTracking = false;
 	private debugLightSeedLengths = new Map<bigint, number>();
+
+	public enableDebugLightSeedTracking(): void {
+		this.debugLightSeedTracking = true;
+	}
 
 	public debugLightSeedLength(chunkId: bigint): number | undefined {
 		return this.debugLightSeedLengths.get(chunkId);
@@ -329,6 +337,13 @@ export class ChunkWorkerPool {
 	// chunk storm can never burn ~10ms of main thread in a single tick
 	// (5ms drain + 5ms flush previously).
 	private static readonly MESH_DRAIN_BUDGET_MS = 5.5;
+	// PERF: Ingestion alone used to be allowed to consume the whole shared
+	// budget during bursts, squeezing the merged-group flush to its 0.5ms
+	// floor — group memcpys + GPU uploads then spilled across many frames
+	// exactly when the CPU was busiest. Cap ingestion below the total so the
+	// flush always keeps a guaranteed slice.
+	private static readonly MESH_INGEST_BUDGET_MS = 3.5;
+	private static readonly MESH_FLUSH_MIN_BUDGET_MS = 2.0;
 	private static readonly WORK_PROCESS_QUEUE = 1 << 0;
 	private static readonly WORK_MESH = 1 << 1;
 	private static readonly WORK_DEFERRED_LIGHT = 1 << 2;
@@ -443,6 +458,7 @@ export class ChunkWorkerPool {
 		meshStaleDroppedTotal: 0,
 		meshUnknownChunkDroppedTotal: 0,
 		meshLodSkippedDroppedTotal: 0,
+		meshOverflowRequeuedTotal: 0,
 		meshRecycledBuffersTotal: 0,
 		meshRecycledBytesTotal: 0,
 		totalTerrainDispatches: 0,
@@ -1448,6 +1464,11 @@ export class ChunkWorkerPool {
 				lightSAB: snap.lightSAB!,
 				paletteSAB: snap.paletteSAB,
 				blockStorageBytesPerElement,
+				// Deferred-lighting chunks get an explicit sky reconcile right
+				// after their BFS — skip the duplicate volume scan here.
+				skipSkyReconcile:
+					this.deferredLightingQueuedIds.has(chunk.id) ||
+					this.deferredLightingSeedStates.has(chunk.id),
 			});
 
 			voxelIds.push(chunk.id);
@@ -1820,7 +1841,7 @@ export class ChunkWorkerPool {
 			while (
 				this.meshResultQueueReadIdx < this.meshResultQueue.length &&
 				((iterCount++ & 15) !== 0 ||
-					performance.now() - start < ChunkWorkerPool.MESH_DRAIN_BUDGET_MS)
+					performance.now() - start < ChunkWorkerPool.MESH_INGEST_BUDGET_MS)
 			) {
 				const data = this.meshResultQueue[this.meshResultQueueReadIdx];
 				const workerIdx =
@@ -1921,7 +1942,7 @@ export class ChunkWorkerPool {
 
 			flushDirtyMergedGroups(
 				Math.max(
-					0.5,
+					ChunkWorkerPool.MESH_FLUSH_MIN_BUDGET_MS,
 					ChunkWorkerPool.MESH_DRAIN_BUDGET_MS - (performance.now() - start),
 				),
 			);
@@ -1976,11 +1997,28 @@ export class ChunkWorkerPool {
 			this.meshResultQueueReadIdx < this.meshResultQueue.length
 		) {
 			// Backpressure discard: the oldest unread result is being replaced —
-			// its buffers are unreferenced, so recycle them.
-			this.recycleMeshBuffers(
-				workerIndex,
-				this.meshResultQueue[this.meshResultQueueReadIdx],
-			);
+			// its buffers are unreferenced, so recycle them. Its owner must not
+			// silently miss the update, though: remeshQueued was already cleared
+			// at dispatch, so without intervention nothing would ever re-schedule
+			// it. Re-queue a fresh build for non-stale victims; stale ones were
+			// superseded by an edit whose own schedule call is still covering
+			// them.
+			const dropped = this.meshResultQueue[this.meshResultQueueReadIdx];
+			this.recycleMeshBuffers(workerIndex, dropped);
+			const droppedChunk = this.resolveChunkByMessageId(dropped.chunkId);
+			if (
+				droppedChunk?.isLoaded &&
+				dropped.meshRevision === droppedChunk.meshRevision
+			) {
+				droppedChunk.isDirty = true;
+				droppedChunk.remeshQueued = false;
+				this.scheduleRemesh(
+					droppedChunk,
+					(droppedChunk.lodLevel ?? 0) === 0,
+					false,
+				);
+				this.debugStats.meshOverflowRequeuedTotal++;
+			}
 			this.meshResultQueue[this.meshResultQueueReadIdx] = data;
 			this.meshResultWorkerIdx[this.meshResultQueueReadIdx] = workerIndex;
 		} else {
@@ -2110,7 +2148,10 @@ export class ChunkWorkerPool {
 		bumpRevision = true,
 	): void {
 		if (!chunk?.isLoaded) return;
-		if (bumpRevision) chunk.meshRevision++;
+		// Same coalescing contract as Chunk.scheduleRemesh: a repeat request
+		// while a build is queued/in-flight must not advance meshRevision, or
+		// the drain discards the in-flight result and pays a duplicate rebuild.
+		if (bumpRevision && !chunk.remeshQueued) chunk.meshRevision++;
 		normalizeChunkLod(chunk);
 		if (!chunk.hasVoxelData) {
 			if (!this.tryApplyCachedLODMesh(chunk, true)) {
@@ -2132,6 +2173,10 @@ export class ChunkWorkerPool {
 			this.pendingRemeshMap.delete(chunk);
 			this.taskQueuePriority.delete(chunk);
 			this.clearChunkMeshIfPresent(chunk);
+			// Nothing is queued anymore — release the flag so a later content
+			// change can enqueue a fresh build instead of hitting the
+			// remeshQueued early-return forever.
+			chunk.remeshQueued = false;
 			return;
 		}
 
@@ -2392,10 +2437,12 @@ export class ChunkWorkerPool {
 			const chunk = this.resolveChunkByMessageId(chunkId);
 			if (chunk) {
 				const isStale = !chunk.isTerrainScheduled && !chunk.isLoaded;
-				this.debugLightSeedLengths.set(
-					chunk.id,
-					lightSeedLength !== undefined ? lightSeedLength : -1,
-				);
+				if (this.debugLightSeedTracking) {
+					this.debugLightSeedLengths.set(
+						chunk.id,
+						lightSeedLength !== undefined ? lightSeedLength : -1,
+					);
+				}
 				const blocks: Uint8Array | Uint16Array | null = block_array ?? null;
 				const light: Uint8Array = light_array;
 
@@ -2878,8 +2925,11 @@ export class ChunkWorkerPool {
 
 		this.remoteChunkProvider
 			.getCachedChunks(toCheck)
-			.then((hits) => this.finishRemotePumpCycle(hits, toCheck))
-			.catch(() => this.finishRemotePumpCycle(null, toCheck));
+			// The returned map is intentionally unused here: its side effects
+			// (chunkVersions bookkeeping, corrupt-blob eviction inside the
+			// provider) are what matter for request validation.
+			.then(() => this.finishRemotePumpCycle(toCheck))
+			.catch(() => this.finishRemotePumpCycle(toCheck));
 	}
 
 	/**
@@ -2887,7 +2937,23 @@ export class ChunkWorkerPool {
 	 * from the same vertical column (same chunkX, chunkZ) as the first chunk.
 	 * This aligns client request batches with server generation batching so
 	 * workers can reuse column-level noise/state across Y-levels.
+	 *
+	 * PERF: the four passes over the queue used to call packCoords() per entry
+	 * per pass — up to 4N BigInt constructions on a 15k backlog every pump
+	 * cycle. Chunk coordinates are immutable while queued, so keys are cached
+	 * on the chunk object instead.
 	 */
+	private static readonly _remoteKeyCache = new WeakMap<Chunk, bigint>();
+
+	private remoteKeyFor(chunk: Chunk): bigint {
+		let key = ChunkWorkerPool._remoteKeyCache.get(chunk);
+		if (key === undefined) {
+			key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+			ChunkWorkerPool._remoteKeyCache.set(chunk, key);
+		}
+		return key;
+	}
+
 	private selectColumnBatch(maxCount: number): Chunk[] {
 		const queue = this.remoteTaskQueue;
 		const queueSet = this.remoteTaskQueueSet;
@@ -2907,8 +2973,7 @@ export class ChunkWorkerPool {
 			const chunk = queue[i];
 			if (chunk.isBoatChunk) continue;
 
-			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-			if (pending.has(key)) continue;
+			if (pending.has(this.remoteKeyFor(chunk))) continue;
 
 			anchor = chunk;
 			anchorX = chunk.chunkX;
@@ -2948,8 +3013,7 @@ export class ChunkWorkerPool {
 				continue;
 			}
 
-			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-			if (pending.has(key)) continue;
+			if (pending.has(this.remoteKeyFor(chunk))) continue;
 
 			result.push(chunk);
 			selected.add(chunk.numericId);
@@ -2963,8 +3027,7 @@ export class ChunkWorkerPool {
 				continue;
 			}
 
-			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-			if (pending.has(key)) continue;
+			if (pending.has(this.remoteKeyFor(chunk))) continue;
 
 			result.push(chunk);
 			selected.add(chunk.numericId);
@@ -2982,8 +3045,7 @@ export class ChunkWorkerPool {
 				continue;
 			}
 
-			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-			if (pending.has(key)) {
+			if (pending.has(this.remoteKeyFor(chunk))) {
 				queueSet.delete(chunk);
 				continue;
 			}
@@ -2997,10 +3059,7 @@ export class ChunkWorkerPool {
 		return result;
 	}
 
-	private finishRemotePumpCycle(
-		hits: Map<Chunk, RemoteChunkData | null> | null,
-		toCheck: Chunk[],
-	): void {
+	private finishRemotePumpCycle(toCheck: Chunk[]): void {
 		this.remotePumpScheduled = false;
 
 		const toRequest: Chunk[] = [];
@@ -3017,12 +3076,6 @@ export class ChunkWorkerPool {
 			// cached chunks validate version, misses fetch full data.
 			chunk.isTerrainScheduled = true;
 			toRequest.push(chunk);
-
-			// Keep the lookup for side effects and future-proofing if caller
-			// changes behavior, but avoid branch duplication.
-			if (hits) {
-				hits.get(chunk);
-			}
 		}
 
 		this.dispatchRemoteRequests(toRequest);

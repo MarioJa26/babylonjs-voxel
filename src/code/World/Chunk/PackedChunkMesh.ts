@@ -165,6 +165,11 @@ interface FaceArena {
 	capacity: number; // in faces
 	used: number; // in faces
 	free: Array<{ base: number; count: number }>;
+	// PERF: running sum of free[].count. Lets allocFaces skip an arena whose
+	// holes cannot possibly satisfy a request with one comparison instead of
+	// linear-scanning every hole first-fit (O(total holes) after fragmentation).
+	// Maintained at every mutation site; merges don't change the sum.
+	freeCount: number;
 	/** False until the arena's buffer has been bound to all materials. */
 	bound: boolean;
 }
@@ -344,6 +349,7 @@ function createFaceArena(initialCapacity: number): FaceArena {
 		capacity,
 		used: 0,
 		free: [],
+		freeCount: 0,
 		bound: false,
 	};
 	faceArenas.push(arena);
@@ -428,6 +434,10 @@ function allocFaces(count: number): FaceAlloc {
 	// The old version leaked the old interval object from the pool path.
 	for (let ai = 0; ai < faceArenas.length; ai++) {
 		const arena = faceArenas[ai];
+
+		// No hole in this arena can hold `count` faces — skip the scan.
+		if (arena.freeCount < count) continue;
+
 		const free = arena.free;
 
 		for (let i = 0, len = free.length; i < len; i++) {
@@ -445,6 +455,7 @@ function allocFaces(count: number): FaceAlloc {
 					releaseInterval(node);
 				}
 
+				arena.freeCount -= count;
 				return { arena: ai, base };
 			}
 		}
@@ -533,6 +544,7 @@ function tryExtendFaces(
 			arena.free.splice(lo, 1);
 			releaseInterval(node);
 		}
+		arena.freeCount -= delta;
 		return true;
 	}
 
@@ -611,6 +623,9 @@ function freeFaceInterval(
 function freeFaces(arena: number, base: number, count: number): void {
 	if (arena < 0 || arena >= faceArenas.length) return;
 	freeFaceInterval(faceArenas[arena].free, base, count);
+	// Merges inside freeFaceInterval only move counts between nodes — the
+	// sum grows by exactly `count`.
+	faceArenas[arena].freeCount += count;
 }
 
 function freeOffsetBlock(base: number): void {

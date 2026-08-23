@@ -1,16 +1,13 @@
 import {
-	addToScene,
 	createMeshFromData,
 	createShaderMaterial,
 	type EngineContext,
 	loadTexture2D,
 	type Mesh,
-	type SceneContext,
 	type ShaderMaterial,
 	setShaderFloat,
 	setShaderTexture,
 	type Texture2D,
-	vec3,
 } from "@babylonjs/lite";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 

@@ -239,6 +239,13 @@ export class CustomBoat implements IUsable {
 	#boatChunkBlockChangeUnsubscribe?: () => void;
 	#ignoredDynamicBlockProviders = new Set<symbol>();
 
+	// Reused by #sampleBoatChunkBlock — see the allocation note there.
+	static #sampleScratch: DynamicBlockSample = {
+		blockId: 0,
+		blockState: 0,
+		lightLevel: 0,
+	};
+
 	#currentYaw = 0;
 	// PERF: Cache cos/sin to avoid recomputing when yaw is unchanged.
 	#cachedYaw = 0;
@@ -846,28 +853,50 @@ export class CustomBoat implements IUsable {
 		worldY: number,
 		worldZ: number,
 	): DynamicBlockSample | null {
-		const local = this.#worldToBoatLocal(worldX, worldY, worldZ);
-		if (!local || !this.#boatChunk) {
+		const boatChunk = this.#boatChunk;
+		if (!boatChunk) {
 			return null;
 		}
 
-		const blockId = this.#boatChunk.getBlockLocal(local.x, local.y, local.z);
+		// worldToLocalBlock is a pure translation (world - root + center), so
+		// the sample region is an axis-aligned box. Reject far-away probes with
+		// six compares instead of paying a transform + bounds check per voxel —
+		// this provider sits on every getBlockByWorldCoords call engine-wide
+		// while any boat exists (collision sweeps, raycasts, debris...).
+		const root = boatChunk.visualRoot.position;
+		const center = boatChunk.center;
+		const originX = root.x - center.x;
+		const originY = root.y - center.y;
+		const originZ = root.z - center.z;
+		if (
+			worldX < originX ||
+			worldY < originY ||
+			worldZ < originZ ||
+			worldX >= originX + Chunk.SIZE ||
+			worldY >= originY + Chunk.SIZE ||
+			worldZ >= originZ + Chunk.SIZE
+		) {
+			return null;
+		}
+
+		const localX = worldX - originX;
+		const localY = worldY - originY;
+		const localZ = worldZ - originZ;
+
+		const blockId = boatChunk.getBlockLocal(localX, localY, localZ);
 		if (blockId === BlockType.Air) {
 			return null;
 		}
 
-		return {
-			blockId,
-			blockState: this.#boatChunk.getBlockStateLocal(local.x, local.y, local.z),
-			lightLevel: this.#boatChunk.getLightLocal(local.x, local.y, local.z),
-			context: {
-				kind: "boatChunk",
-				boatChunk: this.#boatChunk,
-				localX: local.x,
-				localY: local.y,
-				localZ: local.z,
-			},
-		};
+		// Shared scratch: every consumer (getBlockByWorldCoords /
+		// getBlockStateByWorldCoords / getLightByWorldCoords) reads the fields
+		// synchronously and never retains the sample object, so reusing one
+		// instance removes two allocations per solid probe.
+		const sample = CustomBoat.#sampleScratch;
+		sample.blockId = blockId;
+		sample.blockState = boatChunk.getBlockStateLocal(localX, localY, localZ);
+		sample.lightLevel = boatChunk.getLightLocal(localX, localY, localZ);
+		return sample;
 	}
 
 	#setBoatChunkBlock(

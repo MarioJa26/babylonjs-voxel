@@ -40,52 +40,6 @@ type VoxelAabbDebugOptions = {
 	renderOrder?: number;
 };
 
-/**
- * Rotate a ShapeBox around the Y axis of the block cell (centre = 0.5, 0.5).
- * rotation: 0 = 0°, 1 = 90° CW, 2 = 180°, 3 = 270° CW (looking down -Y).
- */
-function rotateShapeBoxY(
-	minX: number,
-	minY: number,
-	minZ: number,
-	maxX: number,
-	maxY: number,
-	maxZ: number,
-	rotation: number,
-	out: [number, number, number, number, number, number],
-): void {
-	const steps = ((rotation % 4) + 4) % 4;
-
-	let ax = minX,
-		az = minZ,
-		bx = maxX,
-		bz = maxZ;
-
-	for (let i = 0; i < steps; i++) {
-		// 90° CW around centre (0.5, 0.5):  (x,z) → (1-z, x)
-		const newAx = 1 - bz;
-		const newAz = ax;
-		const newBx = 1 - az;
-		const newBz = bx;
-		ax = Math.min(newAx, newBx);
-		bx = Math.max(newAx, newBx);
-		az = Math.min(newAz, newBz);
-		bz = Math.max(newAz, newBz);
-	}
-
-	out[0] = ax;
-	out[1] = minY;
-	out[2] = az;
-	out[3] = bx;
-	out[4] = maxY;
-	out[5] = bz;
-}
-
-// Module-level scratch to avoid allocations inside overlaps().
-const _rotatedBox: [number, number, number, number, number, number] = [
-	0, 0, 0, 0, 0, 0,
-];
-
 // Module-level scratch BlockShapeInfo — avoids per-voxel allocations in
 // the isSolidBlockAt callback.  Safe because overlaps() consumes the
 // result immediately (no retained references across frames).
@@ -94,6 +48,16 @@ export const _blockShapeInfoScratch: BlockShapeInfo = {
 	rotation: 0,
 	slice: 0,
 	flipY: false,
+};
+
+// Module-level scratch for VoxelBlockResolver implementations — resolvers
+// write their { blockId, blockState } pair here instead of allocating a fresh
+// literal per collidable voxel. Safe because createVoxelColliderBlockSampler
+// destructures the resolver result immediately (including inside the fence
+// neighbor-mask path, which only reads .blockId per probe).
+export const _voxelResolveScratch: { blockId: number; blockState: number } = {
+	blockId: 0,
+	blockState: 0,
 };
 
 /**
@@ -138,6 +102,11 @@ export function createVoxelColliderBlockSampler(
 		computeFenceNeighborMask,
 	} = deps;
 
+	const neighborIdLookup = (wx: number, wy: number, wz: number): number => {
+		const r = resolveBlock(wx, wy, wz);
+		return r ? r.blockId : 0;
+	};
+
 	return (x, y, z): BlockShapeInfo | null => {
 		const resolved = resolveBlock(x, y, z);
 		if (resolved === null) return null;
@@ -146,10 +115,9 @@ export function createVoxelColliderBlockSampler(
 		if (isPassThroughBlock(blockId)) return null;
 
 		if (isFenceBlockId(blockId)) {
-			const mask = computeFenceNeighborMask(x, y, z, (wx, wy, wz) => {
-				const r = resolveBlock(wx, wy, wz);
-				return r ? r.blockId : 0;
-			});
+			// Hoisted to sampler-creation scope: allocating this lookup per
+			// fence voxel put a closure on every collidable fence probe.
+			const mask = computeFenceNeighborMask(x, y, z, neighborIdLookup);
 			_blockShapeInfoScratch.shape = getFenceDynamicShape(mask);
 			_blockShapeInfoScratch.rotation = 0;
 			_blockShapeInfoScratch.slice = 0;
@@ -536,6 +504,22 @@ export class VoxelAabbCollider {
 			y: hit.y,
 			z: hit.z,
 		};
+	}
+
+	/**
+	 * Zero-allocation variant of firstSolidVoxel for callers that consume the
+	 * result immediately. The returned object is shared scratch and is
+	 * overwritten by the next call on ANY collider instance.
+	 */
+	public firstSolidVoxelScratch(
+		position: Vec3,
+		halfExtents: Vec3,
+	): { x: number; y: number; z: number } | null {
+		const hit = this.tmpVoxelHit;
+		if (!this.#scanSolidVoxel(position, halfExtents, hit)) {
+			return null;
+		}
+		return hit;
 	}
 
 	public moveAxis(

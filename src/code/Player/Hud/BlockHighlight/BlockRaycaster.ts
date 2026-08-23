@@ -1,9 +1,4 @@
-import {
-	addVec3InPlace,
-	scaleVec3InPlace,
-	type Vec3,
-	vec3,
-} from "@babylonjs/lite";
+import { addVec3InPlace, type Vec3, vec3 } from "@babylonjs/lite";
 import {
 	lengthSqVec3,
 	Matrix,
@@ -60,6 +55,12 @@ const FULL_BLOCK_UNKNOWN = 0;
 const FULL_BLOCK_NO = 1;
 const FULL_BLOCK_YES = 2;
 const _fullBlockBaseCache: number[] = [];
+
+// Capture-free module-level fence neighbor lookup — a fresh closure used to
+// be allocated for every fence voxel the DDA visited.
+function fenceNeighborIdLookup(wx: number, wy: number, wz: number): number {
+	return getBlockAndStateByWorldCoords(wx, wy, wz).blockId;
+}
 
 const CUBE_SHAPE_INDEX = getCubeShapeIndex();
 /** All results are written into these shared objects — callers must not retain references across frames. */
@@ -431,9 +432,9 @@ function raycastShapeInVoxel(
 
 	let boxes: ShapeBounds[];
 	if (isFenceBlockId(blockId)) {
-		const mask = computeFenceNeighborMask(vx, vy, vz, (wx, wy, wz) => {
-			return getBlockAndStateByWorldCoords(wx, wy, wz).blockId;
-		});
+		// Module-level lookup (no captures) — a fresh closure used to be
+		// allocated per fence voxel the DDA visited.
+		const mask = computeFenceNeighborMask(vx, vy, vz, fenceNeighborIdLookup);
 		boxes = getFenceDynamicShape(mask).boxes;
 	} else {
 		boxes = getTransformedShapeBoxes(blockId, blockState);

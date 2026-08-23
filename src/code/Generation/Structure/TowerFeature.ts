@@ -13,6 +13,28 @@ export class TowerFeature implements IWorldFeature {
 		maxWorldY: 500,
 	};
 
+	// generate() runs once per chunk-Y layer inside verticalBounds (~66 layers
+	// per chunk column × 25 neighbor chunks), but every decision input below
+	// is Y-independent: region center, corridor gate, radius, ground height
+	// and the collected prepasses. Without this cache each layer re-hashed the
+	// region, re-collected prepasses (first touch builds full 32×32 column
+	// prepasses) and re-scanned ~200 columns for the minimum ground height.
+	private static readonly DECISION_CACHE_MAX = 8192;
+	private static decisionCache = new Map<
+		string,
+		{
+			seed: number;
+			hasResolverPrepasses: boolean;
+			towerCenterX: number;
+			towerCenterZ: number;
+			towerRadius: number;
+			prepassByChunk:
+				| Map<string, ReturnType<ColumnPrepassResolver>["entry"]>
+				| undefined;
+			groundHeight: number;
+		}
+	>();
+
 	public generate(
 		chunkX: number,
 		chunkY: number,
@@ -25,26 +47,90 @@ export class TowerFeature implements IWorldFeature {
 		generatingChunkZ: number,
 		columnPrepassResolver?: ColumnPrepassResolver,
 	) {
-		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 16,
-			magicA: 374761393,
-			magicB: 678446653,
-			spawnChance: 100,
-			earlyReturn: false,
-		});
-		if (!region) return;
+		const cacheKey = chunkX + "," + chunkZ;
+		let decision = TowerFeature.decisionCache.get(cacheKey);
+		if (TowerFeature.decisionCache.size >= TowerFeature.DECISION_CACHE_MAX) {
+			TowerFeature.decisionCache.clear();
+		}
+		if (decision === undefined || decision.seed !== seed) {
+			const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
+				regionSize: 16,
+				magicA: 374761393,
+				magicB: 678446653,
+				spawnChance: 100,
+				earlyReturn: false,
+			});
+			if (!region) {
+				TowerFeature.decisionCache.set(cacheKey, {
+					seed,
+					hasResolverPrepasses: false,
+					towerCenterX: 0,
+					towerCenterZ: 0,
+					towerRadius: 0,
+					prepassByChunk: undefined,
+					groundHeight: 0,
+				});
+				return;
+			}
 
-		const { centerX: towerCenterX, centerZ: towerCenterZ } = region;
+			const { centerX: towerCenterX, centerZ: towerCenterZ } = region;
 
-		const axisCorridorWidth = 20;
-		if (
-			Math.abs(towerCenterX) < axisCorridorWidth ||
-			Math.abs(towerCenterZ) < axisCorridorWidth
-		) {
+			const axisCorridorWidth = 20;
+			if (
+				Math.abs(towerCenterX) < axisCorridorWidth ||
+				Math.abs(towerCenterZ) < axisCorridorWidth
+			) {
+				TowerFeature.decisionCache.set(cacheKey, {
+					seed,
+					hasResolverPrepasses: false,
+					towerCenterX: 0,
+					towerCenterZ: 0,
+					towerRadius: 0,
+					prepassByChunk: undefined,
+					groundHeight: 0,
+				});
+				return;
+			}
+
+			const towerRadius = 8 + (getPRNGBySeed(towerCenterX, seed) % 4);
+
+			// Fetch every affected chunk's prepass ONCE (the resolver builds a
+			// full 32x32 chunk prepass, so calling it per-column would rebuild
+			// up to 9 prepasses per tower). We cover the tower's bounding box of
+			// chunks and index into the cached height maps.
+			const prepassByChunk = columnPrepassResolver
+				? this.collectPrepasses(
+						towerCenterX,
+						towerCenterZ,
+						towerRadius,
+						chunkSize,
+						columnPrepassResolver,
+					)
+				: undefined;
+
+			const groundHeight = this.findMinGroundHeightForTower(
+				towerCenterX,
+				towerCenterZ,
+				towerRadius,
+				biome,
+				prepassByChunk,
+			);
+
+			decision = {
+				seed,
+				hasResolverPrepasses: true,
+				towerCenterX,
+				towerCenterZ,
+				towerRadius,
+				prepassByChunk,
+				groundHeight,
+			};
+			TowerFeature.decisionCache.set(cacheKey, decision);
+		} else if (!decision.hasResolverPrepasses) {
 			return;
 		}
 
-		const towerRadius = 8 + (getPRNGBySeed(towerCenterX, seed) % 4);
+		const { towerCenterX, towerCenterZ, towerRadius } = decision;
 
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
@@ -65,50 +151,24 @@ export class TowerFeature implements IWorldFeature {
 		)
 			return;
 
-		// Fetch every affected chunk's prepass ONCE (the resolver builds a
-		// full 32x32 chunk prepass, so calling it per-column would rebuild
-		// up to 9 prepasses per tower). We cover the tower's bounding box of
-		// chunks and index into the cached height maps.
-		const prepassByChunk = columnPrepassResolver
-			? this.collectPrepasses(
-					towerCenterX,
-					towerCenterZ,
-					towerRadius,
-					chunkSize,
-					columnPrepassResolver,
-				)
-			: undefined;
-
-		const groundHeight = this.findMinGroundHeightForTower(
-			towerCenterX,
-			towerCenterZ,
-			towerRadius,
-			biome,
-			prepassByChunk,
-		);
-
 		this.generateCylinderTower(
-			chunkX,
 			chunkY,
-			chunkZ,
 			towerCenterX,
 			towerCenterZ,
 			towerRadius,
-			groundHeight,
+			decision.groundHeight,
 			biome,
 			placeBlock,
 			chunkSize,
 			seed,
-			prepassByChunk,
+			decision.prepassByChunk,
 		);
 		this.generateUndergroundCylinderTower(
-			chunkX,
 			chunkY,
-			chunkZ,
 			towerCenterX,
 			towerCenterZ,
 			towerRadius,
-			groundHeight,
+			decision.groundHeight,
 			placeBlock,
 			chunkSize,
 		);
@@ -168,9 +228,7 @@ export class TowerFeature implements IWorldFeature {
 	}
 
 	private generateCylinderTower(
-		_chunkX: number,
 		chunkY: number,
-		_chunkZ: number,
 		towerCenterX: number,
 		towerCenterZ: number,
 		towerRadius: number,
@@ -183,36 +241,45 @@ export class TowerFeature implements IWorldFeature {
 			| Map<string, ReturnType<ColumnPrepassResolver>["entry"]>
 			| undefined,
 	) {
+		const chunkMinY = chunkY * chunkSize;
+		const chunkMaxY = chunkMinY + chunkSize - 1;
 		const towerHeight = 76 + (getPRNGBySeed(towerCenterZ, seed) % 8);
 		const wallBlockId = 1;
 		const radiusSq = towerRadius * towerRadius;
 
-		for (let dx = -towerRadius; dx <= towerRadius; dx++) {
-			for (let dz = -towerRadius; dz <= towerRadius; dz++) {
-				if (dx * dx + dz * dz > radiusSq) continue;
+		// Band-clamped below-ground fill: writes land in
+		// [originalHeight, groundHeight), so layers starting at/above
+		// groundHeight can skip the whole phase.
+		if (chunkMinY < groundHeight) {
+			for (let dx = -towerRadius; dx <= towerRadius; dx++) {
+				for (let dz = -towerRadius; dz <= towerRadius; dz++) {
+					if (dx * dx + dz * dz > radiusSq) continue;
 
-				const worldX = towerCenterX + dx;
-				const worldZ = towerCenterZ + dz;
+					const worldX = towerCenterX + dx;
+					const worldZ = towerCenterZ + dz;
 
-				const originalHeight = this.resolveHeight(
-					worldX,
-					worldZ,
-					chunkSize,
-					prepassByChunk,
-				);
+					const originalHeight = this.resolveHeight(
+						worldX,
+						worldZ,
+						chunkSize,
+						prepassByChunk,
+					);
 
-				for (let y = originalHeight; y < groundHeight; y++) {
-					placeBlock(worldX, y, worldZ, biome.undergroundBlock, true);
+					const yStart = Math.max(originalHeight, chunkMinY);
+					const yEnd = Math.min(groundHeight, chunkMaxY + 1);
+					for (let y = yStart; y < yEnd; y++) {
+						placeBlock(worldX, y, worldZ, biome.undergroundBlock, true);
+					}
 				}
 			}
 		}
 
-		for (let localY = 0; localY < chunkSize; localY++) {
-			const worldY = chunkY * chunkSize + localY;
-			if (worldY < groundHeight || worldY >= groundHeight + towerHeight) {
-				continue;
-			}
-
+		// Band-clamped wall cylinder: intersect [groundHeight,
+		// groundHeight+towerHeight) with this layer once instead of filtering
+		// 32 candidate rows through two comparisons each.
+		const wallStart = Math.max(groundHeight, chunkMinY);
+		const wallEnd = Math.min(groundHeight + towerHeight, chunkMaxY + 1);
+		for (let worldY = wallStart; worldY < wallEnd; worldY++) {
 			for (let dx = -towerRadius; dx <= towerRadius; dx++) {
 				for (let dz = -towerRadius; dz <= towerRadius; dz++) {
 					if (dx * dx + dz * dz > radiusSq) continue;
@@ -229,9 +296,7 @@ export class TowerFeature implements IWorldFeature {
 	}
 
 	private generateUndergroundCylinderTower(
-		_chunkX: number,
 		chunkY: number,
-		_chunkZ: number,
 		towerCenterX: number,
 		towerCenterZ: number,
 		towerRadius: number,
@@ -243,12 +308,13 @@ export class TowerFeature implements IWorldFeature {
 		const MIN_WORLD_Y = -16 * 100;
 		const radiusSq = towerRadius * towerRadius;
 
-		for (let localY = 0; localY < chunkSize; localY++) {
-			const worldY = chunkY * chunkSize + localY;
-			if (worldY < MIN_WORLD_Y || worldY >= groundHeight) {
-				continue;
-			}
+		const chunkMinY = chunkY * chunkSize;
+		const chunkMaxY = chunkMinY + chunkSize - 1;
+		const shaftStart = Math.max(MIN_WORLD_Y, chunkMinY);
+		const shaftEnd = Math.min(groundHeight, chunkMaxY + 1);
+		if (shaftStart >= shaftEnd) return;
 
+		for (let worldY = shaftStart; worldY < shaftEnd; worldY++) {
 			for (let dx = -towerRadius; dx <= towerRadius; dx++) {
 				for (let dz = -towerRadius; dz <= towerRadius; dz++) {
 					if (dx * dx + dz * dz > radiusSq) continue;

@@ -90,9 +90,16 @@ function columnTopChunkY(x: number, z: number): number {
 	colTopCache.set(key, topY);
 
 	if (colTopCache.size > COL_TOP_CACHE_MAX) {
-		// Cheap reset — heights are deterministic, recomputation is fine.
-		colTopCache.clear();
-		colTopCache.set(key, topY);
+		// FIFO-evict the oldest quarter instead of a wholesale clear(): a full
+		// reset turned steady-state hit-rates into a cold-start spike exactly
+		// while chunks were streaming in (every subsequent column paid a
+		// terrain-height noise evaluation until the cache warmed again).
+		// Heights are deterministic, so evicted entries just recompute.
+		let toEvict = COL_TOP_CACHE_MAX >> 2;
+		for (const k of colTopCache.keys()) {
+			colTopCache.delete(k);
+			if (--toEvict <= 0) break;
+		}
 	}
 
 	return topY;
@@ -133,7 +140,11 @@ export class ChunkStreamingController {
 
 	private nextRuleGeneration(): number {
 		this._ruleSetGeneration++;
-		this._refreshCache.clear();
+		// Swap instead of clear(): every old decision is genuinely invalid
+		// under the new rules, but a wholesale .clear() pays an O(n) deletion
+		// walk on the streaming hot path. Dropping the reference lets GC
+		// reclaim the old map off the critical path; semantics are identical.
+		this._refreshCache = new Map<number, number>();
 		return this._ruleSetGeneration;
 	}
 

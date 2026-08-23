@@ -13,6 +13,15 @@ const MAX_SPIRE_HEIGHT = 600;
 const SUPERELLIPSE_EXP = 2.8;
 const SPIRE_FOOTPRINT = 64;
 
+// PERF: constant — hoisted out of generate(), which ran once per badlands
+// chunk-layer × neighbor dispatch and allocated a fresh literal each time.
+const EDGE_OFFSETS: readonly (readonly [number, number])[] = [
+	[-SPIRE_FOOTPRINT, 0],
+	[SPIRE_FOOTPRINT, 0],
+	[0, -SPIRE_FOOTPRINT],
+	[0, SPIRE_FOOTPRINT],
+];
+
 const TIER_A = [32, 27, 22, 17, 12, 7];
 const TIER_B = [22, 18, 15, 12, 8, 4];
 const TIER_COUNT = TIER_A.length;
@@ -119,13 +128,7 @@ export class BadlandsSpireFeature implements IWorldFeature {
 
 		const centerBiome = getBiome(cx, cz);
 		if (centerBiome.id !== BIOME_ID.BADLANDS) return;
-		const edgeOffsets: [number, number][] = [
-			[-SPIRE_FOOTPRINT, 0],
-			[SPIRE_FOOTPRINT, 0],
-			[0, -SPIRE_FOOTPRINT],
-			[0, SPIRE_FOOTPRINT],
-		];
-		for (const [ox, oz] of edgeOffsets) {
+		for (const [ox, oz] of EDGE_OFFSETS) {
 			if (getBiome(cx + ox, cz + oz).id !== BIOME_ID.BADLANDS) return;
 		}
 

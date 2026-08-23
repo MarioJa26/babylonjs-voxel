@@ -14,6 +14,7 @@ import { copyVec3, lengthSqVec3, Quaternion, setVec3 } from "@/code/Lib/Math";
 import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
+	_voxelResolveScratch,
 	Axis,
 	createVoxelColliderBlockSampler,
 	VoxelAabbCollider,
@@ -22,7 +23,7 @@ import {
 import { CustomBoat } from "../Entities/CustomBoat";
 import type { Mount } from "../Entities/Mount";
 import type { BoatChunk } from "../World/Boat/BoatChunk";
-import { getChunk } from "../World/Chunk/Chunk";
+import { type Chunk, getChunk } from "../World/Chunk/Chunk";
 import {
 	getBlockAndStateByWorldCoords,
 	getBlockByWorldCoords,
@@ -93,16 +94,47 @@ const _unloadedSolid: { blockId: number; blockState: number } = {
 // True when the chunk containing the given world coordinate is present and has
 // voxel data. Used to gate collision: an unloaded chunk is treated as solid so
 // the player never falls through terrain that hasn't streamed in.
+//
+// PERF: Collision sweeps probe clusters of adjacent voxels that almost always
+// live in the same chunk, but getChunk() builds three BigInts per call via
+// packCoords. Mirror ChunkWorldMutations.resolveCoords' last-chunk cache: only
+// re-resolve when the chunk coords change, and drop the cached entry as soon
+// as it reports unloaded so a disposed chunk can't stick (the next probe
+// falls through to the registry again).
+const _probeCache: {
+	cx: number;
+	cy: number;
+	cz: number;
+	chunk: Chunk | undefined;
+} = { cx: NaN, cy: NaN, cz: NaN, chunk: undefined };
+
 function isChunkLoadedAtWorldCoords(
 	worldX: number,
 	worldY: number,
 	worldZ: number,
 ): boolean {
-	const chunk = getChunk(
-		worldToChunkCoord(worldX),
-		worldToChunkCoord(worldY),
-		worldToChunkCoord(worldZ),
-	);
+	const cx = worldToChunkCoord(worldX);
+	const cy = worldToChunkCoord(worldY);
+	const cz = worldToChunkCoord(worldZ);
+
+	let chunk =
+		_probeCache.cx === cx && _probeCache.cy === cy && _probeCache.cz === cz
+			? _probeCache.chunk
+			: undefined;
+
+	if (!chunk) {
+		chunk = getChunk(cx, cy, cz);
+		_probeCache.cx = cx;
+		_probeCache.cy = cy;
+		_probeCache.cz = cz;
+		_probeCache.chunk = chunk;
+	} else if (!chunk.isLoaded) {
+		// Stale entry (chunk disposed since caching) — release it so future
+		// probes re-resolve instead of trusting a dead object forever.
+		_probeCache.chunk = undefined;
+		return false;
+	}
+
 	return !!chunk && chunk.isLoaded && chunk.hasVoxelData;
 }
 
@@ -328,8 +360,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 					const packed = chunk.getBlockLocal(x, y, z);
 					const blockId = packed & 0x3ff;
 					if (!isCollidableBlock(blockId)) return null;
-					const blockState = (packed >>> 10) & 0x3f;
-					return { blockId, blockState };
+					_voxelResolveScratch.blockId = blockId;
+					_voxelResolveScratch.blockState = (packed >>> 10) & 0x3f;
+					return _voxelResolveScratch;
 				},
 				{
 					getFenceDynamicShape,
@@ -897,26 +930,26 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 		// +X / -X
 		setVec3(p, pos.x + this.colliderHalfWidth + 0.04, cy, pos.z);
-		const v1 = collider.firstSolidVoxel(p, extents);
+		const v1 = collider.firstSolidVoxelScratch(p, extents);
 		if (v1 && this.#isClimbableWall(v1)) {
 			this.#wallContact = true;
 			return;
 		}
 		setVec3(p, pos.x - this.colliderHalfWidth - 0.04, cy, pos.z);
-		const v2 = collider.firstSolidVoxel(p, extents);
+		const v2 = collider.firstSolidVoxelScratch(p, extents);
 		if (v2 && this.#isClimbableWall(v2)) {
 			this.#wallContact = true;
 			return;
 		}
 		// +Z / -Z
 		setVec3(p, pos.x, cy, pos.z + this.colliderHalfWidth + 0.04);
-		const v3 = collider.firstSolidVoxel(p, extents);
+		const v3 = collider.firstSolidVoxelScratch(p, extents);
 		if (v3 && this.#isClimbableWall(v3)) {
 			this.#wallContact = true;
 			return;
 		}
 		setVec3(p, pos.x, cy, pos.z - this.colliderHalfWidth - 0.04);
-		const v4 = collider.firstSolidVoxel(p, extents);
+		const v4 = collider.firstSolidVoxelScratch(p, extents);
 		if (v4 && this.#isClimbableWall(v4)) {
 			this.#wallContact = true;
 		}

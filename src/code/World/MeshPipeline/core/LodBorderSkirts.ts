@@ -52,6 +52,11 @@ interface TopSolid {
 	lightLevel: number;
 }
 
+// PERF: module-level scratch — callers consume the result synchronously
+// (emitSkirt reads fields, nothing retains it across the next topSolidAt
+// call), so this removes one heap allocation per border column.
+const _topSolidScratch: TopSolid = { y: 0, packed: 0, lightLevel: 0 };
+
 function topSolidAt(
 	session: MeshBuildSession,
 	x: number,
@@ -70,7 +75,10 @@ function topSolidAt(
 		const flags = getCachedFlagsAndId(packed) & 0xffff;
 		if ((flags & FLAG_SOLID) === 0) continue;
 
-		return { y, packed, lightLevel: light[idx] };
+		_topSolidScratch.y = y;
+		_topSolidScratch.packed = packed;
+		_topSolidScratch.lightLevel = light[idx];
+		return _topSolidScratch;
 	}
 
 	return null;

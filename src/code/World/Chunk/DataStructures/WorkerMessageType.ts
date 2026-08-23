@@ -252,6 +252,11 @@ export type LightRegisterChunkRequest = {
 	lightSAB: SharedArrayBuffer;
 	paletteSAB: SharedArrayBuffer | null;
 	blockStorageBytesPerElement: 1 | 2;
+	// True when a deferred-lighting refinement is already queued for this
+	// chunk: its BFS is always followed by an explicit sky-reconcile request,
+	// so running the O(volume) sky scan at registration time as well just
+	// doubles the most expensive pass on the light worker.
+	skipSkyReconcile?: boolean;
 };
 
 export type LightRegisterChunkBatchRequest = {

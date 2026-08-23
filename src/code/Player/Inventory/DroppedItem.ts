@@ -26,6 +26,7 @@ import {
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
+	_voxelResolveScratch,
 	Axis as ColliderAxis,
 	createVoxelColliderBlockSampler,
 	VoxelAabbCollider,
@@ -232,7 +233,9 @@ const SHARED_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
 	(x, y, z) => {
 		const blockId = getBlockByWorldCoords(x, y, z);
 		if (!isCollidableBlock(blockId)) return null;
-		return { blockId, blockState: getBlockStateByWorldCoords(x, y, z) };
+		_voxelResolveScratch.blockId = blockId;
+		_voxelResolveScratch.blockState = getBlockStateByWorldCoords(x, y, z);
+		return _voxelResolveScratch;
 	},
 	{
 		getFenceDynamicShape,

@@ -19,6 +19,7 @@ import {
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
+	_voxelResolveScratch,
 	createVoxelColliderBlockSampler,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
@@ -133,7 +134,9 @@ const DEBRIS_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
 	(x, y, z) => {
 		const blockId = getBlockByWorldCoords(x, y, z);
 		if (!isCollidableBlock(blockId)) return null;
-		return { blockId, blockState: getBlockStateByWorldCoords(x, y, z) };
+		_voxelResolveScratch.blockId = blockId;
+		_voxelResolveScratch.blockState = getBlockStateByWorldCoords(x, y, z);
+		return _voxelResolveScratch;
 	},
 	{
 		getFenceDynamicShape,

@@ -220,6 +220,52 @@ export class Chunk {
 	public static onBlockModified: ((chunk: Chunk) => void) | null = null;
 
 	// -------------------------------------------------------------------------
+	// Batched block-edit remeshing (water / tick waves).
+	//
+	// A single water tick can write hundreds of blocks across a handful of
+	// chunks. Without batching, every write cleared the LOD mesh cache and
+	// scheduled a remesh — dozens of full greedy rebuilds for what is really
+	// one intermediate flow state. Inside a batch, edits only MARK chunks
+	// dirty; endBlockEditBatch() coalesces them into one remesh per chunk.
+	// Light mutates still dispatch per block, so incremental lighting and
+	// worker-side BFS stay exactly as before.
+	// -------------------------------------------------------------------------
+	private static _blockEditBatchDepth = 0;
+	private static readonly _blockEditBatchChunks = new Set<Chunk>();
+
+	public static beginBlockEditBatch(): void {
+		Chunk._blockEditBatchDepth++;
+	}
+
+	public static endBlockEditBatch(): void {
+		const depth = --Chunk._blockEditBatchDepth;
+		if (depth > 0) return;
+		if (depth < 0) {
+			// Unbalanced call — clamp instead of going negative forever.
+			Chunk._blockEditBatchDepth = 0;
+			return;
+		}
+		const dirty = Chunk._blockEditBatchChunks;
+		if (dirty.size === 0) return;
+		for (const chunk of dirty) {
+			if (!chunk.isLoaded) continue;
+			chunk.clearCachedLODMeshes();
+			chunk.scheduleRemesh(true);
+		}
+		dirty.clear();
+	}
+
+	/** Mark this chunk (or an optional neighbor) dirty for remesh — batch-aware. */
+	private markDirtyForRemesh(): void {
+		if (Chunk._blockEditBatchDepth > 0) {
+			Chunk._blockEditBatchChunks.add(this);
+			return;
+		}
+		this.clearCachedLODMeshes();
+		this.scheduleRemesh(true);
+	}
+
+	// -------------------------------------------------------------------------
 	// Light-worker integration.
 	//
 	// Each loaded chunk owns a slot in a workspace-wide SharedArrayBuffer
@@ -747,6 +793,12 @@ export class Chunk {
 		const chunkBaseZ = this.chunkZ * size;
 		const chunkBaseY = this.chunkY * size;
 		const hasLoadedAbove = !!aboveChunk?.isLoaded;
+		// PERF: The generator-height probe only applies when the chunk top
+		// could possibly receive generation-time skylight at all. Hoisting the
+		// constant part out of the column loop lets fully-deep chunks skip all
+		// 1024 terrain-height noise evaluations on the render thread.
+		const canSeedFromGeneratorHeight =
+			topWorldY >= Chunk.SKYLIGHT_GENERATION_MIN_WORLD_Y;
 
 		const seedCapacity = _sunlightSeedQueue.length;
 		const seedQueue = _sunlightSeedQueue;
@@ -781,12 +833,9 @@ export class Chunk {
 							unpackBlockId(aboveBlockPacked),
 						);
 					}
-				} else {
+				} else if (canSeedFromGeneratorHeight) {
 					const terrainHeight = getFinalTerrainHeight(worldX, worldZ);
-					if (
-						topWorldY >= Chunk.SKYLIGHT_GENERATION_MIN_WORLD_Y &&
-						topWorldY >= terrainHeight - 48
-					) {
+					if (topWorldY >= terrainHeight - 48) {
 						incomingSkyLight = 15;
 					}
 				}
@@ -800,9 +849,10 @@ export class Chunk {
 						!hasLoadedAbove &&
 						worldY < Chunk.SKYLIGHT_GENERATION_MIN_WORLD_Y
 					) {
-						incomingSkyLight = 0;
-						sourceFiltersFullSun = false;
-						continue;
+						// Descending: every deeper row is also below the
+						// generation-seed floor, and sky bits were already
+						// cleared at function entry — stop scanning.
+						break;
 					}
 
 					let blockPacked: number;
@@ -862,10 +912,9 @@ export class Chunk {
 		if (seedLength > 0) {
 			const pool = Chunk._lightPool;
 			if (pool) {
-				const seedCopy = new Uint16Array(seedLength);
-				for (let i = 0; i < seedLength; i++) {
-					seedCopy[i] = seedQueue[i];
-				}
+				// slice() copies via memcpy — the element-wise loop here used to
+				// show up on storage-load waves (up to 32k seeds per chunk).
+				const seedCopy = seedQueue.slice(0, seedLength);
 				pool.enqueueDeferredLightFromSunlightInit?.(this, seedCopy, seedLength);
 			}
 		}
@@ -1197,20 +1246,19 @@ export class Chunk {
 		this.persistenceRevision++;
 		this.connectivityDirty = true;
 		this.blockRevision++;
-		this.clearCachedLODMeshes();
-		this.scheduleRemesh(true);
+		this.markDirtyForRemesh();
 		Chunk.onBlockModified?.(this);
 
 		const S = Chunk.SIZE;
 
-		if (localX === 0) this.getNeighbor(-1, 0, 0)?.scheduleRemesh(true);
-		else if (localX === S - 1) this.getNeighbor(1, 0, 0)?.scheduleRemesh(true);
+		if (localX === 0) this.getNeighbor(-1, 0, 0)?.markDirtyForRemesh();
+		else if (localX === S - 1) this.getNeighbor(1, 0, 0)?.markDirtyForRemesh();
 
-		if (localY === 0) this.getNeighbor(0, -1, 0)?.scheduleRemesh(true);
-		else if (localY === S - 1) this.getNeighbor(0, 1, 0)?.scheduleRemesh(true);
+		if (localY === 0) this.getNeighbor(0, -1, 0)?.markDirtyForRemesh();
+		else if (localY === S - 1) this.getNeighbor(0, 1, 0)?.markDirtyForRemesh();
 
-		if (localZ === 0) this.getNeighbor(0, 0, -1)?.scheduleRemesh(true);
-		else if (localZ === S - 1) this.getNeighbor(0, 0, 1)?.scheduleRemesh(true);
+		if (localZ === 0) this.getNeighbor(0, 0, -1)?.markDirtyForRemesh();
+		else if (localZ === S - 1) this.getNeighbor(0, 0, 1)?.markDirtyForRemesh();
 	}
 
 	/**
@@ -1267,7 +1315,6 @@ export class Chunk {
 	public scheduleRemesh(priority = false, includeNeighbors = false): void {
 		if (!this.isLoaded) return;
 
-		this.meshRevision++;
 		this.isDirty = true;
 
 		if (includeNeighbors) {
@@ -1279,8 +1326,17 @@ export class Chunk {
 			this.getNeighbor(0, 0, 1)?.scheduleRemesh(priority);
 		}
 
+		// Coalescing: when a rebuild is already queued or in flight, a repeat
+		// request must NOT advance meshRevision. The worker stamps the revision
+		// at dispatch time and reads live voxel state from the shared buffers,
+		// so the pending build already covers these requests; if a build is
+		// mid-flight the pool's rerunRemeshAfterInflight path re-queues a fresh
+		// build after it lands. Bumping here would mark that in-flight result
+		// stale on arrival (drain drops it) and force a duplicate full rebuild —
+		// the remesh storm during load waves.
 		if (this.remeshQueued) return;
 
+		this.meshRevision++;
 		this.remeshQueued = true;
 		Chunk.onRequestRemesh?.(this, priority);
 	}

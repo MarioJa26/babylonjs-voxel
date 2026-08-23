@@ -136,7 +136,27 @@ import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
 export class RemoteChunkProvider {
 	private pending = new Map<bigint, PendingChunk>();
 	private inFlight = new Map<bigint, Promise<RemoteChunkResult>>();
+	// Version per cached chunk, used to skip redundant fetches. Capped with
+	// FIFO trimming: without it, long exploration sessions retained an entry
+	// for every coordinate ever seen. Evicted entries only cost a re-fetch
+	// if the chunk is revisited.
 	private chunkVersions = new Map<bigint, number>();
+	private static readonly CHUNK_VERSIONS_MAX = 32768;
+
+	/** Record a version with recency refresh + FIFO trim past the cap. */
+	private noteChunkVersion(key: bigint, version: number): void {
+		const versions = this.chunkVersions;
+		if (versions.has(key)) versions.delete(key);
+		versions.set(key, version);
+
+		if (versions.size > RemoteChunkProvider.CHUNK_VERSIONS_MAX) {
+			let toEvict = RemoteChunkProvider.CHUNK_VERSIONS_MAX >> 2;
+			for (const k of versions.keys()) {
+				versions.delete(k);
+				if (--toEvict <= 0) break;
+			}
+		}
+	}
 	private store: LevelDbChunkStore;
 	/** Resolves true when the local cache store is usable, false on failure. */
 	private readonly storeReady: Promise<boolean>;
@@ -776,7 +796,7 @@ export class RemoteChunkProvider {
 					if (this.epoch !== responseEpoch) return;
 					const current = this.chunkVersions.get(key);
 					if (current === undefined || chunk.version >= current) {
-						this.chunkVersions.set(key, chunk.version);
+						this.noteChunkVersion(key, chunk.version);
 					}
 				})
 				.catch((error) => {
@@ -955,7 +975,7 @@ export class RemoteChunkProvider {
 				);
 			}
 
-			versions.set(key, resolved.version);
+			this.noteChunkVersion(key, resolved.version);
 			result.set(c, resolved);
 		}
 

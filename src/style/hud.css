@@ -83,8 +83,7 @@
 	   which pins the inventory grid dead-center over the hotbar */
 	width: min(96vw, 1500px);
 
-	background-color: var(--hud-bg-scrim);
-	backdrop-filter: blur(6px);
+	background-color: rgba(8, 13, 18, 0.35);
 	border: 2px solid var(--hud-frame);
 	border-radius: var(--hud-radius-lg);
 	box-shadow: var(--hud-shadow-panel);
@@ -279,26 +278,17 @@
 
 .player-preview-panel {
 	grid-column: 1;
-	justify-self: end; /* hug the left side of the inventory */
+	justify-self: end;
 	align-self: end;
 
-	background-color: var(--hud-bg-panel);
+	/* Transparent center on purpose: the model itself is rendered by the main
+	   scene BEHIND this DOM panel — the frame + equipment slots are the only
+	   DOM here. */
+	background: transparent;
 	border: 2px solid var(--hud-frame);
 	border-radius: var(--hud-radius-md);
-	box-shadow: var(--hud-shadow-panel);
 	padding: 6px;
-	backdrop-filter: blur(6px);
-}
-
-.player-preview-canvas {
-	display: block;
-	width: 100%;
-	max-width: 210px;
-	height: auto; /* keeps the engine's aspect ratio when shrinking */
-	border-radius: var(--hud-radius-sm);
-	/* Opaque on purpose: the game canvas sits behind this panel, and any
-	   translucency lets in-world capsules bleed through into the preview */
-	background-color: rgb(10, 14, 18);
+	pointer-events: none;
 }
 
 .preview-body {

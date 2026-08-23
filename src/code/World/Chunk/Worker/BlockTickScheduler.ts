@@ -36,21 +36,31 @@ function packKey(x: number, y: number, z: number): number {
 	);
 }
 
-interface ScheduledTick {
-	worldX: number;
-	worldY: number;
-	worldZ: number;
-	targetTick: number;
+function unpackKeyX(key: number): number {
+	return Math.floor(key / KEY_X_MUL) - KEY_X_OFFSET;
+}
+
+function unpackKeyY(key: number): number {
+	return Math.floor((key % KEY_X_MUL) / KEY_Y_MUL) - KEY_Y_OFFSET;
+}
+
+function unpackKeyZ(key: number): number {
+	return (key % KEY_Y_MUL) - KEY_Z_OFFSET;
 }
 
 let _instance: BlockTickScheduler | null = null;
 
 export class BlockTickScheduler {
 	// Authoritative "is this block scheduled, and for when" — keyed by
-	// packed coordinate. Reschedules only ever move a key's targetTick
-	// earlier (see schedule() below), never later, which is what makes the
-	// simple `!entry` staleness check in processFrame() sufficient.
-	#pending = new Map<number, ScheduledTick>();
+	// packed coordinate, value = targetTick. Reschedules only ever move a
+	// key's targetTick earlier (see schedule() below), never later, which is
+	// what makes the simple `undefined` staleness check in processFrame()
+	// sufficient.
+	//
+	// PERF: coordinates are re-derived from the key at drain time instead of
+	// storing a {x,y,z,tick} object per cell — water floods schedule thousands
+	// of cells per second and each first-time key used to allocate one.
+	#pending = new Map<number, number>();
 	// buckets[tick & RING_MASK] holds the packed keys due at that tick.
 	#buckets: number[][] = Array.from(
 		{ length: RING_SIZE },
@@ -101,16 +111,9 @@ export class BlockTickScheduler {
 
 		// Always keep whichever requested tick is sooner — matches the
 		// original scheduler's semantics.
-		if (existing && targetTick >= existing.targetTick) return;
+		if (existing !== undefined && targetTick >= existing) return;
 
-		if (existing) {
-			existing.worldX = worldX;
-			existing.worldY = worldY;
-			existing.worldZ = worldZ;
-			existing.targetTick = targetTick;
-		} else {
-			this.#pending.set(key, { worldX, worldY, worldZ, targetTick });
-		}
+		this.#pending.set(key, targetTick);
 		// A stale copy left behind in an earlier-created bucket entry (if
 		// any) is skipped at drain time via the #pending lookup — no need
 		// to hunt it down and remove it from that bucket array now.
@@ -153,12 +156,11 @@ export class BlockTickScheduler {
 
 		for (let i = 0; i < processCount; i++) {
 			const key = due[i];
-			const entry = this.#pending.get(key);
 			// Tombstone: cancelled via removeAt, or already fired via an
 			// earlier reschedule.
-			if (!entry) continue;
+			if (!this.#pending.has(key)) continue;
 			this.#pending.delete(key);
-			callback(entry.worldX, entry.worldY, entry.worldZ);
+			callback(unpackKeyX(key), unpackKeyY(key), unpackKeyZ(key));
 		}
 
 		for (let i = processCount; i < due.length; i++) {

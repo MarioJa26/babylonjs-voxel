@@ -131,7 +131,15 @@ export class PlayerLoopController {
 		const frameStart = performance.now();
 		const dtSec = deltaMs * 0.001;
 
-		this.#blockTickScheduler.processFrame();
+		// Batch the whole tick wave: a flood tick can write hundreds of blocks;
+		// coalescing turns that into one remesh per touched chunk instead of
+		// dozens of intermediate rebuilds.
+		Chunk.beginBlockEditBatch();
+		try {
+			this.#blockTickScheduler.processFrame();
+		} finally {
+			Chunk.endBlockEditBatch();
+		}
 
 		const vehicle = this.playerVehicle;
 		const stats = this.playerStats;

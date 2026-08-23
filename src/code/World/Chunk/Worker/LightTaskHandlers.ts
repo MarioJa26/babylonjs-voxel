@@ -206,13 +206,19 @@ function registerChunkFields(fields: LightRegisterChunkFields): void {
 		);
 	}
 
-	// Reconcile both block and sky light after registration.
+	// Reconcile block light after registration (cheap: border faces only).
+	// The full-volume sky reconcile is skipped when the main thread flagged
+	// the chunk for deferred lighting — that pipeline always ends with an
+	// explicit LightSkyReconcile request, so scanning all 32k voxels here as
+	// well doubles the most expensive pass on the light worker.
 	lightBlockReconcile(registry, fields.headerSlot).forEach((slot) => {
 		dirty.add(slot);
 	});
-	lightSkyReconcile(registry, fields.headerSlot).forEach((slot) => {
-		dirty.add(slot);
-	});
+	if (!fields.skipSkyReconcile) {
+		lightSkyReconcile(registry, fields.headerSlot).forEach((slot) => {
+			dirty.add(slot);
+		});
+	}
 
 	if (dirty.size > 0) {
 		postDirty(fields.seq, dirty, registry);
@@ -323,12 +329,14 @@ function handleSkyReconcile(req: LightSkyReconcileRequest): void {
 	if (!state.registry) return;
 	const dirty = _dirtyScratch;
 	dirty.clear();
-	for (const slot of lightSkyReconcile(state.registry, req.headerSlot)) {
+	// forEach, not for..of: iterating DirtySlotSet allocates an iterator
+	// object per loop (it ships forEach precisely to avoid that).
+	lightSkyReconcile(state.registry, req.headerSlot).forEach((slot) => {
 		dirty.add(slot);
-	}
-	for (const slot of lightBlockReconcile(state.registry, req.headerSlot)) {
+	});
+	lightBlockReconcile(state.registry, req.headerSlot).forEach((slot) => {
 		dirty.add(slot);
-	}
+	});
 	postDirty(req.seq, dirty, state.registry);
 }
 

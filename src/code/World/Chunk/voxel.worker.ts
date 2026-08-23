@@ -501,7 +501,10 @@ type DecodedBlocksEntry = {
 	blocks: Uint8Array | Uint16Array;
 };
 
-const DECODED_BLOCKS_CACHE_MAX = 8;
+// PERF: sized for streaming bursts — a worker can touch dozens of distinct
+// chunks between two touches of the same one, and every miss here means a
+// fresh 64 KiB expandPalette allocation. 32 entries ≈ 2 MiB per worker.
+const DECODED_BLOCKS_CACHE_MAX = 32;
 const decodedBlocksCache = new Map<bigint, DecodedBlocksEntry>();
 
 function getDecodedCenterBlocks(
@@ -591,8 +594,18 @@ type RelightCacheEntry = {
 	neighbors: (Uint16Array | undefined)[];
 };
 
-const RELIGHT_CACHE_MAX = 6;
+// PERF: each entry owns ~190 KiB of padded grids; 16 entries ≈ 3 MiB per
+// worker. The old cap of 6 fell over during streaming bursts (each worker sees
+// far more than 6 distinct chunks between repeats), forcing light-only remeshes
+// down the full-rebuild fallback path.
+const RELIGHT_CACHE_MAX = 16;
 const relightCache = new Map<bigint, RelightCacheEntry>();
+
+/** Refresh insertion order so Map-order eviction stays true LRU. */
+function touchRelightEntry(chunkId: bigint, entry: RelightCacheEntry): void {
+	relightCache.delete(chunkId);
+	relightCache.set(chunkId, entry);
+}
 
 function getOrCreateRelightEntry(
 	chunkId: bigint,
@@ -607,6 +620,7 @@ function getOrCreateRelightEntry(
 		existing.generation = generation;
 		existing.blockRevision = blockRevision;
 		existing.neighbors = neighbors;
+		touchRelightEntry(chunkId, existing);
 		return existing;
 	}
 	if (relightCache.size >= RELIGHT_CACHE_MAX) {
@@ -875,6 +889,8 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 			self.postMessage(miss);
 			return;
 		}
+
+		touchRelightEntry(data.chunkId, entry);
 
 		const reg = _voxelRegistrations.get(
 			packCoords(data.chunkX, data.chunkY, data.chunkZ),

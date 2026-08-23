@@ -267,10 +267,7 @@ const onMessageHandler = (event: MessageEvent) => {
 				const { payload, transferables } = handleGenerateDistantTerrain(
 					event.data,
 				);
-				self.postMessage(
-					{ ...payload, type: WorkerTaskType.GenerateDistantTerrain_Generated },
-					transferables,
-				);
+				self.postMessage(payload, transferables);
 			} catch (err) {
 				console.error("GenerateDistantTerrain failed:", err);
 				const { requestId, centerChunkX, centerChunkZ } = event.data;

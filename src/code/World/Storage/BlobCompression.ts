@@ -100,6 +100,94 @@ export async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
 	return runCodec(new CompressionStream(FORMAT), bytes);
 }
 
+// ---------------------------------------------------------------------------
+// Optional dedicated codec worker.
+//
+// The native codecs run off-thread, but DRIVING them from the main thread
+// costs a burst of stream machinery + Response/arrayBuffer work per blob —
+// visible as jank during bulk load/save waves. When a dedicated worker is
+// available, the pipelines run there instead; any failure (no Worker support,
+// construction error, runtime codec error) rejects with
+// CodecWorkerUnavailable and the caller transparently falls back to the
+// inline streams below.
+//
+// Inputs are structured-cloned (callers keep their references); outputs are
+// transferred back zero-copy.
+// ---------------------------------------------------------------------------
+
+/** Signals "the worker path could not service this op" — retry inline. */
+class CodecWorkerUnavailable extends Error {}
+
+type PendingCodecRequest = {
+	resolve: (bytes: Uint8Array) => void;
+	reject: (error: Error) => void;
+};
+
+let codecWorker: Worker | null | undefined; // undefined = not tried yet
+let nextCodecRequestId = 1;
+const pendingCodecRequests = new Map<number, PendingCodecRequest>();
+
+function ensureCodecWorker(): Worker | null {
+	if (codecWorker !== undefined) return codecWorker;
+	if (typeof Worker === "undefined") {
+		codecWorker = null;
+		return null;
+	}
+
+	try {
+		const worker = new Worker(
+			new URL("./blobCodec.worker.ts", import.meta.url),
+			{ type: "module", name: "blob-codec" },
+		);
+		worker.onmessage = (
+			event: MessageEvent<{
+				id: number;
+				ok: boolean;
+				result?: Uint8Array;
+			}>,
+		) => {
+			const pending = pendingCodecRequests.get(event.data.id);
+			if (!pending) return;
+			pendingCodecRequests.delete(event.data.id);
+			if (event.data.ok && event.data.result) {
+				pending.resolve(event.data.result);
+			} else {
+				pending.reject(new CodecWorkerUnavailable("codec op failed"));
+			}
+		};
+		worker.onerror = () => {
+			const pending = Array.from(pendingCodecRequests.values());
+			pendingCodecRequests.clear();
+			for (const entry of pending) {
+				entry.reject(new CodecWorkerUnavailable("codec worker error"));
+			}
+			codecWorker = null;
+			worker.terminate();
+		};
+		codecWorker = worker;
+		return worker;
+	} catch {
+		codecWorker = null;
+		return null;
+	}
+}
+
+function codecWorkerRun(
+	op: "compress" | "decompress",
+	bytes: Uint8Array,
+): Promise<Uint8Array> {
+	const worker = ensureCodecWorker();
+	if (!worker) {
+		return Promise.reject(new CodecWorkerUnavailable("unavailable"));
+	}
+
+	const id = nextCodecRequestId++;
+	return new Promise((resolve, reject) => {
+		pendingCodecRequests.set(id, { resolve, reject });
+		worker.postMessage({ id, op, bytes });
+	});
+}
+
 /**
  * Decompress bytes produced by deflate into a buffer of exactly outLen bytes.
  */
@@ -160,7 +248,13 @@ export async function compressBlob(bytes: Uint8Array): Promise<Uint8Array> {
 		return frameRaw(bytes);
 	}
 
-	const compressed = await deflate(bytes);
+	let compressed: Uint8Array;
+	try {
+		compressed = await codecWorkerRun("compress", bytes);
+	} catch (error) {
+		if (!(error instanceof CodecWorkerUnavailable)) throw error;
+		compressed = await deflate(bytes);
+	}
 
 	if (compressed.byteLength >= bytes.byteLength) {
 		return frameRaw(bytes);
@@ -194,7 +288,23 @@ export async function decompressBlob(bytes: Uint8Array): Promise<Uint8Array> {
 
 	if (marker === BLOB_MARKER_DEFLATE) {
 		const origLen = readUint32LE(bytes, 1);
-		return inflateInto(bytes.subarray(5), origLen);
+		const payload = bytes.subarray(5);
+
+		try {
+			const out = await codecWorkerRun("decompress", payload);
+			// Same validation inflateInto applies — corrupt payloads must
+			// still surface as errors, not silently wrong data.
+			if (out.byteLength !== origLen) {
+				throw new Error(
+					`Decompressed size mismatch: expected ${origLen}, got ${out.byteLength}`,
+				);
+			}
+			return out;
+		} catch (error) {
+			if (!(error instanceof CodecWorkerUnavailable)) throw error;
+		}
+
+		return inflateInto(payload, origLen);
 	}
 
 	if (marker === BLOB_MARKER_RAW) {
