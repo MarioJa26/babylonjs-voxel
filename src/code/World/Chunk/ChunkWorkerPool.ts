@@ -340,9 +340,6 @@ export class ChunkWorkerPool {
 	// Since-last-summary accumulators for the burst ingestion log.
 	private _summaryApplied = 0;
 	private _summaryDropped = 0;
-	// Distinct chunks applied since last summary — distinguishes "world is
-	// big, ~1 mesh per chunk" from "chunks re-meshing multiple times".
-	private readonly _summaryDistinct = new Set<bigint>();
 	private remeshFlushScheduled = false;
 	private processQueuePumpScheduled = false;
 	private meshDrainScheduled = false;
@@ -618,12 +615,6 @@ export class ChunkWorkerPool {
 		return this.inFlightRemeshKeys.has(
 			packInflightKey(chunk.numericId, chunk.lodLevel ?? 0),
 		);
-	}
-
-	private clearInflightRemeshByMessage(chunkId: bigint, lod: number): void {
-		const chunk = Chunk.chunkInstances.get(chunkId);
-		if (!chunk) return;
-		this.inFlightRemeshKeys.delete(packInflightKey(chunk.numericId, lod));
 	}
 
 	private recordBlockRevisionAtMesh(chunk: Chunk, lod: number): void {
@@ -1938,7 +1929,6 @@ export class ChunkWorkerPool {
 					this.queuePostRemeshSave(chunk);
 					this.debugStats.meshAppliedTotal++;
 					this._summaryApplied++;
-					this._summaryDistinct.add(chunkId);
 				} else {
 					if (!canCacheMesh) {
 						_meshApplyScratch.opaque = opaqueData;
@@ -1986,24 +1976,8 @@ export class ChunkWorkerPool {
 			if (this.meshResultQueueReadIdx < this.meshResultQueue.length) {
 				this.scheduleMeshFlush();
 			} else if (this._summaryApplied + this._summaryDropped >= 256) {
-				/*
-				// P0 burst summary: one line per ingestion burst so the
-				// applied-per-chunk remesh multiplier and the recycled fraction
-				// are visible without hooking a profiler. distinct < applied
-				// means chunks are being re-meshed within the burst.
-				console.info(
-					`[MeshIngestion] burst: ${this._summaryApplied} applied ` +
-						`(${this._summaryDistinct.size} distinct chunks), ` +
-						`${this.debugStats.meshCachedForOtherLodTotal} cached-for-other-lod, ` +
-						`${this._summaryDropped} dropped (recycled), ` +
-						`${this.debugStats.meshRecycledBuffersTotal} buffers ` +
-						`(${(this.debugStats.meshRecycledBytesTotal / 1048576).toFixed(1)} MB) returned to workers, ` +
-						`remeshQueue=${this.debugStats.remeshQueueLength}`,
-				);
-				*/
 				this._summaryApplied = 0;
 				this._summaryDropped = 0;
-				this._summaryDistinct.clear();
 			}
 		} finally {
 			this.insideMeshDrain = false;
@@ -2436,13 +2410,18 @@ export class ChunkWorkerPool {
 
 		if (type === WorkerTaskType.GenerateFullMesh) {
 			const meshData = data as FullMeshMessage;
-			this.clearInflightRemeshByMessage(meshData.chunkId, meshData.lod);
-			this.enqueueMeshResult(meshData, workerIndex);
-
+			// PERF: resolve the chunk ONCE — the in-flight key clear, baseline
+			// record and rerun check all need the same object, and each
+			// BigInt-keyed map lookup hashes the full 3×21-bit id.
 			const resolvedChunk = this.resolveChunkByMessageId(meshData.chunkId);
 			if (resolvedChunk) {
+				this.inFlightRemeshKeys.delete(
+					packInflightKey(resolvedChunk.numericId, meshData.lod),
+				);
 				this.recordBlockRevisionAtMesh(resolvedChunk, meshData.lod);
 			}
+			this.enqueueMeshResult(meshData, workerIndex);
+
 			if (resolvedChunk?.rerunRemeshAfterInflight) {
 				resolvedChunk.rerunRemeshAfterInflight = false;
 				this.scheduleRemesh(
@@ -2614,8 +2593,12 @@ export class ChunkWorkerPool {
 		if (type === (WorkerTaskType.RelightMesh as unknown as string)) {
 			// Relight cache miss in the worker: fall back to a full remesh.
 			const miss = data as unknown as RelightMeshMissMessage;
-			this.clearInflightRemeshByMessage(miss.chunkId, miss.lod);
 			const missChunk = this.resolveChunkByMessageId(miss.chunkId);
+			if (missChunk) {
+				this.inFlightRemeshKeys.delete(
+					packInflightKey(missChunk.numericId, miss.lod),
+				);
+			}
 			if (missChunk?.isLoaded) {
 				this.scheduleRemesh(missChunk, (missChunk.lodLevel ?? 0) === 0, false);
 			}
@@ -2630,15 +2613,16 @@ export class ChunkWorkerPool {
 			return failed;
 		}
 
-		this.clearInflightRemeshByMessage(data.chunkId, data.lod);
-
 		const fullMeshMessage = data as unknown as FullMeshMessage;
-		this.enqueueMeshResult(fullMeshMessage, workerIndex);
-
 		const resolvedChunk = this.resolveChunkByMessageId(data.chunkId);
 		if (resolvedChunk) {
+			this.inFlightRemeshKeys.delete(
+				packInflightKey(resolvedChunk.numericId, data.lod),
+			);
 			this.recordBlockRevisionAtMesh(resolvedChunk, data.lod);
 		}
+		this.enqueueMeshResult(fullMeshMessage, workerIndex);
+
 		if (resolvedChunk?.rerunRemeshAfterInflight) {
 			resolvedChunk.rerunRemeshAfterInflight = false;
 			this.scheduleRemesh(

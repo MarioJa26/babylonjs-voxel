@@ -241,6 +241,15 @@ export class ChunkStreamingController {
 	): Promise<void> {
 		this.streamRevision++;
 
+		// MEMORY: the relative-offset decision cache is semantically valid
+		// forever (keys encode distance + previous LOD, both player-relative),
+		// but its entry count scales with the refresh window. Swap it
+		// periodically so the map stays small; the cold re-resolve burst is a
+		// few thousand cheap rule checks, amortized over hundreds of moves.
+		if (this.streamRevision % 512 === 0) {
+			this._refreshCache = new Map<number, number>();
+		}
+
 		const revision = this.streamRevision;
 		const caveState = isInCave();
 
