@@ -3,18 +3,7 @@ import {
 	TextureDefinitionsReady,
 } from "@/code/World/Texture/TextureDefinitions";
 import { registerProceduralTools } from "./ProceduralTools";
-
-export type ItemDefinition = {
-	id: number;
-	name: string;
-	description?: string;
-	icon?: string;
-	maxStack?: number;
-	useAction?: string;
-	blockId?: number;
-	blockState?: number;
-	shape?: string;
-};
+import type { ItemDefinition } from "./Types/InventoryTypes";
 
 const DEFAULT_ITEMS_URL = "/data/items.json";
 

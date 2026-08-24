@@ -4,16 +4,7 @@ import {
 } from "@/code/World/Shape/BlockShapes";
 import { getFaceAtlasTile } from "@/code/World/Texture/BlockTextures";
 import { FaceName } from "@/code/World/Texture/FaceName";
-
-export interface CubeIconOptions {
-	radius?: number;
-	ry?: number;
-	heightRatio?: number;
-	size?: number;
-	topShade?: number;
-	leftShade?: number;
-	rightShade?: number;
-}
+import type { CubeIconOptions } from "./Types/InventoryTypes";
 
 // ─── Frozen defaults ───
 const R_DEFAULT = 25;

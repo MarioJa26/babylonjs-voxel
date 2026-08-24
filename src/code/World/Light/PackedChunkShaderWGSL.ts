@@ -45,6 +45,14 @@ export interface VertexShaderOptions {
 	 * remove the matching VSOut field when this is false.
 	 */
 	ao?: boolean;
+	/**
+	 * Bake every per-quad lighting term into ONE flat vec3 varying
+	 * (`vShade` @15): wetness darkening × (1 + N·L·sun·sky) × lightMix ×
+	 * faceShade. Drops the vNormal (@5) and vLight (@7) varyings entirely.
+	 * The paired fragment stage MUST drop those VSOut fields and reduce to
+	 * `diffuse.rgb * in.vShade` (+ tint/fog).
+	 */
+	bakeShade?: boolean;
 }
 
 type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
@@ -98,16 +106,20 @@ function vsOutFields(opts: ResolvedVertexShaderOptions): string {
 	if (opts.worldPosition) f.push("  @location(2) vWorldPosition : vec3<f32>,");
 	if (opts.tangent)
 		f.push("  @location(3) @interpolate(flat) vTangent : vec3<f32>,");
-	f.push("  @location(5) @interpolate(flat) vNormal : vec3<f32>,");
+	if (!opts.bakeShade)
+		f.push("  @location(5) @interpolate(flat) vNormal : vec3<f32>,");
 	if (opts.ao) f.push("  @location(6) vAO : f32,");
-	f.push("  @location(7) @interpolate(flat) vLight : vec2<f32>,");
+	if (!opts.bakeShade)
+		f.push("  @location(7) @interpolate(flat) vLight : vec2<f32>,");
 	if (opts.meta) f.push("  @location(9) @interpolate(flat) vMeta : u32,");
 	if (opts.fog) {
 		f.push("  @location(10) vFogFactor : f32,");
 		f.push("  @location(11) vFogColor : vec3<f32>,");
 	}
 	if (opts.tint) f.push("  @location(12) @interpolate(flat) vTint : u32,");
-	if (opts.vertexDiffuse)
+	if (opts.bakeShade)
+		f.push("  @location(15) @interpolate(flat) vShade : vec3<f32>,");
+	else if (opts.vertexDiffuse)
 		f.push("  @location(15) @interpolate(flat) vDiffuse : f32,");
 	if (opts.tangentSpaceLighting) {
 		f.push("  @location(13) vViewDirTS : vec3<f32>,");
@@ -124,15 +136,36 @@ function vsOutAssignments(opts: ResolvedVertexShaderOptions): string {
 	a.push("  out.vTileLayer = tileY * shaderUniforms.atlasMaxTilesU32 + tileX;");
 	if (opts.worldPosition) a.push("  out.vWorldPosition = worldPos.xyz;");
 	if (opts.tangent) a.push("  out.vTangent = sharedTangent;");
-	a.push("  out.vNormal = sharedNormal;");
+	if (!opts.bakeShade) a.push("  out.vNormal = sharedNormal;");
 	if (opts.ao) a.push("  out.vAO = f32(ambientOcclusion);");
-	a.push("  out.vLight = vec2<f32>(skyLight, blockLight);");
+	if (!opts.bakeShade)
+		a.push("  out.vLight = vec2<f32>(skyLight, blockLight);");
 	if (opts.meta) a.push("  out.vMeta = metaByte;");
 	if (opts.tint) a.push("  out.vTint = tintBucket;");
-	if (opts.vertexDiffuse)
+	if (opts.bakeShade) {
+		// Identical op-set the LOD4 fragment used to run per pixel — moved
+		// here verbatim. All inputs are flat varyings or uniforms, so vShade
+		// is constant across each quad.
+		a.push("  let sunI = shaderUniforms.sunLightIntensity;");
+		a.push("  let skyScale = skyLight * 0.8 * (sunI + 0.2);");
+		a.push(
+			"  let lightMix = clamp(vec3<f32>(skyScale) + blockLight * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.18), vec3<f32>(1.0));",
+		);
+		a.push("  let topBottom = select(0.58, 1.0, sharedNormal.y > 0.0);");
+		a.push(
+			"  let faceShade = select(0.78, topBottom, abs(sharedNormal.y) > 0.5);",
+		);
+		a.push(
+			"  let diffuseTerm = max(0.0, dot(shaderUniforms.lightDirection, sharedNormal));",
+		);
+		a.push(
+			"  out.vShade = mix(1.0, 0.65, shaderUniforms.wetness) * (vec3<f32>(1.0 + diffuseTerm * sunI * skyLight) * lightMix * faceShade);",
+		);
+	} else if (opts.vertexDiffuse) {
 		a.push(
 			"  out.vDiffuse = max(0.0, dot(shaderUniforms.lightDirection, sharedNormal));",
 		);
+	}
 	if (opts.fog) {
 		a.push("  let infos = shaderUniforms.fogInfos;");
 		a.push("  let fogStart = infos.y;");
@@ -184,6 +217,7 @@ export function buildPackedVertexWGSL(
 		rawUnits: opts.rawUnits ?? false,
 		boundarySentinel: opts.boundarySentinel ?? true,
 		ao: opts.ao ?? true,
+		bakeShade: opts.bakeShade ?? false,
 	};
 
 	let loadFaceBody = "";

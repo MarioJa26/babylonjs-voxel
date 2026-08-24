@@ -1,5 +1,5 @@
-import type { ItemDefinition } from "./ItemRegistry";
 import { Recipes } from "../Crafting/CraftingManager";
+import type { ItemDefinition } from "./Types/InventoryTypes";
 
 // ─── Procedural tool generation ───
 // Tool items are generated from a material × kind table instead of being
@@ -104,7 +104,7 @@ export function registerProceduralTools(
 				resultCount: 1,
 				ingredients: [
 					{ itemId: material.ingotItemId, count: kind.ingotCount },
-					{ itemId: TOOL_STICK_ITEM_ID, count: kind.stickCount },
+					{ itemId: 35, count: kind.stickCount },
 				],
 			});
 		}

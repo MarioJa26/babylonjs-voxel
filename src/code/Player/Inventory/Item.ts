@@ -17,8 +17,9 @@ import {
 } from "../Hud/BlockHighlight/BlockRaycaster";
 import type { Player } from "../Player";
 import { drawCubeIcon, getShapeHeightScale } from "./CubeIcon";
-import { getRegisteredItemById, type ItemDefinition } from "./ItemRegistry";
+import { getRegisteredItemById } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
+import type { ItemDefinition } from "./Types/InventoryTypes";
 
 // ─── Module-level constants (V8 inlines as immediates, zero memory per instance) ───
 const QUARTER_TURN = Math.PI * 0.5;

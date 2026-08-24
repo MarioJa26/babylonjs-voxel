@@ -158,7 +158,11 @@
 	gap: var(--slot-gap);
 	padding: var(--panel-pad);
 
+	/* Definite height so overflow-y engages: the creative palette below the
+	   storage rows scrolls inside the panel (crafting panel matches exactly) */
+	height: var(--inventory-panel-h);
 	overflow-y: auto;
+	overflow-x: hidden;
 
 	background-color: var(--hud-bg-panel);
 	border: var(--panel-frame-w) solid var(--hud-frame);
@@ -167,6 +171,39 @@
 
 .inventory-row {
 	display: flex;
+	gap: var(--slot-gap);
+}
+
+/* ─── Creative palette (scrollable all-items catalog) ─────────────────────── */
+
+.creative-palette {
+	display: flex;
+	flex-direction: column;
+	gap: var(--slot-gap);
+
+	margin-top: calc(var(--slot-gap) * 0.5);
+	padding-top: calc(var(--slot-gap) * 0.75);
+	border-top: var(--panel-frame-w) solid var(--hud-frame-dim);
+}
+
+.creative-palette-label {
+	text-align: center;
+
+	font-family: var(--ui-font-family);
+	font-size: clamp(0.6em, 2vw, 0.85em);
+	font-weight: 600;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+
+	color: var(--hud-text-muted);
+	text-shadow: var(--hud-text-shadow);
+
+	user-select: none;
+}
+
+.creative-palette-grid {
+	display: flex;
+	flex-direction: column;
 	gap: var(--slot-gap);
 }
 

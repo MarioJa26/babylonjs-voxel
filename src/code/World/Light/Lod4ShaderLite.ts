@@ -59,12 +59,10 @@ struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
   @location(1) @interpolate(flat) vTileLayer : u32,
-  @location(5) @interpolate(flat) vNormal : vec3<f32>,
-  @location(7) @interpolate(flat) vLight : vec2<f32>,
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
   @location(12) @interpolate(flat) vTint : u32,
-  @location(15) @interpolate(flat) vDiffuse : f32,
+  @location(15) @interpolate(flat) vShade : vec3<f32>,
 };
 fn hash12(p : vec2<f32>) -> f32 {
   var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
@@ -97,23 +95,9 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   var diffuseColor = textureSampleLevel(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, 3.0);
 ${alphaLine}
 
-  let skyLight = in.vLight.x;
-  let blockLight = in.vLight.y;
-  let sunIntensity = shaderUniforms.sunLightIntensity;
-
-  // Far terrain should not become shiny/bright when wet.
-  let wetDiffuseMul = mix(1.0, 0.65, shaderUniforms.wetness);
-  diffuseColor = vec4<f32>(diffuseColor.rgb * wetDiffuseMul, diffuseColor.a);
-
-  let diffuseIntensity = in.vDiffuse;
-
-  let skyScale = skyLight * 0.8 * (sunIntensity + 0.2);
-  let lightMix = clamp(vec3<f32>(skyScale) + blockLight * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.18), vec3<f32>(1.0));
-
-  let topBottom = select(0.58, 1.0, in.vNormal.y > 0.0);
-  let faceShade = select(0.78, topBottom, abs(in.vNormal.y) > 0.5);
-
-  var color = diffuseColor.rgb * (1.0 + diffuseIntensity * sunIntensity * skyLight) * lightMix * faceShade;
+  // All per-quad lighting (wetness darkening, N·L diffuse, sky/block light
+  // mix, face shade) was baked into vShade by the vertex stage.
+  var color = diffuseColor.rgb * in.vShade;
   color = applyTintBucket(color, in.vTint);
   color = mix(color, in.vFogColor, in.vFogFactor);
   return vec4<f32>(color, ${outAlpha});
@@ -157,8 +141,6 @@ function buildCommonMaterial(
 
 			// Free win: no view-dependent LOD lighting now.
 			viewDir: false,
-			// Flat faces: N·L hoisted to vertex (exact, removes per-pixel dot).
-			vertexDiffuse: true,
 
 			// Slim raw-units variant — see interface doc.
 			rawUnits: true,
@@ -167,6 +149,11 @@ function buildCommonMaterial(
 			// face's packed AO byte is zero. Drop the decode + varying.
 			// (The fragment VSOut below must stay in sync.)
 			ao: false,
+
+			// Bake wetness × N·L × lightMix × faceShade into one flat vec3 in
+			// the vertex stage; the fragment below reads only `in.vShade`.
+			// (Keeps the fragment VSOut above in sync.)
+			bakeShade: true,
 		}),
 		fragmentSource,
 		attributes: ["position"],

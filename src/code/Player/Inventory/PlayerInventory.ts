@@ -5,23 +5,12 @@ import { generateShapeVariants } from "../Crafting/ShapeVariantGenerator";
 import type { Player } from "../Player";
 import { dropWorldItem } from "./dropWorldItem";
 import { Item } from "./Item";
-import {
-	ensureItemRegistryLoaded,
-	getAllRegisteredItems,
-	type ItemDefinition,
-} from "./ItemRegistry";
+import { ensureItemRegistryLoaded } from "./ItemRegistry";
 import { ItemSlot } from "./ItemSlot";
-
-export type SavedInventoryItem = {
-	itemId: number;
-	stackSize: number;
-};
-
-export type SavedInventoryState = {
-	width: number;
-	height: number;
-	slots: (SavedInventoryItem | null)[][];
-};
+import type {
+	SavedInventoryItem,
+	SavedInventoryState,
+} from "./Types/InventoryTypes";
 
 export class PlayerInventory {
 	scene: SceneContext;
@@ -71,77 +60,7 @@ export class PlayerInventory {
 	async #loadInitialItems(): Promise<void> {
 		await ensureItemRegistryLoaded();
 		await generateShapeVariants();
-		this.#generateFakeItems();
 		this.onInventoryChangedObservable.notifyObservers();
-	}
-
-	#generateFakeItems(): void {
-		const definitions = getAllRegisteredItems();
-		const slots = this.#inventorySlots;
-		const height = this.#y;
-		const width = this.#x;
-
-		if (height <= 0 || width <= 0) return;
-
-		const slotCount = width * height;
-		const placed = new Set<number>();
-
-		for (let i = 0, len = definitions.length; i < len; i++) {
-			const def = definitions[i];
-
-			if (placed.has(def.id) || def.id < 1 || def.id > slotCount) {
-				continue;
-			}
-
-			const index = def.id - 1;
-			const row = (index / width) | 0;
-			const col = index % width;
-
-			if (this.#tryPlaceGeneratedItem(def, row, col)) {
-				placed.add(def.id);
-			}
-		}
-
-		let scanIndex = 0;
-
-		for (let i = 0, len = definitions.length; i < len; i++) {
-			const def = definitions[i];
-
-			if (placed.has(def.id)) continue;
-
-			while (scanIndex < slotCount) {
-				const row = (scanIndex / width) | 0;
-				const col = scanIndex % width;
-				scanIndex++;
-
-				if (slots[row][col].item === null) {
-					if (this.#tryPlaceGeneratedItem(def, row, col)) {
-						placed.add(def.id);
-					}
-					break;
-				}
-			}
-
-			if (scanIndex >= slotCount) break;
-		}
-	}
-
-	#tryPlaceGeneratedItem(
-		def: ItemDefinition,
-		row: number,
-		col: number,
-	): boolean {
-		const slot = this.#inventorySlots[row][col];
-
-		if (slot.item !== null) return false;
-
-		const item = this.#createItemById(def.id, row, col);
-		if (item === null) return false;
-
-		item.stackSize = def.maxStack ?? Math.min(64, def.id);
-		this.#placeItemInSlot(slot, item);
-
-		return true;
 	}
 
 	#createItemById(itemId: number, row: number, col: number): Item | null {

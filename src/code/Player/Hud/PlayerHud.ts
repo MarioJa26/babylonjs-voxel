@@ -21,6 +21,7 @@ import MapFog from "../../Maps/MapFog";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 import { MasonRecipes } from "../Crafting/CraftingManager";
 import { CraftMenu } from "../Crafting/CraftMenu/CraftMenu";
+import { CreativePalette } from "../Inventory/CreativePalette";
 import { Item } from "../Inventory/Item";
 import type { ItemSlot } from "../Inventory/ItemSlot";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
@@ -76,6 +77,7 @@ export class PlayerHud {
 	#overlayDiv: HTMLDivElement;
 	#craftingContainer!: HTMLDivElement;
 	#mainInventoryContainer!: HTMLDivElement;
+	#creativePalette: CreativePalette | null = null;
 	#playerPreview = new PlayerPreview(() => {
 		// Sample the voxel light at chest height (below the head) so the
 		// preview is lit like the spot the player is standing in — and never
@@ -163,6 +165,8 @@ export class PlayerHud {
 
 		onSceneDispose(this.#scene, () => {
 			this.#playerPreview.dispose();
+			this.#creativePalette?.dispose();
+			this.#creativePalette = null;
 			overlayDiv.remove();
 			document.exitPointerLock();
 		});
@@ -202,6 +206,13 @@ export class PlayerHud {
 		}
 
 		inventoryContainer.appendChild(fragment);
+
+		// Minecraft-style creative palette below the storage rows: scrollable,
+		// lists every registered item, copies on take / destroys on drop.
+		const palette = new CreativePalette(PlayerHud.#inventory);
+		this.#creativePalette = palette;
+		inventoryContainer.appendChild(palette.container);
+		void palette.build();
 
 		return inventoryContainer;
 	}

@@ -162,7 +162,7 @@
 		"id": 1019,
 		"name": "Coal",
 		"description": "A fuel source.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/item/coal/coal_diff_1k.png",
 		"maxStack": 64
 	},
 	{
@@ -176,21 +176,21 @@
 		"id": 1021,
 		"name": "Iron Ingot",
 		"description": "Refined iron.\nUsed to craft iron tools.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/item/ironingot/ironingot_diff_1k.png",
 		"maxStack": 64
 	},
 	{
 		"id": 1025,
 		"name": "Gold Ingot",
 		"description": "Refined gold.\nUsed to craft gold tools.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/item/goldingot/goldingot_diff_1k.png",
 		"maxStack": 64
 	},
 	{
 		"id": 1026,
 		"name": "Copper Ingot",
 		"description": "Refined copper.\nUsed to craft copper tools.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/item/copperingot/copperingot_diff_1k.png",
 		"maxStack": 64
 	},
 	{

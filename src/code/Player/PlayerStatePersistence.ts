@@ -5,7 +5,7 @@ import {
 } from "../World/Chunk/ChunkLoadingSystem";
 import { worldLocalStorageKey } from "../World/WorldContext";
 import { WorldStorage } from "../World/WorldStorage";
-import type { SavedInventoryState } from "./Inventory/PlayerInventory";
+import type { SavedInventoryState } from "./Inventory/Types/InventoryTypes";
 import type { Player } from "./Player";
 import { Gamemodes } from "./PlayerStats";
 

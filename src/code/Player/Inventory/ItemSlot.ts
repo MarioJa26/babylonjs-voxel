@@ -7,6 +7,13 @@ let draggedItem: ItemSlot | null = null;
 export class ItemSlot implements EventListenerObject {
 	#item: Item | null = null;
 	#divItemSlot: HTMLDivElement;
+	#destroysDroppedItems = false;
+
+	/**
+	 * Called after a drop where this slot was the drag source. Used by the
+	 * creative palette to refill itself (its items are infinite copies).
+	 */
+	onDraggedOut?: (slot: ItemSlot) => void;
 
 	row: number;
 	col: number;
@@ -62,6 +69,15 @@ export class ItemSlot implements EventListenerObject {
 
 	public get divItemSlot(): HTMLDivElement {
 		return this.#divItemSlot;
+	}
+
+	/** When true, items dropped onto this slot are destroyed (creative trash). */
+	public get destroysDroppedItems(): boolean {
+		return this.#destroysDroppedItems;
+	}
+
+	public set destroysDroppedItems(value: boolean) {
+		this.#destroysDroppedItems = value;
 	}
 
 	public set divItemSlot(div: HTMLDivElement) {
@@ -158,9 +174,19 @@ export class ItemSlot implements EventListenerObject {
 				const source = draggedItem;
 				draggedItem = null;
 
-				if (source !== null && source !== this) {
-					this.swapSlots(source);
+				if (source === null || source === this) {
+					return;
 				}
+
+				if (this.#destroysDroppedItems) {
+					// Creative palette: dropping an item here destroys it.
+					source.clearItemSlots();
+					source.onDraggedOut?.(source);
+					return;
+				}
+
+				this.swapSlots(source);
+				source.onDraggedOut?.(source);
 
 				return;
 			}
