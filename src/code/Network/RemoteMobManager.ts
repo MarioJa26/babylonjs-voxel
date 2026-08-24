@@ -91,6 +91,35 @@ export class RemoteMobManager {
 		return this.mobs.size;
 	}
 
+	/**
+	 * Find the server mob id whose interpolated mesh position is within
+	 * radiusSq of the given point (projectile hit-scan). Returns null on miss.
+	 */
+	getMobIdNear(
+		x: number,
+		y: number,
+		z: number,
+		radiusSq: number,
+	): number | null {
+		let bestId: number | null = null;
+		let bestDistSq = radiusSq;
+
+		for (const [id, mob] of this.mobs) {
+			const p = mob.mesh.position;
+			const dx = p.x - x;
+			const dy = p.y - y;
+			const dz = p.z - z;
+			const distSq = dx * dx + dy * dy + dz * dz;
+
+			if (distSq <= bestDistSq) {
+				bestDistSq = distSq;
+				bestId = id;
+			}
+		}
+
+		return bestId;
+	}
+
 	getDebugStats(): {
 		total: number;
 		perType: { typeId: number; count: number }[];

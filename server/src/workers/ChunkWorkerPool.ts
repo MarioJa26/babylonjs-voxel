@@ -46,7 +46,7 @@ type PendingTask =
 			chunkX: number;
 			chunkY: number;
 			chunkZ: number;
-			blocks: Uint8Array;
+			blocks: Uint8Array | Uint16Array;
 			resolve: (light: Uint8Array) => void;
 			reject: (error: Error) => void;
 	  };
@@ -280,7 +280,7 @@ export class ChunkWorkerPool {
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
-		blocks: Uint8Array,
+		blocks: Uint8Array | Uint16Array,
 	): Promise<Uint8Array> {
 		const unavailable = this.getUnavailableError();
 		if (unavailable) return Promise.reject(unavailable);

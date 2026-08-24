@@ -51,7 +51,7 @@ const STEP_SIZE = 0.2; // max movement per sub-step (matches client)
  * every voxel, and so the storage decompress pool isn't thrashed.
  */
 class ItemBlockSampler {
-	private readonly chunkCache = new Map<number, Uint8Array | null>();
+	private readonly chunkCache = new Map<number, Uint8Array | Uint16Array | null>();
 
 	constructor(private readonly storage: ServerWorldStorage) {}
 

@@ -32,7 +32,10 @@ import {
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
-import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
+import {
+	getShapeForBlockId,
+	isRegisteredBlockId,
+} from "@/code/World/Shape/BlockShapes";
 import {
 	computeFenceNeighborMask,
 	getFenceDynamicShape,
@@ -81,6 +84,8 @@ struct VSOut {
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let atlasUV = in.vUV * shaderUniforms.uScale + shaderUniforms.uOffset;
   let tex = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
+  // Alpha test for billboard item sprites (block atlas texels are opaque).
+  if (tex.a < 0.5) { discard; }
   let tint = shaderUniforms.tintColor;
   return vec4<f32>(tex.rgb * tint, 1.0);
 }
@@ -149,6 +154,53 @@ function disposeAllPooledItemMaterials(): void {
 		for (const mat of stack) disposeItemMaterial(mat);
 	}
 	droppedItemMaterialPool.clear();
+
+	for (const stack of spriteMaterialPool.values()) {
+		for (const mat of stack) disposeItemMaterial(mat);
+	}
+	spriteMaterialPool.clear();
+}
+
+// ─── Billboard sprites (non-block items) ──────────────────────────────────────
+// Items without a block shape (tools, ingots, eggs, ...) drop as a single
+// camera-facing quad textured with the item's icon PNG — far cheaper than a
+// textured cube and visually correct for flat item art.
+
+const spriteMaterialPool = new Map<string, ShaderMaterial[]>();
+const spriteTextureCache = new Map<string, Promise<Texture2D | null>>();
+
+function acquireSpriteMaterial(iconUrl: string): ShaderMaterial {
+	const reused = spriteMaterialPool.get(iconUrl)?.pop();
+	if (reused) return reused;
+	return createDroppedItemMaterial();
+}
+
+function releaseSpriteMaterial(iconUrl: string, mat: ShaderMaterial): void {
+	let total = 0;
+	for (const stack of spriteMaterialPool.values()) total += stack.length;
+	if (total >= MATERIAL_POOL_MAX) {
+		disposeItemMaterial(mat);
+		return;
+	}
+	let pool = spriteMaterialPool.get(iconUrl);
+	if (!pool) {
+		pool = [];
+		spriteMaterialPool.set(iconUrl, pool);
+	}
+	pool.push(mat);
+}
+
+function getIconTexture(url: string): Promise<Texture2D | null> {
+	let promise = spriteTextureCache.get(url);
+	if (!promise) {
+		promise = loadTexture2D(Map1.engine, url, {
+			mipMaps: true,
+			magFilter: "nearest",
+			minFilter: "nearest",
+		}).catch(() => null);
+		spriteTextureCache.set(url, promise);
+	}
+	return promise;
 }
 
 // --------------------------------------------------------------------------
@@ -268,6 +320,30 @@ function getUnitCubeGeometry() {
 	return unitCubeGeometryCache;
 }
 
+// Single +Z-facing quad (same winding/UV layout as the cube's front face, so
+// the shared shader + texture-v convention apply unchanged). Billboarding is
+// yaw-only: #faceCamera rotates the mesh toward the camera every frame.
+let billboardQuadGeometryCache: {
+	positions: Float32Array;
+	normals: Float32Array;
+	uvs: Float32Array;
+	indices: Uint32Array;
+} | null = null;
+
+function getBillboardQuadGeometry() {
+	if (billboardQuadGeometryCache) return billboardQuadGeometryCache;
+
+	billboardQuadGeometryCache = {
+		positions: new Float32Array([
+			-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0,
+		]),
+		normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
+		uvs: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]),
+		indices: new Uint32Array([0, 2, 1, 0, 3, 2]),
+	};
+	return billboardQuadGeometryCache;
+}
+
 const ITEM_NAME: string = "droppedItem";
 const ITEM_NAME_AABB: string = "droppedItemAABB";
 
@@ -299,6 +375,8 @@ export class DroppedItem implements IUsable {
 	 *  async atlas-bind callback can detect a stale acquisition. */
 	#materialEpoch = 0;
 	#item: Item;
+	// Non-block items render as a camera-facing icon sprite instead of a cube.
+	#isSprite = false;
 	#velocity = vec3Zero();
 	#position: Vec3;
 	#halfSize = 0.25;
@@ -360,6 +438,10 @@ export class DroppedItem implements IUsable {
 				if (!item.#sleeping) {
 					item.#updatePhysics(dt);
 				}
+				// Sprites must keep facing the camera even while settled.
+				if (item.#isSprite) {
+					item.#faceCamera();
+				}
 			}
 		});
 	}
@@ -400,7 +482,15 @@ export class DroppedItem implements IUsable {
 	}
 
 	constructor(item: Item, x: number, y: number, z: number) {
-		const geometry = getUnitCubeGeometry();
+		this.#item = item;
+
+		// Items without a block shape drop as a cheap billboard sprite of
+		// their icon; block items keep the textured spinning cube.
+		this.#isSprite = !isRegisteredBlockId(item.blockId) && item.icon !== "";
+
+		const geometry = this.#isSprite
+			? getBillboardQuadGeometry()
+			: getUnitCubeGeometry();
 
 		this.#boxMesh = createMeshFromData(
 			Map1.engine,
@@ -422,11 +512,11 @@ export class DroppedItem implements IUsable {
 		this.#position = vec3(x, y, z);
 		this.#boxMesh.position.set(x, y, z);
 
-		this.#material = acquireDroppedItemMaterial(item.blockId ?? -1);
+		this.#material = this.#isSprite
+			? acquireSpriteMaterial(item.icon)
+			: acquireDroppedItemMaterial(item.blockId ?? -1);
 		this.#boxMesh.material = this.#material;
 		this.#boxMesh.visible = false;
-
-		this.#item = item;
 
 		const size = DroppedItem.#sizeFor(item.stackSize);
 		this.#boxMesh.scaling.set(size, size, size);
@@ -444,30 +534,37 @@ export class DroppedItem implements IUsable {
 			},
 		);
 
-		const sharedAtlas = getDiffuseTexture2D();
-		if (sharedAtlas) {
-			setShaderTexture(this.#material, "diffuseTexture", sharedAtlas);
-			this.#applyAtlasTile(item);
-			this.#boxMesh.visible = true;
+		if (this.#isSprite) {
+			// Full-texture quad: uScale/uOffset are the identity transform.
+			setShaderUniform(this.#material, "uScale", 1);
+			setShaderUniform(this.#material, "uOffset", [0, 0]);
+			this.#bindIconTexture(item.icon);
 		} else {
-			// Capture the material identity: if this item is disposed before
-			// the atlas resolves, its material returns to the pool and may be
-			// reacquired by another item — a late bind must not retarget it.
-			const mat = this.#material;
-			const epoch = this.#materialEpoch;
-			void DroppedItem.#getAtlasTexture().then((atlas) => {
-				if (
-					this.#disposed ||
-					!atlas ||
-					this.#material !== mat ||
-					this.#materialEpoch !== epoch
-				)
-					return;
-
-				setShaderTexture(this.#material, "diffuseTexture", atlas);
+			const sharedAtlas = getDiffuseTexture2D();
+			if (sharedAtlas) {
+				setShaderTexture(this.#material, "diffuseTexture", sharedAtlas);
 				this.#applyAtlasTile(item);
 				this.#boxMesh.visible = true;
-			});
+			} else {
+				// Capture the material identity: if this item is disposed before
+				// the atlas resolves, its material returns to the pool and may be
+				// reacquired by another item — a late bind must not retarget it.
+				const mat = this.#material;
+				const epoch = this.#materialEpoch;
+				void DroppedItem.#getAtlasTexture().then((atlas) => {
+					if (
+						this.#disposed ||
+						!atlas ||
+						this.#material !== mat ||
+						this.#materialEpoch !== epoch
+					)
+						return;
+
+					setShaderTexture(this.#material, "diffuseTexture", atlas);
+					this.#applyAtlasTile(item);
+					this.#boxMesh.visible = true;
+				});
+			}
 		}
 
 		DroppedItem.#ensureObserver();
@@ -476,6 +573,41 @@ export class DroppedItem implements IUsable {
 		DroppedItem.#allItems.push(this);
 
 		this.#syncTransformAndLightingIfMoved();
+	}
+
+	/**
+	 * Bind this sprite's icon PNG to its material (async, epoch-guarded so a
+	 * disposed/recycled item never receives a late bind).
+	 */
+	#bindIconTexture(iconUrl: string): void {
+		const mat = this.#material;
+		const epoch = this.#materialEpoch;
+		void getIconTexture(iconUrl).then((tex) => {
+			if (
+				this.#disposed ||
+				!tex ||
+				this.#material !== mat ||
+				this.#materialEpoch !== epoch
+			)
+				return;
+
+			setShaderTexture(this.#material, "diffuseTexture", tex);
+			this.#boxMesh.visible = true;
+		});
+	}
+
+	/** Yaw-only billboarding: keep the sprite quad facing the camera. */
+	#faceCamera(): void {
+		const cam = Map1.mainScene.camera;
+		if (!cam) return;
+
+		// The lite Camera type exposes no position — read the translation
+		// column of its world matrix instead.
+		const m = cam.worldMatrix;
+		this.#boxMesh.rotation.y = Math.atan2(
+			m[12] - this.#position.x,
+			m[14] - this.#position.z,
+		);
 	}
 
 	addVelocity(x: number, y: number, z: number): void {
@@ -552,11 +684,15 @@ export class DroppedItem implements IUsable {
 		this.#voxelCollider.dispose();
 		removeFromScene(Map1.mainScene, this.#boxMesh);
 
-		// PERF/LEAKFIX: return the material to the blockId pool instead of
-		// leaking one ShaderMaterial (pipeline + bind groups) per despawn.
-		// The epoch bump invalidates any in-flight atlas-bind for this item.
+		// PERF/LEAKFIX: return the material to its pool instead of leaking
+		// one ShaderMaterial (pipeline + bind groups) per despawn. The epoch
+		// bump invalidates any in-flight texture bind for this item.
 		this.#materialEpoch++;
-		releaseDroppedItemMaterial(this.#item.blockId ?? -1, this.#material);
+		if (this.#isSprite) {
+			releaseSpriteMaterial(this.#item.icon, this.#material);
+		} else {
+			releaseDroppedItemMaterial(this.#item.blockId ?? -1, this.#material);
+		}
 	}
 
 	#updatePhysics(dt: number): void {

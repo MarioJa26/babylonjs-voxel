@@ -16,7 +16,7 @@ import {
 	pickBlock,
 } from "../Hud/BlockHighlight/BlockRaycaster";
 import type { Player } from "../Player";
-import { drawCubeIcon, getShapeHeightScale } from "./CubeIcon";
+import { drawCubeIcon, iconAtlasesReadyPromise } from "./CubeIcon";
 import { getRegisteredItemById } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
 import type { ItemDefinition } from "./Types/InventoryTypes";
@@ -421,6 +421,11 @@ export class Item implements IUsable {
 				shapeInitPromise.then(() => {
 					if (isRegisteredBlockId(this.blockId)) this._drawCube();
 				});
+				// Icons drawn before the shading atlas loaded miss their light
+				// pass; redraw once it is ready so they self-heal.
+				iconAtlasesReadyPromise.then(() => {
+					if (isRegisteredBlockId(this.blockId)) this._drawCube();
+				});
 			}
 			return;
 		}
@@ -448,13 +453,7 @@ export class Item implements IUsable {
 		const img = _sharedAtlasImg!; // always non-null after module init
 		const ready = _sharedAtlasLoaded && img.width > 0;
 
-		drawCubeIcon(
-			ctx,
-			this.blockId,
-			img,
-			ready,
-			getShapeHeightScale(this.blockId),
-		);
+		drawCubeIcon(ctx, this.blockId, img, ready);
 	}
 
 	// ─── Stack operations (hot path: inventory drag/drop) ───

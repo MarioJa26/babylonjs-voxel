@@ -44,7 +44,7 @@ type ChunkResult = {
 };
 
 type FinalizedChunk = {
-	blocks: Uint8Array;
+	blocks: Uint8Array | Uint16Array;
 	light: Uint8Array;
 	palette?: number[];
 	isUniform: boolean;
@@ -56,7 +56,7 @@ type RelightRequest = {
 	chunkX: number;
 	chunkY: number;
 	chunkZ: number;
-	blocks: Uint8Array;
+	blocks: Uint8Array | Uint16Array;
 	seed: string;
 	wasmEnabled: boolean;
 };
@@ -69,7 +69,7 @@ type RelightResult = {
 type GenResultMessage = {
 	id: number;
 	kind: PendingTaskKindType.SINGLE;
-	blocks: Uint8Array;
+	blocks: Uint8Array | Uint16Array;
 	light: Uint8Array;
 	palette?: number[];
 	isUniform: boolean;
@@ -97,7 +97,7 @@ let generator: {
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
-		blocks: Uint8Array,
+		blocks: Uint8Array | Uint16Array,
 	) => Uint8Array;
 } | null = null;
 
@@ -181,7 +181,7 @@ async function ensureInit(seed: string, wasmEnabled: boolean): Promise<void> {
 function pushTransferable(
 	transfer: ArrayBuffer[],
 	seen: Set<ArrayBuffer> | null,
-	value: Uint8Array,
+	value: Uint8Array | Uint16Array,
 ): Set<ArrayBuffer> | null {
 	const buffer = value.buffer;
 

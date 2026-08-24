@@ -20,6 +20,7 @@ import {
 	CHUNK_VOLUME,
 	compressBlocks,
 	decompressBlocks,
+	MAX_BLOCK_ID,
 	releaseDecompBuffer,
 } from "./ChunkCompression.ts";
 import type { ChunkGenerationService } from "./ChunkGenerationService.ts";
@@ -28,7 +29,7 @@ export interface StoredChunkData {
 	readonly chunkX: number;
 	readonly chunkY: number;
 	readonly chunkZ: number;
-	readonly blocks: Uint8Array;
+	readonly blocks: Uint8Array | Uint16Array;
 	readonly light: Uint8Array;
 	palette?: number[];
 	readonly isUniform: boolean;
@@ -61,7 +62,7 @@ interface CacheNode {
 	 * - Uniform/palette/compressed chunks get one owned dense buffer.
 	 * Invalidated whenever data is replaced in addToCache().
 	 */
-	denseBlocks: Uint8Array | null;
+	denseBlocks: Uint8Array | Uint16Array | null;
 
 	prev: CacheNode | null;
 	next: CacheNode | null;
@@ -87,6 +88,8 @@ export interface PersistedMob {
 	y: number;
 	z: number;
 	yaw: number;
+	/** Remaining hit points. Optional for pre-existing saved data. */
+	hp?: number;
 	headingTimer: number;
 	stuckTimer: number;
 	fleeing: boolean;
@@ -120,17 +123,17 @@ function yieldToEventLoop(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
 
-/** Validates that every palette entry is an integer block id in [0, 255]. */
+/** Validates that every palette entry is an integer block id in [0, 1023]. */
 function isValidPalette(palette: number[] | Uint16Array): boolean {
 	for (let i = 0; i < palette.length; i++) {
 		const id = palette[i];
-		if (!Number.isInteger(id) || id < 0 || id > 255) return false;
+		if (!Number.isInteger(id) || id < 0 || id > MAX_BLOCK_ID) return false;
 	}
 	return true;
 }
 
 function isValidBlockId(id: number): boolean {
-	return Number.isInteger(id) && id >= 0 && id <= 255;
+	return Number.isInteger(id) && id >= 0 && id <= MAX_BLOCK_ID;
 }
 
 export class ServerWorldStorage {
@@ -326,7 +329,11 @@ export class ServerWorldStorage {
 	 * The returned array is owned by the storage cache. Callers must not mutate it
 	 * or retain it beyond their short synchronous use.
 	 */
-	getCachedChunkBlocks(cx: number, cy: number, cz: number): Uint8Array | null {
+	getCachedChunkBlocks(
+		cx: number,
+		cy: number,
+		cz: number,
+	): Uint8Array | Uint16Array | null {
 		if (this.disposing || this.disposed) return null;
 
 		const node = this.chunkCache.get(packChunkKeyFast(cx, cy, cz));
@@ -487,21 +494,34 @@ export class ServerWorldStorage {
 			}
 		}
 	}
-	private getDenseBlocksForNode(node: CacheNode): Uint8Array {
+	private getDenseBlocksForNode(
+		node: CacheNode,
+	): Uint8Array | Uint16Array {
 		const cached = node.denseBlocks;
 		if (cached) return cached;
 
 		const c = node.data;
 
 		if (c.isUniform) {
+			if (c.uniformBlockId > 255) {
+				const dense = new Uint16Array(CHUNK_VOLUME);
+				dense.fill(c.uniformBlockId);
+				node.denseBlocks = dense;
+				return dense;
+			}
+
 			const dense = new Uint8Array(CHUNK_VOLUME);
 			dense.fill(c.uniformBlockId);
 			node.denseBlocks = dense;
 			return dense;
 		}
 
-		// Fast path for already-dense, uncompressed chunks.
-		if (!c.palette && c.blocks.byteLength === CHUNK_VOLUME) {
+		// Fast path for already-dense, uncompressed chunks (u8 or u16).
+		if (
+			!c.palette &&
+			(c.blocks.byteLength === CHUNK_VOLUME ||
+				c.blocks.byteLength === CHUNK_VOLUME * 2)
+		) {
 			node.denseBlocks = c.blocks;
 			return c.blocks;
 		}
@@ -520,7 +540,7 @@ export class ServerWorldStorage {
 		}
 
 		// Otherwise copy into an owned cache buffer, then release the pooled buffer.
-		const dense = new Uint8Array(decomp);
+		const dense = decomp.slice();
 		releaseDecompBuffer(decomp);
 
 		node.denseBlocks = dense;
@@ -538,14 +558,18 @@ export class ServerWorldStorage {
 			throw new Error(`Chunk ${cx},${cy},${cz} has no block data`);
 		}
 
+		// Keep dense u16 payloads (block ids > 255) as u16; the serializer
+		// already returns them typed. Everything else normalizes to a u8 copy.
 		const blocks =
-			value.blocks instanceof Uint8Array
+			value.blocks instanceof Uint16Array && !value.compressed
 				? value.blocks
-				: new Uint8Array(
-						value.blocks.buffer,
-						value.blocks.byteOffset,
-						value.blocks.byteLength,
-					);
+				: value.blocks instanceof Uint8Array
+					? value.blocks
+					: new Uint8Array(
+							value.blocks.buffer,
+							value.blocks.byteOffset,
+							value.blocks.byteLength,
+						);
 
 		const light =
 			value.lightArray instanceof Uint8Array
@@ -671,8 +695,26 @@ export class ServerWorldStorage {
 		});
 
 		try {
-			const blocks =
-				decomp === existing.blocks ? new Uint8Array(decomp) : decomp;
+			// Copy when the decompressed buffer aliases the cached chunk data so
+			// the mutation below never touches the live cache entry.
+			let blocks: Uint8Array | Uint16Array =
+				decomp === existing.blocks ? decomp.slice() : decomp;
+
+			// Widen to u16 when any edit introduces a block id above 255.
+			let needsWide = blocks instanceof Uint16Array;
+			if (!needsWide) {
+				for (let i = 0; i < edits.length; i++) {
+					if (edits[i].blockId > 255) {
+						needsWide = true;
+						break;
+					}
+				}
+				if (needsWide) {
+					const upgraded = new Uint16Array(CHUNK_VOLUME);
+					upgraded.set(blocks);
+					blocks = upgraded;
+				}
+			}
 
 			for (let i = 0; i < edits.length; i++) {
 				const edit = edits[i];
@@ -688,7 +730,7 @@ export class ServerWorldStorage {
 			const compressed = compressBlocks(blocks);
 
 			if (compressed.data === blocks) {
-				compressed.data = new Uint8Array(blocks);
+				compressed.data = blocks.slice();
 			}
 
 			let newLight = existing.light;
@@ -1098,6 +1140,8 @@ function isPersistedMob(value: unknown): value is PersistedMob {
 		Array.isArray(m.path) &&
 		typeof m.pathIndex === "number" &&
 		typeof m.pathTimer === "number" &&
-		(m.egg === undefined || typeof m.egg === "boolean")
+		(m.egg === undefined || typeof m.egg === "boolean") &&
+		(m.hp === undefined ||
+			(typeof m.hp === "number" && Number.isFinite(m.hp)))
 	);
 }

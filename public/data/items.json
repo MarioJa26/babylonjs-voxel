@@ -196,16 +196,16 @@
 	{
 		"id": 1022,
 		"name": "Bow",
-		"description": "A ranged weapon.",
-		"icon": "/texture/placeholder.png",
+		"description": "A ranged weapon.\nRight-click to shoot an arrow.",
+		"icon": "/texture/items/item/bow/bow_diff_1k.png",
 		"maxStack": 1,
-		"useAction": "use_tool"
+		"useAction": "use_bow"
 	},
 	{
 		"id": 1023,
 		"name": "Arrow",
 		"description": "Ammunition for bows.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/item/arrow/arrow_diff_1k.png",
 		"maxStack": 64
 	},
 	{

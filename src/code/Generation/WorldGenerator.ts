@@ -486,7 +486,7 @@ export class WorldGenerator {
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
-		blocks: Uint8Array,
+		blocks: Uint8Array | Uint16Array,
 	): Uint8Array {
 		const chunkVolume = this.chunkVolume;
 		const light = this.createBuffer(chunkVolume);

@@ -25,11 +25,14 @@ import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
+	decodeArrowShoot,
 	decodeItemDrop,
 	decodeItemPickup,
+	decodeMobDamage,
 	decodeMobSpawnRequest,
 	decodePitchByte,
 	decodeYawByte,
+	encodeArrowSpawn,
 	encodeBlockEditBatch,
 	encodeBlockEditRejected,
 	encodeChatMessage,
@@ -168,16 +171,21 @@ const ITEM_PICKUP_RADIUS = 2.5;
 const ITEM_PICKUP_RADIUS_SQ = ITEM_PICKUP_RADIUS * ITEM_PICKUP_RADIUS;
 const MAX_ITEM_ID = 65535;
 const MAX_ITEM_STACK = 1024;
-	const MAX_ITEM_VELOCITY = 64;
-	const MAX_CHUNK_BATCH = 255;
-	const WORLD_BOUNDARY = 1_000_000;
-	// Spawn-egg reach: the client raycasts up to REACH_DISTANCE (64) blocks,
-	// so the server accepts a little headroom beyond that.
-	const MAX_MOB_SPAWN_REQUEST_DIST = 72;
-	const MAX_MOB_SPAWN_REQUEST_DIST_SQ =
-		MAX_MOB_SPAWN_REQUEST_DIST * MAX_MOB_SPAWN_REQUEST_DIST;
+const MAX_ITEM_VELOCITY = 64;
+const MAX_CHUNK_BATCH = 255;
+const WORLD_BOUNDARY = 1_000_000;
+// Arrow trajectory sync is cosmetic only (damage is validated separately
+// via MobDamage), so just reject absurd speeds and non-finite input.
+const MAX_ARROW_SPEED = 200;
+// Spawn-egg reach: the client raycasts up to REACH_DISTANCE (64) blocks,
+// so the server accepts a little headroom beyond that.
+const MAX_MOB_SPAWN_REQUEST_DIST = 72;
+const MAX_MOB_SPAWN_REQUEST_DIST_SQ =
+	MAX_MOB_SPAWN_REQUEST_DIST * MAX_MOB_SPAWN_REQUEST_DIST;
 const MAX_CHUNK_COORD = WORLD_BOUNDARY >> 5;
-const MAX_BLOCK_ID = 255;
+// 10-bit block ids, matching the client's BlockEncoding (mason shape
+// variants occupy the 500+ range).
+const MAX_BLOCK_ID = 1023;
 const MAX_PROTOCOL_VIOLATIONS = 16;
 const FLUSH_CONCURRENCY = 8;
 const CHUNK_BATCH_BYTE_LIMIT = 256 * 1024;
@@ -1373,8 +1381,8 @@ export class VoxelRoom extends Room {
 	private estimateChunkBytes(c: StoredChunkData): number {
 		let size = 12 + 4 + 1;
 		if (c.isUniform) size += 2;
-		else if (c.palette) size += 2 + c.palette.length * 2 + c.blocks.length;
-		else size += c.blocks.length;
+		else if (c.palette) size += 2 + c.palette.length * 2 + c.blocks.byteLength;
+		else size += c.blocks.byteLength;
 		return size + 4 + c.light.length;
 	}
 
@@ -1514,9 +1522,12 @@ export class VoxelRoom extends Room {
 			enc.writeInt32(c.chunkY);
 			enc.writeInt32(c.chunkZ);
 			enc.writeUint32(c.version);
+			const denseU16 =
+				!c.isUniform && !c.palette && c.blocks instanceof Uint16Array;
 			let flags = 0;
 			if (c.isUniform) flags |= 1;
 			if (c.palette) flags |= 2;
+			if (denseU16) flags |= 4;
 			enc.writeUint8(flags);
 			if (c.isUniform) {
 				enc.writeUint16(c.uniformBlockId);
@@ -1524,9 +1535,14 @@ export class VoxelRoom extends Room {
 				enc.writeUint16(c.palette.length);
 				for (let j = 0; j < c.palette.length; j++)
 					enc.writeUint16(c.palette[j]);
-				enc.writeBytes(c.blocks);
+				enc.writeBytes(c.blocks as Uint8Array);
 			} else {
-				enc.writeBytes(c.blocks);
+				const b = c.blocks;
+				enc.writeBytes(
+					b instanceof Uint16Array
+						? new Uint8Array(b.buffer, b.byteOffset, b.byteLength)
+						: b,
+				);
 			}
 			enc.writeUint32(c.light.length);
 			enc.writeBytes(c.light);
@@ -1855,15 +1871,70 @@ export class VoxelRoom extends Room {
 				// clients render the new mob via RemoteMobManager.
 				this.broadcastBytes(
 					"binary",
-					encodeMobSpawn(
-						mob.id,
-						mob.typeId,
-						mob.x,
-						mob.y,
-						mob.z,
-						mob.yaw,
-					),
+					encodeMobSpawn(mob.id, mob.typeId, mob.x, mob.y, mob.z, mob.yaw),
 					{},
+				);
+				break;
+			}
+
+			case MessageType.MobDamage: {
+				const damage = decodeMobDamage(data);
+				const player = this.players.get(client.sessionId);
+				if (!player) return;
+
+				// Clamp hostile values; arrows deal 2, melee 1.
+				if (damage.damage < 1 || damage.damage > 20) return;
+
+				const mob = this.mobSim.findMob(damage.mobId);
+				if (!mob) return;
+
+				const dx = mob.x - player.x;
+				const dy = mob.y - player.y;
+				const dz = mob.z - player.z;
+				if (dx * dx + dy * dy + dz * dz > MAX_MOB_SPAWN_REQUEST_DIST_SQ) {
+					return;
+				}
+
+				if (this.mobSim.damageMob(damage.mobId, damage.damage)) {
+					this.broadcastBytes("binary", encodeMobDespawn(damage.mobId), {});
+				}
+				break;
+			}
+
+			case MessageType.ArrowShoot: {
+				const arrow = decodeArrowShoot(data);
+				const player = this.players.get(client.sessionId);
+				if (!player) return;
+
+				const speedSq =
+					arrow.vx * arrow.vx + arrow.vy * arrow.vy + arrow.vz * arrow.vz;
+
+				const validTrajectory =
+					Number.isFinite(arrow.x) &&
+					Number.isFinite(arrow.y) &&
+					Number.isFinite(arrow.z) &&
+					Number.isFinite(arrow.vx) &&
+					Number.isFinite(arrow.vy) &&
+					Number.isFinite(arrow.vz) &&
+					Math.abs(arrow.x) <= WORLD_BOUNDARY &&
+					Math.abs(arrow.y) <= WORLD_BOUNDARY &&
+					Math.abs(arrow.z) <= WORLD_BOUNDARY &&
+					speedSq <= MAX_ARROW_SPEED * MAX_ARROW_SPEED;
+				if (!validTrajectory) return;
+
+				// Relay to everyone except the shooter — their own arrow is
+				// already simulated locally.
+				this.broadcastBytes(
+					"binary",
+					encodeArrowSpawn({
+						x: arrow.x,
+						y: arrow.y,
+						z: arrow.z,
+						vx: arrow.vx,
+						vy: arrow.vy,
+						vz: arrow.vz,
+					}),
+					{ except: client },
 				);
 				break;
 			}

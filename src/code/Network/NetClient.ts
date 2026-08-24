@@ -344,6 +344,10 @@ export class NetClient {
 					// Handled by RemoteItemManager via addBinaryHandler.
 					break;
 
+				case MessageType.ArrowSpawn:
+					// Handled by Arrow.ensureNetworkHandler via addBinaryHandler.
+					break;
+
 				default:
 					console.warn(
 						`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,
@@ -607,6 +611,41 @@ export class NetClient {
 		this.encoder.writeFloat32(x);
 		this.encoder.writeFloat32(y);
 		this.encoder.writeFloat32(z);
+		room.sendBytes("binary", this.encoder.getBytes());
+	}
+
+	/** C→S: this client's projectile hit a server mob (server applies HP). */
+	sendMobDamage(mobId: number, damage: number): void {
+		const room = this.getConnectedRoom();
+		if (!room) return;
+
+		this.encoder.reset();
+		this.encoder.writeUint8(MessageType.MobDamage);
+		this.encoder.writeUint16(mobId);
+		this.encoder.writeUint8(damage);
+		room.sendBytes("binary", this.encoder.getBytes());
+	}
+
+	/** C→S: this client fired an arrow (relayed to the other clients). */
+	sendArrowShoot(
+		x: number,
+		y: number,
+		z: number,
+		vx: number,
+		vy: number,
+		vz: number,
+	): void {
+		const room = this.getConnectedRoom();
+		if (!room) return;
+
+		this.encoder.reset();
+		this.encoder.writeUint8(MessageType.ArrowShoot);
+		this.encoder.writeFloat32(x);
+		this.encoder.writeFloat32(y);
+		this.encoder.writeFloat32(z);
+		this.encoder.writeFloat32(vx);
+		this.encoder.writeFloat32(vy);
+		this.encoder.writeFloat32(vz);
 		room.sendBytes("binary", this.encoder.getBytes());
 	}
 

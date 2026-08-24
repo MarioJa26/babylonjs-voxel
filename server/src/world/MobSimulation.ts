@@ -37,6 +37,8 @@ export interface ServerMob {
 	z: number;
 	/** 0-255 byte mapping the full 360° circle (player yaw convention). */
 	yaw: number;
+	/** Current hit points; the mob dies (and despawns) at 0. */
+	hp: number;
 	/** ms until the next random wander heading. */
 	headingTimer: number;
 	/** ms without forward progress — forces a new heading. */
@@ -69,6 +71,8 @@ interface MobTypeConfig {
 	speed: number;
 	/** Half the mob's body height, used for voxel collision. */
 	halfHeight: number;
+	/** Hit points a freshly spawned mob of this type gets. */
+	hp: number;
 }
 
 const MOB_TYPE_CONFIGS: Record<number, MobTypeConfig> = {
@@ -76,11 +80,13 @@ const MOB_TYPE_CONFIGS: Record<number, MobTypeConfig> = {
 		maxCount: 30,
 		speed: 1.8,
 		halfHeight: 0.25,
+		hp: 4,
 	},
 	[MobTypeId.Sheep]: {
 		maxCount: 20,
 		speed: 1.5,
 		halfHeight: 0.35,
+		hp: 8,
 	},
 };
 const MOB_TYPE_IDS = Object.keys(MOB_TYPE_CONFIGS).map(Number);
@@ -122,7 +128,7 @@ const FLEE_SPEED = 5;
  * chunk for every voxel, and so the storage decompress pool isn't thrashed.
  */
 class TickBlockSampler {
-	private readonly chunkCache = new Map<number, Uint8Array | null>();
+	private readonly chunkCache = new Map<number, Uint8Array | Uint16Array | null>();
 
 	constructor(private readonly storage: ServerWorldStorage) {}
 
@@ -209,6 +215,11 @@ export class ServerMobSimulation {
 		target.length = 0;
 		for (const mob of this.mobs.values()) target.push(mob);
 		return target;
+	}
+
+	/** Look up an active mob by id (hit validation for MobDamage). */
+	findMob(mobId: number): ServerMob | undefined {
+		return this.mobs.get(mobId);
 	}
 
 	clear(): void {
@@ -710,6 +721,7 @@ export class ServerMobSimulation {
 				y: pos.y,
 				z: pos.z,
 				yaw: Math.floor(Math.random() * 256),
+				hp: config.hp,
 				headingTimer:
 					WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
 				stuckTimer: 0,
@@ -750,6 +762,7 @@ export class ServerMobSimulation {
 			y,
 			z,
 			yaw: Math.floor(Math.random() * 256),
+			hp: config.hp,
 			headingTimer:
 				WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
 			stuckTimer: 0,
@@ -762,6 +775,22 @@ export class ServerMobSimulation {
 
 		this.addActiveMob(mob);
 		return mob;
+	}
+
+	/**
+	 * Apply damage to a mob (player projectile hit). Returns true when the
+	 * hit killed the mob — the caller must broadcast the despawn; the mob is
+	 * already removed from the active set (dead mobs are never persisted).
+	 */
+	damageMob(mobId: number, amount: number): boolean {
+		const mob = this.mobs.get(mobId);
+		if (!mob) return false;
+
+		mob.hp -= amount;
+		if (mob.hp > 0) return false;
+
+		this.removeActiveMob(mob);
+		return true;
 	}
 
 	/** Random species whose natural cap isn't reached yet (equal weights, like the client). */
@@ -916,6 +945,7 @@ export class ServerMobSimulation {
 			y: mob.y,
 			z: mob.z,
 			yaw: mob.yaw,
+			hp: mob.hp,
 			headingTimer: mob.headingTimer,
 			stuckTimer: mob.stuckTimer,
 			fleeing: mob.fleeing,
@@ -939,6 +969,7 @@ export class ServerMobSimulation {
 			y: pm.y,
 			z: pm.z,
 			yaw: pm.yaw,
+			hp: pm.hp ?? MOB_TYPE_CONFIGS[pm.typeId].hp,
 			headingTimer: pm.headingTimer,
 			stuckTimer: pm.stuckTimer,
 			fleeing: pm.fleeing,

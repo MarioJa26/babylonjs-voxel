@@ -28,6 +28,9 @@ export const MessageType = {
 	ItemPickup: 0x06, // C→S: a player picked up a server item (by instance id)
 	SkinUpload: 0x07, // C→S: this client's avatar skin as PNG bytes
 	MobSpawnRequest: 0x2a, // C→S: a player used a spawn egg (cap-exempt mob)
+	MobDamage: 0x20, // C→S: a player's projectile hit a server mob
+	ArrowShoot: 0x2b, // C→S: a player fired an arrow (cosmetic sync)
+	ArrowSpawn: 0x2c, // S→C: relay an arrow's trajectory to the other clients
 
 	// Server → Client
 	PlayerStateBatch: 0x10,
@@ -47,7 +50,6 @@ export const MessageType = {
 	PlayerSkin: 0x1e, // S→C: another player's skin PNG, keyed by room index
 
 	// Server → Client: server-authoritative mobs
-	// 0x20 is reserved for a future client → server MobDamage message.
 	MobSpawn: 0x21, // New mob appeared (also sent as join snapshot)
 	MobUpdateBatch: 0x22, // Position batch for all mobs (fixed-rate broadcast)
 	MobDespawn: 0x23, // Mob removed (wandered off / despawned)
@@ -210,6 +212,29 @@ export interface MobSpawnRequestData {
 	x: number;
 	y: number;
 	z: number;
+}
+
+/** C→S: a player's projectile (arrow) hit a server mob. */
+export interface MobDamageData {
+	/** Server-assigned mob id (uint16). */
+	mobId: number;
+	/** Damage amount (uint8), clamped server-side. */
+	damage: number;
+}
+
+/**
+ * Arrow trajectory sync (cosmetic only — damage is reported separately via
+ * MobDamage, which the server validates). C→S ArrowShoot carries the shooter's
+ * initial state; S→C ArrowSpawn relays it to the other clients, which simulate
+ * the same ballistic flight locally.
+ */
+export interface ArrowTrajectoryData {
+	x: number;
+	y: number;
+	z: number;
+	vx: number;
+	vy: number;
+	vz: number;
 }
 
 /**

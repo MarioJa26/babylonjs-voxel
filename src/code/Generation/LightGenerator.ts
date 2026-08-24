@@ -1,4 +1,4 @@
-import {
+﻿import {
 	filtersFullSunlight,
 	WATER_BLOCK_ID,
 } from "../World/Chunk/Worker/ChunkMesherConstants";
@@ -42,7 +42,7 @@ export class LightGenerator {
 	private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y = 32;
 
 	private static readonly _transparentLUT: Uint8Array = (() => {
-		const lut = new Uint8Array(128);
+		const lut = new Uint8Array(1024);
 		lut[0] = 1;
 		lut[WATER_BLOCK_ID] = 1;
 		lut[60] = 1;
@@ -54,7 +54,7 @@ export class LightGenerator {
 	})();
 
 	private static readonly _filtersFullSunLUT: Uint8Array = (() => {
-		const lut = new Uint8Array(128);
+		const lut = new Uint8Array(1024);
 
 		for (let blockId = 0; blockId < lut.length; blockId++) {
 			lut[blockId] = filtersFullSunlight(blockId) ? 1 : 0;
@@ -64,7 +64,7 @@ export class LightGenerator {
 	})();
 
 	private static readonly _emissionLUT: Uint8Array = (() => {
-		const lut = new Uint8Array(256);
+		const lut = new Uint8Array(1024);
 		lut[10] = 15;
 		lut[11] = 15;
 		lut[24] = 15;
@@ -114,7 +114,7 @@ export class LightGenerator {
 		chunkY: number,
 		chunkZ: number,
 		_biome: Biome,
-		blocks: Uint8Array,
+		blocks: Uint8Array | Uint16Array,
 		light: Uint8Array,
 		topSunlightMask?: Uint8Array,
 	): LightSeedState {
@@ -138,7 +138,7 @@ export class LightGenerator {
 	 * Takes a previously returned seed snapshot and performs the BFS propagation.
 	 */
 	public propagateLight(
-		blocks: Uint8Array,
+		blocks: Uint8Array | Uint16Array,
 		light: Uint8Array,
 		seedState: LightSeedState,
 	): void {
@@ -161,7 +161,7 @@ export class LightGenerator {
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
-		blocks: Uint8Array,
+		blocks: Uint8Array | Uint16Array,
 		light: Uint8Array,
 		topSunlightMask?: Uint8Array,
 	): void {
@@ -186,7 +186,7 @@ export class LightGenerator {
 		_chunkX: number,
 		chunkY: number,
 		_chunkZ: number,
-		blocks: Uint8Array,
+		blocks: Uint8Array | Uint16Array,
 		light: Uint8Array,
 		topSunlightMask?: Uint8Array,
 	): number {
@@ -235,7 +235,7 @@ export class LightGenerator {
 
 					const blockId = blocks[idx];
 
-					if (blockId >= 128 || transparentLUT[blockId] === 0) {
+					if (blockId >= 1024 || transparentLUT[blockId] === 0) {
 						incomingSkyLight = 0;
 						sourceFiltersFullSun = 0;
 
@@ -302,7 +302,7 @@ export class LightGenerator {
 	 * - deferred refinement path
 	 */
 	private propagateLightFromQueue(
-		blocks: Uint8Array,
+		blocks: Uint8Array | Uint16Array,
 		light: Uint8Array,
 		queue: Uint16Array,
 		initialTail: number,
@@ -333,7 +333,7 @@ export class LightGenerator {
 
 			const sourceBlockId = blocks[idx];
 			const sourceFiltersFullSun =
-				sourceBlockId < 128 ? filtersFullSunLUT[sourceBlockId] : 0;
+				sourceBlockId < 1024 ? filtersFullSunLUT[sourceBlockId] : 0;
 
 			const skyM1 = skyLight - 1;
 			const blkM1 = blockLight - 1;
@@ -393,7 +393,7 @@ export class LightGenerator {
 				const belowIdx = idx - CHUNK_SIZE;
 				const belowBlockId = blocks[belowIdx];
 				const belowFiltersFullSun =
-					belowBlockId < 128 ? filtersFullSunLUT[belowBlockId] : 0;
+					belowBlockId < 1024 ? filtersFullSunLUT[belowBlockId] : 0;
 
 				const preservesFullSunDown =
 					skyLight === 15 &&
@@ -458,7 +458,7 @@ export class LightGenerator {
 		targetBlock: number,
 		sourceFiltersFullSun: number,
 		isDown: boolean,
-		blocks: Uint8Array,
+		blocks: Uint8Array | Uint16Array,
 		light: Uint8Array,
 		queue: Uint16Array,
 		tail: number,
@@ -468,7 +468,7 @@ export class LightGenerator {
 	): number {
 		const targetBlockId = blocks[nIdx];
 
-		if (targetBlockId >= 128 || transparentLUT[targetBlockId] === 0) {
+		if (targetBlockId >= 1024 || transparentLUT[targetBlockId] === 0) {
 			return tail;
 		}
 

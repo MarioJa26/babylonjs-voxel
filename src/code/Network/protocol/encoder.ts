@@ -10,6 +10,7 @@
 import { deflate } from "../../World/Storage/BlobCompression";
 import type { RemoteChunkData } from "../chunk/RemoteChunkProvider";
 import {
+	type ArrowTrajectoryData,
 	type BlockEditData,
 	type BlockEditRejectedData,
 	type ChatMessageData,
@@ -20,6 +21,7 @@ import {
 	type ItemSpawnData,
 	type ItemUpdateBatchEntry,
 	MessageType,
+	type MobDamageData,
 	type MobSpawnRequestData,
 	type MobUpdateBatchEntry,
 	type PlayerJoinData,
@@ -857,7 +859,7 @@ export function decodeWorldConfig(buffer: Uint8Array): WorldConfigData {
  * Chunk data — server → client (response to chunk request).
  * Contains compressed voxel data for meshing on the client.
  * Format: [type:1][chunkX:i32][chunkY:i32][chunkZ:i32][version:u32][flags:u8][blockData...][lightData...]
- * flags: bit0=isUniform, bit1=hasPalette
+ * flags: bit0=isUniform, bit1=hasPalette, bit2=denseBlocksAreU16
  * If isUniform: next 2 bytes = uniformBlockId, no block data
  * If hasPalette: next 2 bytes = paletteLength, then paletteLength*2 bytes palette, then packed data
  * Light data always follows block data (lightLength:u32 then bytes)
@@ -866,7 +868,7 @@ export function encodeChunkData(data: {
 	chunkX: number;
 	chunkY: number;
 	chunkZ: number;
-	blocks: Uint8Array;
+	blocks: Uint8Array | Uint16Array;
 	light: Uint8Array;
 	palette?: number[];
 	isUniform: boolean;
@@ -877,11 +879,13 @@ export function encodeChunkData(data: {
 	const headerSize = 1 + 12 + 4 + 1; // type + chunk coords + version + flags
 	const uniformSize = data.isUniform ? 2 : 0;
 	const paletteSize = data.palette ? 2 + data.palette.length * 2 : 0;
+	const denseU16 =
+		!data.isUniform && !data.palette && data.blocks instanceof Uint16Array;
 	const totalSize =
 		headerSize +
 		uniformSize +
 		paletteSize +
-		data.blocks.length +
+		data.blocks.byteLength +
 		4 +
 		lightBytes;
 
@@ -896,6 +900,7 @@ export function encodeChunkData(data: {
 	let flags = 0;
 	if (data.isUniform) flags |= 1;
 	if (data.palette) flags |= 2;
+	if (denseU16) flags |= 4;
 	enc.writeUint8(flags);
 
 	if (data.isUniform) {
@@ -905,9 +910,14 @@ export function encodeChunkData(data: {
 		for (let i = 0; i < data.palette.length; i++) {
 			enc.writeUint16(data.palette[i]);
 		}
-		enc.writeBytes(data.blocks);
+		enc.writeBytes(data.blocks as Uint8Array);
 	} else {
-		enc.writeBytes(data.blocks);
+		const b = data.blocks;
+		enc.writeBytes(
+			b instanceof Uint16Array
+				? new Uint8Array(b.buffer, b.byteOffset, b.byteLength)
+				: b,
+		);
 	}
 
 	// Light data
@@ -934,10 +944,11 @@ function decodeChunkDataEntry(
 	const flags = dec.readUint8();
 	const isUniform = (flags & 1) !== 0;
 	const hasPalette = (flags & 2) !== 0;
+	const denseU16 = (flags & 4) !== 0;
 
 	let uniformBlockId = 0;
 	let palette: Uint16Array | undefined;
-	let blocks: Uint8Array;
+	let blocks: Uint8Array | Uint16Array;
 
 	if (isUniform) {
 		uniformBlockId = dec.readUint16();
@@ -958,6 +969,12 @@ function decodeChunkDataEntry(
 		blocks = allocSAB
 			? dec.readBytesViewSAB(packedSize)
 			: dec.readBytesView(packedSize);
+	} else if (denseU16) {
+		const byteLen = CHUNK_VOLUME * 2;
+		const raw = allocSAB
+			? dec.readBytesViewSAB(byteLen)
+			: dec.readBytesView(byteLen);
+		blocks = new Uint16Array(raw.buffer, raw.byteOffset, raw.byteLength >>> 1);
 	} else {
 		blocks = allocSAB
 			? dec.readBytesViewSAB(CHUNK_VOLUME)
@@ -1166,9 +1183,9 @@ function encodeChunkDataBatchMeasure(
 		if (c.isUniform) {
 			totalSize += 2;
 		} else if (c.palette) {
-			totalSize += 2 + c.palette.length * 2 + c.blocks.length;
+			totalSize += 2 + c.palette.length * 2 + c.blocks.byteLength;
 		} else {
-			totalSize += c.blocks.length;
+			totalSize += c.blocks.byteLength;
 		}
 		totalSize += 4 + c.light.length;
 	}
@@ -1470,6 +1487,67 @@ export function decodeMobSpawnRequest(buffer: Uint8Array): MobSpawnRequestData {
 		x: dec.readFloat32(),
 		y: dec.readFloat32(),
 		z: dec.readFloat32(),
+	};
+}
+
+// MobDamage (C→S): [type:1][mobId:u16][damage:u8]
+
+export function encodeMobDamage(data: MobDamageData): Uint8Array {
+	const enc = new BinaryEncoder(1 + 2 + 1);
+	enc.writeUint8(MessageType.MobDamage);
+	enc.writeUint16(data.mobId);
+	enc.writeUint8(data.damage);
+	return enc.getBytes();
+}
+
+export function decodeMobDamage(buffer: Uint8Array): MobDamageData {
+	const dec = new BinaryDecoder(buffer, 1);
+	return { mobId: dec.readUint16(), damage: dec.readUint8() };
+}
+
+// ArrowShoot (C→S) / ArrowSpawn (S→C):
+//   [type:1][x:f32][y:f32][z:f32][vx:f32][vy:f32][vz:f32]
+
+export function encodeArrowShoot(data: ArrowTrajectoryData): Uint8Array {
+	return encodeArrowTrajectory(MessageType.ArrowShoot, data);
+}
+
+export function decodeArrowShoot(buffer: Uint8Array): ArrowTrajectoryData {
+	return decodeArrowTrajectory(buffer);
+}
+
+export function encodeArrowSpawn(data: ArrowTrajectoryData): Uint8Array {
+	return encodeArrowTrajectory(MessageType.ArrowSpawn, data);
+}
+
+export function decodeArrowSpawn(buffer: Uint8Array): ArrowTrajectoryData {
+	return decodeArrowTrajectory(buffer);
+}
+
+function encodeArrowTrajectory(
+	type: number,
+	data: ArrowTrajectoryData,
+): Uint8Array {
+	const enc = new BinaryEncoder(1 + 4 * 6);
+	enc.writeUint8(type);
+	enc.writeFloat32(data.x);
+	enc.writeFloat32(data.y);
+	enc.writeFloat32(data.z);
+	enc.writeFloat32(data.vx);
+	enc.writeFloat32(data.vy);
+	enc.writeFloat32(data.vz);
+	return enc.getBytes();
+}
+
+function decodeArrowTrajectory(buffer: Uint8Array): ArrowTrajectoryData {
+	const dec = new BinaryDecoder(buffer, 1);
+	return {
+		x: dec.readFloat32(),
+		y: dec.readFloat32(),
+		z: dec.readFloat32(),
+		vx: dec.readFloat32(),
+		vy: dec.readFloat32(),
+		vz: dec.readFloat32(),
 	};
 }
 

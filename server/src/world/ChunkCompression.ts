@@ -1,34 +1,40 @@
 /**
  * ChunkCompression — shared block compression helpers for the server.
  *
- * Blocks are stored as a 32³ (32768-entry) byte array. To cut memory and
+ * Blocks are stored as a 32³ (32768-entry) array. To cut memory and
  * network payload size, chunks are compressed on generation:
  * - uniform chunk: all voxels share one block id → stores nothing (0 bytes)
  * - ≤16 unique ids: 4-bit palette-packed (half the size)
- * - otherwise: raw copy
+ * - otherwise: raw copy (Uint8Array for 8-bit ids, Uint16Array when any
+ *   id exceeds 255 — e.g. mason shape-variant ids in the 500+ range)
  *
  * The inverse (decompressBlocks) is needed when applying block edits to a
  * stored chunk: edits target world coordinates, so the full array must be
  * materialized first.
+ *
+ * Block ids are 10-bit (0..1023), matching the client's BlockEncoding.
  */
 
 export const CHUNK_VOLUME = 32 * 32 * 32;
 
+/** Matches the client's BLOCK_ID_BITS (World/Chunk/DataStructures/BlockEncoding.ts). */
+export const MAX_BLOCK_ID = 1023;
+
 export interface CompressedBlocks {
-	data: Uint8Array;
+	data: Uint8Array | Uint16Array;
 	palette?: number[];
 	isUniform: boolean;
 	uniformBlockId: number;
 }
 
 // Module-level scratch buffers reused across calls instead of allocating a
-// fresh Uint16Array(256)/Uint8Array(256) on every single chunk compressed.
+// fresh Uint16Array(1024)/Uint8Array(1024) on every single chunk compressed.
 // Safe to share: compressBlocks is fully synchronous (no `await` inside),
 // and JS run-to-completion semantics guarantee one call always finishes
 // before the next starts, even when many "concurrent" callers invoke it
 // back-to-back via Promise.all — there's never mid-function interleaving.
-const _countsScratch = new Uint16Array(256);
-const _blockToPaletteScratch = new Uint8Array(256);
+const _countsScratch = new Uint16Array(MAX_BLOCK_ID + 1);
+const _blockToPaletteScratch = new Uint8Array(MAX_BLOCK_ID + 1);
 
 // Small pool of pre-allocated 32KB decompression buffers. Avoids GC pressure
 // from allocating a fresh Uint8Array(32768) on every decompressBlocks call.
@@ -47,7 +53,9 @@ const DECOMP_POOL_MAX = 4;
  * unique ids are found, and dropped mask ops that were always no-ops given
  * the value ranges involved (see inline notes).
  */
-export function compressBlocks(blocks: Uint8Array): CompressedBlocks {
+export function compressBlocks(
+	blocks: Uint8Array | Uint16Array,
+): CompressedBlocks {
 	const len = blocks.length;
 
 	const counts = _countsScratch;
@@ -90,7 +98,11 @@ export function compressBlocks(blocks: Uint8Array): CompressedBlocks {
 	const palette: number[] = [];
 	const blockToPalette = _blockToPaletteScratch;
 
-	for (let id = 0; id < 256 && palette.length < uniqueCount; id++) {
+	for (
+		let id = 0;
+		id <= MAX_BLOCK_ID && palette.length < uniqueCount;
+		id++
+	) {
 		if (counts[id] !== 0) {
 			blockToPalette[id] = palette.length;
 			palette.push(id);
@@ -117,21 +129,50 @@ export function compressBlocks(blocks: Uint8Array): CompressedBlocks {
  * Returns a fresh buffer when the chunk was palette-packed; for raw chunks
  * the stored buffer is returned as-is (no copy).
  *
+ * The result is a Uint16Array whenever any block id exceeds 255 (uniform
+ * ids, palette entries, or raw u16 storage); otherwise a pooled Uint8Array.
+ *
  * Uses a small buffer pool to avoid per-call 32KB allocations on the hot
  * path (block edit flushes). Callers that need to hold the buffer beyond
  * the synchronous scope should copy it.
  */
-export function decompressBlocks(compressed: CompressedBlocks): Uint8Array {
+export function decompressBlocks(
+	compressed: CompressedBlocks,
+): Uint8Array | Uint16Array {
 	const { data, palette, isUniform, uniformBlockId } = compressed;
 	const len = CHUNK_VOLUME;
 
 	if (isUniform) {
+		if (uniformBlockId > 255) {
+			const out = new Uint16Array(len);
+			out.fill(uniformBlockId);
+			return out;
+		}
+
 		const out = _decompPool.pop() ?? new Uint8Array(len);
 		out.fill(uniformBlockId);
 		return out;
 	}
 
 	if (palette && palette.length > 0) {
+		let hasWideIds = false;
+		for (let i = 0; i < palette.length; i++) {
+			if (palette[i] > 255) {
+				hasWideIds = true;
+				break;
+			}
+		}
+
+		if (hasWideIds) {
+			const out = new Uint16Array(len);
+			for (let i = 0, j = 0; i < len; i += 2, j++) {
+				const packed = data[j];
+				out[i] = palette[packed & 0x0f];
+				out[i + 1] = palette[packed >> 4];
+			}
+			return out;
+		}
+
 		const out = _decompPool.pop() ?? new Uint8Array(len);
 
 		for (let i = 0, j = 0; i < len; i += 2, j++) {
@@ -150,9 +191,14 @@ export function decompressBlocks(compressed: CompressedBlocks): Uint8Array {
  * Return a decompression buffer to the pool for reuse.
  * Call after you're done with the buffer from decompressBlocks (e.g. after
  * compressing the modified blocks or after mesh generation copies the data).
+ * Uint16Array results are never pooled (they are rare, freshly allocated).
  */
-export function releaseDecompBuffer(buf: Uint8Array): void {
-	if (buf.length === CHUNK_VOLUME && _decompPool.length < DECOMP_POOL_MAX) {
+export function releaseDecompBuffer(buf: Uint8Array | Uint16Array): void {
+	if (
+		buf instanceof Uint8Array &&
+		buf.length === CHUNK_VOLUME &&
+		_decompPool.length < DECOMP_POOL_MAX
+	) {
 		_decompPool.push(buf);
 	}
 }

@@ -39,10 +39,16 @@ import { atlasSize, tileSize } from "../World/Texture/TextureAtlasFactory";
 const ATLAS_URL = "/texture/diffuse_atlas.png";
 const POOL_SIZE = 2048;
 const PARTICLES_PER_BREAK = 198;
+
 const MINING_PARTICLES_PER_EMIT = 6;
 const MINING_PARTICLE_INTERVAL_MS = 67;
+
 const SPRINT_PARTICLES_PER_EMIT = 6;
 const SPRINT_PARTICLE_INTERVAL_MS = 120;
+
+const ARROW_PARTICLES_PER_EMIT = 8;
+const ARROW_PARTICLE_INTERVAL_MS = 75;
+
 const GRAVITY = -16;
 const MAX_DT = 0.1;
 const FADE_START = 0.85;
@@ -306,6 +312,83 @@ export function playMining(
 		);
 	}
 }
+export function playArrowHit(
+	scene: SceneContext,
+	x: number,
+	y: number,
+	z: number,
+	nx: number,
+	ny: number,
+	nz: number,
+	blockId: number,
+): void {
+	ensureInit(scene);
+	if (!ready) return;
+
+	const now = performance.now();
+	if (now - lastMiningEmitMs < ARROW_PARTICLE_INTERVAL_MS) return;
+	lastMiningEmitMs = now;
+
+	const frame = getBlockFrame(blockId);
+
+	// Sample light one more half-block out along the normal: `x/y/z` is the
+	// face boundary, which floors into the mined (solid) block for half of the
+	// faces — that voxel stores no light, so particles came out black there.
+	// `face center + normal * 0.5` lands in the adjacent air block, which is
+	// lit, for every face (same spot the block-break burst samples).
+	const light = computeLight(
+		getLightByWorldCoords(x + nx * 0.5, y + ny * 0.5, z + nz * 0.5),
+	);
+	const lr = light.r;
+	const lg = light.g;
+	const lb = light.b;
+	let life = 0.4 + getPRNGUnit2();
+
+	for (let i = 0; i < ARROW_PARTICLES_PER_EMIT; i++) {
+		const jx = (getPRNGUnit2() - 0.25) * 0.25;
+		const jy = (getPRNGUnit2() - 0.3) * 0.3;
+		const jz = (getPRNGUnit2() - 0.25) * 0.25;
+		const speed = 0.66 + getPRNGUnit2();
+		life += 0.1;
+		addParticle(
+			x + jx,
+			y + jy,
+			z + jz,
+			nx * speed + jx * 0.6,
+			ny * speed + 0.35 + jy * 0.6,
+			nz * speed + jz * 0.6,
+			life,
+			0.04 + getPRNGUnit2() * 0.03,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			lr,
+			lg,
+			lb,
+			1,
+			0.5,
+		);
+		addParticle(
+			x + jx,
+			y + jy,
+			z + jz,
+			nx * speed + jx * 0.6,
+			ny * speed + 0.35 + jy * 0.6,
+			nz * speed + jz * 0.6,
+			life,
+			0.04 + getPRNGUnit2() * 0.03,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			lr,
+			lg,
+			lb,
+			1,
+			0.5,
+			1,
+		);
+	}
+}
 
 /**
  * Footstep dust kicked up behind a sprinting player. `x/y/z` is the feet
@@ -564,7 +647,7 @@ function spawnDebrisBurst(
 			b * shade,
 			1,
 			1,
-			true,
+			1,
 		);
 	}
 }
@@ -659,7 +742,7 @@ function addParticle(
 	b: number,
 	a: number,
 	gravityScale: number,
-	collide = false,
+	collide: 0 | 1 = 0,
 ): void {
 	if (aliveCount >= POOL_SIZE) return;
 	const i = aliveCount++;
@@ -680,7 +763,7 @@ function addParticle(
 	pb[i] = b;
 	pa[i] = a;
 	pgrav[i] = gravityScale;
-	pflags[i] = collide ? COLLIDE_BIT : 0;
+	pflags[i] = collide;
 }
 
 /** Swap-remove: overwrites slot `i` with the last live particle and shrinks aliveCount. */
