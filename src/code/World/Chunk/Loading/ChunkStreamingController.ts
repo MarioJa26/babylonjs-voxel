@@ -464,21 +464,15 @@ export class ChunkStreamingController {
 		chunkZ: number,
 		lodRuleSet: ChunkLodRuleSet,
 	): void {
-		const {
-			lod0HorizontalRadius,
-			lod0VerticalRadius,
-			lod1HorizontalRadius,
-			lod1VerticalRadius,
-			lod2HorizontalRadius,
-			lod2VerticalRadius,
-		} = lodRuleSet.radii;
-
-		const lod0H2 = lod0HorizontalRadius + 2;
-		const lod0V2 = lod0VerticalRadius + 2;
-		const lod1H2 = lod1HorizontalRadius + 2;
-		const lod1V2 = lod1VerticalRadius + 2;
-		const lod2H2 = lod2HorizontalRadius + 2;
-		const lod2V2 = lod2VerticalRadius + 2;
+		// BUGFIX: the refresh window must span EVERY chunk-creating band, not
+		// just LOD0-2. It previously capped at lod2Radius+2, so chunks pushed
+		// beyond it (by walking/sprinting/boating away) kept their near-band
+		// LOD forever — full-detail lod0/1 meshes rendering inside the far
+		// lod3-5 rings until unload. Chunks are collected below out to
+		// unloadScanRadius (operationalRadius+9), so the only limiter needed
+		// here is the rule set's outermost radius (+ hysteresis margin).
+		const maxH = lodRuleSet.maxHorizontalRadius() + 2;
+		const maxV = lodRuleSet.maxVerticalRadius() + 2;
 
 		for (let i = 0; i < _queryScratch.length; i++) {
 			const chunk = _queryScratch[i];
@@ -497,11 +491,7 @@ export class ChunkStreamingController {
 			const hDist = absX > absZ ? absX : absZ;
 			const vDist = absY;
 
-			const nearLod0 = hDist <= lod0H2 && vDist <= lod0V2;
-			const nearLod1 = hDist <= lod1H2 && vDist <= lod1V2;
-			const nearLod2 = hDist <= lod2H2 && vDist <= lod2V2;
-
-			if (!nearLod0 && !nearLod1 && !nearLod2) continue;
+			if (hDist > maxH || vDist > maxV) continue;
 
 			const chunkLod = chunk.lodLevel ?? 3;
 			const key = packOffsetKey(relX, relY, relZ, chunkLod);
