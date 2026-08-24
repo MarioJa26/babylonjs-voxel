@@ -61,6 +61,9 @@ export class BoatChunk {
 	#centerChunk: Chunk;
 	#scratchWorldMatrix = new Matrix();
 	#scratchLocal = vec3Zero();
+	// PERF: reusable input for localToWorldCenterToRef — it used to allocate a
+	// fresh vec3 per call despite being the ToRef (allocation-free) variant.
+	#scratchLocalInput = vec3Zero();
 	#neighborChunks: Chunk[] = [];
 	#attachedOpaqueMesh: Mesh | null = null;
 	#attachedTransparentMesh: Mesh | null = null;
@@ -441,7 +444,7 @@ export class BoatChunk {
 		const sm = this.#scratchWorldMatrix.m;
 		for (let i = 0; i < 16; i++) sm[i] = wm[i];
 		transformCoordinatesVec3ToRef(
-			vec3(lx, ly, lz),
+			setVec3(this.#scratchLocalInput, lx, ly, lz),
 			this.#scratchWorldMatrix,
 			ref,
 		);

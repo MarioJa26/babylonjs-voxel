@@ -819,6 +819,133 @@ function isBoatChunkInReach(ray: RayLike, boatChunk: BoatChunk): boolean {
 	return dx * dx + dy * dy + dz * dz <= radius * radius;
 }
 
+// PERF: persistent per-raycast state for the boat-chunk DDA visitor. The
+// ~90-line visit callback used to be a fresh closure allocated on every boat
+// raycast (every frame while any boat is targetable) — same no-capture
+// pattern as the fence neighbor lookup in raycastShapeInVoxel.
+type BoatShouldHitFn = (
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+) => boolean;
+
+const _boatVisitState = {
+	boatChunk: null as BoatChunk | null,
+	shouldHit: null as BoatShouldHitFn | null,
+	dx: 0,
+	dy: 0,
+	dz: 0,
+	hit: false,
+};
+
+function _visitBoatVoxel(
+	lx: number,
+	ly: number,
+	lz: number,
+	t: number,
+	_nx: number,
+	_ny: number,
+	_nz: number,
+	tExit: number,
+): DdaVisitResult {
+	const state = _boatVisitState;
+	const boatChunk = state.boatChunk!;
+	const shouldHit = state.shouldHit!;
+	if (!boatChunk.isInsideLocalBounds(lx, ly, lz)) {
+		return DdaVisitResult.Stop;
+	}
+
+	const blockId = boatChunk.getBlockLocal(lx, ly, lz);
+	if (!shouldHit(lx, ly, lz, blockId)) return DdaVisitResult.Skip;
+
+	const blockState = boatChunk.getBlockStateLocal(lx, ly, lz);
+
+	let hitT = t;
+	let hitNx = _nx;
+	let hitNy = _ny;
+	let hitNz = _nz;
+	let hasHit = isFullBlockShape(blockId, blockState);
+
+	if (!hasHit) {
+		const shapeHit = raycastShapeInVoxel(
+			_sharedLocalOrigin.x,
+			_sharedLocalOrigin.y,
+			_sharedLocalOrigin.z,
+			state.dx,
+			state.dy,
+			state.dz,
+			lx,
+			ly,
+			lz,
+			blockId,
+			blockState,
+			t,
+			tExit,
+			_nx,
+			_ny,
+			_nz,
+		);
+
+		if (shapeHit) {
+			hitT = shapeHit.t;
+			hitNx = shapeHit.nx;
+			hitNy = shapeHit.ny;
+			hitNz = shapeHit.nz;
+			hasHit = true;
+		}
+	}
+
+	if (!hasHit) return DdaVisitResult.Skip;
+
+	setVec3(_sharedWorldNormal, hitNx, hitNy, hitNz);
+	transformNormalVec3ToRef(
+		_sharedWorldNormal,
+		_sharedWorldMatrix,
+		_sharedVec3b,
+	);
+
+	const ax = Math.abs(_sharedVec3b.x);
+	const ay = Math.abs(_sharedVec3b.y);
+	const az = Math.abs(_sharedVec3b.z);
+
+	let worldNx = 0;
+	let worldNy = 0;
+	let worldNz = 0;
+
+	if (ax >= ay && ax >= az) {
+		worldNx = _sharedVec3b.x >= 0 ? 1 : -1;
+	} else if (ay >= ax && ay >= az) {
+		worldNy = _sharedVec3b.y >= 0 ? 1 : -1;
+	} else {
+		worldNz = _sharedVec3b.z >= 0 ? 1 : -1;
+	}
+
+	boatChunk.localToWorldCenterToRef(lx, ly, lz, _sharedWorldCenter);
+
+	_sharedHit.t = hitT;
+	_sharedHit.x = Math.floor(_sharedWorldCenter.x);
+	_sharedHit.y = Math.floor(_sharedWorldCenter.y);
+	_sharedHit.z = Math.floor(_sharedWorldCenter.z);
+	_sharedHit.nx = worldNx;
+	_sharedHit.ny = worldNy;
+	_sharedHit.nz = worldNz;
+	_sharedHit.blockId = blockId;
+	_sharedHit.blockState = blockState;
+	_sharedHit.dynamicContext = _sharedBoatContext;
+
+	_sharedBoatContext.boatChunk = boatChunk;
+	_sharedBoatContext.localX = lx;
+	_sharedBoatContext.localY = ly;
+	_sharedBoatContext.localZ = lz;
+	_sharedBoatContext.localHitNx = hitNx;
+	_sharedBoatContext.localHitNy = hitNy;
+	_sharedBoatContext.localHitNz = hitNz;
+
+	state.hit = true;
+	return DdaVisitResult.Hit;
+}
+
 function raycastSingleBoatChunk(
 	ray: RayLike,
 	boatChunk: BoatChunk,
@@ -893,7 +1020,12 @@ function raycastSingleBoatChunk(
 
 	if (!boatChunk.isInsideLocalBounds(x, y, z)) return false;
 
-	let hitResult = false;
+	_boatVisitState.boatChunk = boatChunk;
+	_boatVisitState.shouldHit = shouldHit;
+	_boatVisitState.dx = dx;
+	_boatVisitState.dy = dy;
+	_boatVisitState.dz = dz;
+	_boatVisitState.hit = false;
 
 	traceRayDda(
 		_sharedLocalOrigin.x,
@@ -908,103 +1040,10 @@ function raycastSingleBoatChunk(
 		tStart,
 		ray.length,
 		true,
-		(lx, ly, lz, t, _nx, _ny, _nz, tExit) => {
-			if (!boatChunk.isInsideLocalBounds(lx, ly, lz)) {
-				return DdaVisitResult.Stop;
-			}
-
-			const blockId = boatChunk.getBlockLocal(lx, ly, lz);
-			if (!shouldHit(lx, ly, lz, blockId)) return DdaVisitResult.Skip;
-
-			const blockState = boatChunk.getBlockStateLocal(lx, ly, lz);
-
-			let hitT = t;
-			let hitNx = _nx;
-			let hitNy = _ny;
-			let hitNz = _nz;
-			let hasHit = isFullBlockShape(blockId, blockState);
-
-			if (!hasHit) {
-				const shapeHit = raycastShapeInVoxel(
-					_sharedLocalOrigin.x,
-					_sharedLocalOrigin.y,
-					_sharedLocalOrigin.z,
-					dx,
-					dy,
-					dz,
-					lx,
-					ly,
-					lz,
-					blockId,
-					blockState,
-					t,
-					tExit,
-					_nx,
-					_ny,
-					_nz,
-				);
-
-				if (shapeHit) {
-					hitT = shapeHit.t;
-					hitNx = shapeHit.nx;
-					hitNy = shapeHit.ny;
-					hitNz = shapeHit.nz;
-					hasHit = true;
-				}
-			}
-
-			if (!hasHit) return DdaVisitResult.Skip;
-
-			setVec3(_sharedWorldNormal, hitNx, hitNy, hitNz);
-			transformNormalVec3ToRef(
-				_sharedWorldNormal,
-				_sharedWorldMatrix,
-				_sharedVec3b,
-			);
-
-			const ax = Math.abs(_sharedVec3b.x);
-			const ay = Math.abs(_sharedVec3b.y);
-			const az = Math.abs(_sharedVec3b.z);
-
-			let worldNx = 0;
-			let worldNy = 0;
-			let worldNz = 0;
-
-			if (ax >= ay && ax >= az) {
-				worldNx = _sharedVec3b.x >= 0 ? 1 : -1;
-			} else if (ay >= ax && ay >= az) {
-				worldNy = _sharedVec3b.y >= 0 ? 1 : -1;
-			} else {
-				worldNz = _sharedVec3b.z >= 0 ? 1 : -1;
-			}
-
-			boatChunk.localToWorldCenterToRef(lx, ly, lz, _sharedWorldCenter);
-
-			_sharedHit.t = hitT;
-			_sharedHit.x = Math.floor(_sharedWorldCenter.x);
-			_sharedHit.y = Math.floor(_sharedWorldCenter.y);
-			_sharedHit.z = Math.floor(_sharedWorldCenter.z);
-			_sharedHit.nx = worldNx;
-			_sharedHit.ny = worldNy;
-			_sharedHit.nz = worldNz;
-			_sharedHit.blockId = blockId;
-			_sharedHit.blockState = blockState;
-			_sharedHit.dynamicContext = _sharedBoatContext;
-
-			_sharedBoatContext.boatChunk = boatChunk;
-			_sharedBoatContext.localX = lx;
-			_sharedBoatContext.localY = ly;
-			_sharedBoatContext.localZ = lz;
-			_sharedBoatContext.localHitNx = hitNx;
-			_sharedBoatContext.localHitNy = hitNy;
-			_sharedBoatContext.localHitNz = hitNz;
-
-			hitResult = true;
-			return DdaVisitResult.Hit;
-		},
+		_visitBoatVoxel,
 	);
 
-	return hitResult;
+	return _boatVisitState.hit;
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────

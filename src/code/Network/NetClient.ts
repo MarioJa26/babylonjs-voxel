@@ -596,6 +596,20 @@ export class NetClient {
 		room.sendBytes("binary", this.encoder.getBytes());
 	}
 
+	/** C→S: a player used a spawn egg — the server spawns a cap-exempt mob. */
+	sendMobSpawnRequest(typeId: number, x: number, y: number, z: number): void {
+		const room = this.getConnectedRoom();
+		if (!room) return;
+
+		this.encoder.reset();
+		this.encoder.writeUint8(MessageType.MobSpawnRequest);
+		this.encoder.writeUint8(typeId);
+		this.encoder.writeFloat32(x);
+		this.encoder.writeFloat32(y);
+		this.encoder.writeFloat32(z);
+		room.sendBytes("binary", this.encoder.getBytes());
+	}
+
 	/** C→S: share this client's avatar skin PNG with the room. */
 	uploadSkin(png: Uint8Array): void {
 		const room = this.getConnectedRoom();

@@ -770,10 +770,7 @@ export class Chunk {
 				for (const entry of cache.values()) {
 					for (const md of [entry.opaque, entry.water, entry.cutout]) {
 						if (!md) continue;
-						cachedMeshBytes +=
-							md.faceDataA.byteLength +
-							md.faceDataB.byteLength +
-							md.faceDataC.byteLength;
+						cachedMeshBytes += md.faceData.byteLength;
 					}
 				}
 			}

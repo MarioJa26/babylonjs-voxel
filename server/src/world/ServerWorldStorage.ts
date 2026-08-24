@@ -93,6 +93,8 @@ export interface PersistedMob {
 	path: Array<{ x: number; z: number; groundY: number }>;
 	pathIndex: number;
 	pathTimer: number;
+	/** Spawn-egg mobs are cap-exempt. Optional for pre-existing saved data. */
+	egg?: boolean;
 }
 
 const DEFAULT_CACHE_SIZE = 1024;
@@ -1095,6 +1097,7 @@ function isPersistedMob(value: unknown): value is PersistedMob {
 		typeof m.fleeing === "boolean" &&
 		Array.isArray(m.path) &&
 		typeof m.pathIndex === "number" &&
-		typeof m.pathTimer === "number"
+		typeof m.pathTimer === "number" &&
+		(m.egg === undefined || typeof m.egg === "boolean")
 	);
 }

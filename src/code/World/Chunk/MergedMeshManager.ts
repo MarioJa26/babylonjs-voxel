@@ -40,16 +40,9 @@ export interface ChunkMemberData {
 }
 
 export interface MergedVertexData {
-	faceDataA: Uint8Array;
-	faceDataB: Uint8Array;
-	faceDataC: Uint8Array;
+	/** Interleaved face records (12 bytes = 3 u32 words per face). */
+	faceData: Uint8Array;
 	faceCount: number;
-}
-
-interface MergedBuffers {
-	a: Uint8Array;
-	b: Uint8Array;
-	c: Uint8Array;
 }
 
 export interface MergedFaceRange {
@@ -92,21 +85,12 @@ export interface MergedMeshGroup {
 	waterCapacityFaces: number;
 	cutoutCapacityFaces: number;
 
-	opaqueA: Uint8Array | null;
-	opaqueB: Uint8Array | null;
-	opaqueC: Uint8Array | null;
-
-	waterA: Uint8Array | null;
-	waterB: Uint8Array | null;
-	waterC: Uint8Array | null;
-
-	cutoutA: Uint8Array | null;
-	cutoutB: Uint8Array | null;
-	cutoutC: Uint8Array | null;
-
-	opaqueBuffers: MergedBuffers | null;
-	waterBuffers: MergedBuffers | null;
-	cutoutBuffers: MergedBuffers | null;
+	// One interleaved face-record buffer per layer (12 bytes per face).
+	// Replaces the old opaqueA/B/C SoA triple: member assembly is a single
+	// memcpy, and the chunk-index OR pass strides through one u32 view.
+	opaqueData: Uint8Array | null;
+	waterData: Uint8Array | null;
+	cutoutData: Uint8Array | null;
 
 	opaqueVertexData: MergedVertexData | null;
 	waterVertexData: MergedVertexData | null;
@@ -320,6 +304,8 @@ function copyFaceBytes(
 	}
 }
 
+const EMPTY_U12 = new Uint8Array(0);
+
 const _precomputedOffsets = (() => {
 	const offsets = new Float32Array(MAX_GROUP_MEMBERS * 3);
 	for (let i = 0; i < MAX_GROUP_MEMBERS; i++) {
@@ -446,18 +432,9 @@ export function assignChunkToGroup(
 			opaqueCapacityFaces: 0,
 			waterCapacityFaces: 0,
 			cutoutCapacityFaces: 0,
-			opaqueA: null,
-			opaqueB: null,
-			opaqueC: null,
-			waterA: null,
-			waterB: null,
-			waterC: null,
-			cutoutA: null,
-			cutoutB: null,
-			cutoutC: null,
-			opaqueBuffers: null,
-			waterBuffers: null,
-			cutoutBuffers: null,
+			opaqueData: null,
+			waterData: null,
+			cutoutData: null,
 			opaqueVertexData: null,
 			waterVertexData: null,
 			cutoutVertexData: null,
@@ -715,14 +692,11 @@ export function disposeAll(): void {
 			group.cutoutMeshRef = null;
 		}
 		group.cachedOpaque = group.cachedWater = group.cachedCutout = null;
-		group.opaqueA = group.opaqueB = group.opaqueC = null;
-		group.opaqueBuffers = null;
+		group.opaqueData = null;
 		group.opaqueCapacityFaces = 0;
-		group.waterA = group.waterB = group.waterC = null;
-		group.waterBuffers = null;
+		group.waterData = null;
 		group.waterCapacityFaces = 0;
-		group.cutoutA = group.cutoutB = group.cutoutC = null;
-		group.cutoutBuffers = null;
+		group.cutoutData = null;
 		group.cutoutCapacityFaces = 0;
 		group.opaqueSlots = newSlotLayerState();
 		group.waterSlots = newSlotLayerState();
@@ -747,91 +721,49 @@ export function disposeAll(): void {
 function ensureOpaqueMergedCapacity(
 	group: MergedMeshGroup,
 	faceCount: number,
-): MergedBuffers {
+): void {
 	let capacity = group.opaqueCapacityFaces;
 	if (capacity < faceCount) {
 		const maxFaces = maxFacesPerArena();
 		capacity = Math.min(Math.max(faceCount, capacity << 1, 256), maxFaces);
 		group.opaqueCapacityFaces = capacity;
-		const byte4 = capacity << 2;
-		const a = new Uint8Array(byte4),
-			b = new Uint8Array(byte4),
-			c = new Uint8Array(byte4);
-		if (group.opaqueA) a.set(group.opaqueA);
-		if (group.opaqueB) b.set(group.opaqueB);
-		if (group.opaqueC) c.set(group.opaqueC);
-		group.opaqueA = a;
-		group.opaqueB = b;
-		group.opaqueC = c;
-		if (group.opaqueBuffers) {
-			group.opaqueBuffers.a = a;
-			group.opaqueBuffers.b = b;
-			group.opaqueBuffers.c = c;
-		} else {
-			group.opaqueBuffers = { a, b, c };
-		}
+		const bytes = capacity * 12;
+		const data = new Uint8Array(bytes);
+		if (group.opaqueData) data.set(group.opaqueData);
+		group.opaqueData = data;
 	}
-	return group.opaqueBuffers!;
 }
 
 function ensureWaterMergedCapacity(
 	group: MergedMeshGroup,
 	faceCount: number,
-): MergedBuffers {
+): void {
 	let capacity = group.waterCapacityFaces;
 	if (capacity < faceCount) {
 		const maxFaces = maxFacesPerArena();
 		capacity = Math.min(Math.max(faceCount, capacity << 1, 256), maxFaces);
 		group.waterCapacityFaces = capacity;
-		const byte4 = capacity << 2;
-		const a = new Uint8Array(byte4),
-			b = new Uint8Array(byte4),
-			c = new Uint8Array(byte4);
-		if (group.waterA) a.set(group.waterA);
-		if (group.waterB) b.set(group.waterB);
-		if (group.waterC) c.set(group.waterC);
-		group.waterA = a;
-		group.waterB = b;
-		group.waterC = c;
-		if (group.waterBuffers) {
-			group.waterBuffers.a = a;
-			group.waterBuffers.b = b;
-			group.waterBuffers.c = c;
-		} else {
-			group.waterBuffers = { a, b, c };
-		}
+		const bytes = capacity * 12;
+		const data = new Uint8Array(bytes);
+		if (group.waterData) data.set(group.waterData);
+		group.waterData = data;
 	}
-	return group.waterBuffers!;
 }
 
 function ensureCutoutMergedCapacity(
 	group: MergedMeshGroup,
 	faceCount: number,
-): MergedBuffers {
+): void {
 	let capacity = group.cutoutCapacityFaces;
 	if (capacity < faceCount) {
 		const maxFaces = maxFacesPerArena();
 		capacity = Math.min(Math.max(faceCount, capacity << 1, 256), maxFaces);
 		group.cutoutCapacityFaces = capacity;
-		const byte4 = capacity << 2;
-		const a = new Uint8Array(byte4),
-			b = new Uint8Array(byte4),
-			c = new Uint8Array(byte4);
-		if (group.cutoutA) a.set(group.cutoutA);
-		if (group.cutoutB) b.set(group.cutoutB);
-		if (group.cutoutC) c.set(group.cutoutC);
-		group.cutoutA = a;
-		group.cutoutB = b;
-		group.cutoutC = c;
-		if (group.cutoutBuffers) {
-			group.cutoutBuffers.a = a;
-			group.cutoutBuffers.b = b;
-			group.cutoutBuffers.c = c;
-		} else {
-			group.cutoutBuffers = { a, b, c };
-		}
+		const bytes = capacity * 12;
+		const data = new Uint8Array(bytes);
+		if (group.cutoutData) data.set(group.cutoutData);
+		group.cutoutData = data;
 	}
-	return group.cutoutBuffers!;
 }
 
 // Engine optimization: Inlined Meshkind enum switch to reduce branching in the hot path
@@ -843,20 +775,13 @@ function getValidatedFaceCount(
 ): number {
 	if (!data) return 0;
 	const raw = data.faceCount;
-	const aLen = data.faceDataA.length;
-	if (
-		raw >= 0 &&
-		raw << 2 === aLen &&
-		aLen === data.faceDataB.length &&
-		aLen === data.faceDataC.length
-	) {
+	const byteLen = data.faceData.length;
+	if (raw >= 0 && raw * 12 === byteLen) {
 		return raw;
 	}
-	const bLen = data.faceDataB.length;
-	const cLen = data.faceDataC.length;
-	const derived = Math.min(aLen, bLen, cLen) >> 2;
+	const derived = (byteLen / 12) | 0;
 	console.warn(
-		`[MergedMeshManager] chunk #${chunkId} (lod ${lod}) ${kindName} faceCount (${raw}) inconsistent with buffer lengths (${aLen}/${bLen}/${cLen} bytes) â€” using ${derived} instead.`,
+		`[MergedMeshManager] chunk #${chunkId} (lod ${lod}) ${kindName} faceCount (${raw}) inconsistent with buffer length (${byteLen} bytes) — using ${derived} instead.`,
 	);
 	return derived;
 }
@@ -881,94 +806,57 @@ function getValidatedFaceCount(
 
 const LAYER_SHRINK_MIN_CAPACITY_FACES = 2048;
 
-function shrinkLayerTriple(
-	a: Uint8Array | null,
-	b: Uint8Array | null,
-	c: Uint8Array | null,
+function shrinkLayer(
+	data: Uint8Array | null,
 	capacityFaces: number,
 	extentFaces: number,
-): { a: Uint8Array; b: Uint8Array; c: Uint8Array; cap: number } | null {
+): { data: Uint8Array; cap: number } | null {
 	if (
-		!a ||
+		!data ||
 		capacityFaces < LAYER_SHRINK_MIN_CAPACITY_FACES ||
 		extentFaces > capacityFaces ||
-		extentFaces << 2 > capacityFaces
+		extentFaces * 4 > capacityFaces
 	) {
 		return null;
 	}
 	const newCap = Math.max(256, Math.min(extentFaces << 1, capacityFaces));
 	if (newCap >= capacityFaces) return null;
-	const byte4 = newCap << 2;
-	const copyPrefix = (src: Uint8Array | null): Uint8Array => {
-		// src.length == oldCapacity<<2 >= byte4: the live prefix always fits.
-		const n = new Uint8Array(byte4);
-		if (src) n.set(src.subarray(0, byte4));
-		return n;
-	};
-	return {
-		a: copyPrefix(a),
-		b: copyPrefix(b),
-		c: copyPrefix(c),
-		cap: newCap,
-	};
+	const bytes = newCap * 12;
+	// data.length == oldCapacity*12 >= bytes: the live prefix always fits.
+	const n = new Uint8Array(bytes);
+	n.set(data.subarray(0, bytes));
+	return { data: n, cap: newCap };
 }
 
 function maybeShrinkGroupLayers(group: MergedMeshGroup): void {
-	const op = shrinkLayerTriple(
-		group.opaqueA,
-		group.opaqueB,
-		group.opaqueC,
+	const op = shrinkLayer(
+		group.opaqueData,
 		group.opaqueCapacityFaces,
 		group.opaqueSlots.appendedFaces,
 	);
 	if (op) {
-		group.opaqueA = op.a;
-		group.opaqueB = op.b;
-		group.opaqueC = op.c;
+		group.opaqueData = op.data;
 		group.opaqueCapacityFaces = op.cap;
-		if (group.opaqueBuffers) {
-			group.opaqueBuffers.a = op.a;
-			group.opaqueBuffers.b = op.b;
-			group.opaqueBuffers.c = op.c;
-		}
 	}
 
-	const wa = shrinkLayerTriple(
-		group.waterA,
-		group.waterB,
-		group.waterC,
+	const wa = shrinkLayer(
+		group.waterData,
 		group.waterCapacityFaces,
 		group.waterSlots.appendedFaces,
 	);
 	if (wa) {
-		group.waterA = wa.a;
-		group.waterB = wa.b;
-		group.waterC = wa.c;
+		group.waterData = wa.data;
 		group.waterCapacityFaces = wa.cap;
-		if (group.waterBuffers) {
-			group.waterBuffers.a = wa.a;
-			group.waterBuffers.b = wa.b;
-			group.waterBuffers.c = wa.c;
-		}
 	}
 
-	const cu = shrinkLayerTriple(
-		group.cutoutA,
-		group.cutoutB,
-		group.cutoutC,
+	const cu = shrinkLayer(
+		group.cutoutData,
 		group.cutoutCapacityFaces,
 		group.cutoutSlots.appendedFaces,
 	);
 	if (cu) {
-		group.cutoutA = cu.a;
-		group.cutoutB = cu.b;
-		group.cutoutC = cu.c;
+		group.cutoutData = cu.data;
 		group.cutoutCapacityFaces = cu.cap;
-		if (group.cutoutBuffers) {
-			group.cutoutBuffers.a = cu.a;
-			group.cutoutBuffers.b = cu.b;
-			group.cutoutBuffers.c = cu.c;
-		}
 	}
 }
 
@@ -1096,9 +984,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		opStructChanged = true;
 		// Re-acquired slot padding must be guaranteed-zero: wipe the layer so
 		// stale bytes from the discarded layout can't resurface as quads.
-		group.opaqueA?.fill(0);
-		group.opaqueB?.fill(0);
-		group.opaqueC?.fill(0);
+		group.opaqueData?.fill(0);
 		for (let i = 0; i < memberCount; i++) {
 			members[i].slotOpaqueOffset = 0;
 			members[i].slotOpaqueFaces = 0;
@@ -1115,9 +1001,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		waSt.released.length = 0;
 		waSt.appendedFaces = 0;
 		waStructChanged = true;
-		group.waterA?.fill(0);
-		group.waterB?.fill(0);
-		group.waterC?.fill(0);
+		group.waterData?.fill(0);
 		for (let i = 0; i < memberCount; i++) {
 			members[i].slotWaterOffset = 0;
 			members[i].slotWaterFaces = 0;
@@ -1134,9 +1018,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		cuSt.released.length = 0;
 		cuSt.appendedFaces = 0;
 		cuStructChanged = true;
-		group.cutoutA?.fill(0);
-		group.cutoutB?.fill(0);
-		group.cutoutC?.fill(0);
+		group.cutoutData?.fill(0);
 		for (let i = 0; i < memberCount; i++) {
 			members[i].slotCutoutOffset = 0;
 			members[i].slotCutoutFaces = 0;
@@ -1234,13 +1116,11 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	else group.cachedOpaque = null;
 	if (opSt.released.length > 0 || opSt.appendedFaces !== prevOpAppended)
 		opStructChanged = true;
-	while (opSt.released.length > 0 && group.opaqueA) {
+	while (opSt.released.length > 0 && group.opaqueData) {
 		const r = opSt.released.pop()!;
-		const b4 = r.offset << 2;
-		const n4 = r.faces << 2;
-		group.opaqueA.fill(0, b4, b4 + n4);
-		group.opaqueB!.fill(0, b4, b4 + n4);
-		group.opaqueC!.fill(0, b4, b4 + n4);
+		const b12 = r.offset * 12;
+		const n12 = r.faces * 12;
+		group.opaqueData.fill(0, b12, b12 + n12);
 		insertSlotHole(opSt, r.offset, r.faces);
 	}
 
@@ -1249,13 +1129,11 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	else group.cachedWater = null;
 	if (waSt.released.length > 0 || waSt.appendedFaces !== prevWaAppended)
 		waStructChanged = true;
-	while (waSt.released.length > 0 && group.waterA) {
+	while (waSt.released.length > 0 && group.waterData) {
 		const r = waSt.released.pop()!;
-		const b4 = r.offset << 2;
-		const n4 = r.faces << 2;
-		group.waterA.fill(0, b4, b4 + n4);
-		group.waterB!.fill(0, b4, b4 + n4);
-		group.waterC!.fill(0, b4, b4 + n4);
+		const b12 = r.offset * 12;
+		const n12 = r.faces * 12;
+		group.waterData.fill(0, b12, b12 + n12);
 		insertSlotHole(waSt, r.offset, r.faces);
 	}
 
@@ -1264,25 +1142,24 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	else group.cachedCutout = null;
 	if (cuSt.released.length > 0 || cuSt.appendedFaces !== prevCuAppended)
 		cuStructChanged = true;
-	while (cuSt.released.length > 0 && group.cutoutA) {
+	while (cuSt.released.length > 0 && group.cutoutData) {
 		const r = cuSt.released.pop()!;
-		const b4 = r.offset << 2;
-		const n4 = r.faces << 2;
-		group.cutoutA.fill(0, b4, b4 + n4);
-		group.cutoutB!.fill(0, b4, b4 + n4);
-		group.cutoutC!.fill(0, b4, b4 + n4);
+		const b12 = r.offset * 12;
+		const n12 = r.faces * 12;
+		group.cutoutData.fill(0, b12, b12 + n12);
 		insertSlotHole(cuSt, r.offset, r.faces);
 	}
 
-	const opaqueA = group.opaqueA;
-	const opaqueB = group.opaqueB;
-	const opaqueC = group.opaqueC;
-	const waterA = group.waterA;
-	const waterB = group.waterB;
-	const waterC = group.waterC;
-	const cutoutA = group.cutoutA;
-	const cutoutB = group.cutoutB;
-	const cutoutC = group.cutoutC;
+	const opaqueData = group.opaqueData;
+	const waterData = group.waterData;
+	const cutoutData = group.cutoutData;
+
+	// PERF: one u32 view per layer, created lazily on the first member whose
+	// chunk index needs stamping and reused for every subsequent member. The
+	// old code allocated a fresh Uint32Array view per member per layer.
+	let opaqueWords: Uint32Array | null = null;
+	let waterWords: Uint32Array | null = null;
+	let cutoutWords: Uint32Array | null = null;
 
 	for (let i = 0; i < memberCount; i++) {
 		const m = members[i];
@@ -1291,24 +1168,28 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		const opaque = m.opaqueData;
 		const opaqueFaceCount = _opaqueFaceCounts[i];
 		if (opaque && opaqueFaceCount > 0 && m.slotOpaqueFaces > 0) {
-			const byteCount = opaqueFaceCount << 2;
+			const byteCount = opaqueFaceCount * 12;
 			// Slot offsets are stable, so identity alone decides the skip.
 			if (m.lastBuiltOpaque !== opaque) {
-				const byteOff = m.slotOpaqueOffset << 2;
-				copyFaceBytes(opaqueA!, opaque.faceDataA, byteCount, byteOff);
-				copyFaceBytes(opaqueB!, opaque.faceDataB, byteCount, byteOff);
-				copyFaceBytes(opaqueC!, opaque.faceDataC, byteCount, byteOff);
+				const byteOff = m.slotOpaqueOffset * 12;
+				copyFaceBytes(opaqueData!, opaque.faceData, byteCount, byteOff);
 
 				const ci = m.localIndex;
 				if (ci !== 0) {
 					// Engine optimization: 32-bit SIMD vectorization instead of byte-stride loop
 					const mask = IS_LITTLE_ENDIAN ? ci << 24 : ci;
-					const c32 = new Uint32Array(
-						opaqueC!.buffer,
-						opaqueC!.byteOffset + byteOff,
-						opaqueFaceCount,
-					);
-					for (let j = 0; j < opaqueFaceCount; j++) c32[j] |= mask;
+					if (!opaqueWords) {
+						opaqueWords = new Uint32Array(
+							opaqueData!.buffer,
+							opaqueData!.byteOffset,
+							opaqueData!.length >>> 2,
+						);
+					}
+					let w = (byteOff >> 2) + 2; // word2 = chunk-index lane
+					for (let j = 0; j < opaqueFaceCount; j++) {
+						opaqueWords[w] |= mask;
+						w += 3;
+					}
 				}
 				m.lastBuiltOpaque = opaque;
 				m.lastBuiltOpaqueOffset = byteOff;
@@ -1322,22 +1203,26 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		const water = m.waterData;
 		const waterFaceCount = _waterFaceCounts[i];
 		if (water && waterFaceCount > 0 && m.slotWaterFaces > 0) {
-			const byteCount = waterFaceCount << 2;
+			const byteCount = waterFaceCount * 12;
 			if (m.lastBuiltWater !== water) {
-				const byteOff = m.slotWaterOffset << 2;
-				copyFaceBytes(waterA!, water.faceDataA, byteCount, byteOff);
-				copyFaceBytes(waterB!, water.faceDataB, byteCount, byteOff);
-				copyFaceBytes(waterC!, water.faceDataC, byteCount, byteOff);
+				const byteOff = m.slotWaterOffset * 12;
+				copyFaceBytes(waterData!, water.faceData, byteCount, byteOff);
 
 				const ci = m.localIndex;
 				if (ci !== 0) {
 					const mask = IS_LITTLE_ENDIAN ? ci << 24 : ci;
-					const c32 = new Uint32Array(
-						waterC!.buffer,
-						waterC!.byteOffset + byteOff,
-						waterFaceCount,
-					);
-					for (let j = 0; j < waterFaceCount; j++) c32[j] |= mask;
+					if (!waterWords) {
+						waterWords = new Uint32Array(
+							waterData!.buffer,
+							waterData!.byteOffset,
+							waterData!.length >>> 2,
+						);
+					}
+					let w = (byteOff >> 2) + 2;
+					for (let j = 0; j < waterFaceCount; j++) {
+						waterWords[w] |= mask;
+						w += 3;
+					}
 				}
 				m.lastBuiltWater = water;
 				m.lastBuiltWaterOffset = byteOff;
@@ -1351,22 +1236,26 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		const cutout = m.cutoutData;
 		const cutoutFaceCount = _cutoutFaceCounts[i];
 		if (cutout && cutoutFaceCount > 0 && m.slotCutoutFaces > 0) {
-			const byteCount = cutoutFaceCount << 2;
+			const byteCount = cutoutFaceCount * 12;
 			if (m.lastBuiltCutout !== cutout) {
-				const byteOff = m.slotCutoutOffset << 2;
-				copyFaceBytes(cutoutA!, cutout.faceDataA, byteCount, byteOff);
-				copyFaceBytes(cutoutB!, cutout.faceDataB, byteCount, byteOff);
-				copyFaceBytes(cutoutC!, cutout.faceDataC, byteCount, byteOff);
+				const byteOff = m.slotCutoutOffset * 12;
+				copyFaceBytes(cutoutData!, cutout.faceData, byteCount, byteOff);
 
 				const ci = m.localIndex;
 				if (ci !== 0) {
 					const mask = IS_LITTLE_ENDIAN ? ci << 24 : ci;
-					const c32 = new Uint32Array(
-						cutoutC!.buffer,
-						cutoutC!.byteOffset + byteOff,
-						cutoutFaceCount,
-					);
-					for (let j = 0; j < cutoutFaceCount; j++) c32[j] |= mask;
+					if (!cutoutWords) {
+						cutoutWords = new Uint32Array(
+							cutoutData!.buffer,
+							cutoutData!.byteOffset,
+							cutoutData!.length >>> 2,
+						);
+					}
+					let w = (byteOff >> 2) + 2;
+					for (let j = 0; j < cutoutFaceCount; j++) {
+						cutoutWords[w] |= mask;
+						w += 3;
+					}
 				}
 				m.lastBuiltCutout = cutout;
 				m.lastBuiltCutoutOffset = byteOff;
@@ -1387,7 +1276,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	if (cuStructChanged && cuSt.appendedFaces > 0)
 		pushDirtyRange(cutoutRanges, 0, cuSt.appendedFaces);
 
-	// Release layer-array slack after spikes (see shrinkLayerTriple) BEFORE
+	// Release layer-array slack after spikes (see shrinkLayer) BEFORE
 	// re-slicing the vertex-data views, so they wrap the shrunken arrays.
 	maybeShrinkGroupLayers(group);
 
@@ -1399,51 +1288,30 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	// updatePackedChunkMesh take its dirty-range fast path instead of
 	// reallocating the GPU arena block on every flush.
 	if (opSt.appendedFaces > 0) {
-		const totalBytes = opSt.appendedFaces << 2;
+		const totalBytes = opSt.appendedFaces * 12;
 		if (!group.opaqueVertexData)
-			group.opaqueVertexData = {
-				faceDataA: new Uint8Array(0),
-				faceDataB: new Uint8Array(0),
-				faceDataC: new Uint8Array(0),
-				faceCount: 0,
-			};
+			group.opaqueVertexData = { faceData: EMPTY_U12, faceCount: 0 };
 		const vd = group.opaqueVertexData;
-		vd.faceDataA = opaqueA!.subarray(0, totalBytes);
-		vd.faceDataB = opaqueB!.subarray(0, totalBytes);
-		vd.faceDataC = opaqueC!.subarray(0, totalBytes);
+		vd.faceData = opaqueData!.subarray(0, totalBytes);
 		vd.faceCount = opSt.appendedFaces;
 		group.cachedOpaque = vd;
 	}
 	if (waSt.appendedFaces > 0) {
-		const totalBytes = waSt.appendedFaces << 2;
+		const totalBytes = waSt.appendedFaces * 12;
 		if (!group.waterVertexData)
-			group.waterVertexData = {
-				faceDataA: new Uint8Array(0),
-				faceDataB: new Uint8Array(0),
-				faceDataC: new Uint8Array(0),
-				faceCount: 0,
-			};
+			group.waterVertexData = { faceData: EMPTY_U12, faceCount: 0 };
 		const vd = group.waterVertexData;
-		vd.faceDataA = waterA!.subarray(0, totalBytes);
-		vd.faceDataB = waterB!.subarray(0, totalBytes);
-		vd.faceDataC = waterC!.subarray(0, totalBytes);
+		vd.faceData = waterData!.subarray(0, totalBytes);
 		vd.faceCount = waSt.appendedFaces;
 		group.cachedWater = vd;
 	}
 
 	if (cuSt.appendedFaces > 0) {
-		const totalBytes = cuSt.appendedFaces << 2;
+		const totalBytes = cuSt.appendedFaces * 12;
 		if (!group.cutoutVertexData)
-			group.cutoutVertexData = {
-				faceDataA: new Uint8Array(0),
-				faceDataB: new Uint8Array(0),
-				faceDataC: new Uint8Array(0),
-				faceCount: 0,
-			};
+			group.cutoutVertexData = { faceData: EMPTY_U12, faceCount: 0 };
 		const vd = group.cutoutVertexData;
-		vd.faceDataA = cutoutA!.subarray(0, totalBytes);
-		vd.faceDataB = cutoutB!.subarray(0, totalBytes);
-		vd.faceDataC = cutoutC!.subarray(0, totalBytes);
+		vd.faceData = cutoutData!.subarray(0, totalBytes);
 		vd.faceCount = cuSt.appendedFaces;
 		group.cachedCutout = vd;
 	}

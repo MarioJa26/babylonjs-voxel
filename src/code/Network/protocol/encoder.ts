@@ -20,6 +20,7 @@ import {
 	type ItemSpawnData,
 	type ItemUpdateBatchEntry,
 	MessageType,
+	type MobSpawnRequestData,
 	type MobUpdateBatchEntry,
 	type PlayerJoinData,
 	type PlayerLeaveData,
@@ -1448,6 +1449,28 @@ export function encodeMobDespawn(mobId: number): Uint8Array {
 export function decodeMobDespawn(buffer: Uint8Array): number {
 	const dec = new BinaryDecoder(buffer, 1);
 	return dec.readUint16();
+}
+
+// MobSpawnRequest (C→S): [type:1][typeId:u8][x:f32][y:f32][z:f32]
+
+export function encodeMobSpawnRequest(data: MobSpawnRequestData): Uint8Array {
+	const enc = new BinaryEncoder(1 + 1 + 4 * 3);
+	enc.writeUint8(MessageType.MobSpawnRequest);
+	enc.writeUint8(data.typeId);
+	enc.writeFloat32(data.x);
+	enc.writeFloat32(data.y);
+	enc.writeFloat32(data.z);
+	return enc.getBytes();
+}
+
+export function decodeMobSpawnRequest(buffer: Uint8Array): MobSpawnRequestData {
+	const dec = new BinaryDecoder(buffer, 1);
+	return {
+		typeId: dec.readUint8(),
+		x: dec.readFloat32(),
+		y: dec.readFloat32(),
+		z: dec.readFloat32(),
+	};
 }
 
 // ---------------------------------------------------------------------------

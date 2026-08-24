@@ -17,6 +17,8 @@ export type ItemDefinition = {
 	blockId?: number;
 	blockState?: number;
 	shape?: string;
+	/** Spawn eggs: the mobType (MobSpawnConfig key) to spawn on use. */
+	spawnMobType?: string;
 };
 export type SavedInventoryItem = {
 	itemId: number;

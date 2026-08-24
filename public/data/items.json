@@ -215,5 +215,23 @@
 		"icon": "/texture/placeholder.png",
 		"maxStack": 64,
 		"useAction": "open_crafting"
+	},
+	{
+		"id": 1037,
+		"name": "Chicken Spawn Egg",
+		"description": "Spawns a chicken where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/chickenspawnegg/chickenspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "chicken"
+	},
+	{
+		"id": 1038,
+		"name": "Sheep Spawn Egg",
+		"description": "Spawns a sheep where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/sheepspawnegg/sheepspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "sheep"
 	}
 ]

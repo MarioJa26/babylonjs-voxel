@@ -27,6 +27,7 @@ import {
 	BinaryEncoder,
 	decodeItemDrop,
 	decodeItemPickup,
+	decodeMobSpawnRequest,
 	decodePitchByte,
 	decodeYawByte,
 	encodeBlockEditBatch,
@@ -167,9 +168,14 @@ const ITEM_PICKUP_RADIUS = 2.5;
 const ITEM_PICKUP_RADIUS_SQ = ITEM_PICKUP_RADIUS * ITEM_PICKUP_RADIUS;
 const MAX_ITEM_ID = 65535;
 const MAX_ITEM_STACK = 1024;
-const MAX_ITEM_VELOCITY = 64;
-const MAX_CHUNK_BATCH = 255;
-const WORLD_BOUNDARY = 1_000_000;
+	const MAX_ITEM_VELOCITY = 64;
+	const MAX_CHUNK_BATCH = 255;
+	const WORLD_BOUNDARY = 1_000_000;
+	// Spawn-egg reach: the client raycasts up to REACH_DISTANCE (64) blocks,
+	// so the server accepts a little headroom beyond that.
+	const MAX_MOB_SPAWN_REQUEST_DIST = 72;
+	const MAX_MOB_SPAWN_REQUEST_DIST_SQ =
+		MAX_MOB_SPAWN_REQUEST_DIST * MAX_MOB_SPAWN_REQUEST_DIST;
 const MAX_CHUNK_COORD = WORLD_BOUNDARY >> 5;
 const MAX_BLOCK_ID = 255;
 const MAX_PROTOCOL_VIOLATIONS = 16;
@@ -1811,6 +1817,54 @@ export class VoxelRoom extends Room {
 
 				this.itemSim.remove(pickup.itemId);
 				this.broadcastBytes("binary", encodeItemDespawn(pickup.itemId), {});
+				break;
+			}
+
+			case MessageType.MobSpawnRequest: {
+				const request = decodeMobSpawnRequest(data);
+				const player = this.players.get(client.sessionId);
+				if (!player) return;
+
+				const validRequest =
+					Number.isFinite(request.x) &&
+					Number.isFinite(request.y) &&
+					Number.isFinite(request.z) &&
+					Math.abs(request.x) <= WORLD_BOUNDARY &&
+					Math.abs(request.y) <= WORLD_BOUNDARY &&
+					Math.abs(request.z) <= WORLD_BOUNDARY;
+				if (!validRequest) return;
+
+				const dx = request.x - player.x;
+				const dy = request.y - player.y;
+				const dz = request.z - player.z;
+				if (dx * dx + dy * dy + dz * dz > MAX_MOB_SPAWN_REQUEST_DIST_SQ) {
+					return;
+				}
+
+				// Egg mobs are cap-exempt on the server too; the sim validates
+				// the typeId and the spawn cell (loaded chunk, non-solid).
+				const mob = this.mobSim.spawnEggMob(
+					request.typeId,
+					request.x,
+					request.y,
+					request.z,
+				);
+				if (!mob) return;
+
+				// Broadcast to everyone (including the requester) so all
+				// clients render the new mob via RemoteMobManager.
+				this.broadcastBytes(
+					"binary",
+					encodeMobSpawn(
+						mob.id,
+						mob.typeId,
+						mob.x,
+						mob.y,
+						mob.z,
+						mob.yaw,
+					),
+					{},
+				);
 				break;
 			}
 

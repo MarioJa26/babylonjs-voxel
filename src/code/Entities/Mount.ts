@@ -1,5 +1,5 @@
 import { addVec3ToRef, type Mesh, type Quat, type Vec3 } from "@babylonjs/lite";
-import { Quaternion, vec3Zero, vec4 } from "@/code/Lib/Math";
+import { Quaternion, vec3Zero } from "@/code/Lib/Math";
 import type { IControls } from "../Interface/IControls";
 import type { IMountable } from "../Interface/IMountable";
 import type { IPlayerBody } from "../Player/PlayerBody";
@@ -29,6 +29,10 @@ export class Mount implements IMountable {
 	#physicsDisabled = false;
 	#scratchPos = vec3Zero();
 	#scratchRot = new Quaternion(0, 0, 0, 1);
+	// PERF: reused vehicle-rotation input — updateMountedPosition runs every
+	// frame while mounted, and vec4()/Quaternion.Identity() each allocated a
+	// fresh object per call.
+	#scratchVehicleRot = new Quaternion(0, 0, 0, 1);
 
 	/**
 	 * Predicate to check if a value is a mountable user.
@@ -162,10 +166,17 @@ export class Mount implements IMountable {
 
 		playerBody.characterController.setPosition(this.#scratchPos);
 		const rp = this.vehicle.rotationQuaternion;
-		const vehicleRotation: any = rp
-			? vec4(rp.x, rp.y, rp.z, rp.w)
-			: Quaternion.Identity();
-		vehicleRotation.multiplyToRef(this.#mountRotationOffset, this.#scratchRot);
+		if (rp) {
+			this.#scratchVehicleRot.copyFromFloats(rp.x, rp.y, rp.z, rp.w);
+		} else {
+			this.#scratchVehicleRot.copyFromFloats(0, 0, 0, 1);
+		}
+		// mountRotationOffset is the lightweight Quat shape; the math helper
+		// only reads x/y/z/w, so a structural cast keeps this alloc-free.
+		this.#scratchVehicleRot.multiplyToRef(
+			this.#mountRotationOffset as unknown as Quaternion,
+			this.#scratchRot,
+		);
 		playerBody.displayCapsule.rotationQuaternion.copyFrom(this.#scratchRot);
 	}
 

@@ -422,9 +422,7 @@ export async function initAtlas(): Promise<void> {
 const _packedInput: PackedMeshInput = {
 	name: "",
 	material: null as any,
-	faceDataA: null as any,
-	faceDataB: null as any,
-	faceDataC: null as any,
+	faceData: null as any,
 	chunkOffsets: null as any,
 	position: [0, 0, 0],
 	boundsMin: [0, 0, 0],
@@ -435,9 +433,7 @@ function buildLiteMesh(
 	group: MergedMeshGroup,
 	existingMesh: Mesh | null,
 	mergedData: {
-		faceDataA: Uint8Array;
-		faceDataB: Uint8Array;
-		faceDataC: Uint8Array;
+		faceData: Uint8Array;
 		faceCount: number;
 	},
 	material: ShaderMaterial,
@@ -452,9 +448,7 @@ function buildLiteMesh(
 
 	input.name = "";
 	input.material = material;
-	input.faceDataA = mergedData.faceDataA;
-	input.faceDataB = mergedData.faceDataB;
-	input.faceDataC = mergedData.faceDataC;
+	input.faceData = mergedData.faceData;
 	input.chunkOffsets = group.chunkOffsets;
 
 	input.position[0] = originX;
@@ -575,9 +569,7 @@ function buildBoatInput(
 ): PackedMeshInput {
 	//_packedInput.name = "";
 	_packedInput.material = material;
-	_packedInput.faceDataA = data.faceDataA;
-	_packedInput.faceDataB = data.faceDataB;
-	_packedInput.faceDataC = data.faceDataC;
+	_packedInput.faceData = data.faceData;
 	_packedInput.chunkOffsets = boatChunkOffsets;
 	// Boat chunks carry no world AABB, so they are never frustum-culled.
 

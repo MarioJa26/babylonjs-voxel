@@ -2,10 +2,14 @@ import { MeshData } from "../Chunk/DataStructures/MeshData";
 
 const _emptyU8 = new Uint8Array(0);
 
-const MESH_HEADER_BYTES = 16;
+const MESH_HEADER_BYTES = 8;
 const MESH_PAIR_HEADER_BYTES = 11;
 
-const MESH_FORMAT_VERSION = 3;
+// v3: three separate SoA face sections (faceDataA/B/C).
+// v4: single interleaved face-record section (12 bytes per face, 3 u32
+// words), matching the GPU arena layout end-to-end. Old-format blobs return
+// null from deserializeMeshPair and are silently re-meshed.
+const MESH_FORMAT_VERSION = 4;
 
 function writeU32LE(buf: Uint8Array, off: number, val: number): void {
 	const v = val >>> 0;
@@ -25,12 +29,7 @@ function readU32LE(buf: Uint8Array, off: number): number {
 }
 
 function serializedMeshLength(mesh: MeshData): number {
-	return (
-		MESH_HEADER_BYTES +
-		(mesh.faceDataA?.length ?? 0) +
-		(mesh.faceDataB?.length ?? 0) +
-		(mesh.faceDataC?.length ?? 0)
-	);
+	return MESH_HEADER_BYTES + mesh.faceData.length;
 }
 
 function writeSerializedMeshInto(
@@ -38,49 +37,25 @@ function writeSerializedMeshInto(
 	off: number,
 	mesh: MeshData,
 ): number {
-	const a = mesh.faceDataA ?? _emptyU8;
-	const b = mesh.faceDataB ?? _emptyU8;
-	const c = mesh.faceDataC ?? _emptyU8;
-
-	const aLen = a.length;
-	const bLen = b.length;
-	const cLen = c.length;
+	const data = mesh.faceData;
+	const dataLen = data.length;
 
 	writeU32LE(out, off, mesh.faceCount >>> 0);
-	writeU32LE(out, off + 4, aLen);
-	writeU32LE(out, off + 8, bLen);
-	writeU32LE(out, off + 12, cLen);
+	writeU32LE(out, off + 4, dataLen);
 
-	let dataOff = off + MESH_HEADER_BYTES;
-
-	if (aLen !== 0) {
-		out.set(a, dataOff);
-		dataOff += aLen;
+	if (dataLen !== 0) {
+		out.set(data, off + MESH_HEADER_BYTES);
 	}
 
-	if (bLen !== 0) {
-		out.set(b, dataOff);
-		dataOff += bLen;
-	}
-
-	if (cLen !== 0) {
-		out.set(c, dataOff);
-		dataOff += cLen;
-	}
-
-	return MESH_HEADER_BYTES + aLen + bLen + cLen;
+	return MESH_HEADER_BYTES + dataLen;
 }
 
 /**
  * Serializes a MeshData into a single Uint8Array for OPFS storage.
- * Format:
+ * Format (v4):
  * [faceCount: u32 LE]
- * [aLen: u32 LE]
- * [bLen: u32 LE]
- * [cLen: u32 LE]
- * [aData: aLen bytes]
- * [bData: bLen bytes]
- * [cData: cLen bytes]
+ * [dataLen: u32 LE]
+ * [faceData: interleaved face records, dataLen bytes]
  */
 export function serializeMesh(
 	mesh: MeshData | null | undefined,
@@ -101,12 +76,10 @@ export function deserializeMesh(bytes: Uint8Array): MeshData {
 		throw new Error("Invalid mesh data: too short");
 	}
 
-	const faceCount = readU32LE(bytes, 0);
-	const aLen = readU32LE(bytes, 4);
-	const bLen = readU32LE(bytes, 8);
-	const cLen = readU32LE(bytes, 12);
+	const faceCountRaw = readU32LE(bytes, 0);
+	const dataLen = readU32LE(bytes, 4);
 
-	const total = MESH_HEADER_BYTES + aLen + bLen + cLen;
+	const total = MESH_HEADER_BYTES + dataLen;
 
 	if (total > bytes.byteLength) {
 		throw new Error(
@@ -114,19 +87,16 @@ export function deserializeMesh(bytes: Uint8Array): MeshData {
 		);
 	}
 
+	// Defensive: a corrupt faceCount must never desync from the byte stream.
+	// Clamp to the record-aligned length instead of trusting the header.
+	const faceCount =
+		faceCountRaw * 12 === dataLen ? faceCountRaw : (dataLen / 12) | 0;
+
 	const mesh = new MeshData();
 
-	let off = MESH_HEADER_BYTES;
-
 	mesh.faceCount = faceCount;
-
-	mesh.faceDataA = aLen !== 0 ? bytes.subarray(off, off + aLen) : _emptyU8;
-	off += aLen;
-
-	mesh.faceDataB = bLen !== 0 ? bytes.subarray(off, off + bLen) : _emptyU8;
-	off += bLen;
-
-	mesh.faceDataC = cLen !== 0 ? bytes.subarray(off, off + cLen) : _emptyU8;
+	mesh.faceData =
+		dataLen !== 0 ? bytes.subarray(MESH_HEADER_BYTES, total) : _emptyU8;
 
 	return mesh;
 }

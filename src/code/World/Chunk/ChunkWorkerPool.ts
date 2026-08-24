@@ -146,13 +146,21 @@ function pushRecyclableBuffer(scratch: ArrayBuffer[], arr: Uint8Array): void {
 	if (buf instanceof ArrayBuffer && buf.byteLength > 0) scratch.push(buf);
 }
 
-type WorkerTaskContext = {
+// PERF: single monomorphic shape for every dispatch context. The old union
+// was instantiated as four different literal shapes ({taskType,chunk,...},
+// {taskType}, {taskType,distantTask}, ...) — several live V8 hidden classes
+// for one logical type, plus one fresh object allocation per worker dispatch.
+// Contexts are now allocated once per worker and mutated in place; all fields
+// are always assigned on every dispatch so no stale values can leak between
+// task types (readers all gate on taskType first anyway).
+type WorkerTaskContextShape = {
 	taskType: TaskType;
-	chunk?: Chunk;
-	lod?: number;
-	distantTask?: DistantTerrainTask;
-	terrainDeferLighting?: boolean;
-} | null;
+	chunk: Chunk | null;
+	lod: number;
+	distantTask: DistantTerrainTask | null;
+	terrainDeferLighting: boolean;
+};
+type WorkerTaskContext = WorkerTaskContextShape | null;
 
 /** Exhaustiveness guard for the RemoteChunkResult switch. */
 function assertNever(value: never): never {
@@ -179,6 +187,9 @@ export class ChunkWorkerPool {
 
 	private workers: ChunkWorker[] = [];
 	private workerTaskContext: WorkerTaskContext[] = [];
+	/** Persistent per-worker context objects reused across dispatches —
+	 *  never nulled; workerTaskContext points at the active one or null. */
+	private persistentTaskCtx: WorkerTaskContextShape[] = [];
 
 	// Remote server-side terrain generation (multiplayer mode)
 	private remoteChunkProvider: RemoteChunkProvider | null = null;
@@ -286,10 +297,17 @@ export class ChunkWorkerPool {
 	// this entry can be re-meshed with a light-only RelightMesh task instead of
 	// a full remesh. Deleted on dispose; stale entries simply fall back to full
 	// remesh.
-	private blockRevisionAtMesh = new Map<
-		bigint,
-		{ blockRevision: number; lod: number }
-	>();
+	// PERF: stored as one packed number (same layout as packInflightKey:
+	// blockRevision * 16 + lod) — recording a baseline used to allocate a
+	// fresh { blockRevision, lod } record per mesh result received.
+	private blockRevisionAtMesh = new Map<bigint, number>();
+
+	private static packBlockRevisionBaseline(
+		blockRevision: number,
+		lod: number,
+	): number {
+		return blockRevision * 16 + (lod & 0xf);
+	}
 
 	// ---------------------------------------------------------------------------
 	// Idle-worker tracking
@@ -560,9 +578,28 @@ export class ChunkWorkerPool {
 
 	private setWorkerTaskContext(
 		workerIndex: number,
-		context: WorkerTaskContext,
+		taskType: TaskType,
+		chunk: Chunk | null = null,
+		lod = -1,
+		distantTask: DistantTerrainTask | null = null,
+		terrainDeferLighting = true,
 	): void {
-		this.workerTaskContext[workerIndex] = context;
+		let ctx = this.persistentTaskCtx[workerIndex];
+		if (ctx === undefined) {
+			ctx = { taskType, chunk, lod, distantTask, terrainDeferLighting };
+			this.persistentTaskCtx[workerIndex] = ctx;
+		} else {
+			ctx.taskType = taskType;
+			ctx.chunk = chunk;
+			ctx.lod = lod;
+			ctx.distantTask = distantTask;
+			ctx.terrainDeferLighting = terrainDeferLighting;
+		}
+		this.workerTaskContext[workerIndex] = ctx;
+	}
+
+	private clearWorkerTaskContext(workerIndex: number): void {
+		this.workerTaskContext[workerIndex] = null;
 	}
 
 	// -------------------------------------------------------------------------
@@ -590,10 +627,10 @@ export class ChunkWorkerPool {
 	}
 
 	private recordBlockRevisionAtMesh(chunk: Chunk, lod: number): void {
-		this.blockRevisionAtMesh.set(chunk.id, {
-			blockRevision: chunk.blockRevision,
-			lod,
-		});
+		this.blockRevisionAtMesh.set(
+			chunk.id,
+			ChunkWorkerPool.packBlockRevisionBaseline(chunk.blockRevision, lod),
+		);
 	}
 
 	// -------------------------------------------------------------------------
@@ -864,7 +901,7 @@ export class ChunkWorkerPool {
 
 			this.workers[workerIndex] = replacement;
 			this.workerRestartAtMs[workerIndex] = performance.now();
-			this.setWorkerTaskContext(workerIndex, null);
+			this.clearWorkerTaskContext(workerIndex);
 
 			// Flush pending unregisters before re-registering, so a disposed
 			// chunk that got re-created is not dropped by the replacement.
@@ -1306,9 +1343,9 @@ export class ChunkWorkerPool {
 		const baseline = this.blockRevisionAtMesh.get(chunk.id);
 		const lod = chunk.lodLevel ?? 0;
 		if (
-			!baseline ||
-			baseline.lod !== lod ||
-			baseline.blockRevision !== chunk.blockRevision
+			baseline === undefined ||
+			baseline !==
+				ChunkWorkerPool.packBlockRevisionBaseline(chunk.blockRevision, lod)
 		) {
 			return false;
 		}
@@ -2007,19 +2044,13 @@ export class ChunkWorkerPool {
 		const c = data.cutout;
 
 		if (o) {
-			pushRecyclableBuffer(scratch, o.faceDataA);
-			pushRecyclableBuffer(scratch, o.faceDataB);
-			pushRecyclableBuffer(scratch, o.faceDataC);
+			pushRecyclableBuffer(scratch, o.faceData);
 		}
 		if (w) {
-			pushRecyclableBuffer(scratch, w.faceDataA);
-			pushRecyclableBuffer(scratch, w.faceDataB);
-			pushRecyclableBuffer(scratch, w.faceDataC);
+			pushRecyclableBuffer(scratch, w.faceData);
 		}
 		if (c) {
-			pushRecyclableBuffer(scratch, c.faceDataA);
-			pushRecyclableBuffer(scratch, c.faceDataB);
-			pushRecyclableBuffer(scratch, c.faceDataC);
+			pushRecyclableBuffer(scratch, c.faceData);
 		}
 
 		if (scratch.length === 0) return;
@@ -2332,7 +2363,7 @@ export class ChunkWorkerPool {
 			if (failed) return;
 			if (this.workers[workerIndex] !== getWorker()) return;
 
-			this.setWorkerTaskContext(workerIndex, null);
+			this.clearWorkerTaskContext(workerIndex);
 			this._markWorkerIdle(workerIndex);
 			this.scheduleProcessQueuePump();
 		};
@@ -2437,7 +2468,7 @@ export class ChunkWorkerPool {
 					lightSeedLength > 0;
 
 				if (isStale) {
-					this.setWorkerTaskContext(workerIndex, null);
+					this.clearWorkerTaskContext(workerIndex);
 					this._markWorkerIdle(workerIndex);
 					if (needsLightRefinement) {
 						scheduleChunkAndNeighborsRemesh(
@@ -2519,7 +2550,7 @@ export class ChunkWorkerPool {
 			if (failed) return;
 			if (this.workers[workerIndex] !== getWorker()) return;
 
-			this.setWorkerTaskContext(workerIndex, null);
+			this.clearWorkerTaskContext(workerIndex);
 			this._markWorkerIdle(workerIndex);
 			this.scheduleProcessQueuePump();
 		};
@@ -3194,11 +3225,14 @@ export class ChunkWorkerPool {
 
 		this.terrainTaskQueue.delete(chunk);
 		this.terrainTaskDeferLighting.delete(chunk.id);
-		this.setWorkerTaskContext(workerIndex, {
-			taskType: TaskType.Terrain,
+		this.setWorkerTaskContext(
+			workerIndex,
+			TaskType.Terrain,
 			chunk,
-			terrainDeferLighting: deferLighting,
-		});
+			-1,
+			null,
+			deferLighting,
+		);
 		chunk.isTerrainScheduled = true;
 		worker.postTerrainGeneration(chunk, deferLighting);
 		return true;
@@ -3807,9 +3841,12 @@ export class ChunkWorkerPool {
 				const baseline = this.blockRevisionAtMesh.get(taskChunk.id);
 
 				if (
-					!baseline ||
-					baseline.lod !== lod ||
-					baseline.blockRevision !== taskChunk.blockRevision
+					baseline === undefined ||
+					baseline !==
+						ChunkWorkerPool.packBlockRevisionBaseline(
+							taskChunk.blockRevision,
+							lod,
+						)
 				) {
 					this.scheduleRemesh(taskChunk, lod === 0, false);
 					continue;
@@ -3888,11 +3925,12 @@ export class ChunkWorkerPool {
 
 				const lod = taskChunk!.lodLevel ?? 0;
 
-				this.setWorkerTaskContext(workerIndex, {
+				this.setWorkerTaskContext(
+					workerIndex,
 					taskType,
-					chunk: taskChunk,
+					taskChunk ?? null,
 					lod,
-				});
+				);
 
 				this.pendingRemeshMap.delete(taskChunk!);
 				this.taskQueuePriority.delete(taskChunk!);
@@ -3906,11 +3944,12 @@ export class ChunkWorkerPool {
 			} else if (taskType === TaskType.LodPrecompute) {
 				const lod = precomputeLod!;
 
-				this.setWorkerTaskContext(workerIndex, {
+				this.setWorkerTaskContext(
+					workerIndex,
 					taskType,
-					chunk: taskChunk,
+					taskChunk ?? null,
 					lod,
-				});
+				);
 
 				this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.numericId, lod));
 
@@ -3924,11 +3963,12 @@ export class ChunkWorkerPool {
 
 				const lod = taskChunk!.lodLevel ?? 0;
 
-				this.setWorkerTaskContext(workerIndex, {
+				this.setWorkerTaskContext(
+					workerIndex,
 					taskType,
-					chunk: taskChunk,
+					taskChunk ?? null,
 					lod,
-				});
+				);
 
 				this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.numericId, lod));
 
@@ -3938,7 +3978,7 @@ export class ChunkWorkerPool {
 				this.debugStats.totalRelightDispatches++;
 				dispatchedThisTick++;
 			} else if (taskType === TaskType.FarTile && farTask) {
-				this.setWorkerTaskContext(workerIndex, { taskType });
+				this.setWorkerTaskContext(workerIndex, taskType);
 				this.farTilesInFlightCount++;
 
 				worker.postGenerateFarTile(
@@ -3951,7 +3991,13 @@ export class ChunkWorkerPool {
 				this.recordWorkerDispatch(workerIndex);
 				dispatchedThisTick++;
 			} else {
-				this.setWorkerTaskContext(workerIndex, { taskType, distantTask });
+				this.setWorkerTaskContext(
+					workerIndex,
+					taskType,
+					null,
+					-1,
+					distantTask ?? null,
+				);
 				this.distantTerrainInFlight = true;
 
 				worker.postGenerateDistantTerrain(

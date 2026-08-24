@@ -471,9 +471,7 @@ export class MeshBuildSession implements MeshContext {
  */
 export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData {
 	return {
-		faceDataA: new ResizableTypedArray(Uint8Array),
-		faceDataB: new ResizableTypedArray(Uint8Array),
-		faceDataC: new ResizableTypedArray(Uint8Array),
+		faceData: new ResizableTypedArray(Uint8Array),
 		faceCount: 0,
 	};
 }
@@ -484,9 +482,7 @@ export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData {
  */
 export function toTransferableMeshData(data: WorkerInternalMeshData): MeshData {
 	const out = new MeshData();
-	out.faceDataA = data.faceDataA.finalArray;
-	out.faceDataB = data.faceDataB.finalArray;
-	out.faceDataC = data.faceDataC.finalArray;
+	out.faceData = data.faceData.finalArray;
 	out.faceCount = data.faceCount;
 	return out;
 }

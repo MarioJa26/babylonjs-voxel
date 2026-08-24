@@ -661,17 +661,11 @@ const _waterOut = createEmptyWorkerInternalMeshData();
 const _cutoutOut = createEmptyWorkerInternalMeshData();
 
 function resetMeshOut(): void {
-	_opaqueOut.faceDataA.reset();
-	_opaqueOut.faceDataB.reset();
-	_opaqueOut.faceDataC.reset();
+	_opaqueOut.faceData.reset();
 	_opaqueOut.faceCount = 0;
-	_waterOut.faceDataA.reset();
-	_waterOut.faceDataB.reset();
-	_waterOut.faceDataC.reset();
+	_waterOut.faceData.reset();
 	_waterOut.faceCount = 0;
-	_cutoutOut.faceDataA.reset();
-	_cutoutOut.faceDataB.reset();
-	_cutoutOut.faceDataC.reset();
+	_cutoutOut.faceData.reset();
 	_cutoutOut.faceCount = 0;
 }
 
@@ -748,15 +742,20 @@ function fillMeshBuffer(
 	return rta.finalArray;
 }
 
+// PERF: MeshData shells are reused across responses. self.postMessage clones
+// the payload synchronously (same reasoning as _meshResponseScratch) and the
+// transfer list detaches only the backing ArrayBuffers, so every field of the
+// shell can be overwritten on the next use without aliasing. Pool size
+// naturally stabilizes at ≤3 (one per output bucket).
+const _meshShellPool: MeshData[] = [];
+
 function takeTransferableOutput(data: WorkerInternalMeshData): MeshData | null {
 	if (data.faceCount <= 0) return null;
 
-	const bytes = data.faceCount << 2;
-	const out = new MeshData();
+	const bytes = data.faceCount * 12;
+	const out = _meshShellPool.pop() ?? new MeshData();
 	out.faceCount = data.faceCount;
-	out.faceDataA = fillMeshBuffer(data.faceDataA, bytes);
-	out.faceDataB = fillMeshBuffer(data.faceDataB, bytes);
-	out.faceDataC = fillMeshBuffer(data.faceDataC, bytes);
+	out.faceData = fillMeshBuffer(data.faceData, bytes);
 	return out;
 }
 
@@ -799,30 +798,24 @@ function postMeshResponse(
 	localTransferables.length = 0;
 
 	if (opaque) {
-		localTransferables.push(
-			opaque.faceDataA.buffer,
-			opaque.faceDataB.buffer,
-			opaque.faceDataC.buffer,
-		);
+		localTransferables.push(opaque.faceData.buffer);
 	}
 
 	if (water) {
-		localTransferables.push(
-			water.faceDataA.buffer,
-			water.faceDataB.buffer,
-			water.faceDataC.buffer,
-		);
+		localTransferables.push(water.faceData.buffer);
 	}
 
 	if (cutout) {
-		localTransferables.push(
-			cutout.faceDataA.buffer,
-			cutout.faceDataB.buffer,
-			cutout.faceDataC.buffer,
-		);
+		localTransferables.push(cutout.faceData.buffer);
 	}
 
 	self.postMessage(response, localTransferables);
+
+	// Clones completed synchronously above — reclaim the shells for the next
+	// response instead of allocating fresh MeshData objects per bucket.
+	if (opaque) _meshShellPool.push(opaque);
+	if (water) _meshShellPool.push(water);
+	if (cutout) _meshShellPool.push(cutout);
 }
 
 self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {

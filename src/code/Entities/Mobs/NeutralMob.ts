@@ -70,6 +70,9 @@ export abstract class NeutralMob {
 	abstract readonly mobType: string;
 	abstract readonly CHUNK_ENTITY_TYPE: string;
 
+	/** Spawn eggs set this to false before registry insertion (cap-exempt). */
+	countsTowardMobCap = true;
+
 	#hp: number;
 	#maxHp: number;
 	#bodyMesh!: Mesh;
@@ -584,10 +587,14 @@ export abstract class NeutralMob {
 		this.#collider.moveAxis(pos, this.#velocity, axis, delta, STEP_SIZE);
 	}
 
+	// PERF: bound once per mob. voxelStepUp's onStep used to allocate a fresh
+	// closure per axis attempt — up to 2 per physics substep while walking.
+	readonly #onStepUp = (): void => {
+		this.#velocity.y = 0;
+	};
+
 	#attemptStepUp(pos: Vec3, axis: Axis.X | Axis.Z, delta: number): boolean {
-		return voxelStepUp(this.#collider, pos, axis, delta, 1.0, () => {
-			this.#velocity.y = 0;
-		});
+		return voxelStepUp(this.#collider, pos, axis, delta, 1.0, this.#onStepUp);
 	}
 
 	#isGrounded(pos: Vec3): boolean {

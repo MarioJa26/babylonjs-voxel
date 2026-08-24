@@ -652,17 +652,21 @@ export class PlayerLoopController {
 		}
 
 		if (localStats) {
-			PlayerHud.updateDebugInfo(
-				"Mobs",
-				`${localStats.total}/${localStats.cap}`,
-				"mobs",
-			);
+			// Cap accounting covers only naturally spawned mobs; spawn-egg
+			// mobs are cap-exempt and shown as a "+N" suffix when present.
+			const eggCount = localStats.total - localStats.naturalTotal;
+			const mobLabel =
+				eggCount > 0
+					? `${localStats.naturalTotal}/${localStats.cap} (+${eggCount})`
+					: `${localStats.naturalTotal}/${localStats.cap}`;
+
+			PlayerHud.updateDebugInfo("Mobs", mobLabel, "mobs");
 
 			let breakdown = "";
 			for (let i = 0; i < localStats.perType.length; i++) {
 				const t = localStats.perType[i];
 				if (i > 0) breakdown += "  ";
-				breakdown += `${t.type}:${t.count}/${t.max}`;
+				breakdown += `${t.type}:${t.natural}/${t.max}`;
 			}
 
 			PlayerHud.updateDebugInfo("Mob Types", breakdown || "-", "mobs");

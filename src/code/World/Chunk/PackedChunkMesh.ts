@@ -130,11 +130,9 @@ interface PackedMeshState {
 	/** Retained mesh-visible bounds; reused across updates (no realloc). */
 	boundMin?: [number, number, number];
 	boundMax?: [number, number, number];
-	/** Cached u32 views over the caller's input.faceDataA/B/C — rebuilt only
-	 *  when the underlying buffer identity or range changes. */
-	faceWordsA?: Uint32Array;
-	faceWordsB?: Uint32Array;
-	faceWordsC?: Uint32Array;
+	/** Cached u32 view over the caller's input.faceData — rebuilt only when
+	 *  the underlying buffer identity or range changes. */
+	faceWords?: Uint32Array;
 	/** Scratch flag used by compactArena to mark meshes whose faceBase moved
 	 *  (their instance-record faceBase lanes need rewriting). */
 	_compactMoved?: boolean;
@@ -1054,9 +1052,9 @@ export function registerPackedMaterial(material: ShaderMaterial): void {
 export interface PackedMeshInput {
 	name: string;
 	material: ShaderMaterial;
-	faceDataA: Uint8Array;
-	faceDataB: Uint8Array;
-	faceDataC: Uint8Array;
+	/** Interleaved face records (12 bytes = 3 u32 words per face), already in
+	 *  the arena's native layout — packing is a plain contiguous copy. */
+	faceData: Uint8Array;
 	chunkOffsets: Float32Array; // length 192, stride 3
 	position: [number, number, number];
 	boundsMin: [number, number, number];
@@ -1064,65 +1062,33 @@ export interface PackedMeshInput {
 }
 
 // `input` is the caller's (reused, module-level scratch) `PackedMeshInput`,
-// so its typed arrays are only ever replaced when the merged-group buffers
-// grow — the views below stay valid across calls and are rebuilt only when
+// so its typed array is only ever replaced when the merged-group buffers
+// grow — the view below stays valid across calls and is rebuilt only when
 // the buffer identity or range changes.
-// Reinterpreting faceDataA/B/C (each a byte array with a 4-multiple length
-// and offset) as a Uint32Array over the SAME buffer is safe: the
-// little-endian byte layout `a[i*4]` (LSB) .. `a[i*4+3]` (MSB) is
-// bit-for-bit identical to reading those four bytes as one u32 on every
-// realistic deployment target (WebGPU browsers are all little-endian).
-// This turns 12 shifts+ORs per face into 3 direct word reads, and replaces
-// four independent `i * 4` index computations per array with one running
-// accumulator.
-// Rebuild the cached u32 views over `input`'s face data.
+// Reinterpreting faceData (a byte array with a 12-multiple length and
+// offset) as a Uint32Array over the SAME buffer is safe: WebGPU browsers
+// are all little-endian, so each 4-byte lane reads back exactly the u32 the
+// worker packed.
+// Rebuild the cached u32 view over `input`'s face data.
 function ensureFaceWordViews(
 	state: PackedMeshState,
 	input: PackedMeshInput,
 ): void {
-	const faceCount = input.faceDataA.length >>> 2;
+	const words = input.faceData.length >>> 2;
 
-	let aWords = state.faceWordsA;
+	let faceWords = state.faceWords;
 	if (
-		!aWords ||
-		aWords.buffer !== input.faceDataA.buffer ||
-		aWords.byteOffset !== input.faceDataA.byteOffset ||
-		aWords.length !== faceCount
+		!faceWords ||
+		faceWords.buffer !== input.faceData.buffer ||
+		faceWords.byteOffset !== input.faceData.byteOffset ||
+		faceWords.length !== words
 	) {
-		aWords = new Uint32Array(
-			input.faceDataA.buffer,
-			input.faceDataA.byteOffset,
-			faceCount,
+		faceWords = new Uint32Array(
+			input.faceData.buffer,
+			input.faceData.byteOffset,
+			words,
 		);
-		state.faceWordsA = aWords;
-	}
-	let bWords = state.faceWordsB;
-	if (
-		!bWords ||
-		bWords.buffer !== input.faceDataB.buffer ||
-		bWords.byteOffset !== input.faceDataB.byteOffset ||
-		bWords.length !== faceCount
-	) {
-		bWords = new Uint32Array(
-			input.faceDataB.buffer,
-			input.faceDataB.byteOffset,
-			faceCount,
-		);
-		state.faceWordsB = bWords;
-	}
-	let cWords = state.faceWordsC;
-	if (
-		!cWords ||
-		cWords.buffer !== input.faceDataC.buffer ||
-		cWords.byteOffset !== input.faceDataC.byteOffset ||
-		cWords.length !== faceCount
-	) {
-		cWords = new Uint32Array(
-			input.faceDataC.buffer,
-			input.faceDataC.byteOffset,
-			faceCount,
-		);
-		state.faceWordsC = cWords;
+		state.faceWords = faceWords;
 	}
 }
 
@@ -1134,14 +1100,10 @@ function ensureFaceWordViews(
 // into word2 byte 3 by the merged-group assembly, so the words are copied
 // verbatim.
 //
-// PERF: the inner copy is 4-way unrolled. This is the hottest per-element
-// kernel in the file (runs over every dirty face on every remesh) — with the
-// plain 1-at-a-time loop, the increment/compare/branch of the loop itself is
-// a significant fraction of the 6 memory ops (3 loads + 3 stores) each
-// iteration does. Unrolling amortizes that control overhead across 4 faces
-// and gives the CPU more independent load/store pairs to overlap. As with
-// any hand-unroll, verify the win against a trace rather than assuming it —
-// gains here are JIT/engine dependent.
+// PERF: the worker now emits faces already interleaved (3 consecutive words
+// per record), so source and destination share one contiguous layout and
+// each range packs as a single memcpy (TypedArray.set) instead of the old
+// 4-way-unrolled three-stream gather.
 function packFaceRanges(
 	state: PackedMeshState,
 	input: PackedMeshInput,
@@ -1151,7 +1113,7 @@ function packFaceRanges(
 
 	ensureFaceWordViews(state, input);
 
-	const faceCount = input.faceDataA.length >>> 2;
+	const faceCount = input.faceData.length / 12;
 
 	if (faceCount <= 0) return;
 
@@ -1159,9 +1121,7 @@ function packFaceRanges(
 	if (!arena) return;
 
 	const faceCpu = arena.cpu;
-	const aWords = state.faceWordsA!;
-	const bWords = state.faceWordsB!;
-	const cWords = state.faceWordsC!;
+	const words = state.faceWords!;
 	const baseWord = state.faceBase * FACE_WORDS;
 
 	for (let r = 0, len = ranges.length; r < len; r++) {
@@ -1183,86 +1143,28 @@ function packFaceRanges(
 			count = faceCount - start;
 		}
 
-		const end = start + count;
-		const unrolledEnd = start + (count - (count % 4));
-
-		let dst = baseWord + start * FACE_WORDS;
-		let i = start;
-
-		for (; i < unrolledEnd; i += 4) {
-			faceCpu[dst] = aWords[i];
-			faceCpu[dst + 1] = bWords[i];
-			faceCpu[dst + 2] = cWords[i];
-
-			faceCpu[dst + 3] = aWords[i + 1];
-			faceCpu[dst + 4] = bWords[i + 1];
-			faceCpu[dst + 5] = cWords[i + 1];
-
-			faceCpu[dst + 6] = aWords[i + 2];
-			faceCpu[dst + 7] = bWords[i + 2];
-			faceCpu[dst + 8] = cWords[i + 2];
-
-			faceCpu[dst + 9] = aWords[i + 3];
-			faceCpu[dst + 10] = bWords[i + 3];
-			faceCpu[dst + 11] = cWords[i + 3];
-
-			dst += 12;
-		}
-
-		for (; i < end; i++) {
-			faceCpu[dst] = aWords[i];
-			faceCpu[dst + 1] = bWords[i];
-			faceCpu[dst + 2] = cWords[i];
-			dst += FACE_WORDS;
-		}
+		faceCpu.set(
+			words.subarray(start * FACE_WORDS, (start + count) * FACE_WORDS),
+			baseWord + start * FACE_WORDS,
+		);
 	}
 }
 
-// Same 4-way unroll as packFaceRanges above, for the full-mesh pack path
-// (initial build / full realloc). See that function's PERF comment.
+// Full-mesh pack path (initial build / full realloc): one contiguous memcpy.
 function packFaces(state: PackedMeshState, input: PackedMeshInput): void {
 	ensureFaceWordViews(state, input);
 
 	const arena = faceArenas[state.faceArena];
 	if (!arena) return;
 
-	const faceCpu = arena.cpu;
-	const aWords = state.faceWordsA!;
-	const bWords = state.faceWordsB!;
-	const cWords = state.faceWordsC!;
-	const faceCount = aWords.length;
+	const faceCount = input.faceData.length / 12;
 
-	const unrolledEnd = faceCount - (faceCount % 4);
+	if (faceCount <= 0) return;
 
-	let o = state.faceBase * FACE_WORDS;
-	let i = 0;
-
-	for (; i < unrolledEnd; i += 4) {
-		faceCpu[o] = aWords[i];
-		faceCpu[o + 1] = bWords[i];
-		faceCpu[o + 2] = cWords[i];
-
-		faceCpu[o + 3] = aWords[i + 1];
-		faceCpu[o + 4] = bWords[i + 1];
-		faceCpu[o + 5] = cWords[i + 1];
-
-		faceCpu[o + 6] = aWords[i + 2];
-		faceCpu[o + 7] = bWords[i + 2];
-		faceCpu[o + 8] = cWords[i + 2];
-
-		faceCpu[o + 9] = aWords[i + 3];
-		faceCpu[o + 10] = bWords[i + 3];
-		faceCpu[o + 11] = cWords[i + 3];
-
-		o += 12;
-	}
-
-	for (; i < faceCount; i++) {
-		faceCpu[o] = aWords[i];
-		faceCpu[o + 1] = bWords[i];
-		faceCpu[o + 2] = cWords[i];
-		o += 3;
-	}
+	faceArenas[state.faceArena]!.cpu.set(
+		state.faceWords!.subarray(0, faceCount * FACE_WORDS),
+		state.faceBase * FACE_WORDS,
+	);
 }
 
 function packOffsets(state: PackedMeshState, input: PackedMeshInput): void {
@@ -1481,7 +1383,7 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 	const engine = engineRef!;
 	const scene = sceneRef!;
 
-	const faceCount = input.faceDataA.length >>> 2;
+	const faceCount = input.faceData.length / 12;
 
 	// Refuse before doing any work (arena/offset allocation, mesh creation):
 	// a corrupt face count would otherwise reach buildInstanceMatrices and
@@ -1590,7 +1492,7 @@ export function updatePackedChunkMesh(
 		return createPackedChunkMesh(input) ?? mesh;
 	}
 
-	const faceCount = input.faceDataA.length >>> 2;
+	const faceCount = input.faceData.length / 12;
 
 	if (faceCount === state.faceCount) {
 		applyMeshMeta(mesh, state, input);

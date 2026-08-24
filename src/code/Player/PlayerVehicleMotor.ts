@@ -867,6 +867,16 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		}
 	}
 
+	// PERF: bound once per motor. The onStep callback used to be a fresh
+	// closure per axis attempt — up to 2 per physics substep while grounded
+	// and moving. #stepUpVel carries the active velocity object (boat-local or
+	// world) into the single reusable callback.
+	#stepUpVel: Vec3 | null = null;
+	readonly #onStepUp = (_steppedPos: Vec3): void => {
+		if (this.#stepUpVel !== null) this.#stepUpVel.y = 0;
+		this.lastStepUpTime = this.now;
+	};
+
 	#attemptStepUp(
 		pos: Vec3,
 		vel: Vec3,
@@ -874,10 +884,15 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		axis: Axis.X | Axis.Z,
 		delta: number,
 	): boolean {
-		return voxelStepUp(collider, pos, axis, delta, this.stepUpHeight, () => {
-			vel.y = 0;
-			this.lastStepUpTime = this.now;
-		});
+		this.#stepUpVel = vel;
+		return voxelStepUp(
+			collider,
+			pos,
+			axis,
+			delta,
+			this.stepUpHeight,
+			this.#onStepUp,
+		);
 	}
 
 	#moveAxis(

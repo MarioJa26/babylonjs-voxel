@@ -103,11 +103,13 @@ export class SpawnCoordinator {
 
 	#trySpawn(playerPos: Vec3): void {
 		const totalCap = this.#getTotalCap();
-		if (this.#registry.getTotalCount() >= totalCap) return;
+		// Only naturally spawned mobs count toward the cap; spawn-egg mobs
+		// (countsTowardMobCap === false) never block natural spawning.
+		if (this.#registry.getNaturalTotal() >= totalCap) return;
 
 		const attempts = 3;
 		for (let i = 0; i < attempts; i++) {
-			if (this.#registry.getTotalCount() >= totalCap) return;
+			if (this.#registry.getNaturalTotal() >= totalCap) return;
 
 			const config = this.#registry.pickSpawnType();
 			if (!config) return;

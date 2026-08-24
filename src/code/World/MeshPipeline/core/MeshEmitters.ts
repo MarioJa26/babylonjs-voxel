@@ -12,7 +12,7 @@ export const MeshEmitters = {
 	buildVoxelMesh,
 };
 
-const FACE_DATA_WORDS_PER_QUAD = 4;
+const FACE_DATA_BYTES_PER_QUAD = 12;
 const CUSTOM_SHAPE_QUAD_HEADROOM_PER_BLOCK = 16;
 const GREEDY_FACE_HEADROOM_FACTOR = 3;
 
@@ -31,25 +31,15 @@ export function reserveMeshCapacity(
 	out: WorkerInternalMeshData,
 	maxQuads: number,
 ): void {
-	const requiredEntries = maxQuads * FACE_DATA_WORDS_PER_QUAD;
+	const requiredEntries = maxQuads * FACE_DATA_BYTES_PER_QUAD;
 
-	const faceDataA = out.faceDataA;
-	const faceDataB = out.faceDataB;
-	const faceDataC = out.faceDataC;
-
-	// Avoid calling ensureCapacity repeatedly once the reused buffers are large
-	// enough. This keeps the common rebuild path to a few direct length checks.
-	if (
-		faceDataA.backingArray.length >= requiredEntries &&
-		faceDataB.backingArray.length >= requiredEntries &&
-		faceDataC.backingArray.length >= requiredEntries
-	) {
+	// Avoid calling ensureCapacity repeatedly once the reused buffer is large
+	// enough. This keeps the common rebuild path to a single length check.
+	if (out.faceData.backingArray.length >= requiredEntries) {
 		return;
 	}
 
-	faceDataA.ensureCapacity(requiredEntries);
-	faceDataB.ensureCapacity(requiredEntries);
-	faceDataC.ensureCapacity(requiredEntries);
+	out.faceData.ensureCapacity(requiredEntries);
 }
 
 /**

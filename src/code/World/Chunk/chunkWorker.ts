@@ -165,6 +165,11 @@ export class ChunkWorker {
 		chunkY: 0,
 		chunkZ: 0,
 		neighborMask: 0,
+		// PERF: declared here so postFullRemesh never adds these after
+		// construction — late-added fields force a V8 hidden-class (map)
+		// transition on every worker instance's first remesh dispatch.
+		borderSkirtSides: 0,
+		borderSkirtNearInset: 0,
 		uniformBlockId: undefined,
 	};
 
@@ -180,6 +185,9 @@ export class ChunkWorker {
 		chunkY: 0,
 		chunkZ: 0,
 		neighborMask: 0,
+		// Same hidden-class rationale as #voxelMeshMsg above.
+		borderSkirtSides: 0,
+		borderSkirtNearInset: 0,
 	};
 
 	// PERF: prebuilt, reused registration/update descriptors. Fields are

@@ -27,6 +27,7 @@ export const MessageType = {
 	ItemDrop: 0x05, // C→S: a player dropped an item into the world
 	ItemPickup: 0x06, // C→S: a player picked up a server item (by instance id)
 	SkinUpload: 0x07, // C→S: this client's avatar skin as PNG bytes
+	MobSpawnRequest: 0x2a, // C→S: a player used a spawn egg (cap-exempt mob)
 
 	// Server → Client
 	PlayerStateBatch: 0x10,
@@ -200,6 +201,15 @@ export interface MobSpawnData {
 export interface MobDespawnData {
 	/** Server-assigned mob id (uint16). */
 	mobId: number;
+}
+
+/** C→S: a player used a spawn egg — the server spawns a cap-exempt mob. */
+export interface MobSpawnRequestData {
+	/** MobTypeId (Chicken=1, Sheep=2). */
+	typeId: number;
+	x: number;
+	y: number;
+	z: number;
 }
 
 /**

@@ -46,6 +46,11 @@ export interface ServerMob {
 	path: ServerWaypoint[];
 	pathIndex: number;
 	pathTimer: number;
+	/**
+	 * Spawn-egg mobs are cap-exempt: they never occupy a cap slot, so the
+	 * mob cap (which limits natural spawning only) can never block them.
+	 */
+	egg: boolean;
 }
 
 interface ServerWaypoint {
@@ -183,6 +188,10 @@ export class ServerMobSimulation {
 	private readonly pendingColumnLoads = new Set<number>();
 
 	private readonly typeCounts = new Map<number, number>();
+	// Cap accounting tracks only naturally spawned mobs; spawn-egg mobs
+	// (egg === true) never occupy cap slots.
+	private readonly naturalTypeCounts = new Map<number, number>();
+	private naturalTotal = 0;
 
 	constructor(private readonly storage: ServerWorldStorage) {
 		this.sampler = new TickBlockSampler(storage);
@@ -205,10 +214,20 @@ export class ServerMobSimulation {
 	clear(): void {
 		this.mobs.clear();
 		this.typeCounts.clear();
+		this.naturalTypeCounts.clear();
+		this.naturalTotal = 0;
 	}
 	private addActiveMob(mob: ServerMob): void {
 		this.mobs.set(mob.id, mob);
 		this.typeCounts.set(mob.typeId, (this.typeCounts.get(mob.typeId) ?? 0) + 1);
+
+		if (!mob.egg) {
+			this.naturalTotal++;
+			this.naturalTypeCounts.set(
+				mob.typeId,
+				(this.naturalTypeCounts.get(mob.typeId) ?? 0) + 1,
+			);
+		}
 	}
 	private removeActiveMob(mob: ServerMob): boolean {
 		if (!this.mobs.delete(mob.id)) return false;
@@ -218,6 +237,18 @@ export class ServerMobSimulation {
 			this.typeCounts.set(mob.typeId, next);
 		} else {
 			this.typeCounts.delete(mob.typeId);
+		}
+
+		if (!mob.egg) {
+			this.naturalTotal = Math.max(0, this.naturalTotal - 1);
+
+			const naturalNext =
+				(this.naturalTypeCounts.get(mob.typeId) ?? 1) - 1;
+			if (naturalNext > 0) {
+				this.naturalTypeCounts.set(mob.typeId, naturalNext);
+			} else {
+				this.naturalTypeCounts.delete(mob.typeId);
+			}
 		}
 
 		return true;
@@ -655,13 +686,15 @@ export class ServerMobSimulation {
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
 		events: ServerMobEvent[],
 	): void {
-		if (this.mobs.size >= TOTAL_MOB_CAP) return;
+		// Only naturally spawned mobs occupy cap slots; spawn-egg mobs never
+		// block natural spawning.
+		if (this.naturalTotal >= TOTAL_MOB_CAP) return;
 
 		const player = players[Math.floor(Math.random() * players.length)];
 		if (!player) return;
 
 		for (let i = 0; i < SPAWN_ATTEMPTS; i++) {
-			if (this.mobs.size >= TOTAL_MOB_CAP) return;
+			if (this.naturalTotal >= TOTAL_MOB_CAP) return;
 
 			const typeId = this.pickSpawnType();
 			if (typeId === null) return;
@@ -684,6 +717,7 @@ export class ServerMobSimulation {
 				path: [],
 				pathIndex: 0,
 				pathTimer: 0,
+				egg: false,
 			};
 
 			this.addActiveMob(mob);
@@ -691,23 +725,58 @@ export class ServerMobSimulation {
 		}
 	}
 
-	/** Random species whose cap isn't reached yet (equal weights, like the client). */
+	/**
+	 * Spawn a cap-exempt mob at an explicit position (spawn egg use). The
+	 * position must be inside a loaded chunk with a free body + head cell;
+	 * the simulation settles the mob onto the ground on subsequent ticks.
+	 * Returns the spawned mob, or null when the request is invalid.
+	 */
+	spawnEggMob(typeId: number, x: number, y: number, z: number): ServerMob | null {
+		const config = MOB_TYPE_CONFIGS[typeId];
+		if (!config) return null;
+		if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+			return null;
+		}
+
+		// Unknown chunk (not cached) or solid body/head cell — reject so the
+		// mob never spawns stuck inside terrain.
+		if (this.sampler.sample(x, y, z) === null) return null;
+		if (this.isSolid(x, y, z) || this.isSolid(x, y + 1, z)) return null;
+
+		const mob: ServerMob = {
+			id: this.nextId++,
+			typeId,
+			x,
+			y,
+			z,
+			yaw: Math.floor(Math.random() * 256),
+			headingTimer:
+				WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
+			stuckTimer: 0,
+			fleeing: false,
+			path: [],
+			pathIndex: 0,
+			pathTimer: 0,
+			egg: true,
+		};
+
+		this.addActiveMob(mob);
+		return mob;
+	}
+
+	/** Random species whose natural cap isn't reached yet (equal weights, like the client). */
 	private pickSpawnType(): number | null {
 		const available: number[] = [];
 
 		for (const typeId of MOB_TYPE_IDS) {
 			const config = MOB_TYPE_CONFIGS[typeId];
-			if ((this.typeCounts.get(typeId) ?? 0) < config.maxCount) {
+			if ((this.naturalTypeCounts.get(typeId) ?? 0) < config.maxCount) {
 				available.push(typeId);
 			}
 		}
 
 		if (available.length === 0) return null;
 		return available[Math.floor(Math.random() * available.length)];
-	}
-
-	private countByType(typeId: number): number {
-		return this.typeCounts.get(typeId) ?? 0;
 	}
 
 	/**
@@ -816,9 +885,11 @@ export class ServerMobSimulation {
 					continue;
 				}
 
-				// Loaded mobs count toward the per-type cap; if it's full,
-				// leave this one persisted until a slot frees up.
-				if (this.countByType(pm.typeId) >= config.maxCount) {
+				// Natural mobs count toward the per-type cap; if it's full,
+				// leave this one persisted until a slot frees up. Spawn-egg
+				// mobs are cap-exempt and always load back.
+				const naturalCount = this.naturalTypeCounts.get(pm.typeId) ?? 0;
+				if (!pm.egg && naturalCount >= config.maxCount) {
 					kept.push(pm);
 					continue;
 				}
@@ -851,6 +922,7 @@ export class ServerMobSimulation {
 			path: mob.path.map((w) => ({ x: w.x, z: w.z, groundY: w.groundY })),
 			pathIndex: mob.pathIndex,
 			pathTimer: mob.pathTimer,
+			egg: mob.egg,
 		};
 	}
 
@@ -873,6 +945,7 @@ export class ServerMobSimulation {
 			path: pm.path.map((w) => ({ x: w.x, z: w.z, groundY: w.groundY })),
 			pathIndex: pm.pathIndex,
 			pathTimer: pm.pathTimer,
+			egg: pm.egg ?? false,
 		};
 	}
 

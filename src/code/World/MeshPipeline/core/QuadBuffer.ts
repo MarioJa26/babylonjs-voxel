@@ -22,36 +22,26 @@ const META_POS_OFF_Z = 1 << 7;
 
 export class QuadBuffer {
 	private data!: WorkerInternalMeshData;
-	private rtaA!: ResizableTypedArray<Uint8Array>;
-	private rtaB!: ResizableTypedArray<Uint8Array>;
-	private rtaC!: ResizableTypedArray<Uint8Array>;
-	private a!: Uint8Array;
-	private b!: Uint8Array;
-	private c!: Uint8Array;
+	private rta!: ResizableTypedArray<Uint8Array>;
+	// Interleaved face records: 12 bytes (3 u32 words) per face, one
+	// contiguous stream. emitRaw writes one record per quad instead of
+	// touching three separate SoA streams.
+	private buf!: Uint8Array;
 	private count = 0;
 
 	/** Point this buffer at a reused output mesh and zero its face count. */
 	public bind(out: WorkerInternalMeshData): void {
 		this.data = out;
 
-		const rtaA = out.faceDataA;
-		const rtaB = out.faceDataB;
-		const rtaC = out.faceDataC;
+		const rta = out.faceData;
 
-		this.rtaA = rtaA;
-		this.rtaB = rtaB;
-		this.rtaC = rtaC;
-
-		this.a = rtaA.backingArray;
-		this.b = rtaB.backingArray;
-		this.c = rtaC.backingArray;
+		this.rta = rta;
+		this.buf = rta.backingArray;
 
 		this.count = 0;
 
 		// Keep the externally visible mesh empty immediately after bind.
-		rtaA.length = 0;
-		rtaB.length = 0;
-		rtaC.length = 0;
+		rta.length = 0;
 		out.faceCount = 0;
 	}
 
@@ -62,10 +52,7 @@ export class QuadBuffer {
 	 * uploaded, merged, or transferred.
 	 */
 	public finish(): void {
-		const byteLength = this.count << 2;
-		this.rtaA.length = byteLength;
-		this.rtaB.length = byteLength;
-		this.rtaC.length = byteLength;
+		this.rta.length = this.count * 12;
 		this.data.faceCount = this.count;
 	}
 
@@ -87,28 +74,25 @@ export class QuadBuffer {
 		tint: number,
 		meta: number,
 	): void {
-		const i = this.count << 2;
-
-		const a = this.a;
-		const b = this.b;
-		const c = this.c;
+		const i = this.count * 12;
+		const buf = this.buf;
 
 		// Positions/dims are single bytes; emitters guarantee in-range values
 		// (boundary faces encode 255 + shader sentinel, never raw 256).
-		a[i] = sx;
-		a[i + 1] = sy;
-		a[i + 2] = sz;
-		a[i + 3] = axisFace | (tint << 3);
+		buf[i] = sx;
+		buf[i + 1] = sy;
+		buf[i + 2] = sz;
+		buf[i + 3] = axisFace | (tint << 3);
 
-		b[i] = sw;
-		b[i + 1] = sh;
-		b[i + 2] = tx;
-		b[i + 3] = ty;
+		buf[i + 4] = sw;
+		buf[i + 5] = sh;
+		buf[i + 6] = tx;
+		buf[i + 7] = ty;
 
-		c[i] = ao;
-		c[i + 1] = light;
-		c[i + 2] = meta;
-		c[i + 3] = 0;
+		buf[i + 8] = ao;
+		buf[i + 9] = light;
+		buf[i + 10] = meta;
+		buf[i + 11] = 0; // chunk-index lane, stamped by merged-group assembly
 
 		this.count++;
 	}
