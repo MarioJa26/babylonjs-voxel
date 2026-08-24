@@ -33,6 +33,7 @@ import {
 	createRigShaderMaterial,
 	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
 	packedLightToLightColor,
+	setRigHeadPitch,
 	setRigLightColor,
 	setRigWalk,
 	WALK_REF_SPEED,
@@ -191,7 +192,10 @@ export class Player {
 			this.#bodyWalkAmp +=
 				(targetAmp - this.#bodyWalkAmp) * Math.min(1, dt * 10);
 			const mat = this.#playerBodyMat;
-			if (mat) setRigWalk(mat, this.#bodyWalkPhase, this.#bodyWalkAmp);
+			if (mat) {
+				setRigWalk(mat, this.#bodyWalkPhase, this.#bodyWalkAmp);
+				setRigHeadPitch(mat, this.#playerCamera.cameraPitch);
+			}
 		}
 
 		// Don't render until the skin texture is bound (unbound sampler would

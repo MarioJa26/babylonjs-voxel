@@ -39,6 +39,7 @@ import {
 	getRigFallbackTexture,
 	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
 	packedLightToLightColor,
+	setRigHeadPitch,
 	setRigLightColor,
 	setRigWalk,
 	WALK_REF_SPEED,
@@ -272,6 +273,8 @@ export class RemotePlayerVisual {
 	private walkSampleX = Number.NaN;
 	private walkSampleZ = Number.NaN;
 	private walkSampleMs = Number.NaN;
+	// Head pitch eased toward the server's pitch byte each frame.
+	private headPitch = 0;
 
 	private readonly positionScratch: [number, number, number] = [0, 0, 0];
 
@@ -448,19 +451,25 @@ export class RemotePlayerVisual {
 	 * Sampled on a short window so per-frame jitter doesn't feed the easing.
 	 */
 	private syncWalk(now: number): void {
-		const dtMs = now - this.walkSampleMs;
-		if (!(dtMs >= WALK_SAMPLE_MS)) return;
-
 		const p = this.player;
-		const dt = Math.min(dtMs / 1000, 0.25); // clamp: tab-switch / cull gaps
 
-		if (!Number.isNaN(this.walkSampleX)) {
-			const dx = p.x - this.walkSampleX;
-			const dz = p.z - this.walkSampleZ;
-			const instSpeed = Math.hypot(dx, dz) / dt;
-			this.smoothedSpeed +=
-				(instSpeed - this.smoothedSpeed) * Math.min(1, dt * 6);
+		// First sample after spawn/cull: record the baseline — there is no
+		// previous position to measure speed against yet.
+		if (!Number.isFinite(this.walkSampleMs)) {
+			this.walkSampleX = p.x;
+			this.walkSampleZ = p.z;
+			this.walkSampleMs = now;
+			return;
 		}
+
+		const dtMs = now - this.walkSampleMs;
+		if (dtMs < WALK_SAMPLE_MS) return;
+
+		const dt = Math.min(dtMs / 1000, 0.25); // clamp: tab-switch / cull gaps
+		const instSpeed =
+			Math.hypot(p.x - this.walkSampleX, p.z - this.walkSampleZ) / dt;
+		this.smoothedSpeed +=
+			(instSpeed - this.smoothedSpeed) * Math.min(1, dt * 6);
 
 		this.walkSampleX = p.x;
 		this.walkSampleZ = p.z;
@@ -472,12 +481,25 @@ export class RemotePlayerVisual {
 		setRigWalk(this.mat, this.walkPhase, this.walkAmp);
 	}
 
+	/** Ease the head toward the server pitch byte (0-255 → -90°..+90°). */
+	private syncHeadPitch(): void {
+		// Network convention is negative-looks-down; the rig shader expects
+		// the camera convention (positive = down), so invert the decode.
+		const target = -(this.player.pitch * (180 / 255) - 90) * DEG_TO_RAD;
+		this.headPitch += (target - this.headPitch) * 0.2;
+		setRigHeadPitch(this.mat, this.headPitch);
+	}
+
 	update(camX: number, camY: number, camZ: number, now: number): void {
 		const player = this.player;
 
-		const dx = player.x - camX;
-		const dy = player.y - camY;
-		const dz = player.z - camZ;
+		const x = player.x;
+		const y = player.y;
+		const z = player.z;
+
+		const dx = x - camX;
+		const dy = y - camY;
+		const dz = z - camZ;
 		const distanceSquared = dx * dx + dy * dy + dz * dz;
 
 		let forceVisualRefresh = false;
@@ -489,10 +511,15 @@ export class RemotePlayerVisual {
 
 			this.culled = false;
 			forceVisualRefresh = true;
+
+			/*
+			 * Establish a fresh walk baseline after unculling. Without this reset,
+			 * movement that occurred while culled could create a one-frame spike.
+			 */
+			this.walkSampleMs = Number.NaN;
 		} else if (distanceSquared >= REMOTE_CULL_ENTER_DIST_SQ) {
 			this.culled = true;
 			this.mesh.visible = false;
-			// Reset the walk sampler so resume doesn't integrate a huge dt.
 			this.walkSampleMs = Number.NaN;
 
 			if (this.billboardActive) {
@@ -503,15 +530,31 @@ export class RemotePlayerVisual {
 			return;
 		}
 
+		/*
+		 * These systems must continue updating for stationary visible players:
+		 *
+		 * - light can change without the player moving;
+		 * - walk amplitude needs to ease back to zero;
+		 * - head pitch can change independently of position and yaw.
+		 */
 		this.syncLight(now);
 		this.syncWalk(now);
+		this.syncHeadPitch();
+
 		this.mesh.visible = this.skinBound;
 
-		const x = player.x;
-		const y = player.y;
-		const z = player.z;
 		const yaw = player.yaw;
 
+		const positionChanged =
+			x !== this.lastX || y !== this.lastY || z !== this.lastZ;
+
+		const yawChanged = yaw !== this.lastYaw;
+
+		/*
+		 * Target changes do not directly alter either renderable. However, retain
+		 * their cached values so existing interpolation/debug assumptions remain
+		 * observable and no stale comparison state accumulates.
+		 */
 		const targetX = player.targetX;
 		const targetY = player.targetY;
 		const targetZ = player.targetZ;
@@ -523,24 +566,24 @@ export class RemotePlayerVisual {
 			targetZ !== this.lastTargetZ ||
 			targetYaw !== this.lastTargetYaw;
 
-		const transformChanged =
-			x !== this.lastX ||
-			y !== this.lastY ||
-			z !== this.lastZ ||
-			yaw !== this.lastYaw;
+		if (targetChanged) {
+			this.lastTargetX = targetX;
+			this.lastTargetY = targetY;
+			this.lastTargetZ = targetZ;
+			this.lastTargetYaw = targetYaw;
+		}
 
-		/*
-		 * forceVisualRefresh is required after unculling. The billboard was
-		 * cleared when the player was culled, so an unchanged stationary
-		 * transform must still be submitted again.
-		 */
-		if (!forceVisualRefresh && !targetChanged && !transformChanged) {
+		if (!forceVisualRefresh && !positionChanged && !yawChanged) {
 			return;
 		}
 
+		/*
+		 * Preserve the original refresh throttle for ordinary interpolated
+		 * movement. An uncull bypasses it because both renderables must be
+		 * restored immediately.
+		 */
 		if (
 			!forceVisualRefresh &&
-			!targetChanged &&
 			now - this.lastFlushMs < RemotePlayerVisual.VISUAL_REFRESH_MS
 		) {
 			return;
@@ -548,27 +591,37 @@ export class RemotePlayerVisual {
 
 		this.lastFlushMs = now;
 
-		this.lastX = x;
-		this.lastY = y;
-		this.lastZ = z;
-		this.lastYaw = yaw;
+		/*
+		 * Update only the mesh properties that actually changed. Babylon-style
+		 * observable vectors can mark transforms dirty on every setter call, so
+		 * avoiding unchanged writes reduces downstream matrix work.
+		 */
+		if (forceVisualRefresh || positionChanged) {
+			this.lastX = x;
+			this.lastY = y;
+			this.lastZ = z;
+			this.mesh.position.set(x, y, z);
+		}
 
-		this.lastTargetX = targetX;
-		this.lastTargetY = targetY;
-		this.lastTargetZ = targetZ;
-		this.lastTargetYaw = targetYaw;
+		if (forceVisualRefresh || yawChanged) {
+			this.lastYaw = yaw;
+			this.mesh.rotation.y = yaw * DEG_TO_RAD;
+		}
 
-		this.mesh.position.set(x, y, z);
-		this.mesh.rotation.y = yaw * DEG_TO_RAD;
+		/*
+		 * The name tag depends only on position. Do not clear and recreate it for
+		 * yaw-only or interpolation-target-only updates.
+		 */
+		if (forceVisualRefresh || positionChanged || !this.billboardActive) {
+			const billboardPosition = this.positionScratch;
+			billboardPosition[0] = x;
+			billboardPosition[1] = y + NAME_TAG_Y_OFFSET;
+			billboardPosition[2] = z;
 
-		const billboardPosition = this.positionScratch;
-		billboardPosition[0] = x;
-		billboardPosition[1] = y + NAME_TAG_Y_OFFSET;
-		billboardPosition[2] = z;
-
-		clearBillboardSprites(this.billboard);
-		addBillboardSpriteIndex(this.billboard, this.billboardOptions);
-		this.billboardActive = true;
+			clearBillboardSprites(this.billboard);
+			addBillboardSpriteIndex(this.billboard, this.billboardOptions);
+			this.billboardActive = true;
+		}
 	}
 
 	dispose(): void {

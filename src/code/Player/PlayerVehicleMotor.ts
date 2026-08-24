@@ -45,6 +45,7 @@ import {
 	createRigShaderMaterial,
 	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
 	packedLightToLightColor,
+	setRigHeadPitch,
 	setRigLightColor,
 	setRigWalk,
 	WALK_REF_SPEED,
@@ -1258,6 +1259,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			const mat = this.#displayMat;
 			if (mat) {
 				setRigWalk(mat, this.#displayWalkPhase, this.#displayWalkAmp);
+				setRigHeadPitch(mat, this.#camera.cameraPitch);
 			}
 		}
 		const rq = this.#displayCapsule.rotationQuaternion;

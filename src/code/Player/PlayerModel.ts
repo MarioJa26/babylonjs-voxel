@@ -16,12 +16,13 @@ import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 export const PLAYER_MODEL_HEIGHT = 1.8;
 const PX = PLAYER_MODEL_HEIGHT / 32; // meters per skin pixel (rig is 32px tall)
 
-/** Limb ids baked into normal.x for the walk-swing shader. */
+/** Limb ids baked into normal.x for the animation shader. */
 const PART_STATIC = 0;
 const PART_ARM_L = 1;
 const PART_ARM_R = 2;
 const PART_LEG_L = 3;
 const PART_LEG_R = 4;
+const PART_HEAD = 5;
 
 // ─── Rig shader sources (unlit textured, brightness uniform) ────────────────
 // Mirrors the proven DroppedItem shader so no scene lights or
@@ -32,7 +33,8 @@ const PART_LEG_R = 4;
 // normals, so the slot is free — tagging at build time gives exact limb
 // membership with none of the coplanar-boundary ambiguity of classifying by
 // position (arm bottoms / leg tops / torso underside all share y-planes).
-// IDs: 0 static · 1 arm-left · 2 arm-right · 3 leg-left · 4 leg-right.
+// IDs: 0 static · 1 arm-left · 2 arm-right · 3 leg-left · 4 leg-right ·
+// 5 head (pitches with the camera around the neck line).
 const RIG_VERTEX_WGSL = /* wgsl */ `
 struct VSOut {
 	@builtin(position) pos : vec4<f32>,
@@ -46,7 +48,7 @@ const HIP_PIVOT_Y : f32 = ${(-(4 * PX)).toFixed(6)};
 const SWING_MAX : f32 = 0.75;
 
 fn animateRig(p : vec3<f32>, part : f32) -> vec3<f32> {
-	if (shaderUniforms.uWalkAmp <= 0.0 || part < 0.5) {
+	if (shaderUniforms.uWalkAmp <= 0.0 && shaderUniforms.uHeadPitch == 0.0) {
 		return p;
 	}
 	let osc = sin(shaderUniforms.uWalkPhase)
@@ -54,14 +56,20 @@ fn animateRig(p : vec3<f32>, part : f32) -> vec3<f32> {
 		* shaderUniforms.uWalkAmp;
 	var pivotY : f32;
 	var ang : f32;
-	if (part < 2.5) {
+	if (part < 0.5) {
+		return p;
+	} else if (part < 2.5) {
 		// arms: right swings opposite to left
 		pivotY = ARM_PIVOT_Y;
 		ang = osc * select(-1.0, 1.0, part > 1.5) * -1.0;
-	} else {
+	} else if (part < 4.5) {
 		// legs: right in phase with left arm
 		pivotY = HIP_PIVOT_Y;
 		ang = osc * select(-1.0, 1.0, part > 3.5);
+	} else {
+		// head pitches with the camera about the neck line
+		pivotY = ARM_PIVOT_Y;
+		ang = shaderUniforms.uHeadPitch;
 	}
 	let s = sin(ang);
 	let c = cos(ang);
@@ -185,100 +193,81 @@ function appendBox(
 	p: BoxPart,
 	uvMode: "skin" | "atlas" = "skin",
 ): void {
-	const hx = p.w / 2;
-	const hy = p.h / 2;
-	const hz = p.d / 2;
-	const { x, y, z } = p;
+	const x0 = p.x - p.w * 0.5;
+	const x1 = p.x + p.w * 0.5;
+	const y0 = p.y - p.h * 0.5;
+	const y1 = p.y + p.h * 0.5;
+	const z0 = p.z - p.d * 0.5;
+	const z1 = p.z + p.d * 0.5;
 
-	// Face vertex order: [bottom-left, bottom-right, top-right, top-left] as
-	// seen from outside — identical to the game's proven box winding.
-	const faces: Array<{
-		r: UvRect | undefined;
-		v: Array<[number, number, number]>;
-	}> = [
-		{
-			r: p.uv?.left,
-			v: [
-				[x + hx, y - hy, z + hz],
-				[x + hx, y - hy, z - hz],
-				[x + hx, y + hy, z - hz],
-				[x + hx, y + hy, z + hz],
-			],
-		},
-		{
-			r: p.uv?.right,
-			v: [
-				[x - hx, y - hy, z - hz],
-				[x - hx, y - hy, z + hz],
-				[x - hx, y + hy, z + hz],
-				[x - hx, y + hy, z - hz],
-			],
-		},
-		{
-			r: p.uv?.top,
-			v: [
-				[x - hx, y + hy, z + hz],
-				[x + hx, y + hy, z + hz],
-				[x + hx, y + hy, z - hz],
-				[x - hx, y + hy, z - hz],
-			],
-		},
-		{
-			r: p.uv?.bottom,
-			v: [
-				[x - hx, y - hy, z - hz],
-				[x + hx, y - hy, z - hz],
-				[x + hx, y - hy, z + hz],
-				[x - hx, y - hy, z + hz],
-			],
-		},
-		{
-			r: p.uv?.front,
-			v: [
-				[x - hx, y - hy, z + hz],
-				[x + hx, y - hy, z + hz],
-				[x + hx, y + hy, z + hz],
-				[x - hx, y + hy, z + hz],
-			],
-		},
-		{
-			r: p.uv?.back,
-			v: [
-				[x + hx, y - hy, z - hz],
-				[x - hx, y - hy, z - hz],
-				[x - hx, y + hy, z - hz],
-				[x + hx, y + hy, z - hz],
-			],
-		},
-	];
+	const partId = p.partId ?? PART_STATIC;
+	const positions = out.positions;
+	const normals = out.normals;
+	const indices = out.indices;
+	const uvs = out.uvs;
+	const uv = p.uv;
 
-	for (const f of faces) {
-		const base = out.positions.length / 3;
-		for (let i = 0; i < 4; i++) {
-			out.positions.push(f.v[i][0], f.v[i][1], f.v[i][2]);
-			// normal.x carries the limb tag (unused by the unlit fragment).
-			out.normals.push(p.partId ?? PART_STATIC, 0, 0);
-			if (f.r) {
-				if (uvMode === "atlas") {
-					// Final normalized atlas coords, passed through verbatim:
-					// bl=(r0,r1) br=(r2,r1) tr=(r2,r3) tl=(r0,r3).
-					out.uvs.push(
-						i === 0 || i === 3 ? f.r[0] : f.r[2],
-						i < 2 ? f.r[1] : f.r[3],
-					);
-				} else {
-					// Skin-pixel space (÷64) with v=1 at image top.
-					const vTop = 1 - f.r[1] / 64;
-					const vBottom = 1 - f.r[3] / 64;
-					out.uvs.push(
-						i === 0 || i === 3 ? f.r[0] / 64 : f.r[2] / 64,
-						i < 2 ? vBottom : vTop,
-					);
-				}
-			}
+	let vertexBase = positions.length / 3;
+
+	const appendFace = (
+		rect: UvRect | undefined,
+		ax: number,
+		ay: number,
+		az: number,
+		bx: number,
+		by: number,
+		bz: number,
+		cx: number,
+		cy: number,
+		cz: number,
+		dx: number,
+		dy: number,
+		dz: number,
+	): void => {
+		positions.push(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz);
+
+		normals.push(partId, 0, 0, partId, 0, 0, partId, 0, 0, partId, 0, 0);
+
+		if (rect) {
+			const u0 = uvMode === "atlas" ? rect[0] : rect[0] * (1 / 64);
+			const u1 = uvMode === "atlas" ? rect[2] : rect[2] * (1 / 64);
+
+			const vBottom = uvMode === "atlas" ? rect[1] : 1 - rect[3] * (1 / 64);
+			const vTop = uvMode === "atlas" ? rect[3] : 1 - rect[1] * (1 / 64);
+
+			// Vertex order: bottom-left, bottom-right, top-right, top-left.
+			uvs.push(u0, vBottom, u1, vBottom, u1, vTop, u0, vTop);
 		}
-		out.indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
-	}
+
+		indices.push(
+			vertexBase,
+			vertexBase + 2,
+			vertexBase + 1,
+			vertexBase,
+			vertexBase + 3,
+			vertexBase + 2,
+		);
+
+		vertexBase += 4;
+	};
+
+	// +X face, skin "left"
+	appendFace(uv?.left, x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1);
+
+	// -X face, skin "right"
+	appendFace(uv?.right, x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0);
+
+	// +Y face
+	appendFace(uv?.top, x0, y1, z1, x1, y1, z1, x1, y1, z0, x0, y1, z0);
+
+	// -Y face
+	appendFace(uv?.bottom, x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1);
+
+	// +Z face
+	appendFace(uv?.front, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1);
+
+	// -Z face
+	appendFace(uv?.back, x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0);
 }
 
 interface MeshBuffers {
@@ -314,6 +303,7 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 			h: 8 * PX,
 			d: 8 * PX,
 			uv: HEAD_UV,
+			partId: PART_HEAD,
 		},
 		{
 			x: 0,
@@ -475,6 +465,7 @@ export function applyRigSkin(
 	setShaderUniform(mat, "uLightColor", [1, 1, 1]);
 	setShaderUniform(mat, "uWalkPhase", 0);
 	setShaderUniform(mat, "uWalkAmp", 0);
+	setShaderUniform(mat, "uHeadPitch", 0);
 	setShaderTexture(mat, "diffuseTexture", getFallbackTexture(engine));
 	loadSkin(engine)
 		.then((tex) => {
@@ -524,6 +515,7 @@ export function createRigShaderMaterial(name: string): ShaderMaterial {
 			{ name: "uLightColor", type: "vec3<f32>" },
 			{ name: "uWalkPhase", type: "f32" },
 			{ name: "uWalkAmp", type: "f32" },
+			{ name: "uHeadPitch", type: "f32" },
 		],
 		samplers: ["diffuseTexture"],
 		backFaceCulling: false,
@@ -555,4 +547,20 @@ export function setRigWalk(
 ): void {
 	setShaderUniform(mat, "uWalkPhase", phase);
 	setShaderUniform(mat, "uWalkAmp", Math.max(0, Math.min(1, amp)));
+}
+
+/** Head pitch clamp (±~69°) so extreme look angles stay readable. */
+export const HEAD_PITCH_LIMIT = 1.2;
+
+/**
+ * Tilt the head part with the camera. Positive = looking down (the camera
+ * convention: cameraPitch is positive when looking down, and +ang tips the
+ * face's +Z front downward).
+ */
+export function setRigHeadPitch(mat: ShaderMaterial, pitch: number): void {
+	setShaderUniform(
+		mat,
+		"uHeadPitch",
+		Math.max(-HEAD_PITCH_LIMIT, Math.min(HEAD_PITCH_LIMIT, pitch)),
+	);
 }
