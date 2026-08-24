@@ -104,6 +104,53 @@ function createDroppedItemMaterial(): ShaderMaterial {
 	});
 }
 
+// PERF: ShaderMaterials are pooled per blockId instead of built per item.
+// uScale/uOffset are fixed by blockId, so a pooled instance only needs the
+// tint refresh it gets on every light crossing anyway. Pooling removes
+// pipeline/bind-group churn per spawn AND fixes the old leak where #dispose
+// never released the material at all. Cap bounds worst-case VRAM; overflow
+// materials are disposed outright.
+const MATERIAL_POOL_MAX = 64;
+const droppedItemMaterialPool = new Map<number, ShaderMaterial[]>();
+
+// Lite's ShaderMaterial type exposes no dispose — call it structurally
+// (same pattern as MaterialFactory's local dispose? interface).
+function disposeItemMaterial(mat: ShaderMaterial): void {
+	(mat as unknown as { dispose?: () => void }).dispose?.();
+}
+
+function acquireDroppedItemMaterial(blockId: number): ShaderMaterial {
+	const pool = droppedItemMaterialPool.get(blockId);
+	const reused = pool?.pop();
+	if (reused) return reused;
+	return createDroppedItemMaterial();
+}
+
+function releaseDroppedItemMaterial(
+	blockId: number,
+	mat: ShaderMaterial,
+): void {
+	let total = 0;
+	for (const stack of droppedItemMaterialPool.values()) total += stack.length;
+	if (total >= MATERIAL_POOL_MAX) {
+		disposeItemMaterial(mat);
+		return;
+	}
+	let pool = droppedItemMaterialPool.get(blockId);
+	if (!pool) {
+		pool = [];
+		droppedItemMaterialPool.set(blockId, pool);
+	}
+	pool.push(mat);
+}
+
+function disposeAllPooledItemMaterials(): void {
+	for (const stack of droppedItemMaterialPool.values()) {
+		for (const mat of stack) disposeItemMaterial(mat);
+	}
+	droppedItemMaterialPool.clear();
+}
+
 // --------------------------------------------------------------------------
 // OPTIMIZATION: Cache geometry arrays globally. Creating these arrays on
 // every DroppedItem instance causes massive GC spikes in dense worlds.
@@ -248,6 +295,9 @@ const SHARED_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
 export class DroppedItem implements IUsable {
 	#boxMesh: Mesh;
 	#material: ShaderMaterial;
+	/** Bumped whenever the material leaves this item (dispose→pool) so the
+	 *  async atlas-bind callback can detect a stale acquisition. */
+	#materialEpoch = 0;
 	#item: Item;
 	#velocity = vec3Zero();
 	#position: Vec3;
@@ -372,7 +422,7 @@ export class DroppedItem implements IUsable {
 		this.#position = vec3(x, y, z);
 		this.#boxMesh.position.set(x, y, z);
 
-		this.#material = createDroppedItemMaterial();
+		this.#material = acquireDroppedItemMaterial(item.blockId ?? -1);
 		this.#boxMesh.material = this.#material;
 		this.#boxMesh.visible = false;
 
@@ -400,8 +450,19 @@ export class DroppedItem implements IUsable {
 			this.#applyAtlasTile(item);
 			this.#boxMesh.visible = true;
 		} else {
+			// Capture the material identity: if this item is disposed before
+			// the atlas resolves, its material returns to the pool and may be
+			// reacquired by another item — a late bind must not retarget it.
+			const mat = this.#material;
+			const epoch = this.#materialEpoch;
 			void DroppedItem.#getAtlasTexture().then((atlas) => {
-				if (this.#disposed || !atlas) return;
+				if (
+					this.#disposed ||
+					!atlas ||
+					this.#material !== mat ||
+					this.#materialEpoch !== epoch
+				)
+					return;
 
 				setShaderTexture(this.#material, "diffuseTexture", atlas);
 				this.#applyAtlasTile(item);
@@ -490,6 +551,12 @@ export class DroppedItem implements IUsable {
 
 		this.#voxelCollider.dispose();
 		removeFromScene(Map1.mainScene, this.#boxMesh);
+
+		// PERF/LEAKFIX: return the material to the blockId pool instead of
+		// leaking one ShaderMaterial (pipeline + bind groups) per despawn.
+		// The epoch bump invalidates any in-flight atlas-bind for this item.
+		this.#materialEpoch++;
+		releaseDroppedItemMaterial(this.#item.blockId ?? -1, this.#material);
 	}
 
 	#updatePhysics(dt: number): void {
@@ -732,6 +799,7 @@ export class DroppedItem implements IUsable {
 		while (DroppedItem.#allItems.length > 0) {
 			DroppedItem.#allItems[0].#dispose();
 		}
+		disposeAllPooledItemMaterials();
 	}
 
 	static nearestTo(player: Player): DroppedItem | null {

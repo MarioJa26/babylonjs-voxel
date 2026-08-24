@@ -58,3 +58,5 @@ src/composer.bat
 /.tmp-selftest
 tools/generate-coal-icon.mjs
 tools/generate-spawn-egg-icons.mjs
+/scripts
+scripts/far-tile-selftest.ts

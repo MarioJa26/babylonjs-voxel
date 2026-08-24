@@ -25,6 +25,7 @@ import type { Player } from "@/code/Player/Player";
 import { Gamemodes } from "@/code/Player/PlayerStats";
 import {
 	deleteBlock,
+	getBlockByWorldCoords,
 	getLightByWorldCoords,
 	setBlock,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
@@ -375,6 +376,14 @@ export class NetworkManager {
 
 		if (action !== BlockActionType.Break) return;
 
+		// The local chunk still holds the PRE-break block here — trust it over
+		// the wire id for visuals. Relayed Break edits have been observed to
+		// carry the post-edit state (air = 0), which made every remote break
+		// emit particles for frame 0 (cobblestone) instead of the real block.
+		const localBlockId = getBlockByWorldCoords(x, y, z);
+		const visualBlockId =
+			localBlockId !== 0 && localBlockId !== undefined ? localBlockId : blockId;
+
 		const px = x + 0.5;
 		const py = y + 0.5;
 		const pz = z + 0.5;
@@ -385,10 +394,10 @@ export class NetworkManager {
 		play(
 			this.player.sceneRef,
 			setVec3(this._scratchVec, px, py, pz),
-			blockId,
+			visualBlockId,
 			packedLight,
 		);
-		playDebris(this.player.sceneRef, px, py, pz, blockId, packedLight);
+		playDebris(this.player.sceneRef, px, py, pz, visualBlockId, packedLight);
 	}
 
 	/**

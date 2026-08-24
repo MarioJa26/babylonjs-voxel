@@ -1,5 +1,5 @@
 /**
- * Pure far-tile face format: encoding, decoding and CPU expansion.
+ * Pure far-tile face format: encoding and decoding.
  *
  * ZERO imports — this module must stay dependency-free so the self-test can
  * compile and run it standalone (see scripts/far-tile-selftest.ts).
@@ -9,18 +9,17 @@
  *   w1: w:u10(bit0) | h:u10(bit10) | backFace:u1(bit20) | axis:u2(bit21-22)
  *   w2: tileX:u8 | tileY:u8 | light:u8              atlas tile + light
  *   w3: kind:u8                                     0 opaque, 1 water
+ *       (bits 8-23 carry the tile-origin slot index, stamped by
+ *        FarTileManager on arrival — never set by the worker)
  *
- * Axis dimension convention (must match QuadBuffer):
+ * Faces are consumed verbatim by the GPU (FarTileShaderLite expands quads in
+ * the vertex stage from faceData + tileOrigins storage buffers); there is no
+ * CPU expansion step anymore.
+ *
+ * Axis dimension convention:
  *   axis 0 (+/-X): w = Y-extent, h = Z-extent
- *   axis 1 (+/-Y): w = X-extent, h = Z-extent
+ *   axis 1 (+/-Y): w = X-extent, h = Z-extent   [water uses w=X, h=Z too]
  *   axis 2 (+/-Z): w = X-extent, h = Y-extent
- *
- * Corner tables all traverse [P00, P10, P11, P01] over (u,v) so ONE index
- * policy serves every facing:
- *   straight (0,1,2)(0,2,3) -> vertex-cross = +axis -> used for -axis faces
- *   reversed (0,2,1)(0,3,2) -> vertex-cross = -axis -> used for +axis faces
- * (Lite renders the triangle whose vertex-order cross OPPOSES its intended
- * face normal — verified against DistantTerrain's grid winding.)
  */
 
 export const FAR_TILE_Y_OFFSET = -(-32) * 32; // MIN_CHUNK_Y * CHUNK_SIZE negated
@@ -31,8 +30,6 @@ export const KIND_WATER = 1;
 export const LIGHT_FULL = 0xf0;
 export const LIGHT_SIDE = 0xc0;
 
-const AXISFACE_MASK = 0x3 << 20;
-
 /** Encode one packed face word-pair helper (w1 value). */
 export function packWord1(
 	w: number,
@@ -40,49 +37,11 @@ export function packWord1(
 	axis: number,
 	backFace: number,
 ): number {
-	// Layout: bit20 = backFace, bit21 = axis. Mask must keep THREE bits
+	// Layout: bit20 = backFace, bit21-22 = axis. Mask must keep THREE bits
 	// (axis occupies bits 21-22 after the shift) — an &0x3 here silently
 	// truncates axis=2 into axis=0 and scrambles every Z-facing quad.
 	const axisFace = (((axis << 1) | backFace) & 0x7) << 20;
 	return (w & 0x3ff) | ((h & 0x3ff) << 10) | (axisFace & 0x700000);
-}
-
-/** Encode the full 4-word record for one face. */
-export function packFace(
-	out: number[],
-	x: number,
-	y: number,
-	z: number,
-	w: number,
-	h: number,
-	axis: number,
-	backFace: number,
-	tileX: number,
-	tileY: number,
-	light: number,
-	kind: number,
-): void {
-	const yBiased = y + FAR_TILE_Y_OFFSET;
-
-	if (
-		x < 0 ||
-		z < 0 ||
-		yBiased < 0 ||
-		x > 1023 ||
-		z > 1023 ||
-		yBiased > 4095 ||
-		w > 1023 ||
-		h > 1023
-	) {
-		return;
-	}
-
-	out.push(
-		x | (yBiased << 10) | (z << 22),
-		packWord1(w, h, axis, backFace),
-		(tileX & 0xff) | ((tileY & 0xff) << 8) | ((light & 0xff) << 16),
-		kind & 0xff,
-	);
 }
 
 export interface DecodedFarTileFace {
@@ -121,197 +80,5 @@ export function decodeFarTileFace(
 		tileY: (w2 >>> 8) & 0xff,
 		light: (w2 >>> 16) & 0xff,
 		kind: faces[i + 3] & 0xff,
-	};
-}
-
-// ---------------------------------------------------------------------------
-// Expansion
-//
-// Uniform scheme: every axis gets a right-handed (U, V) basis — U scaled by
-// the face's w, V by h — and ALL faces share the same corner weights
-// [P00, P10, P11, P01]. Right-handedness guarantees straight triangles always
-// compute vertex-cross = +axis, so ONE index policy is provably correct:
-//   backFace 0 (+axis intent): reversed  -> cross = -axis (opposes intent)
-//   backFace 1 (-axis intent): straight  -> cross = +axis (opposes intent)
-// Axis basis/semantics:
-//   axis 0: U=Y(w), V=Z(h)   (Y x Z = +X)
-//   axis 1: U=Z(w), V=X(h)   (Z x X = +Y)   [w/h swap vs naive X/Z!]
-//   axis 2: U=X(w), V=Y(h)   (X x Y = +Z)
-// ---------------------------------------------------------------------------
-
-const CORNER_WEIGHTS = [0, 0, 1, 0, 1, 1, 0, 1]; // (au, av) per corner
-
-// Flat typed arrays for CPU cache locality
-const AXIS_BASIS = new Int8Array([
-	0,
-	1,
-	0,
-	0,
-	0,
-	1, // X: U=Y, V=Z
-	0,
-	0,
-	1,
-	1,
-	0,
-	0, // Y: U=Z, V=X
-	1,
-	0,
-	0,
-	0,
-	1,
-	0, // Z: U=X, V=Y
-]);
-
-export interface TileVertexData {
-	positions: Float32Array;
-	normals: Float32Array;
-	uv2: Float32Array;
-	colors: Float32Array;
-	indices: Uint32Array;
-}
-
-export interface ExpandedTile {
-	opaque: TileVertexData | null;
-	waterPositions: Float32Array | null;
-	// waterIndices removed - generated on the fly in the main thread
-}
-
-/**
- * Expand packed faces into vertex buffers. Positions are absolute world
- * coordinates; water output is position-only (12 floats per quad, ORDER A
- * corner walk [P00,P01,P11,P10]).
- */
-export function expandTileFaces(
-	opaqueFaces: Uint32Array,
-	waterFaces: Uint32Array,
-	originX: number,
-	originZ: number,
-): ExpandedTile {
-	const opaqueCount = opaqueFaces.length >> 2;
-	const positions = new Float32Array(opaqueCount * 4 * 3);
-	const normals = new Float32Array(opaqueCount * 4 * 3);
-	const uv2 = new Float32Array(opaqueCount * 4 * 2);
-	const colors = new Float32Array(opaqueCount * 4 * 4);
-	const indices = new Uint32Array(opaqueCount * 6);
-
-	let vOff = 0;
-	let iOff = 0;
-
-	for (let f = 0; f < opaqueCount; f++) {
-		const i = f * 4;
-		const w0 = opaqueFaces[i];
-		const w1 = opaqueFaces[i + 1];
-		const w2 = opaqueFaces[i + 2];
-		const w3 = opaqueFaces[i + 3];
-
-		// INLINE DECODING: Eliminates decodeFarTileFace() object allocation
-		const x = originX + (w0 & 0x3ff);
-		const y = ((w0 >>> 10) & 0xfff) - FAR_TILE_Y_OFFSET;
-		const z = originZ + ((w0 >>> 22) & 0x3ff);
-
-		const w = w1 & 0x3ff;
-		const h = (w1 >>> 10) & 0x3ff;
-		const axis = (w1 >>> 21) & 0x3;
-		const backFace = (w1 >>> 20) & 0x1;
-
-		const tileX = w2 & 0xff;
-		const tileY = (w2 >>> 8) & 0xff;
-		const light = (w2 >>> 16) & 0xff;
-
-		const bOff = axis * 6;
-		const ux = AXIS_BASIS[bOff];
-		const uy = AXIS_BASIS[bOff + 1];
-		const uz = AXIS_BASIS[bOff + 2];
-		const vx = AXIS_BASIS[bOff + 3];
-		const vy = AXIS_BASIS[bOff + 4];
-		const vz = AXIS_BASIS[bOff + 5];
-
-		const nx = axis === 0 ? (backFace ? -1 : 1) : 0;
-		const ny = axis === 1 ? (backFace ? -1 : 1) : 0;
-		const nz = axis === 2 ? (backFace ? -1 : 1) : 0;
-		const lightFactor = light >= 224 ? 1 : 0.8;
-
-		for (let corner = 0; corner < 4; corner++) {
-			const au = CORNER_WEIGHTS[corner * 2];
-			const av = CORNER_WEIGHTS[corner * 2 + 1];
-			const vi = vOff + corner;
-
-			positions[vi * 3] = x + au * w * ux + av * h * vx;
-			positions[vi * 3 + 1] = y + au * w * uy + av * h * vy;
-			positions[vi * 3 + 2] = z + au * w * uz + av * h * vz;
-
-			normals[vi * 3] = nx;
-			normals[vi * 3 + 1] = ny;
-			normals[vi * 3 + 2] = nz;
-			uv2[vi * 2] = tileX;
-			uv2[vi * 2 + 1] = tileY;
-
-			colors[vi * 4] = lightFactor;
-			colors[vi * 4 + 1] = lightFactor;
-			colors[vi * 4 + 2] = lightFactor;
-			colors[vi * 4 + 3] = 1;
-		}
-
-		if (backFace) {
-			indices[iOff++] = vOff;
-			indices[iOff++] = vOff + 1;
-			indices[iOff++] = vOff + 2;
-			indices[iOff++] = vOff;
-			indices[iOff++] = vOff + 2;
-			indices[iOff++] = vOff + 3;
-		} else {
-			indices[iOff++] = vOff;
-			indices[iOff++] = vOff + 2;
-			indices[iOff++] = vOff + 1;
-			indices[iOff++] = vOff;
-			indices[iOff++] = vOff + 3;
-			indices[iOff++] = vOff + 2;
-		}
-		vOff += 4;
-	}
-
-	// Water: position-only quads
-	const waterQuadCount = waterFaces.length >> 2;
-	const waterPositions = new Float32Array(waterQuadCount * 12);
-	let wOff = 0;
-	for (let f = 0; f < waterQuadCount; f++) {
-		const i = f * 4;
-		const w0 = waterFaces[i];
-		const w1 = waterFaces[i + 1];
-
-		const x = originX + (w0 & 0x3ff);
-		const y = ((w0 >>> 10) & 0xfff) - FAR_TILE_Y_OFFSET;
-		const z = originZ + ((w0 >>> 22) & 0x3ff);
-		const w = w1 & 0x3ff;
-		const h = (w1 >>> 10) & 0x3ff;
-
-		waterPositions[wOff++] = x;
-		waterPositions[wOff++] = y;
-		waterPositions[wOff++] = z;
-		waterPositions[wOff++] = x;
-		waterPositions[wOff++] = y;
-		waterPositions[wOff++] = z + h;
-		waterPositions[wOff++] = x + w;
-		waterPositions[wOff++] = y;
-		waterPositions[wOff++] = z + h;
-		waterPositions[wOff++] = x + w;
-		waterPositions[wOff++] = y;
-		waterPositions[wOff++] = z;
-	}
-
-	return {
-		opaque:
-			opaqueCount > 0
-				? {
-						positions: positions.subarray(0, vOff * 3),
-						normals: normals.subarray(0, vOff * 3),
-						uv2: uv2.subarray(0, vOff * 2),
-						colors: colors.subarray(0, vOff * 4),
-						indices: indices.subarray(0, iOff),
-					}
-				: null,
-		waterPositions:
-			waterQuadCount > 0 ? waterPositions.subarray(0, wOff) : null,
 	};
 }

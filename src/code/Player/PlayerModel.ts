@@ -479,6 +479,11 @@ export function applyRigSkin(
 		});
 }
 
+// PERF: reused result buffers — packedLightToLightColor/setRigLightColor run
+// on every voxel-light crossing retint. Callers must consume immediately.
+const _lightColorScratch: [number, number, number] = [0, 0, 0];
+const _lightColorUniformScratch = [0, 0, 0];
+
 /**
  * Convert packed voxel light (sky << 4 | block) into an RGB light color,
  * mirroring the terrain shaders' mix: neutral skylight scaled by the
@@ -495,7 +500,10 @@ export function packedLightToLightColor(
 	const skyScale = sky * 0.8 * (sunIntensity + 0.2);
 	const channel = (torch: number): number =>
 		Math.min(1, Math.max(0.2, skyScale + block * torch));
-	return [channel(0.9), channel(0.6), channel(0.2)];
+	_lightColorScratch[0] = channel(0.9);
+	_lightColorScratch[1] = channel(0.6);
+	_lightColorScratch[2] = channel(0.2);
+	return _lightColorScratch;
 }
 
 /**
@@ -530,7 +538,11 @@ export function setRigLightColor(
 	mat: ShaderMaterial,
 	color: readonly [number, number, number],
 ): void {
-	setShaderUniform(mat, "uLightColor", [color[0], color[1], color[2]]);
+	const u = _lightColorUniformScratch;
+	u[0] = color[0];
+	u[1] = color[1];
+	u[2] = color[2];
+	setShaderUniform(mat, "uLightColor", u);
 }
 
 /** Radians of walk-stride phase accumulated per meter traveled. */

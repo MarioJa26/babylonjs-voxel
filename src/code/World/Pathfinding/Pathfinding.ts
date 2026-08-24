@@ -17,17 +17,6 @@ export interface PathWaypoint {
 	kind: PathNodeKind;
 }
 
-interface AStarNode {
-	x: number;
-	z: number;
-	groundY: number;
-	kind: PathNodeKind;
-	g: number;
-	h: number;
-	f: number;
-	parent: AStarNode | null;
-}
-
 interface SurfaceResult {
 	groundY: number;
 	cost: number;
@@ -153,130 +142,173 @@ export function isLandAt(
 	return findLandSurface(x, z, startY, headroom, LAND_SCRATCH) !== null;
 }
 
-// --- AStar heap (specialized, no closures) ---
+// --- A* storage (flat SoA arrays) ---
+//
+// Node records live in parallel typed arrays addressed by node index; the
+// heap stores indices and compares nodeF directly — no pointer-chasing, no
+// per-node objects, nothing to pool or release. The closed set is an
+// open-addressed table whose entries are node indices compared by FULL
+// identity (x, z, groundY, kind), so distinct nodes can never alias through
+// a hash collision (the old FNV-hash-keyed Map compared hashes only).
+//
+// Worst case: one start node + 4 neighbors per expansion. With the global
+// expansion budget (PATHFINDING_EXPANSION_BUDGET) capping expansions per
+// window, NODE_CAPACITY covers any single search with wide margin; hitting
+// it aborts the search cleanly (caller retries next tick, same as budget
+// exhaustion).
+const NODE_CAPACITY = 8192;
+const TABLE_CAPACITY = 16384; // power of two
+const TABLE_MASK = TABLE_CAPACITY - 1;
 
-class AStarHeap {
-	private items: AStarNode[] = [];
+const nodeX = new Int32Array(NODE_CAPACITY);
+const nodeZ = new Int32Array(NODE_CAPACITY);
+const nodeY = new Int32Array(NODE_CAPACITY);
+const nodeKind = new Int32Array(NODE_CAPACITY);
+const nodeG = new Float64Array(NODE_CAPACITY);
+const nodeF = new Float64Array(NODE_CAPACITY);
+const nodeParent = new Int32Array(NODE_CAPACITY);
 
-	get size(): number {
-		return this.items.length;
-	}
+const heapItems = new Int32Array(NODE_CAPACITY);
+let heapSize = 0;
 
-	clear(): void {
-		this.items.length = 0;
-	}
+const closedTable = new Int32Array(TABLE_CAPACITY); // nodeId + 1, 0 = empty
 
-	push(item: AStarNode): void {
-		const items = this.items;
-		items.push(item);
-		let idx = items.length - 1;
-		while (idx > 0) {
-			const parent = (idx - 1) >> 1;
-			if (items[idx].f >= items[parent].f) break;
-			const tmp = items[idx];
-			items[idx] = items[parent];
-			items[parent] = tmp;
-			idx = parent;
-		}
-	}
-
-	pop(): AStarNode | undefined {
-		const items = this.items;
-		if (items.length === 0) return undefined;
-		const top = items[0];
-		const last = items.pop()!;
-		if (items.length > 0) {
-			items[0] = last;
-			let idx = 0;
-			const len = items.length;
-			while (true) {
-				let smallest = idx;
-				const left = (idx << 1) + 1;
-				const right = left + 1;
-				if (left < len && items[left].f < items[smallest].f) {
-					smallest = left;
-				}
-				if (right < len && items[right].f < items[smallest].f) {
-					smallest = right;
-				}
-				if (smallest === idx) break;
-				const tmp = items[idx];
-				items[idx] = items[smallest];
-				items[smallest] = tmp;
-				idx = smallest;
-			}
-		}
-		return top;
-	}
-}
-
-// --- Numeric node key (FNV-1a) ---
-
-function nodeKey(x: number, z: number, y: number, kind: PathNodeKind): number {
+function hashIdentity(
+	x: number,
+	z: number,
+	groundY: number,
+	kind: number,
+): number {
 	let h = 2166136261;
-	h ^= x | 0;
+	h ^= x;
 	h = Math.imul(h, 16777619);
-	h ^= z | 0;
+	h ^= z;
 	h = Math.imul(h, 16777619);
-	h ^= y | 0;
+	h ^= groundY;
 	h = Math.imul(h, 16777619);
 	h ^= kind;
 	h = Math.imul(h, 16777619);
 	return h >>> 0;
 }
 
-// --- Node pool ---
-
-const NODE_POOL: AStarNode[] = [];
-const USED_NODES: AStarNode[] = [];
-const MAX_NODE_POOL_SIZE = 4096;
-
-function allocNode(
+/** Append a node record; returns its index. Caller guards NODE_CAPACITY. */
+function allocNodeIndex(
 	x: number,
 	z: number,
 	groundY: number,
-	kind: PathNodeKind,
+	kind: number,
 	g: number,
 	h: number,
-	parent: AStarNode | null,
-): AStarNode {
-	const node = NODE_POOL.pop() ?? {
-		x: 0,
-		z: 0,
-		groundY: 0,
-		kind: PathNodeKind.Land,
-		g: 0,
-		h: 0,
-		f: 0,
-		parent: null,
-	};
-	node.x = x;
-	node.z = z;
-	node.groundY = groundY;
-	node.kind = kind;
-	node.g = g;
-	node.h = h;
-	node.f = g + h;
-	node.parent = parent;
-	USED_NODES.push(node);
-	return node;
+	parent: number,
+): number {
+	const id = _nodeCursor;
+	nodeX[id] = x;
+	nodeZ[id] = z;
+	nodeY[id] = groundY;
+	nodeKind[id] = kind;
+	nodeG[id] = g;
+	nodeF[id] = g + h;
+	nodeParent[id] = parent;
+	_nodeCursor++;
+	return id;
 }
 
-function releaseUsedNodes(): void {
-	for (let i = 0; i < USED_NODES.length; i++) {
-		const node = USED_NODES[i];
-		node.parent = null;
-		if (NODE_POOL.length < MAX_NODE_POOL_SIZE) {
-			NODE_POOL.push(node);
-		}
+let _nodeCursor = 0;
+
+function heapPush(node: number): void {
+	const f = nodeF[node];
+	let idx = heapSize++;
+	while (idx > 0) {
+		const parent = (idx - 1) >> 1;
+		if (nodeF[heapItems[parent]] <= f) break;
+		heapItems[idx] = heapItems[parent];
+		idx = parent;
 	}
-	USED_NODES.length = 0;
+	heapItems[idx] = node;
 }
 
-// --- Shared state for findPathInto ---
+function heapPop(): number {
+	const top = heapItems[0];
+	const last = heapItems[--heapSize];
+	if (heapSize > 0) {
+		const lastF = nodeF[last];
+		let idx = 0;
+		for (;;) {
+			const left = (idx << 1) + 1;
+			if (left >= heapSize) break;
+			const right = left + 1;
+			let child = left;
+			let childF = nodeF[heapItems[left]];
+			if (right < heapSize) {
+				const rf = nodeF[heapItems[right]];
+				if (rf < childF) {
+					child = right;
+					childF = rf;
+				}
+			}
+			if (childF >= lastF) break;
+			heapItems[idx] = heapItems[child];
+			idx = child;
+		}
+		heapItems[idx] = last;
+	}
+	return top;
+}
 
-const SHARED_OPEN_HEAP = new AStarHeap();
-const SHARED_CLOSED = new Map<number, number>();
+/**
+ * Insert `node` into the closed table. If an entry with the same identity
+ * already exists it is REPOINTED to the newer record — matching the old
+ * Map.set(key, tentativeG) overwrite-on-better-g semantics.
+ */
+function closedUpsert(node: number): void {
+	const x = nodeX[node];
+	const z = nodeZ[node];
+	const gy = nodeY[node];
+	const kind = nodeKind[node];
+	let slot = hashIdentity(x, z, gy, kind) & TABLE_MASK;
+	for (;;) {
+		const entry = closedTable[slot];
+		if (entry === 0) {
+			closedTable[slot] = node + 1;
+			return;
+		}
+		const n = entry - 1;
+		if (
+			nodeX[n] === x &&
+			nodeZ[n] === z &&
+			nodeY[n] === gy &&
+			nodeKind[n] === kind
+		) {
+			closedTable[slot] = node + 1;
+			return;
+		}
+		slot = (slot + 1) & TABLE_MASK;
+	}
+}
+
+/** Best recorded g for this exact identity, or -1 when absent. */
+function closedLookupG(
+	x: number,
+	z: number,
+	groundY: number,
+	kind: number,
+): number {
+	let slot = hashIdentity(x, z, groundY, kind) & TABLE_MASK;
+	for (;;) {
+		const entry = closedTable[slot];
+		if (entry === 0) return -1;
+		const n = entry - 1;
+		if (
+			nodeX[n] === x &&
+			nodeZ[n] === z &&
+			nodeY[n] === groundY &&
+			nodeKind[n] === kind
+		) {
+			return nodeG[n];
+		}
+		slot = (slot + 1) & TABLE_MASK;
+	}
+}
 
 // PERF: Global per-window expansion budget for A* so mob wander/shore searches
 // (up to 2×250 + 6×700 expansions) can't eat the whole main thread when many
@@ -322,18 +354,16 @@ function fallbackSurface(out: SurfaceResult, groundY: number): SurfaceResult {
 
 // --- Path reconstruction (no reverse/slice/shift) ---
 
-function buildPathInto(outPath: PathWaypoint[], endNode: AStarNode): void {
+function buildPathInto(outPath: PathWaypoint[], endIndex: number): void {
 	let count = 0;
-	let node: AStarNode | null = endNode;
-	while (node) {
+	for (let node = endIndex; node !== -1; node = nodeParent[node]) {
 		count++;
-		node = node.parent;
 	}
 
 	const waypointCount = Math.max(0, count - 1);
 	outPath.length = waypointCount;
 
-	node = endNode;
+	let node = endIndex;
 	for (let i = waypointCount - 1; i >= 0; i--) {
 		let wp = outPath[i];
 		if (!wp) {
@@ -345,11 +375,11 @@ function buildPathInto(outPath: PathWaypoint[], endNode: AStarNode): void {
 			};
 			outPath[i] = wp;
 		}
-		wp.x = node!.x;
-		wp.z = node!.z;
-		wp.groundY = node!.groundY;
-		wp.kind = node!.kind;
-		node = node!.parent;
+		wp.x = nodeX[node];
+		wp.z = nodeZ[node];
+		wp.groundY = nodeY[node];
+		wp.kind = nodeKind[node];
+		node = nodeParent[node];
 	}
 }
 
@@ -397,63 +427,66 @@ export function findPathInto(
 			SURFACE_SCRATCH,
 		) ?? fallbackSurface(SURFACE_SCRATCH, startGroundY);
 
-	const open = SHARED_OPEN_HEAP;
-	const closed = SHARED_CLOSED;
-	open.clear();
-	closed.clear();
-	USED_NODES.length = 0;
+	// Reset the shared SoA search state. The closed-table fill is 16k words —
+	// cheaper than generation-stamp bookkeeping and runs once per search.
+	heapSize = 0;
+	_nodeCursor = 0;
+	closedTable.fill(0);
 
 	let success = false;
 	try {
 		const startH = Math.abs(startX - targetX) + Math.abs(startZ - targetZ);
-		const startNode = allocNode(
+		const startIndex = allocNodeIndex(
 			startX,
 			startZ,
 			startSurface.groundY,
 			startSurface.kind,
 			0,
 			startH,
-			null,
+			-1,
 		);
-		open.push(startNode);
-		closed.set(
-			nodeKey(startX, startZ, startSurface.groundY, startSurface.kind),
-			0,
-		);
+		heapPush(startIndex);
+		closedUpsert(startIndex);
 
 		let expansions = 0;
-		while (open.size > 0 && expansions < maxExpansions) {
+		while (heapSize > 0 && expansions < maxExpansions) {
 			if (!hasPathfindingBudget()) {
 				// Budget window exhausted — bail out cleanly this tick; the
 				// caller retries on its next wander/shore search.
 				break;
 			}
 			consumePathfindingBudget();
-			const current = open.pop()!;
+			const current = heapPop();
 			expansions++;
 
 			if (
-				current.x === targetX &&
-				current.z === targetZ &&
+				nodeX[current] === targetX &&
+				nodeZ[current] === targetZ &&
 				(requiredTargetGroundY === undefined ||
-					current.groundY === requiredTargetGroundY)
+					nodeY[current] === requiredTargetGroundY)
 			) {
 				buildPathInto(outPath, current);
 				success = outPath.length > 0;
 				return success;
 			}
 
+			const curX = nodeX[current];
+			const curZ = nodeZ[current];
+			const curY = nodeY[current];
+			const curKind = nodeKind[current];
+			const curG = nodeG[current];
+
 			for (let i = 0; i < DIRS.length; i++) {
 				const dir = DIRS[i];
-				const nx = current.x + dir[0];
-				const nz = current.z + dir[1];
+				const nx = curX + dir[0];
+				const nz = curZ + dir[1];
 
 				const surface = findSurface(
 					nx,
 					nz,
-					current.groundY,
-					current.kind === PathNodeKind.Water ? 3 : 1,
-					current.kind === PathNodeKind.Water ? 6 : 1,
+					curY,
+					curKind === PathNodeKind.Water ? 3 : 1,
+					curKind === PathNodeKind.Water ? 6 : 1,
 					headroom,
 					true,
 					SURFACE_SCRATCH,
@@ -465,25 +498,26 @@ export function findPathInto(
 					moveCost += 6;
 				}
 				if (
-					current.kind === PathNodeKind.Land &&
+					curKind === PathNodeKind.Land &&
 					surface.kind === PathNodeKind.Water
 				) {
 					moveCost += 8;
 				}
 				if (
-					current.kind === PathNodeKind.Water &&
+					curKind === PathNodeKind.Water &&
 					surface.kind === PathNodeKind.Land
 				) {
 					moveCost -= 3;
 				}
 
-				const tentativeG = current.g + moveCost;
-				const key = nodeKey(nx, nz, surface.groundY, surface.kind);
-				const best = closed.get(key);
-				if (best !== undefined && best <= tentativeG) continue;
+				const tentativeG = curG + moveCost;
+				const best = closedLookupG(nx, nz, surface.groundY, surface.kind);
+				if (best >= 0 && best <= tentativeG) continue;
+
+				if (_nodeCursor >= NODE_CAPACITY) break;
 
 				const h = Math.abs(nx - targetX) + Math.abs(nz - targetZ);
-				const nextNode = allocNode(
+				const nextNode = allocNodeIndex(
 					nx,
 					nz,
 					surface.groundY,
@@ -492,16 +526,16 @@ export function findPathInto(
 					h,
 					current,
 				);
-				open.push(nextNode);
-				closed.set(key, tentativeG);
+				heapPush(nextNode);
+				closedUpsert(nextNode);
 			}
 		}
 
 		return false;
 	} finally {
-		open.clear();
-		closed.clear();
-		releaseUsedNodes();
+		heapSize = 0;
+		closedTable.fill(0);
+		_nodeCursor = 0;
 		if (!success) {
 			outPath.length = 0;
 		}

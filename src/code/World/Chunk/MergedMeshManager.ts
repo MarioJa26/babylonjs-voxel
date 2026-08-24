@@ -321,7 +321,6 @@ const _precomputedOffsets = (() => {
 })();
 
 const _allGroupsReuse: MergedMeshGroup[] = [];
-export const PRECOMPUTED_CHUNK_OFFSETS_ARRAY = Array.from(_precomputedOffsets);
 
 export type GroupMeshRebuildCallback = (group: MergedMeshGroup) => void;
 let _onGroupMeshNeedsRebuild: GroupMeshRebuildCallback | null = null;

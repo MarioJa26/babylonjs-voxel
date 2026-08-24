@@ -1,9 +1,4 @@
-import {
-	createFreeCamera,
-	type FreeCamera,
-	type Vec3,
-	vec3,
-} from "@babylonjs/lite";
+import { createFreeCamera, type FreeCamera, type Vec3 } from "@babylonjs/lite";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 
 /**
@@ -142,8 +137,17 @@ export class PlayerCamera {
 	}
 
 	/** Full 3D unit vector pointing in the direction the camera is looking. */
+	// PERF: shared scratch — callers consume immediately; avoids a fresh
+	// {x,y,z} literal per call (currently throttled debug-HUD only, but this
+	// is a getter future hot paths will reach for).
+	#getForwardScratch: Vec3 = { x: 0, y: 0, z: 0 };
+
 	public getForwardDirection(): Vec3 {
-		return vec3(this.#forwardX, this.#forwardY, this.#forwardZ);
+		const s = this.#getForwardScratch;
+		s.x = this.#forwardX;
+		s.y = this.#forwardY;
+		s.z = this.#forwardZ;
+		return s;
 	}
 
 	/** True when zoomed out far enough to see the player body, meaning third-person. */
@@ -159,9 +163,15 @@ export class PlayerCamera {
 		this.#playerCamera.fov = value * (Math.PI / 180);
 	}
 
+	#positionScratch: Vec3 = { x: 0, y: 0, z: 0 };
+
 	public get position(): Vec3 {
 		const position = this.#playerCamera.position;
-		return { x: position.x, y: position.y, z: position.z };
+		const s = this.#positionScratch;
+		s.x = position.x;
+		s.y = position.y;
+		s.z = position.z;
+		return s;
 	}
 
 	public set position(position: Vec3) {

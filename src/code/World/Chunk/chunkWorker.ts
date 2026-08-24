@@ -3,6 +3,7 @@ import {
 	type GenerateDistantTerrainRequest,
 	type GenerateFarTileRequest,
 	type GenerateFullMeshRequest,
+	type GenerateTerrainRequest,
 	type InitDistantTerrainSharedRequest,
 	type InitLightSharedRequest,
 	type LightAddEmissionRequest,
@@ -54,20 +55,19 @@ function lodStepOfLod(lod: number | null | undefined): number {
 	return lod !== null && lod !== undefined && lod >= 4 ? 1 << (lod - 3) : 1;
 }
 
-const SKIRT_SIDE_ALL = 0xf;
-
 /**
  * Decide which horizontal borders this chunk owns skirts for, so two chunks
  * never wall the same boundary plane (coplanar z-fighting). A side gets a
  * skirt only when its neighbor is MISSING or FINER; same-level boundaries
  * are seamless via padded slabs and coarser neighbors own their own side.
+ *
+ * PERF: returns one packed int — low nibble = sides, high nibble = near-inset
+ * sides — instead of a fresh {sides, nearInset} literal per remesh/relight
+ * dispatch.
  */
-export function computeBorderSkirtMasks(chunk: Chunk): {
-	sides: number;
-	nearInset: number;
-} {
+export function computeBorderSkirtMasks(chunk: Chunk): number {
 	const myStep = lodStepOfLod(chunk.lodLevel);
-	if (myStep <= 1) return { sides: 0, nearInset: 0 };
+	if (myStep <= 1) return 0;
 
 	let sides = 0;
 	let nearInset = 0;
@@ -98,7 +98,7 @@ export function computeBorderSkirtMasks(chunk: Chunk): {
 	check(0, -1, 4, true);
 	check(0, 1, 8, false);
 
-	return { sides, nearInset };
+	return sides | (nearInset << 4);
 }
 
 export class ChunkWorker {
@@ -340,8 +340,8 @@ export class ChunkWorker {
 		msg.uniformBlockId = chunk.isUniform ? chunk.uniformBlockId : undefined;
 
 		const skirts = computeBorderSkirtMasks(chunk);
-		msg.borderSkirtSides = skirts.sides;
-		msg.borderSkirtNearInset = skirts.nearInset;
+		msg.borderSkirtSides = skirts & 0xf;
+		msg.borderSkirtNearInset = (skirts >>> 4) & 0xf;
 
 		// SAB-direct: no payload buffers, no transfer list. The worker reads
 		// the center grid and the 26 neighbor borders straight from the
@@ -357,13 +357,9 @@ export class ChunkWorker {
 	 */
 	public postVoxelRecycleBuffers(buffers: ArrayBuffer[]): void {
 		if (buffers.length === 0) return;
-		this.voxelWorker.postMessage(
-			{
-				type: WorkerTaskType.VoxelRecycleBuffers,
-				buffers,
-			} satisfies VoxelRecycleBuffersRequest,
-			buffers,
-		);
+		const msg = this.#recycleBuffersMsg;
+		msg.buffers = buffers;
+		this.voxelWorker.postMessage(msg, buffers);
 	}
 
 	/**
@@ -388,25 +384,41 @@ export class ChunkWorker {
 		msg.neighborMask = ChunkWorker._buildNeighborMask(chunk);
 
 		const skirts = computeBorderSkirtMasks(chunk);
-		msg.borderSkirtSides = skirts.sides;
-		msg.borderSkirtNearInset = skirts.nearInset;
+		msg.borderSkirtSides = skirts & 0xf;
+		msg.borderSkirtNearInset = (skirts >>> 4) & 0xf;
 
 		this.voxelWorker.postMessage(msg);
 	}
 
 	// Terrain generation stays on terrainWorker
+	// PERF: prebuilt, reused descriptors (same pattern + postMessage-clones-
+	// synchronously rationale as #voxelMeshMsg above) — one object allocation
+	// per instance instead of per generated chunk / recycled result.
+	readonly #terrainGenMsg: GenerateTerrainRequest = {
+		type: WorkerTaskType.GenerateTerrain,
+		chunkId: 0n,
+		chunkX: 0,
+		chunkY: 0,
+		chunkZ: 0,
+		deferLighting: true,
+	};
+
+	readonly #recycleBuffersMsg: VoxelRecycleBuffersRequest = {
+		type: WorkerTaskType.VoxelRecycleBuffers,
+		buffers: [],
+	};
+
 	public postTerrainGeneration(
 		chunk: Chunk,
 		deferLighting: boolean = true,
 	): void {
-		this.terrainWorker.postMessage({
-			type: WorkerTaskType.GenerateTerrain,
-			chunkId: chunk.id,
-			chunkX: chunk.chunkX,
-			chunkY: chunk.chunkY,
-			chunkZ: chunk.chunkZ,
-			deferLighting,
-		});
+		const msg = this.#terrainGenMsg;
+		msg.chunkId = chunk.id;
+		msg.chunkX = chunk.chunkX;
+		msg.chunkY = chunk.chunkY;
+		msg.chunkZ = chunk.chunkZ;
+		msg.deferLighting = deferLighting;
+		this.terrainWorker.postMessage(msg);
 	}
 
 	// ---------------------------------------------------------------------

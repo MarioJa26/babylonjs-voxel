@@ -1,15 +1,19 @@
 import {
 	addToScene,
 	createMeshFromData,
-	disposeMeshGpu,
+	createStorageBuffer,
+	disposeStorageBuffer,
 	type EngineContext,
 	getCameraPosition,
 	type Mesh,
 	onBeforeRender,
-	removeFromScene,
-	resizeMeshGeometry,
 	type SceneContext,
+	type ShaderMaterial,
+	type StorageBuffer,
+	setShaderStorageBuffer,
 	setShaderUniform,
+	setThinInstances,
+	updateStorageBuffer,
 } from "@babylonjs/lite";
 import MapFog from "@/code/Maps/MapFog";
 import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
@@ -17,54 +21,204 @@ import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import { ChunkWorkerPool } from "../Chunk/ChunkWorkerPool";
 import type { FarTileGeneratedMessage } from "../Chunk/DataStructures/WorkerMessageType";
 import {
+	bindFarTileBuffers,
 	createFarTileTerrainMaterial,
 	createFarTileWaterMaterial,
 } from "../Light/FarTileShaderLite";
+import { onGpuWorkDone } from "../Light/liteGpuBuffer.js";
 import {
 	atlasTileSize,
 	getDiffuseTexture2D,
 } from "../Texture/TextureAtlasFactory";
-import { expandTileFaces } from "./FarTileFaceFormat";
 import { getFarTileLevels, isFarTilesEnabled } from "./FarTileLadder";
 
 /**
- * Main-thread far-tile streaming manager.
+ * Main-thread far-tile streaming manager — GPU face-decoding variant.
  *
- * Owns the LOD6+ tile meshes: requests missing tiles nearest-first through
- * the worker pool, expands returned compact face data into vertex buffers,
- * and rebuilds one merged Mesh per ladder level (plus a single global water
- * mesh) whenever a level's tile set changes.
+ * Worker faces (4×u32 words, see FarTileFaceFormat.ts) are copied VERBATIM
+ * into a per-level face-word storage buffer; each level renders as ONE shared
+ * quad drawn once per face through compact thin instances. The previous CPU
+ * expand-to-vertex-buffers pipeline (expandTileFaces + full-level recopy +
+ * destroy/recreate uploads on every tile arrival) is gone entirely:
+ *
+ *   - tile arrival   = memcpy words into an arena slot + ranged GPU write
+ *   - tile eviction  = zero-fill the slot + ranged GPU write
+ *   - VRAM           = 16 B/face words + 16 B/instance record (+ shared quad),
+ *                      vs ~216 B/quad of expanded vertex data before
+ *
+ * Each tile also owns one entry in a workspace-wide `tileOrigins` buffer
+ * (vec2 world X/Z); faces reference their tile's origin slot via bits 8-23
+ * of word3, stamped main-thread-side at arrival (worker output untouched).
  */
 
 const MAX_TILE_REQUESTS_PER_UPDATE = 24;
 const UNLOAD_MARGIN_CHUNKS = 4;
 
+// Bytes per face word record (4 u32).
+const FT_FACE_BYTES = 16;
+const FT_FACE_WORDS = 4;
+
+// Shared unit quad — same constants PackedChunkMesh uses. Vertex shader
+// derives real positions from the face words; this buffer only feeds the
+// mandatory position attribute.
+const QUAD_POSITIONS = new Float32Array([0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]);
+const QUAD_NORMALS = new Float32Array(12);
+const QUAD_INDICES = new Uint32Array([0, 2, 1, 0, 3, 2]);
+
+interface FarSlot {
+	base: number; // first face index in the arena
+	count: number; // face count
+}
+
+interface DirtyRange {
+	start: number; // face units
+	count: number;
+}
+
+interface FarMeshLike extends Mesh {
+	thinInstances?: {
+		matrices: Float32Array;
+		count: number;
+		compact?: boolean;
+		_capacity: number;
+		_version: number;
+		_gpuBuffer: GPUBuffer | null;
+		_gpuBufferStorage: boolean;
+		_gpuVersion: number;
+		_dirtyMin: number;
+		_dirtyMax: number;
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Face-word arena: verbatim worker words + stable per-tile slots.
+// ---------------------------------------------------------------------------
+
+let engineRef: EngineContext | null = null;
+
+function disposeBufferAfterGpuWork(buffer: StorageBuffer): void {
+	if (!engineRef) return;
+	void onGpuWorkDone(engineRef).then(() => disposeStorageBuffer(buffer));
+}
+
+class FaceWordArena {
+	cpu: Uint32Array = new Uint32Array(0);
+	buffer: StorageBuffer | null = null;
+	capacityFaces = 0;
+	appendedFaces = 0; // high-water extent == instance count target
+	holes: FarSlot[] = [];
+	dirtyRanges: DirtyRange[] = [];
+	instances = new Float32Array(0);
+	instanceCapacityFaces = 0;
+	initialCapacity: number;
+	bufferRebound = false;
+
+	constructor(initialCapacity: number) {
+		this.initialCapacity = initialCapacity;
+	}
+
+	private ensureCpu(faceCount: number): void {
+		if (faceCount <= this.capacityFaces) return;
+		const maxFaces = maxFarFacesPerArena();
+		const cap = Math.min(
+			Math.max(faceCount, this.capacityFaces * 4 || this.initialCapacity, 256),
+			maxFaces,
+		);
+
+		const next = new Uint32Array(cap * FT_FACE_WORDS);
+		next.set(this.cpu.subarray(0, this.appendedFaces * FT_FACE_WORDS));
+		this.cpu = next;
+		this.capacityFaces = cap;
+
+		const old = this.buffer;
+		this.buffer = createStorageBuffer(engineRef!, this.cpu, "farTileFaces");
+		if (old) disposeBufferAfterGpuWork(old);
+		this.bufferRebound = true;
+	}
+
+	/** Allocate a contiguous slot; returns null when the arena is full. */
+	alloc(count: number): FarSlot | null {
+		if (count === 0) return { base: 0, count: 0 };
+		if (count > maxFarFacesPerArena()) return null;
+
+		for (let i = 0; i < this.holes.length; i++) {
+			const h = this.holes[i];
+			if (h.count >= count) {
+				this.holes.splice(i, 1);
+				if (h.count > count) {
+					this.insertHole(h.base + count, h.count - count);
+				}
+				return { base: h.base, count };
+			}
+		}
+
+		if (this.appendedFaces + count > this.capacityFaces) {
+			this.ensureCpu(this.appendedFaces + count);
+			if (this.appendedFaces + count > this.capacityFaces) return null;
+		}
+		const slot = { base: this.appendedFaces, count };
+		this.appendedFaces += count;
+		return slot;
+	}
+
+	insertHole(base: number, count: number): void {
+		let lo = 0;
+		while (lo < this.holes.length && this.holes[lo].base < base) lo++;
+		this.holes.splice(lo, 0, { base, count });
+	}
+
+	free(slot: FarSlot): void {
+		if (slot.count === 0) return;
+		const b4 = slot.base * FT_FACE_WORDS;
+		const n4 = slot.count * FT_FACE_WORDS;
+		this.cpu.fill(0, b4, b4 + n4);
+		this.pushDirty(slot.base, slot.count);
+		this.insertHole(slot.base, slot.count);
+	}
+
+	pushDirty(start: number, count: number): void {
+		if (count <= 0) return;
+		const ranges = this.dirtyRanges;
+		const last = ranges.length > 0 ? ranges[ranges.length - 1] : null;
+		if (last && last.start + last.count === start) {
+			last.count += count;
+			return;
+		}
+		ranges.push({ start, count });
+	}
+
+	flushDirty(): void {
+		const engine = engineRef;
+		if (!engine || !this.buffer) {
+			this.dirtyRanges.length = 0;
+			return;
+		}
+		for (const r of this.dirtyRanges) {
+			updateStorageBuffer(
+				engine,
+				this.buffer,
+				this.cpu.subarray(
+					r.start * FT_FACE_WORDS,
+					(r.start + r.count) * FT_FACE_WORDS,
+				),
+				r.start * FT_FACE_BYTES,
+			);
+		}
+		this.dirtyRanges.length = 0;
+	}
+}
+
 interface TileEntry {
 	levelIndex: number;
 	tx: number;
 	tz: number;
-	opaque: import("./FarTileFaceFormat").TileVertexData | null;
-	waterPositions: Float32Array | null;
-	// waterIndices removed - generated on the fly in rebuildWater()
-}
-
-interface LevelRenderState {
-	mesh: Mesh | null;
-	dirty: boolean;
-	// Buffer Pooling to prevent O(N^2) GC Stutter
-	capacityQuads: number;
-	positions: Float32Array | null;
-	normals: Float32Array | null;
-	uv2: Float32Array | null;
-	colors: Float32Array | null;
-	indices: Uint32Array | null;
+	opaque: FarSlot | null;
+	water: FarSlot | null;
+	originSlot: number;
 }
 
 class FarTileManagerImpl {
 	private static instance: FarTileManagerImpl | null = null;
-	private waterPositionsBuf: Float32Array | null = null;
-	private waterNormalsBuf: Float32Array | null = null;
-	private waterIndicesBuf: Uint32Array | null = null;
 
 	public static getInstance(): FarTileManagerImpl {
 		if (!FarTileManagerImpl.instance) {
@@ -80,15 +234,19 @@ class FarTileManagerImpl {
 	private engine: EngineContext | null = null;
 	private scene: SceneContext | null = null;
 
-	private terrainMaterial: ReturnType<
-		typeof createFarTileTerrainMaterial
-	> | null = null;
-	private waterMaterial: ReturnType<typeof createFarTileWaterMaterial> | null =
-		null;
+	private terrainMaterials: ShaderMaterial[] = [];
+	private waterMaterial: ShaderMaterial | null = null;
+	private terrainArenas: FaceWordArena[] = [];
+	private terrainMeshes: (FarMeshLike | null)[] = [];
+	private waterArena = new FaceWordArena(4096);
+	private waterMesh: FarMeshLike | null = null;
 
-	private readonly levels: LevelRenderState[] = [];
-	private waterMesh: Mesh | null = null;
-	private waterDirty = false;
+	// Workspace-wide tile-origin table (shared by every material).
+	private origins = new Float32Array(0);
+	private originsBuffer: StorageBuffer | null = null;
+	private originCapacitySlots = 0;
+	private nextOriginSlot = 0;
+	private originsDirty = false;
 
 	private readonly tiles = new Map<string, TileEntry>();
 	private readonly pendingByKey = new Set<string>();
@@ -119,28 +277,27 @@ class FarTileManagerImpl {
 
 		this.engine = engine;
 		this.scene = scene;
+		engineRef = engine;
 
-		this.terrainMaterial = createFarTileTerrainMaterial({
-			engine,
-			scene,
-			diffuseTexture: getDiffuseTexture2D(),
-			atlasTileSize,
-			textureScale: 32,
-		});
+		const diffuse = getDiffuseTexture2D();
+		const levels = getFarTileLevels();
+
+		for (let i = 0; i < levels.length; i++) {
+			const material = createFarTileTerrainMaterial({
+				engine,
+				scene,
+				diffuseTexture: diffuse,
+				atlasTileSize,
+				textureScale: 32,
+				nameSuffix: String(i),
+			});
+			this.terrainMaterials.push(material);
+			this.terrainArenas.push(new FaceWordArena(8192));
+			this.terrainMeshes.push(null);
+		}
 		this.waterMaterial = createFarTileWaterMaterial();
 
-		for (let i = 0; i < getFarTileLevels().length; i++) {
-			this.levels.push({
-				mesh: null,
-				dirty: false,
-				capacityQuads: 0,
-				positions: null,
-				normals: null,
-				uv2: null,
-				colors: null,
-				indices: null,
-			});
-		}
+		this.ensureOrigins(1024);
 
 		const pool = ChunkWorkerPool.getInstance();
 		pool.onFarTileGenerated = (data) => this.handleResult(data);
@@ -221,7 +378,9 @@ class FarTileManagerImpl {
 			requested++;
 		}
 
-		// Unload tiles beyond their ring + margin.
+		// Unload tiles outside their window: beyond ringOuter+margin (walked
+		// away) OR inside ringInner (approached — real chunks now cover this
+		// area, and a lingering far tile would z-fight/poke through them).
 		for (const [key, entry] of this.tiles) {
 			const lv = levels[entry.levelIndex];
 			if (!lv) continue;
@@ -231,9 +390,12 @@ class FarTileManagerImpl {
 			const centerZ = entry.tz * span + span / 2;
 			const d = Math.max(Math.abs(centerX - pcx), Math.abs(centerZ - pcz));
 
-			if (d >= lv.ringOuterChunks + UNLOAD_MARGIN_CHUNKS) {
+			if (
+				d >= lv.ringOuterChunks + UNLOAD_MARGIN_CHUNKS ||
+				d < lv.ringInnerChunks
+			) {
+				this.releaseEntry(entry);
 				this.tiles.delete(key);
-				this.markLevelDirty(entry.levelIndex);
 			}
 		}
 	}
@@ -255,26 +417,57 @@ class FarTileManagerImpl {
 		const lv = levels[data.levelIndex];
 		if (!lv) return;
 
-		const originX = data.tileX * lv.tileSizeChunks * 32;
-		const originZ = data.tileZ * lv.tileSizeChunks * 32;
+		const arena = this.terrainArenas[data.levelIndex];
+		if (!arena) return;
 
-		const expanded = expandTileFaces(
-			data.opaqueFaces,
-			data.waterFaces,
-			originX,
-			originZ,
+		const opaqueCount = data.opaqueFaces.length >>> 2;
+		const waterCount = data.waterFaces.length >>> 2;
+
+		const opaqueSlot = opaqueCount > 0 ? arena.alloc(opaqueCount) : null;
+		const waterSlot = waterCount > 0 ? this.waterArena.alloc(waterCount) : null;
+		if ((opaqueCount > 0 && !opaqueSlot) || (waterCount > 0 && !waterSlot)) {
+			// Arena full (binding-size cap) — drop the tile rather than
+			// partially populating it.
+			console.warn(
+				`[FarTileManager] arena full, dropping tile ${key} ` +
+					`(opaque ${opaqueCount}, water ${waterCount}).`,
+			);
+			return;
+		}
+
+		const originSlot = this.allocOrigin(
+			data.tileX * lv.tileSizeChunks * 32,
+			data.tileZ * lv.tileSizeChunks * 32,
 		);
+
+		if (opaqueSlot && opaqueSlot.count > 0) {
+			arena.cpu.set(data.opaqueFaces, opaqueSlot.base * FT_FACE_WORDS);
+			stampOriginSlot(arena.cpu, opaqueSlot, originSlot);
+			arena.pushDirty(opaqueSlot.base, opaqueSlot.count);
+		}
+		if (waterSlot && waterSlot.count > 0) {
+			this.waterArena.cpu.set(data.waterFaces, waterSlot.base * FT_FACE_WORDS);
+			stampOriginSlot(this.waterArena.cpu, waterSlot, originSlot);
+			this.waterArena.pushDirty(waterSlot.base, waterSlot.count);
+		}
 
 		const entry: TileEntry = {
 			levelIndex: data.levelIndex,
 			tx: data.tileX,
 			tz: data.tileZ,
-			opaque: expanded.opaque,
-			waterPositions: expanded.waterPositions,
+			opaque: opaqueSlot,
+			water: waterSlot,
+			originSlot,
 		};
-
 		this.tiles.set(key, entry);
-		this.markLevelDirty(data.levelIndex);
+	}
+
+	private releaseEntry(entry: TileEntry): void {
+		const arena = this.terrainArenas[entry.levelIndex];
+		if (arena && entry.opaque) arena.free(entry.opaque);
+		if (entry.water) this.waterArena.free(entry.water);
+		// Origin slots are never reused — stale entries stay unreferenced and
+		// the table simply grows with the monotonic slot counter.
 	}
 
 	private pendingIsStillWanted(
@@ -302,14 +495,8 @@ class FarTileManagerImpl {
 		);
 	}
 
-	private markLevelDirty(levelIndex: number): void {
-		const state = this.levels[levelIndex];
-		if (state) state.dirty = true;
-		this.waterDirty = true;
-	}
-
 	// ------------------------------------------------------------------
-	// Frame pump + mesh rebuild
+	// Frame pump + GPU sync
 	// ------------------------------------------------------------------
 
 	private frame(): void {
@@ -317,200 +504,139 @@ class FarTileManagerImpl {
 
 		this.updateUniforms();
 
-		for (let i = 0; i < this.levels.length; i++) {
-			if (!this.levels[i].dirty) continue;
-			this.levels[i].dirty = false;
-			this.rebuildLevel(i);
+		for (const arena of this.terrainArenas) {
+			this.syncArena(arena);
 		}
+		this.syncArena(this.waterArena);
+		this.flushOrigins();
 
-		if (this.waterDirty) {
-			this.waterDirty = false;
-			this.rebuildWater();
+		for (let i = 0; i < this.terrainArenas.length; i++) {
+			this.ensureLevelMesh(i);
+		}
+		this.ensureWaterMesh();
+	}
+
+	private syncArena(arena: FaceWordArena): void {
+		arena.flushDirty();
+
+		// Grow the retained zero-filled instance records to cover the arena's
+		// high-water extent. Records stay all-zero forever — the vertex shader
+		// selects faces purely via @builtin(instance_index).
+		const needLen = arena.appendedFaces * 4;
+		if (needLen > arena.instances.length) {
+			let cap = arena.instances.length > 0 ? arena.instances.length : 1024;
+			while (cap < needLen) cap *= 2;
+			const next = new Float32Array(cap);
+			next.set(arena.instances);
+			arena.instances = next;
+			arena.instanceCapacityFaces = cap / 4;
+		} else if (
+			arena.instances.length >= 4096 &&
+			needLen * 4 <= arena.instances.length
+		) {
+			arena.instances = new Float32Array(Math.max(1024, needLen));
+			arena.instanceCapacityFaces = arena.instances.length / 4;
 		}
 	}
 
-	private rebuildLevel(levelIndex: number): void {
-		if (!this.engine || !this.scene || !this.terrainMaterial) return;
+	private ensureLevelMesh(levelIndex: number): void {
+		if (!this.engine || !this.scene) return;
+		const arena = this.terrainArenas[levelIndex];
+		const material = this.terrainMaterials[levelIndex];
+		// Mesh creation binds the arena's storage buffer, so wait until the
+		// first tile arrival actually materialized one.
+		if (!arena || !material || !arena.buffer || !this.originsBuffer) return;
 
-		let totalQuads = 0;
-		for (const entry of this.tiles.values()) {
-			if (entry.levelIndex === levelIndex && entry.opaque) {
-				totalQuads += entry.opaque.indices.length / 6;
-			}
-		}
-
-		const state = this.levels[levelIndex];
-		if (totalQuads === 0) {
-			if (state.mesh) {
-				disposeFarMesh(this.scene, state.mesh);
-				state.mesh = null;
-			}
-			return;
-		}
-
-		// 1.2x Over-allocation prevents thrashing when multiple tiles load rapidly
-		if (!state.positions || totalQuads > state.capacityQuads) {
-			const cap = Math.ceil(totalQuads * 1.2);
-			state.capacityQuads = cap;
-			state.positions = new Float32Array(cap * 4 * 3);
-			state.normals = new Float32Array(cap * 4 * 3);
-			state.uv2 = new Float32Array(cap * 4 * 2);
-			state.colors = new Float32Array(cap * 4 * 4);
-			state.indices = new Uint32Array(cap * 4 * 1.5); // 6 indices per quad
-		}
-
-		const positions = state.positions!;
-		const normals = state.normals!;
-		const uv2 = state.uv2!;
-		const colors = state.colors!;
-		const indices = state.indices!;
-
-		let vOff = 0;
-		let iOff = 0;
-
-		for (const entry of this.tiles.values()) {
-			if (entry.levelIndex !== levelIndex || !entry.opaque) continue;
-			const src = entry.opaque;
-
-			// Fast TypedArray Copy
-			positions.set(src.positions, vOff * 3);
-			normals.set(src.normals, vOff * 3);
-			uv2.set(src.uv2, vOff * 2);
-			colors.set(src.colors, vOff * 4);
-
-			for (let i = 0; i < src.indices.length; i++) {
-				indices[iOff++] = src.indices[i] + vOff;
-			}
-			vOff += src.positions.length / 3;
-		}
-
-		// Use subarrays to pass exact bounds to WebGL without slicing/copying
-		const posView = positions.subarray(0, vOff * 3);
-		const normView = normals.subarray(0, vOff * 3);
-		const uv2View = uv2.subarray(0, vOff * 2);
-		const colorView = colors.subarray(0, vOff * 4);
-		const idxView = indices.subarray(0, iOff);
-
-		if (state.mesh) {
-			resizeMeshGeometry(
-				this.engine,
-				state.mesh,
-				posView,
-				normView,
-				idxView,
-				undefined,
-				uv2View,
-				undefined,
-				colorView,
-			);
-		} else {
-			const mesh = createMeshFromData(
+		let mesh = this.terrainMeshes[levelIndex];
+		if (!mesh) {
+			mesh = createQuadInstanceMesh(
 				this.engine,
 				`farTilesLod${6 + levelIndex}`,
-				posView,
-				normView,
-				idxView,
-				undefined,
-				uv2View,
-				undefined,
-				colorView,
 			);
-			mesh.material = this.terrainMaterial;
+			mesh.material = material;
 			mesh.pickable = false;
+			// Explicit placement AFTER chunk opaque/cutout groups (order 0) —
+			// equal-depth coplanar cases resolve toward the real chunks.
+			mesh.renderOrder = 90;
+			bindFarTileBuffers(material, arena.buffer, this.originsBuffer);
 			addToScene(this.scene, mesh);
-			state.mesh = mesh;
+			this.terrainMeshes[levelIndex] = mesh;
+		} else if (arena.bufferRebound) {
+			bindFarTileBuffers(material, arena.buffer, this.originsBuffer);
 		}
+		syncThinInstanceCount(mesh, arena);
+		arena.bufferRebound = false;
 	}
 
-	private rebuildWater(): void {
+	private ensureWaterMesh(): void {
 		if (!this.engine || !this.scene || !this.waterMaterial) return;
+		const arena = this.waterArena;
+		if (!arena.buffer || !this.originsBuffer) return;
 
-		let totalQuads = 0;
-		for (const entry of this.tiles.values()) {
-			if (entry.waterPositions) totalQuads += entry.waterPositions.length / 12;
-		}
-
-		if (totalQuads === 0) {
-			if (this.waterMesh) {
-				disposeFarMesh(this.scene, this.waterMesh);
-				this.waterMesh = null;
-			}
-			return;
-		}
-
-		if (
-			!this.waterPositionsBuf ||
-			totalQuads > this.waterPositionsBuf.length / 12
-		) {
-			const cap = Math.ceil(totalQuads * 1.2);
-			this.waterPositionsBuf = new Float32Array(cap * 12);
-			this.waterNormalsBuf = new Float32Array(cap * 12);
-			this.waterIndicesBuf = new Uint32Array(cap * 6);
-		}
-
-		const positions = this.waterPositionsBuf;
-		const normals = this.waterNormalsBuf!;
-		const indices = this.waterIndicesBuf!;
-
-		let vOff = 0;
-		let iOff = 0;
-
-		for (const entry of this.tiles.values()) {
-			if (!entry.waterPositions) continue; // Only check waterPositions now
-
-			const src = entry.waterPositions;
-			const quadCount = src.length / 12;
-			const base = vOff;
-
-			positions.set(src, vOff * 3);
-
-			// Generate Indices on the fly (Eliminates worker-side waterIndices generation)
-			for (let f = 0; f < quadCount; f++) {
-				const b = base + f * 4;
-				indices[iOff++] = b;
-				indices[iOff++] = b + 2;
-				indices[iOff++] = b + 1;
-				indices[iOff++] = b;
-				indices[iOff++] = b + 3;
-				indices[iOff++] = b + 2;
-			}
-
-			// Set Normals (Y=1)
-			for (let k = 0; k < quadCount; k++) {
-				const b = (vOff + k * 4) * 3;
-				normals[b + 1] = 1;
-				normals[b + 4] = 1;
-				normals[b + 7] = 1;
-				normals[b + 10] = 1;
-			}
-			vOff += quadCount * 4;
-		}
-
-		const posView = positions.subarray(0, vOff * 3);
-		const normView = normals!.subarray(0, vOff * 3);
-		const idxView = indices!.subarray(0, iOff);
-
-		if (this.waterMesh) {
-			resizeMeshGeometry(
-				this.engine,
-				this.waterMesh,
-				posView,
-				normView,
-				idxView,
-			);
-		} else {
-			const mesh = createMeshFromData(
-				this.engine,
-				"farTilesWater",
-				posView,
-				normView,
-				idxView,
-			);
+		if (!this.waterMesh) {
+			const mesh = createQuadInstanceMesh(this.engine, "farTilesWater");
 			mesh.material = this.waterMaterial;
 			mesh.pickable = false;
+			// After far terrain (90); chunk water is a transparent-pass mesh
+			// (order 1) that always draws after the whole opaque bucket.
+			mesh.renderOrder = 95;
+			bindFarTileBuffers(this.waterMaterial, arena.buffer, this.originsBuffer);
 			addToScene(this.scene, mesh);
 			this.waterMesh = mesh;
+		} else if (arena.bufferRebound) {
+			bindFarTileBuffers(this.waterMaterial, arena.buffer, this.originsBuffer);
 		}
+		syncThinInstanceCount(this.waterMesh, arena);
+		arena.bufferRebound = false;
+	}
+
+	// ------------------------------------------------------------------
+	// Tile-origin table
+	// ------------------------------------------------------------------
+
+	private ensureOrigins(slots: number): void {
+		if (slots <= this.originCapacitySlots) return;
+		const cap = Math.max(slots, this.originCapacitySlots * 2 || 1024);
+		const next = new Float32Array(cap * 2);
+		next.set(this.origins);
+		this.origins = next;
+		this.originCapacitySlots = cap;
+
+		if (this.originsBuffer) {
+			disposeBufferAfterGpuWork(this.originsBuffer);
+		}
+		this.originsBuffer = createStorageBuffer(
+			this.engine!,
+			this.origins,
+			"farTileOrigins",
+		);
+		// Rebind everywhere; materials may not have meshes yet (harmless).
+		for (const m of this.terrainMaterials) {
+			setShaderStorageBuffer(m, "tileOrigins", this.originsBuffer);
+		}
+		if (this.waterMaterial) {
+			setShaderStorageBuffer(
+				this.waterMaterial,
+				"tileOrigins",
+				this.originsBuffer,
+			);
+		}
+		this.originsDirty = true;
+	}
+
+	private allocOrigin(worldX: number, worldZ: number): number {
+		const slot = this.nextOriginSlot++;
+		if (slot + 1 > this.originCapacitySlots) this.ensureOrigins(slot + 1);
+		this.origins[slot * 2] = worldX;
+		this.origins[slot * 2 + 1] = worldZ;
+		this.originsDirty = true;
+		return slot;
+	}
+
+	private flushOrigins(): void {
+		if (!this.originsDirty || !engineRef || !this.originsBuffer) return;
+		this.originsDirty = false;
+		updateStorageBuffer(engineRef, this.originsBuffer, this.origins, 0);
 	}
 
 	// ------------------------------------------------------------------
@@ -518,7 +644,7 @@ class FarTileManagerImpl {
 	// ------------------------------------------------------------------
 
 	private updateUniforms(): void {
-		if (!this.terrainMaterial || !this.waterMaterial) return;
+		if (this.terrainMaterials.length === 0 || !this.waterMaterial) return;
 
 		const lightDir = GLOBAL_VALUES.skyLightDirection;
 		const shaderDirY = -lightDir.y;
@@ -573,7 +699,7 @@ class FarTileManagerImpl {
 
 		if (!staticChanged && !fogChanged) return;
 
-		const mats = [this.terrainMaterial, this.waterMaterial];
+		const mats = [...this.terrainMaterials, this.waterMaterial];
 
 		if (staticChanged) {
 			this.lightDirScratch[0] = lxQ;
@@ -616,6 +742,99 @@ class FarTileManagerImpl {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Stamp the tile-origin slot into word3 bits 8-23 of every face in a slot. */
+function stampOriginSlot(
+	cpu: Uint32Array,
+	slot: FarSlot,
+	originSlot: number,
+): void {
+	const mask = (originSlot & 0xffff) << 8;
+	let w = slot.base * FT_FACE_WORDS + 3;
+	for (let j = 0; j < slot.count; j++) {
+		cpu[w] = (cpu[w] & 0xff) | mask;
+		w += FT_FACE_WORDS;
+	}
+}
+
+function createQuadInstanceMesh(
+	engine: EngineContext,
+	name: string,
+): FarMeshLike {
+	const mesh = createMeshFromData(
+		engine,
+		name,
+		QUAD_POSITIONS,
+		QUAD_NORMALS,
+		QUAD_INDICES,
+	) as FarMeshLike;
+
+	// Seed compact thin instances at count 0 so an empty level draws nothing
+	// (without thinInstances the base quad itself would render).
+	setThinInstances(mesh, new Float32Array(4), 1);
+	const ti = (mesh as FarMeshLike).thinInstances;
+	if (ti) {
+		ti.compact = true;
+		ti._capacity = 1;
+		ti.count = 0;
+		ti._dirtyMin = 0;
+		ti._dirtyMax = 0;
+	}
+	return mesh;
+}
+
+/**
+ * Compact thin-instance sync — same two-path strategy as PackedChunkMesh's
+ * setThinInstancesRange: full setThinInstances only when the GPU buffer must
+ * (re)grow, otherwise mutate count/dirty-range in place so lite uploads just
+ * the changed lanes. Records are always zero here, so even a full upload is
+ * trivially cheap.
+ */
+function syncThinInstanceCount(mesh: FarMeshLike, arena: FaceWordArena): void {
+	const count = arena.appendedFaces;
+	const capacity = arena.instanceCapacityFaces;
+	if (capacity === 0 && count === 0) return;
+
+	const anyMesh = mesh as FarMeshLike;
+	let ti = anyMesh.thinInstances;
+	const needsGrowth = !ti?._gpuBuffer || capacity > (ti._capacity ?? 0);
+
+	if (needsGrowth && capacity > 0) {
+		setThinInstances(mesh, arena.instances, capacity);
+		ti = anyMesh.thinInstances;
+		if (ti) {
+			ti.compact = true;
+			ti._capacity = capacity;
+			ti.count = count;
+			ti._dirtyMin = 0;
+			ti._dirtyMax = count;
+		}
+		return;
+	}
+
+	if (!ti) return;
+	ti.matrices = arena.instances;
+	ti.count = count;
+}
+
+function maxFarFacesPerArena(): number {
+	const engine = engineRef;
+	if (!engine) return 1 << 20;
+	const device = (engine as EngineWithDevice)._device;
+	const limit =
+		typeof device?.limits?.maxStorageBufferBindingSize === "number"
+			? device.limits.maxStorageBufferBindingSize
+			: 128 * 1024 * 1024;
+	return Math.max(1, Math.floor(limit / FT_FACE_BYTES));
+}
+
+interface EngineWithDevice extends EngineContext {
+	_device?: GPUDevice;
+}
+
 export const FarTileManager = {
 	init(engine: EngineContext, scene: SceneContext): void {
 		FarTileManagerImpl.getInstance().init(engine, scene);
@@ -635,12 +854,3 @@ export const FarTileManager = {
 		return FarTileManagerImpl.peekInstance()?.isReady() === true;
 	},
 };
-
-function disposeFarMesh(scene: SceneContext, mesh: Mesh): void {
-	try {
-		removeFromScene(scene, mesh);
-	} catch {
-		// already detached
-	}
-	disposeMeshGpu(mesh);
-}

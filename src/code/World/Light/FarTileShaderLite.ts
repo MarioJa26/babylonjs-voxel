@@ -1,19 +1,40 @@
 /**
- * Babylon Lite materials for far-tile LOD meshes (LOD6+).
+ * Babylon Lite materials for far-tile LOD meshes (LOD6+) — GPU face-decoding
+ * variant.
  *
- * Vertex data is CPU-expanded from the compact face format produced by
- * FarTileGenerator into standard Lite slots:
- *   position : Float32x3 (world-space)
- *   normal   : Float32x3
- *   uv       : Float32x2 (block-space, tiles per block via fract)
- *   uv2      : Float32x2 (atlas tile id, constant per quad)
- *   color    : Float32x4 (r = light factor)
+ * Faces arrive from FarTileGenerator as 4×u32 words and go into a per-level
+ * `faceData` storage buffer VERBATIM (no CPU expansion). Each level mesh is a
+ * single shared quad drawn once per face via thin instances (compact stride-16
+ * records injected by the lite patch as `instData`; the record content is
+ * unused here — `@builtin(instance_index)` selects the face directly).
+ *
+ * Face encoding (see FarTileFaceFormat.ts):
+ *   w0: x:u10 | (y+Y_OFF):u12 | z:u10      tile-local block coords
+ *   w1: w:u10 | h:u10 | backFace:u1(b20) | axis:u2(b21-22)
+ *   w2: tileX:u8 | tileY:u8 | light:u8
+ *   w3: kind:u8 (low byte) | tileOriginIndex:u16 (bits 8-23, stamped by the
+ *       manager) — indexes the `tileOrigins` storage buffer of vec2<f32>
+ *       world-space X/Z origins.
+ *
+ * Corner selection: the fixed index pattern [0,2,1,0,3,2] gives every face
+ * ONE orientation (triangles (C0,C2,C1),(C0,C3,C2) over corner weights
+ * [P00,P10,P11,P01] = the CPU path's "reversed" order). Per-face winding
+ * flips are impossible to express as a per-vertex relabeling in a single
+ * indexed draw (orientation is uniform per draw), and the generator emits
+ * both ±axis facings — so the materials run WITHOUT backface culling. At
+ * far-tile distances the extra raster work is negligible; depth testing is
+ * unchanged and visuals are identical.
+ *
+ * Fragment stages keep the previous fog/sky/atlas math bit-for-bit; only the
+ * vertex stage changed its data source.
  */
 import {
 	createShaderMaterial,
 	type EngineContext,
 	type SceneContext,
 	type ShaderMaterial,
+	type StorageBuffer,
+	setShaderStorageBuffer,
 	setShaderTexture,
 	setShaderUniform,
 	type Texture2D,
@@ -33,7 +54,88 @@ fn ftSkyboxColor(viewDirY : f32, nightAmount : f32) -> vec3<f32> {
 }
 `;
 
+// Shared face-decode + quad-expansion prologue for both variants.
+const FACE_EXPAND_WGSL = /* wgsl */ `
+const FAR_TILE_Y_OFFSET : f32 = 1024.0;
+
+const CORNER_U = array<f32, 4>(0.0, 1.0, 1.0, 0.0);
+const CORNER_V = array<f32, 4>(0.0, 0.0, 1.0, 1.0);
+
+// Right-handed (U, V) bases per axis — mirrors the deleted CPU AXIS_BASIS:
+//   axis 0: U=Y(w), V=Z(h)   axis 1: U=Z(w), V=X(h)   axis 2: U=X(w), V=Y(h)
+const AXIS_U = array<vec3<f32>, 3>(
+  vec3<f32>(0.0, 1.0, 0.0),
+  vec3<f32>(0.0, 0.0, 1.0),
+  vec3<f32>(1.0, 0.0, 0.0),
+);
+const AXIS_V = array<vec3<f32>, 3>(
+  vec3<f32>(0.0, 0.0, 1.0),
+  vec3<f32>(1.0, 0.0, 0.0),
+  vec3<f32>(0.0, 1.0, 0.0),
+);
+
+// Unsigned +axis normal per face axis — the old CPU path always emitted
+// +axis normals (backFace flipped WINDING, never the normal).
+const AXIS_NORMAL = array<vec3<f32>, 3>(
+  vec3<f32>(1.0, 0.0, 0.0),
+  vec3<f32>(0.0, 1.0, 0.0),
+  vec3<f32>(0.0, 0.0, 1.0),
+);
+
+struct DecodedFace {
+  originX : f32,
+  originZ : f32,
+  x : f32,
+  y : f32,
+  z : f32,
+  w : f32,
+  h : f32,
+  au : f32,
+  av : f32,
+  tileX : f32,
+  tileY : f32,
+  lightFactor : f32,
+  axis : u32,
+}
+
+fn expandFace(ii : u32, vi : u32) -> DecodedFace {
+  var d : DecodedFace;
+  let i4 = ii * 4u;
+  let w0 = faceData[i4];
+  let w1 = faceData[i4 + 1u];
+  let w2 = faceData[i4 + 2u];
+  let w3 = faceData[i4 + 3u];
+
+  let origin = tileOrigins[(w3 >> 8u) & 0xffffu];
+  d.originX = origin.x;
+  d.originZ = origin.y;
+
+  d.x = origin.x + f32(w0 & 0x3ffu);
+  d.y = f32((w0 >> 10u) & 0xfffu) - FAR_TILE_Y_OFFSET;
+  d.z = origin.y + f32((w0 >> 22u) & 0x3ffu);
+
+  d.w = f32(w1 & 0x3ffu);
+  d.h = f32((w1 >> 10u) & 0x3ffu);
+  d.axis = (w1 >> 21u) & 3u;
+
+  d.tileX = f32(w2 & 0xffu);
+  d.tileY = f32((w2 >> 8u) & 0xffu);
+  let light = (w2 >> 16u) & 0xffu;
+  d.lightFactor = select(0.8, 1.0, light >= 224u);
+
+  // Fixed index pattern renders every face with ONE orientation; the
+  // material runs without backface culling so ±axis faces both survive
+  // (see module doc — per-face winding flips are impossible to express as
+  // a corner relabeling in a single indexed draw).
+  let corner = vi & 3u;
+  d.au = CORNER_U[corner];
+  d.av = CORNER_V[corner];
+  return d;
+}
+`;
+
 const terrainVertexWGSL = /* wgsl */ `
+${FACE_EXPAND_WGSL}
 ${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
@@ -43,32 +145,36 @@ struct VSOut {
   // normal), so N·L and the sky term are identical across each quad's pixels
   // and fold exactly into one scalar here instead of per-pixel work.
   @location(2) vShade : f32,
-  // Axis hint for triplanar UV selection: 0 = X-facing, 1 = Y-facing, 2 = Z.
+  // Triplanar UV hint derived from the face axis: 0 = X-facing, 1 = Y, 2 = Z.
   @location(3) vAxisMode : f32,
   @location(4) vFogColor : vec3<f32>,
   @location(5) vFogFactor : f32,
 };
 
 @vertex
-fn mainVertex(input : VertexInput) -> VSOut {
+fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32, @builtin(vertex_index) vertexIndex : u32) -> VSOut {
   var out : VSOut;
-  let worldPos = input.position + shaderSystem.world[3].xyz;
-  out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
-  out.vPositionW = worldPos;
-  out.vTile = input.uv2;
+  let f = expandFace(instanceIndex, vertexIndex);
 
-  let nrm = normalize(input.normal);
-  // Chunk-matching sun convention: dot(N, +lightDirection).
+  let uvec = AXIS_U[f.axis];
+  let vvec = AXIS_V[f.axis];
+  let worldPos = vec3<f32>(f.x, f.y, f.z) + uvec * (f.au * f.w) + vvec * (f.av * f.h);
+
+  out.pos = shaderSystem.worldViewProjection * vec4<f32>(worldPos, 1.0);
+  out.vPositionW = worldPos;
+  out.vTile = vec2<f32>(f.tileX, f.tileY);
+
+  // Chunk-matching sun convention: dot(N, +lightDirection). The old CPU
+  // path always emitted +axis normals (backFace flipped WINDING, not the
+  // normal), so N·L here uses the unsigned axis vector exactly like before.
+  let nrm = AXIS_NORMAL[f.axis];
   let ndotl = max(0.0, dot(nrm, shaderUniforms.lightDirection));
   let sun = shaderUniforms.sunLightIntensity;
-  let shade =
-    (ndotl * sun * 0.6 + 0.48 * (sun + 0.2)) * mix(0.55, 1.0, input.color.r);
-  out.vShade = shade;
+  out.vShade =
+    (ndotl * sun * 0.6 + 0.48 * (sun + 0.2)) * mix(0.55, 1.0, f.lightFactor);
 
-  // Triplanar axis hint from the face normal's dominant component.
-  let an = abs(nrm);
-  out.vAxisMode =
-    select(select(2.0, 0.0, an.x > an.y), 1.0, an.y >= an.x && an.y >= an.z);
+  // axis 0 = X-facing (mode 0), axis 1 = Y-facing (mode 1), axis 2 = Z (2).
+  out.vAxisMode = f32(f.axis);
 
   let toCamera = shaderSystem.cameraPosition - worldPos;
   let dist = length(toCamera);
@@ -130,16 +236,26 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 `;
 
 const waterVertexWGSL = /* wgsl */ `
+${FACE_EXPAND_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vPositionW : vec3<f32>,
 };
 
 @vertex
-fn mainVertex(input : VertexInput) -> VSOut {
+fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32, @builtin(vertex_index) vertexIndex : u32) -> VSOut {
   var out : VSOut;
-  out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
-  out.vPositionW = input.position + shaderSystem.world[3].xyz;
+  let f = expandFace(instanceIndex, vertexIndex);
+
+  // Water faces are always Y planes. The old CPU ORDER-A walk was
+  // [P00,(z+h),(x+w,z+h),(x+w)] with indices (0,2,1)(0,3,2); with the fixed
+  // pattern that maps to au driving +Z by h and av driving +X by w.
+  let worldPos = vec3<f32>(f.x, f.y, f.z)
+    + vec3<f32>(0.0, 0.0, 1.0) * (f.au * f.h)
+    + vec3<f32>(1.0, 0.0, 0.0) * (f.av * f.w);
+
+  out.pos = shaderSystem.worldViewProjection * vec4<f32>(worldPos, 1.0);
+  out.vPositionW = worldPos;
   return out;
 }
 `;
@@ -193,16 +309,37 @@ export interface FarTileMaterialOptions {
 	diffuseTexture: Texture2D | null;
 	atlasTileSize: number;
 	textureScale: number;
+	nameSuffix?: string;
+}
+
+function applyCommonUniformDefaults(material: ShaderMaterial): void {
+	setShaderUniform(material, "sunLightIntensity", 1);
+	setShaderUniform(material, "lightDirection", [0, 1, 0]);
+	setShaderUniform(material, "fogInfos", [0, 0, 1000, 0]);
+	setShaderUniform(material, "fogColor", [0.6, 0.7, 0.9]);
+	setShaderUniform(material, "fogInvRange", 1 / 1000);
+}
+
+/** Bind (or re-bind after a grow) the level's face-word + origin buffers. */
+export function bindFarTileBuffers(
+	material: ShaderMaterial,
+	faceBuffer: StorageBuffer,
+	originsBuffer: StorageBuffer,
+): void {
+	setShaderStorageBuffer(material, "faceData", faceBuffer);
+	setShaderStorageBuffer(material, "tileOrigins", originsBuffer);
 }
 
 export function createFarTileTerrainMaterial(
 	opts: FarTileMaterialOptions,
 ): ShaderMaterial {
 	const material = createShaderMaterial({
-		name: "farTileTerrainLite",
+		name: opts.nameSuffix
+			? `farTileTerrainLite_${opts.nameSuffix}`
+			: "farTileTerrainLite",
 		vertexSource: terrainVertexWGSL,
 		fragmentSource: terrainFragmentWGSL,
-		attributes: ["position", "normal", "uv2", "color"],
+		attributes: ["position"],
 		uniforms: [
 			"world",
 			"worldViewProjection",
@@ -216,22 +353,27 @@ export function createFarTileTerrainMaterial(
 			{ name: "fogInvRange", type: "f32" },
 		],
 		samplers: ["diffuseTexture"],
-		backFaceCulling: true,
+		storageBuffers: [
+			{ name: "faceData", type: "array<u32>" },
+			{ name: "tileOrigins", type: "array<vec2<f32>>" },
+		],
+		// Fixed per-draw winding (see module doc): both ±axis facings render
+		// through one orientation, so culling stays off. At far-tile ranges
+		// the extra raster work is negligible; depth testing is unchanged.
+		backFaceCulling: false,
 	});
 	setShaderTexture(material, "diffuseTexture", opts.diffuseTexture);
 	setShaderUniform(material, "atlasTileSize", opts.atlasTileSize);
 	setShaderUniform(material, "textureScale", opts.textureScale);
-	setShaderUniform(material, "sunLightIntensity", 1);
-	setShaderUniform(material, "lightDirection", [0, 1, 0]);
-	setShaderUniform(material, "fogInfos", [0, 0, 1000, 0]);
-	setShaderUniform(material, "fogColor", [0.6, 0.7, 0.9]);
-	setShaderUniform(material, "fogInvRange", 1 / 1000);
+	applyCommonUniformDefaults(material);
 	return material;
 }
 
-export function createFarTileWaterMaterial(): ShaderMaterial {
+export function createFarTileWaterMaterial(
+	nameSuffix?: string,
+): ShaderMaterial {
 	const material = createShaderMaterial({
-		name: "farTileWaterLite",
+		name: nameSuffix ? `farTileWaterLite_${nameSuffix}` : "farTileWaterLite",
 		vertexSource: waterVertexWGSL,
 		fragmentSource: waterFragmentWGSL,
 		attributes: ["position"],
@@ -246,15 +388,15 @@ export function createFarTileWaterMaterial(): ShaderMaterial {
 			{ name: "fogInvRange", type: "f32" },
 		],
 		samplers: [],
-		backFaceCulling: true,
+		storageBuffers: [
+			{ name: "faceData", type: "array<u32>" },
+			{ name: "tileOrigins", type: "array<vec2<f32>>" },
+		],
+		backFaceCulling: false,
 		// Same reasoning as the clip-map water: never publish depth so real
 		// chunk geometry always wins the depth test against this plane.
 		depthWrite: false,
 	});
-	setShaderUniform(material, "sunLightIntensity", 1);
-	setShaderUniform(material, "lightDirection", [0, 1, 0]);
-	setShaderUniform(material, "fogInfos", [0, 0, 1000, 0]);
-	setShaderUniform(material, "fogColor", [0.6, 0.7, 0.9]);
-	setShaderUniform(material, "fogInvRange", 1 / 1000);
+	applyCommonUniformDefaults(material);
 	return material;
 }

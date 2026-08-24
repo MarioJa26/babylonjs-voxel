@@ -1100,8 +1100,12 @@ export class ChunkWorkerPool {
 	// flushing before ANY register/update broadcast (see the register entry
 	// points) plus a macrotask drain so workers never keep stale entries.
 	// ---------------------------------------------------------------------------
+	// PERF: growable typed buffer + count instead of a JS number[] — the old
+	// path boxed three numbers per disposed chunk and allocated a fresh
+	// Int32Array on every flush.
+	private _pendingVoxelUnregisterCoords = new Int32Array(256);
+	private _pendingVoxelUnregisterCount = 0;
 	private _pendingLightUnregisterIds: bigint[] = [];
-	private _pendingVoxelUnregisterCoords: number[] = [];
 	private _unregisterFlushTimer: ReturnType<typeof setTimeout> | null = null;
 	private static readonly UNREGISTER_FLUSH_THRESHOLD = 64;
 
@@ -1113,8 +1117,18 @@ export class ChunkWorkerPool {
 	}
 
 	private broadcastVoxelUnregister(chunk: Chunk): void {
-		const coords = this._pendingVoxelUnregisterCoords;
-		coords.push(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+		let coords = this._pendingVoxelUnregisterCoords;
+		const needed = this._pendingVoxelUnregisterCount + 3;
+		if (needed > coords.length) {
+			const grown = new Int32Array(Math.max(needed, coords.length << 1));
+			grown.set(coords);
+			this._pendingVoxelUnregisterCoords = coords = grown;
+		}
+		const n = this._pendingVoxelUnregisterCount;
+		coords[n] = chunk.chunkX;
+		coords[n + 1] = chunk.chunkY;
+		coords[n + 2] = chunk.chunkZ;
+		this._pendingVoxelUnregisterCount = needed;
 		this.flushPendingUnregistersIfNeeded();
 		this.schedulePendingUnregisterFlush();
 	}
@@ -1123,7 +1137,7 @@ export class ChunkWorkerPool {
 		if (
 			this._pendingLightUnregisterIds.length >=
 				ChunkWorkerPool.UNREGISTER_FLUSH_THRESHOLD ||
-			this._pendingVoxelUnregisterCoords.length >=
+			this._pendingVoxelUnregisterCount >=
 				ChunkWorkerPool.UNREGISTER_FLUSH_THRESHOLD * 3
 		) {
 			this.flushPendingUnregisters();
@@ -1140,11 +1154,11 @@ export class ChunkWorkerPool {
 
 	private flushPendingUnregisters(): void {
 		const ids = this._pendingLightUnregisterIds;
-		const coords = this._pendingVoxelUnregisterCoords;
-		if (ids.length === 0 && coords.length === 0) return;
+		const coordCount = this._pendingVoxelUnregisterCount;
+		if (ids.length === 0 && coordCount === 0) return;
 
 		this._pendingLightUnregisterIds = [];
-		this._pendingVoxelUnregisterCoords = [];
+		this._pendingVoxelUnregisterCount = 0;
 		if (this._unregisterFlushTimer !== null) {
 			clearTimeout(this._unregisterFlushTimer);
 			this._unregisterFlushTimer = null;
@@ -1153,8 +1167,12 @@ export class ChunkWorkerPool {
 		if (ids.length > 0) {
 			this.getLightWorker().postLightUnregisterChunkBatch(ids);
 		}
-		if (coords.length > 0) {
-			const packedCoords = new Int32Array(coords);
+		if (coordCount > 0) {
+			// subarray view: postMessage clones exactly the live range.
+			const packedCoords = this._pendingVoxelUnregisterCoords.subarray(
+				0,
+				coordCount,
+			);
 			for (let i = 0; i < this.workers.length; i++) {
 				this.workers[i].postVoxelUnregisterChunkBatch(packedCoords);
 			}
@@ -1208,6 +1226,10 @@ export class ChunkWorkerPool {
 
 	private _lightRegChunks: Chunk[] = [];
 	private _lightRegFlags: boolean[] = [];
+	// PERF: reused drain buffers (see _drainLightRegistration).
+	private _drainIds = new BigInt64Array(64);
+	private _drainCoords = new Int32Array(192);
+	private _drainMeta = new Uint32Array(192);
 	private _lightRegDrainScheduled = false;
 
 	private onLightChunkLoaded(chunk: Chunk, fromChannel: boolean): void {
@@ -1436,17 +1458,36 @@ export class ChunkWorkerPool {
 
 		const lightRegistrations: LightRegisterChunkBatchRequest["chunks"] = [];
 		const seen = new Set<bigint>();
-		const voxelIds: bigint[] = [];
-		const voxelCoords: number[] = [];
-		const voxelMeta: number[] = [];
 		const voxelBlockSABs: (SharedArrayBuffer | null)[] = [];
 		const voxelPaletteSABs: (SharedArrayBuffer | null)[] = [];
 		const voxelLightSABs: (SharedArrayBuffer | null)[] = [];
+
+		// PERF: drain writes go straight into growable typed buffers reused
+		// across drains — no intermediate bigint[]/number[] boxing pass before
+		// the BigInt64/Int32/Uint32 conversion.
+		let drainIds = this._drainIds;
+		let drainCoords = this._drainCoords;
+		let drainMeta = this._drainMeta;
+		let n = 0;
 
 		for (let i = 0; i < chunks.length; i++) {
 			const chunk = chunks[i];
 			if (seen.has(chunk.id)) continue;
 			seen.add(chunk.id);
+
+			if ((n + 1) * 3 > drainCoords.length) {
+				// Double the chunk capacity (coords hold 3 ints per chunk).
+				const newChunks = Math.max(n + 1, drainCoords.length / 3) << 1;
+				const ids = new BigInt64Array(newChunks);
+				ids.set(drainIds.subarray(0, n));
+				this._drainIds = drainIds = ids;
+				const coords = new Int32Array(newChunks * 3);
+				coords.set(drainCoords.subarray(0, n * 3));
+				this._drainCoords = drainCoords = coords;
+				const meta = new Uint32Array(newChunks * 3);
+				meta.set(drainMeta.subarray(0, n * 3));
+				this._drainMeta = drainMeta = meta;
+			}
 
 			const snap = chunk.getLightStorageSnapshot();
 			const blockStorageBytesPerElement = snap.blockStorageBytesPerElement;
@@ -1469,34 +1510,31 @@ export class ChunkWorkerPool {
 					this.deferredLightingSeedStates.has(chunk.id),
 			});
 
-			voxelIds.push(chunk.id);
-			voxelCoords.push(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-			voxelMeta.push(
-				chunk.isUniform ? 1 : 0,
-				chunk.uniformBlockId,
-				blockStorageBytesPerElement,
-			);
+			drainIds[n] = chunk.id;
+			drainCoords[n * 3] = chunk.chunkX;
+			drainCoords[n * 3 + 1] = chunk.chunkY;
+			drainCoords[n * 3 + 2] = chunk.chunkZ;
+			drainMeta[n * 3] = chunk.isUniform ? 1 : 0;
+			drainMeta[n * 3 + 1] = chunk.uniformBlockId;
+			drainMeta[n * 3 + 2] = blockStorageBytesPerElement;
 			voxelBlockSABs.push(snap.blockSAB);
 			voxelPaletteSABs.push(snap.paletteSAB);
 			voxelLightSABs.push(snap.lightSAB);
+			n++;
 		}
 		chunks.length = 0;
 		flags.length = 0;
 
 		this.getLightWorker().postLightRegisterChunkBatch(lightRegistrations);
 
-		// PERF: SoA flat arrays, constructed once per drain — structured clone
-		// still copies the typed-array backing per worker, but ~32 bytes per
-		// chunk instead of an 11-keyed object.
-		const voxelChunkIdsArray = new BigInt64Array(voxelIds);
-		const voxelCoordsArray = new Int32Array(voxelCoords);
-		const voxelMetaArray = new Uint32Array(voxelMeta);
-
+		// PERF: SoA flat arrays, written in place above and sliced per drain —
+		// structured clone still copies the typed-array backing per worker, but
+		// ~32 bytes per chunk instead of an 11-keyed object.
 		for (let i = 0; i < this.workers.length; i++) {
 			this.workers[i].postVoxelRegisterChunkBatch({
-				chunkIds: voxelChunkIdsArray,
-				coords: voxelCoordsArray,
-				meta: voxelMetaArray,
+				chunkIds: drainIds.subarray(0, n),
+				coords: drainCoords.subarray(0, n * 3),
+				meta: drainMeta.subarray(0, n * 3),
 				blockSABs: voxelBlockSABs,
 				paletteSABs: voxelPaletteSABs,
 				lightSABs: voxelLightSABs,
