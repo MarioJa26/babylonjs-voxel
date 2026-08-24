@@ -461,6 +461,10 @@ export function createChunkTransparentMaterial(
 			fog: true,
 			viewDir: true,
 			tangentSpaceLighting: false,
+
+			// Water-only bucket: META_WATER collides with the materialType
+			// field, so the ==3 boundary restore would fire on every face.
+			boundarySentinel: false,
 		},
 		opts,
 	);

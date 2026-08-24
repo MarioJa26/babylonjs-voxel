@@ -27,6 +27,17 @@ export interface VertexShaderOptions {
 	 */
 	rawUnits?: boolean;
 	/**
+	 * Emit the materialType==3 chunk-boundary plane restore (+INV_POS along
+	 * the face axis). Water faces carry META_WATER in meta bit 2, which IS
+	 * the high bit of the 2-bit materialType field, so ((metaByte >> 1) & 3)
+	 * decodes as 3 for EVERY water face — materials whose buckets hold only
+	 * water (chunkTransparentLite, lod2/lod3 transparent) MUST pass false or
+	 * every water quad is displaced one position unit (1/8 block) along its
+	 * axis. Opaque/cutout buckets never receive META_WATER faces, so they
+	 * keep the default and genuine boundary cubes keep working.
+	 */
+	boundarySentinel?: boolean;
+	/**
 	 * Emit the ambient-occlusion varying. Downsampled builds (lodStep > 1)
 	 * run with session.disableAO=true, which zeroes every face's packed AO
 	 * word — pass false there to drop the byte decode, the per-corner
@@ -37,7 +48,6 @@ export interface VertexShaderOptions {
 }
 
 type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
-
 // Varying locations (stable across all variants):
 //   0: vUV          (always)
 //   1: vTileLayer   (always)
@@ -172,6 +182,7 @@ export function buildPackedVertexWGSL(
 		tangentSpaceLighting: opts.tangentSpaceLighting ?? false,
 		vertexDiffuse: opts.vertexDiffuse ?? false,
 		rawUnits: opts.rawUnits ?? false,
+		boundarySentinel: opts.boundarySentinel ?? true,
 		ao: opts.ao ?? true,
 	};
 
@@ -183,6 +194,25 @@ export function buildPackedVertexWGSL(
 		"  return vec3<u32>(faceData0[i3], faceData0[i3 + 1u], faceData0[i3 + 2u]);\n";
 
 	// ── Segment 1: meta decode → face dims → base position (+ boundary fix) ──
+	// materialType==3 marks chunk-boundary faces: their true plane (coord =
+	// CHUNK_SIZE) exceeds the u8 position encoding, which clamped them 1/8
+	// block inward. Restore the exact plane along the face axis (+1 position
+	// unit = INV_POS, NOT one block).
+	//
+	// Water-only materials MUST opt out (boundarySentinel=false): META_WATER
+	// occupies meta bit 2, the high bit of the materialType field, so
+	// ((metaByte >> 1) & 3) reads as 3 on EVERY water face and this restore
+	// would push each one out by a full position unit.
+	const boundaryRestoreBlock = o.boundarySentinel
+		? `
+  if (((metaByte >> 1u) & 3u) == 3u) {
+    if (axis == 0u) { baseX = baseX + INV_POS; }
+    else if (axis == 1u) { baseY = baseY + INV_POS; }
+    else { baseZ = baseZ + INV_POS; }
+  }
+`
+		: "";
+
 	const decodeBlock = o.rawUnits
 		? `  // Raw-units variant: the meta byte is guaranteed zero on every face
   // emitted by emitQuadRawUnits — no flip/diag/posOff/sentinel/rawDim.
@@ -223,17 +253,7 @@ ${o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : ""}
   var baseX = posX + co.x;
   var baseY = bByte * INV_POS + co.y;
   var baseZ = posZ + co.z;
-
-  // materialType==3 marks chunk-boundary faces: their true plane (coord =
-  // CHUNK_SIZE) exceeds the u8 position encoding, which clamped them 1/8
-  // block inward. Restore the exact plane along the face axis (+1 position
-  // unit = INV_POS, NOT one block).
-  if (((metaByte >> 1u) & 3u) == 3u) {
-    if (axis == 0u) { baseX = baseX + INV_POS; }
-    else if (axis == 1u) { baseY = baseY + INV_POS; }
-    else { baseZ = baseZ + INV_POS; }
-  }
-`;
+${boundaryRestoreBlock}`;
 
 	// ── Segment 2: corner state + normal/tangent basis ───────────────────────
 	const normalBlock = o.rawUnits
@@ -333,9 +353,14 @@ ${vsOutFields(o)}
 //   bit5 diagVariant · bit6 rawDim · bit7 posOffZ
 //   materialType=3 is a vertex-stage sentinel: chunk-boundary faces clamp to
 //   the u8 position grid and the shader restores the exact plane (+1 unit).
-// Water faces carry isWater in bit 2 (their materialType=1 leaves bit 2 clear;
-// Cutout=2 faces render on the opaque pipeline), so bit 3 stays a clean
-// posOffX correction for every face — water never sets posOffX/posOffZ.
+// Water faces carry isWater in bit 2 — which OVERLAPS the materialType field:
+// META_WATER makes ((metaByte >> 1) & 3) read as 3 on every water face even
+// though their stored materialType is 1. Materials whose buckets contain only
+// water (chunkTransparentLite, lod2/lod3 transparent) must therefore be built
+// with boundarySentinel=false so the ==3 restore never fires for them; opaque
+// and cutout buckets never receive water faces and keep it enabled. Bit 3
+// stays a clean posOffX correction for every face — water never sets
+// posOffX/posOffZ.
 //
 // The face arenas are declared as flat array<u32> (NOT array<vec3<u32>>:
 // WGSL storage-buffer layout pads vec3 elements to a 16-byte stride, which

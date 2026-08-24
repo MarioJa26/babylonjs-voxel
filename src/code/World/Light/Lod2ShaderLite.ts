@@ -267,6 +267,10 @@ export function createLod2TransparentMaterial(
 			// Free win: no view-dependent LOD lighting now.
 			viewDir: false,
 			vertexDiffuse: true,
+
+			// Water-only bucket: META_WATER collides with the materialType
+			// field, so the ==3 boundary restore would fire on every face.
+			boundarySentinel: false,
 		}),
 		fragmentSource: lod2TransparentFragmentWGSL,
 		attributes: ["position"],
