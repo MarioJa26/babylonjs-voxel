@@ -36,15 +36,20 @@ import { getFarTileLevels, isFarTilesEnabled } from "./FarTileLadder";
  * Main-thread far-tile streaming manager — GPU face-decoding variant.
  *
  * Worker faces (4×u32 words, see FarTileFaceFormat.ts) are copied VERBATIM
- * into a per-level face-word storage buffer; each level renders as ONE shared
- * quad drawn once per face through compact thin instances. The previous CPU
- * expand-to-vertex-buffers pipeline (expandTileFaces + full-level recopy +
- * destroy/recreate uploads on every tile arrival) is gone entirely:
+ * into a per-level face-word storage buffer; each level renders through TWO
+ * shared-quad thin-instance meshes — straight-indexed for backFace=1 faces,
+ * reversed-indexed for backFace=0 — so per-face winding (and therefore
+ * backface culling) matches the old CPU-expanded path exactly. Without the
+ * split, coplanar opposite-facing boundary skirts at tile/ring edges would
+ * z-fight. The previous CPU expand-to-vertex-buffers pipeline
+ * (expandTileFaces + full-level recopy + destroy/recreate uploads on every
+ * tile arrival) is gone entirely:
  *
- *   - tile arrival   = memcpy words into an arena slot + ranged GPU write
- *   - tile eviction  = zero-fill the slot + ranged GPU write
- *   - VRAM           = 16 B/face words + 16 B/instance record (+ shared quad),
- *                      vs ~216 B/quad of expanded vertex data before
+ *   - tile arrival   = memcpy words into an arena slot, partition face
+ *                      indices into the two winding lists, ranged GPU write
+ *   - tile eviction  = zero-fill the slot + remove indices + ranged write
+ *   - VRAM           = 16 B/face words + 16 B/instance record (+ shared
+ *                      quads), vs ~216 B/quad of expanded vertex data before
  *
  * Each tile also owns one entry in a workspace-wide `tileOrigins` buffer
  * (vec2 world X/Z); faces reference their tile's origin slot via bits 8-23
@@ -63,7 +68,6 @@ const FT_FACE_WORDS = 4;
 // mandatory position attribute.
 const QUAD_POSITIONS = new Float32Array([0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]);
 const QUAD_NORMALS = new Float32Array(12);
-const QUAD_INDICES = new Uint32Array([0, 2, 1, 0, 3, 2]);
 
 interface FarSlot {
 	base: number; // first face index in the arena
@@ -105,11 +109,9 @@ class FaceWordArena {
 	cpu: Uint32Array = new Uint32Array(0);
 	buffer: StorageBuffer | null = null;
 	capacityFaces = 0;
-	appendedFaces = 0; // high-water extent == instance count target
+	appendedFaces = 0; // high-water extent (holes included)
 	holes: FarSlot[] = [];
 	dirtyRanges: DirtyRange[] = [];
-	instances = new Float32Array(0);
-	instanceCapacityFaces = 0;
 	initialCapacity: number;
 	bufferRebound = false;
 
@@ -217,6 +219,93 @@ interface TileEntry {
 	originSlot: number;
 }
 
+// ---------------------------------------------------------------------------
+// Winding meshes
+//
+// Each level renders its shared face arena through TWO thin-instanced quads:
+// the straight-indexed mesh draws backFace=1 faces, the reversed-indexed mesh
+// draws backFace=0 faces — restoring the CPU expander's exact per-face
+// winding so backface culling works (and coplanar opposite-facing boundary
+// skirts culled from behind instead of z-fighting). The per-instance record
+// carries the face's absolute index in the arena (instData.x).
+// ---------------------------------------------------------------------------
+
+const STRAIGHT_INDICES = new Uint32Array([0, 1, 2, 0, 2, 3]);
+const REVERSED_INDICES = new Uint32Array([0, 2, 1, 0, 3, 2]);
+
+class WindingMesh {
+	mesh: FarMeshLike | null = null;
+	/** Compact instance records; lane x = absolute face index in the arena. */
+	records = new Float32Array(0);
+	count = 0;
+	capacityFaces = 0;
+	dirtyMin = 0;
+	dirtyMax = 0;
+	readonly straight: boolean;
+
+	constructor(straight: boolean) {
+		this.straight = straight;
+	}
+
+	appendFace(faceIndex: number): void {
+		if (this.count * 4 >= this.records.length) {
+			let cap = this.records.length > 0 ? this.records.length : 1024;
+			while (cap < (this.count + 1) * 4) cap *= 2;
+			const next = new Float32Array(cap);
+			next.set(this.records);
+			this.records = next;
+		}
+		const o = this.count * 4;
+		this.records[o] = faceIndex;
+		// lanes y/z/w stay zero
+		this.dirtyMin = Math.min(this.dirtyMin, this.count);
+		this.dirtyMax = Math.max(this.dirtyMax, this.count + 1);
+		this.count++;
+	}
+
+	/** Order-preserving removal of every face index inside `slot`. */
+	removeSlot(slot: FarSlot): void {
+		if (slot.count === 0 || this.count === 0) return;
+		const lo = slot.base;
+		const hi = slot.base + slot.count;
+		let write = 0;
+		for (let r = 0; r < this.count; r++) {
+			const fi = this.records[r * 4];
+			if (fi >= lo && fi < hi) continue;
+			if (write !== r) {
+				this.records[write * 4] = fi;
+			}
+			write++;
+		}
+		if (write !== this.count) {
+			this.count = write;
+			this.dirtyMin = 0;
+			this.dirtyMax = Math.max(this.dirtyMax, write);
+		}
+	}
+
+	sync(): void {
+		const needLen = this.count * 4;
+		if (needLen > this.records.length) {
+			let cap = this.records.length > 0 ? this.records.length : 1024;
+			while (cap < needLen) cap *= 2;
+			const next = new Float32Array(cap);
+			next.set(this.records);
+			this.records = next;
+		} else if (
+			this.records.length >= 4096 &&
+			needLen * 4 <= this.records.length
+		) {
+			const next = new Float32Array(Math.max(1024, needLen));
+			next.set(this.records.subarray(0, needLen));
+			this.records = next;
+			this.dirtyMin = 0;
+			this.dirtyMax = this.count;
+		}
+		this.capacityFaces = this.records.length / 4;
+	}
+}
+
 class FarTileManagerImpl {
 	private static instance: FarTileManagerImpl | null = null;
 
@@ -237,9 +326,10 @@ class FarTileManagerImpl {
 	private terrainMaterials: ShaderMaterial[] = [];
 	private waterMaterial: ShaderMaterial | null = null;
 	private terrainArenas: FaceWordArena[] = [];
-	private terrainMeshes: (FarMeshLike | null)[] = [];
+	private terrainStraight: WindingMesh[] = [];
+	private terrainReversed: WindingMesh[] = [];
 	private waterArena = new FaceWordArena(4096);
-	private waterMesh: FarMeshLike | null = null;
+	private waterReversed = new WindingMesh(false);
 
 	// Workspace-wide tile-origin table (shared by every material).
 	private origins = new Float32Array(0);
@@ -293,7 +383,8 @@ class FarTileManagerImpl {
 			});
 			this.terrainMaterials.push(material);
 			this.terrainArenas.push(new FaceWordArena(8192));
-			this.terrainMeshes.push(null);
+			this.terrainStraight.push(new WindingMesh(true));
+			this.terrainReversed.push(new WindingMesh(false));
 		}
 		this.waterMaterial = createFarTileWaterMaterial();
 
@@ -444,11 +535,27 @@ class FarTileManagerImpl {
 			arena.cpu.set(data.opaqueFaces, opaqueSlot.base * FT_FACE_WORDS);
 			stampOriginSlot(arena.cpu, opaqueSlot, originSlot);
 			arena.pushDirty(opaqueSlot.base, opaqueSlot.count);
+
+			// Partition faces into the straight/reversed winding meshes so
+			// backface culling sees the intended orientation per face.
+			const straight = this.terrainStraight[data.levelIndex];
+			const reversed = this.terrainReversed[data.levelIndex];
+			const base = opaqueSlot.base;
+			for (let j = 0; j < opaqueCount; j++) {
+				const backFace = (data.opaqueFaces[j * 4 + 1] >>> 20) & 1;
+				if (backFace) straight.appendFace(base + j);
+				else reversed.appendFace(base + j);
+			}
 		}
 		if (waterSlot && waterSlot.count > 0) {
 			this.waterArena.cpu.set(data.waterFaces, waterSlot.base * FT_FACE_WORDS);
 			stampOriginSlot(this.waterArena.cpu, waterSlot, originSlot);
 			this.waterArena.pushDirty(waterSlot.base, waterSlot.count);
+
+			const waterBase = waterSlot.base;
+			for (let j = 0; j < waterCount; j++) {
+				this.waterReversed.appendFace(waterBase + j);
+			}
 		}
 
 		const entry: TileEntry = {
@@ -464,8 +571,15 @@ class FarTileManagerImpl {
 
 	private releaseEntry(entry: TileEntry): void {
 		const arena = this.terrainArenas[entry.levelIndex];
-		if (arena && entry.opaque) arena.free(entry.opaque);
-		if (entry.water) this.waterArena.free(entry.water);
+		if (arena && entry.opaque) {
+			arena.free(entry.opaque);
+			this.terrainStraight[entry.levelIndex]?.removeSlot(entry.opaque);
+			this.terrainReversed[entry.levelIndex]?.removeSlot(entry.opaque);
+		}
+		if (entry.water) {
+			this.waterArena.free(entry.water);
+			this.waterReversed.removeSlot(entry.water);
+		}
 		// Origin slots are never reused — stale entries stay unreferenced and
 		// the table simply grows with the monotonic slot counter.
 	}
@@ -505,9 +619,12 @@ class FarTileManagerImpl {
 		this.updateUniforms();
 
 		for (const arena of this.terrainArenas) {
-			this.syncArena(arena);
+			arena.flushDirty();
 		}
-		this.syncArena(this.waterArena);
+		this.waterArena.flushDirty();
+		for (const wm of this.terrainStraight) wm.sync();
+		for (const wm of this.terrainReversed) wm.sync();
+		this.waterReversed.sync();
 		this.flushOrigins();
 
 		for (let i = 0; i < this.terrainArenas.length; i++) {
@@ -516,42 +633,21 @@ class FarTileManagerImpl {
 		this.ensureWaterMesh();
 	}
 
-	private syncArena(arena: FaceWordArena): void {
-		arena.flushDirty();
-
-		// Grow the retained zero-filled instance records to cover the arena's
-		// high-water extent. Records stay all-zero forever — the vertex shader
-		// selects faces purely via @builtin(instance_index).
-		const needLen = arena.appendedFaces * 4;
-		if (needLen > arena.instances.length) {
-			let cap = arena.instances.length > 0 ? arena.instances.length : 1024;
-			while (cap < needLen) cap *= 2;
-			const next = new Float32Array(cap);
-			next.set(arena.instances);
-			arena.instances = next;
-			arena.instanceCapacityFaces = cap / 4;
-		} else if (
-			arena.instances.length >= 4096 &&
-			needLen * 4 <= arena.instances.length
-		) {
-			arena.instances = new Float32Array(Math.max(1024, needLen));
-			arena.instanceCapacityFaces = arena.instances.length / 4;
-		}
-	}
-
 	private ensureLevelMesh(levelIndex: number): void {
 		if (!this.engine || !this.scene) return;
 		const arena = this.terrainArenas[levelIndex];
 		const material = this.terrainMaterials[levelIndex];
+		const straight = this.terrainStraight[levelIndex];
+		const reversed = this.terrainReversed[levelIndex];
 		// Mesh creation binds the arena's storage buffer, so wait until the
 		// first tile arrival actually materialized one.
 		if (!arena || !material || !arena.buffer || !this.originsBuffer) return;
 
-		let mesh = this.terrainMeshes[levelIndex];
-		if (!mesh) {
-			mesh = createQuadInstanceMesh(
+		if (!straight.mesh) {
+			const mesh = createQuadInstanceMesh(
 				this.engine,
-				`farTilesLod${6 + levelIndex}`,
+				`farTilesLod${6 + levelIndex}s`,
+				STRAIGHT_INDICES,
 			);
 			mesh.material = material;
 			mesh.pickable = false;
@@ -560,11 +656,26 @@ class FarTileManagerImpl {
 			mesh.renderOrder = 90;
 			bindFarTileBuffers(material, arena.buffer, this.originsBuffer);
 			addToScene(this.scene, mesh);
-			this.terrainMeshes[levelIndex] = mesh;
-		} else if (arena.bufferRebound) {
+			straight.mesh = mesh;
+		}
+		if (!reversed.mesh) {
+			const mesh = createQuadInstanceMesh(
+				this.engine,
+				`farTilesLod${6 + levelIndex}r`,
+				REVERSED_INDICES,
+			);
+			mesh.material = material;
+			mesh.pickable = false;
+			mesh.renderOrder = 90;
+			bindFarTileBuffers(material, arena.buffer, this.originsBuffer);
+			addToScene(this.scene, mesh);
+			reversed.mesh = mesh;
+		}
+		if (arena.bufferRebound) {
 			bindFarTileBuffers(material, arena.buffer, this.originsBuffer);
 		}
-		syncThinInstanceCount(mesh, arena);
+		syncThinInstanceCount(straight.mesh, straight);
+		syncThinInstanceCount(reversed.mesh, reversed);
 		arena.bufferRebound = false;
 	}
 
@@ -573,8 +684,12 @@ class FarTileManagerImpl {
 		const arena = this.waterArena;
 		if (!arena.buffer || !this.originsBuffer) return;
 
-		if (!this.waterMesh) {
-			const mesh = createQuadInstanceMesh(this.engine, "farTilesWater");
+		if (!this.waterReversed.mesh) {
+			const mesh = createQuadInstanceMesh(
+				this.engine,
+				"farTilesWater",
+				REVERSED_INDICES,
+			);
 			mesh.material = this.waterMaterial;
 			mesh.pickable = false;
 			// After far terrain (90); chunk water is a transparent-pass mesh
@@ -582,11 +697,11 @@ class FarTileManagerImpl {
 			mesh.renderOrder = 95;
 			bindFarTileBuffers(this.waterMaterial, arena.buffer, this.originsBuffer);
 			addToScene(this.scene, mesh);
-			this.waterMesh = mesh;
+			this.waterReversed.mesh = mesh;
 		} else if (arena.bufferRebound) {
 			bindFarTileBuffers(this.waterMaterial, arena.buffer, this.originsBuffer);
 		}
-		syncThinInstanceCount(this.waterMesh, arena);
+		syncThinInstanceCount(this.waterReversed.mesh, this.waterReversed);
 		arena.bufferRebound = false;
 	}
 
@@ -763,13 +878,14 @@ function stampOriginSlot(
 function createQuadInstanceMesh(
 	engine: EngineContext,
 	name: string,
+	indices: Uint32Array,
 ): FarMeshLike {
 	const mesh = createMeshFromData(
 		engine,
 		name,
 		QUAD_POSITIONS,
 		QUAD_NORMALS,
-		QUAD_INDICES,
+		indices,
 	) as FarMeshLike;
 
 	// Seed compact thin instances at count 0 so an empty level draws nothing
@@ -790,12 +906,12 @@ function createQuadInstanceMesh(
  * Compact thin-instance sync — same two-path strategy as PackedChunkMesh's
  * setThinInstancesRange: full setThinInstances only when the GPU buffer must
  * (re)grow, otherwise mutate count/dirty-range in place so lite uploads just
- * the changed lanes. Records are always zero here, so even a full upload is
- * trivially cheap.
+ * the changed lanes. Records carry absolute face indices (written by
+ * WindingMesh.appendFace/removeSlot, which also track the dirty lanes).
  */
-function syncThinInstanceCount(mesh: FarMeshLike, arena: FaceWordArena): void {
-	const count = arena.appendedFaces;
-	const capacity = arena.instanceCapacityFaces;
+function syncThinInstanceCount(mesh: FarMeshLike, wm: WindingMesh): void {
+	const count = wm.count;
+	const capacity = wm.capacityFaces;
 	if (capacity === 0 && count === 0) return;
 
 	const anyMesh = mesh as FarMeshLike;
@@ -803,7 +919,7 @@ function syncThinInstanceCount(mesh: FarMeshLike, arena: FaceWordArena): void {
 	const needsGrowth = !ti?._gpuBuffer || capacity > (ti._capacity ?? 0);
 
 	if (needsGrowth && capacity > 0) {
-		setThinInstances(mesh, arena.instances, capacity);
+		setThinInstances(mesh, wm.records, capacity);
 		ti = anyMesh.thinInstances;
 		if (ti) {
 			ti.compact = true;
@@ -812,12 +928,25 @@ function syncThinInstanceCount(mesh: FarMeshLike, arena: FaceWordArena): void {
 			ti._dirtyMin = 0;
 			ti._dirtyMax = count;
 		}
+		wm.dirtyMin = 0;
+		wm.dirtyMax = 0;
 		return;
 	}
 
 	if (!ti) return;
-	ti.matrices = arena.instances;
+	ti.matrices = wm.records;
 	ti.count = count;
+
+	if (wm.dirtyMax > wm.dirtyMin && capacity > 0) {
+		const lo = Math.max(0, wm.dirtyMin);
+		const hi = Math.min(capacity, Math.max(wm.dirtyMax, count));
+		if (hi > lo) {
+			ti._dirtyMin = Math.min(ti._dirtyMin, lo);
+			ti._dirtyMax = Math.max(ti._dirtyMax, hi);
+		}
+	}
+	wm.dirtyMin = 0;
+	wm.dirtyMax = 0;
 }
 
 function maxFarFacesPerArena(): number {

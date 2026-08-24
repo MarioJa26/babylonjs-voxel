@@ -16,14 +16,14 @@
  *       manager) — indexes the `tileOrigins` storage buffer of vec2<f32>
  *       world-space X/Z origins.
  *
- * Corner selection: the fixed index pattern [0,2,1,0,3,2] gives every face
- * ONE orientation (triangles (C0,C2,C1),(C0,C3,C2) over corner weights
- * [P00,P10,P11,P01] = the CPU path's "reversed" order). Per-face winding
- * flips are impossible to express as a per-vertex relabeling in a single
- * indexed draw (orientation is uniform per draw), and the generator emits
- * both ±axis facings — so the materials run WITHOUT backface culling. At
- * far-tile distances the extra raster work is negligible; depth testing is
- * unchanged and visuals are identical.
+ * Corner selection: each level renders through TWO meshes that share the
+ * face-word storage buffer — one with straight indices (0,1,2)(0,2,3) for
+ * backFace=1 faces, one with reversed indices (0,2,1)(0,3,2) for backFace=0
+ * — exactly reproducing the CPU expander's per-face winding with backface
+ * culling ON. Coplanar opposite-facing skirt pairs at tile/ring boundaries
+ * are therefore culled from behind (no z-fighting). The per-instance record
+ * (compact stride-16 vec4 injected by the lite patch) carries the absolute
+ * face index in instData.x; instance_index is not used for indexing.
  *
  * Fragment stages keep the previous fog/sky/atlas math bit-for-bit; only the
  * vertex stage changed its data source.
@@ -123,10 +123,9 @@ fn expandFace(ii : u32, vi : u32) -> DecodedFace {
   let light = (w2 >> 16u) & 0xffu;
   d.lightFactor = select(0.8, 1.0, light >= 224u);
 
-  // Fixed index pattern renders every face with ONE orientation; the
-  // material runs without backface culling so ±axis faces both survive
-  // (see module doc — per-face winding flips are impossible to express as
-  // a corner relabeling in a single indexed draw).
+  // Corner weights are the identity walk [P00,P10,P11,P01]; the per-mesh
+  // index buffer supplies straight vs reversed triangulation (see module
+  // doc) so winding matches the face's intended normal with culling on.
   let corner = vi & 3u;
   d.au = CORNER_U[corner];
   d.av = CORNER_V[corner];
@@ -154,7 +153,7 @@ struct VSOut {
 @vertex
 fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32, @builtin(vertex_index) vertexIndex : u32) -> VSOut {
   var out : VSOut;
-  let f = expandFace(instanceIndex, vertexIndex);
+  let f = expandFace(u32(input.instData.x), vertexIndex);
 
   let uvec = AXIS_U[f.axis];
   let vvec = AXIS_V[f.axis];
@@ -245,7 +244,7 @@ struct VSOut {
 @vertex
 fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32, @builtin(vertex_index) vertexIndex : u32) -> VSOut {
   var out : VSOut;
-  let f = expandFace(instanceIndex, vertexIndex);
+  let f = expandFace(u32(input.instData.x), vertexIndex);
 
   // Water faces are always Y planes. The old CPU ORDER-A walk was
   // [P00,(z+h),(x+w,z+h),(x+w)] with indices (0,2,1)(0,3,2); with the fixed
@@ -357,10 +356,11 @@ export function createFarTileTerrainMaterial(
 			{ name: "faceData", type: "array<u32>" },
 			{ name: "tileOrigins", type: "array<vec2<f32>>" },
 		],
-		// Fixed per-draw winding (see module doc): both ±axis facings render
-		// through one orientation, so culling stays off. At far-tile ranges
-		// the extra raster work is negligible; depth testing is unchanged.
-		backFaceCulling: false,
+		// Per-face winding is restored by the straight/reversed mesh pair
+		// (see module doc), so backface culling works exactly like the old
+		// CPU-expanded path — and coplanar opposite-facing boundary skirts
+		// are culled from behind instead of z-fighting.
+		backFaceCulling: true,
 	});
 	setShaderTexture(material, "diffuseTexture", opts.diffuseTexture);
 	setShaderUniform(material, "atlasTileSize", opts.atlasTileSize);
@@ -392,7 +392,7 @@ export function createFarTileWaterMaterial(
 			{ name: "faceData", type: "array<u32>" },
 			{ name: "tileOrigins", type: "array<vec2<f32>>" },
 		],
-		backFaceCulling: false,
+		backFaceCulling: true,
 		// Same reasoning as the clip-map water: never publish depth so real
 		// chunk geometry always wins the depth test against this plane.
 		depthWrite: false,
