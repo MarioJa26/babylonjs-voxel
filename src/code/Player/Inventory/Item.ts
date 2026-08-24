@@ -101,7 +101,7 @@ export class Item implements IUsable {
 	private _stackLabel: HTMLSpanElement | null = null;
 	private _cubeCanvas: HTMLCanvasElement | null = null;
 	private _useAction: ((player: Player) => void) | null = null;
-	private _shapeRedrawn = false;
+	private _iconReadyDrawn = false;
 
 	constructor(
 		name: string,
@@ -415,18 +415,17 @@ export class Item implements IUsable {
 		const isBlock = isRegisteredBlockId(this.blockId);
 		if (isBlock) {
 			if (this._cubeCanvas !== null) this._cubeCanvas.style.display = "";
-			this._drawCube();
-			if (!this._shapeRedrawn) {
-				this._shapeRedrawn = true;
-				shapeInitPromise.then(() => {
+			if (!this._iconReadyDrawn) {
+				// First draw: wait for the shading atlases and the shape
+				// definitions so the icon is rendered correctly in one pass
+				// instead of being redrawn with missing lighting.
+				this._iconReadyDrawn = true;
+				Promise.all([iconAtlasesReadyPromise, shapeInitPromise]).then(() => {
 					if (isRegisteredBlockId(this.blockId)) this._drawCube();
 				});
-				// Icons drawn before the shading atlas loaded miss their light
-				// pass; redraw once it is ready so they self-heal.
-				iconAtlasesReadyPromise.then(() => {
-					if (isRegisteredBlockId(this.blockId)) this._drawCube();
-				});
+				return;
 			}
+			this._drawCube();
 			return;
 		}
 		// Non-block: hide canvas, use background image

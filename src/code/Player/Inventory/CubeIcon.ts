@@ -169,7 +169,6 @@ function _onDiffuseLoad(): void {
 	_shadedTileCache.clear();
 	_resizeLitCacheFromDiffuseAtlas();
 	_notifyAtlasesReady();
-	_flushPendingIconRedraws();
 }
 
 function _onNormalLoad(): void {
@@ -182,7 +181,6 @@ function _onNormalLoad(): void {
 	_shadedTileCache.clear();
 	_litTileCacheVersion++;
 	_notifyAtlasesReady();
-	_flushPendingIconRedraws();
 }
 
 function _ensureAtlases(): void {
@@ -202,7 +200,6 @@ function _ensureAtlases(): void {
 		_normalImg.onerror = () => {
 			_normalFailed = true;
 			_notifyAtlasesReady();
-			_flushPendingIconRedraws();
 		};
 		_normalImg.src = NORMAL_ATLAS_URL;
 	}
@@ -353,31 +350,6 @@ function _getShadedTile(
 
 	_shadedTileCache.set(cacheKey, tile);
 	return tile;
-}
-
-// ─── Pending icon redraws ───
-// Icons drawn before the shading/normal atlases finish loading miss their
-// lit pass. Every such draw registers a redraw closure here; the queue is
-// flushed whenever atlas readiness improves. Bounded: entries only
-// accumulate until the atlases load (or fail) once.
-type PendingIconRedraw = () => void;
-const _pendingIconRedraws: PendingIconRedraw[] = [];
-
-function _shadingFullyReady(): boolean {
-	return _diffuseReady && (!_normalMapEnabled || _normalReady || _normalFailed);
-}
-
-function _queueIconRedraw(redraw: PendingIconRedraw): void {
-	_pendingIconRedraws.push(redraw);
-}
-
-function _flushPendingIconRedraws(): void {
-	if (_pendingIconRedraws.length === 0) return;
-
-	const pending = _pendingIconRedraws.slice();
-	_pendingIconRedraws.length = 0;
-
-	for (let i = 0; i < pending.length; i++) pending[i]();
 }
 
 /**
@@ -704,14 +676,6 @@ export function drawCubeIcon(
 			ctx.stroke();
 		}
 	}
-
-	// If the shading/normal atlases are still loading, this draw was produced
-	// without their baked lighting; redraw it once readiness improves.
-	if (!_shadingFullyReady()) {
-		_queueIconRedraw(() => {
-			drawCubeIcon(ctx, blockId, atlasImage, atlasReady, options);
-		});
-	}
 }
 
 /**
@@ -854,3 +818,8 @@ function _drawQuad(
 
 	ctx.restore();
 }
+
+// ─── EAGER LOAD ───
+// Icon rendering waits on atlas readiness, so the fetch must start at module
+// init — drawCubeIcon only runs after the readiness promise resolves.
+_ensureAtlases();
