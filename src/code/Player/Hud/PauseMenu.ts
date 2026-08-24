@@ -78,6 +78,8 @@ const LOD_SLIDERS: ReadonlyArray<{
 ];
 
 export class PauseMenu {
+	private static nextSliderId = 0;
+
 	private readonly menuContainer: HTMLDivElement;
 	private readonly mainButtonsContainer: HTMLDivElement;
 	private readonly settingsContainer: HTMLDivElement;
@@ -479,18 +481,44 @@ export class PauseMenu {
 	): HTMLInputElement {
 		const sliderContainer = document.createElement("div");
 		sliderContainer.className = "slider-container";
+		sliderContainer.style.display = "flex";
+		sliderContainer.style.flexDirection = "column";
+		sliderContainer.style.gap = "6px";
+		sliderContainer.style.width = "100%";
+
+		// Separate row for the setting name and current value.
+		const header = document.createElement("div");
+		header.className = "slider-header";
+		header.style.display = "flex";
+		header.style.alignItems = "center";
+		header.style.justifyContent = "space-between";
+		header.style.gap = "24px";
+		header.style.width = "100%";
 
 		const label = document.createElement("label");
+		label.className = "slider-label";
 		label.textContent = options.label;
+		label.style.flex = "1";
+		label.style.minWidth = "0";
 
 		const valueDisplay = document.createElement("span");
 		valueDisplay.className = "slider-value";
+		valueDisplay.style.flexShrink = "0";
+		valueDisplay.style.minWidth = "80px";
+		valueDisplay.style.textAlign = "right";
+		valueDisplay.style.whiteSpace = "nowrap";
 
 		const slider = document.createElement("input");
 		slider.type = "range";
 		slider.min = String(options.min);
 		slider.max = String(options.max);
 		slider.step = String(options.step ?? 1);
+		slider.style.width = "100%";
+
+		// Connect the visible label to the range input.
+		const sliderId = `pause-slider-${PauseMenu.nextSliderId++}`;
+		slider.id = sliderId;
+		label.htmlFor = sliderId;
 
 		const initialValue = Math.min(
 			options.max,
@@ -500,8 +528,8 @@ export class PauseMenu {
 		slider.value = String(initialValue);
 		valueDisplay.textContent = options.format(initialValue);
 
-		label.append(valueDisplay, slider);
-		sliderContainer.appendChild(label);
+		header.append(label, valueDisplay);
+		sliderContainer.append(header, slider);
 		container.appendChild(sliderContainer);
 
 		slider.addEventListener("input", () => {
