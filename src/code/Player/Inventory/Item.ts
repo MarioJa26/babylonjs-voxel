@@ -5,7 +5,6 @@ import { setBlock } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	getShapeForBlockId,
 	isRegisteredBlockId,
-	shapeInitPromise,
 } from "@/code/World/Shape/BlockShapes";
 import { getSliceAxis } from "@/code/World/Shape/BlockShapeTransforms";
 import { BlockType } from "@/code/World/Texture/BlockType";
@@ -27,28 +26,6 @@ const TWO_PI = Math.PI * 2;
 const HALF_QUARTER = QUARTER_TURN * 0.5;
 const INV_QUARTER = 1 / QUARTER_TURN;
 const CANVAS_SIZE = 64;
-const ATLAS_PATH = "/texture/diffuse_atlas.png";
-
-// ─── Shared atlas loader (single Image for all Item instances) ───
-let _sharedAtlasImg: HTMLImageElement | null = null;
-let _sharedAtlasLoaded = false;
-const _atlasWaiters: (() => void)[] = [];
-
-function _ensureSharedAtlas(): HTMLImageElement {
-	if (_sharedAtlasImg !== null) return _sharedAtlasImg;
-	const img = new Image();
-	img.onload = () => {
-		_sharedAtlasLoaded = true;
-		// Flush waiters
-		const len = _atlasWaiters.length;
-		for (let i = 0; i < len; i++) _atlasWaiters[i]();
-		_atlasWaiters.length = 0; // release references
-	};
-	img.src = ATLAS_PATH;
-	_sharedAtlasImg = img;
-	return img;
-}
-_ensureSharedAtlas();
 // ─── Rotation policy: flat lookup (avoids Map.get overhead for 2 entries) ───
 // Only "cube" and "slab" return true; everything else defaults to true.
 // Since the default is true, we only need to track exceptions (none currently).
@@ -412,17 +389,14 @@ export class Item implements IUsable {
 
 	// ─── Icon rendering ───
 	private _refreshIcon(): void {
-		const isBlock = isRegisteredBlockId(this.blockId);
-		if (isBlock) {
+		if (isRegisteredBlockId(this.blockId)) {
 			if (this._cubeCanvas !== null) this._cubeCanvas.style.display = "";
 			if (!this._iconReadyDrawn) {
-				// First draw: wait for the shading atlases and the shape
-				// definitions so the icon is rendered correctly in one pass
-				// instead of being redrawn with missing lighting.
+				// First draw: wait for the shading atlases so the icon renders
+				// with lighting in a single pass. Shapes are already
+				// initialized whenever isRegisteredBlockId is true.
 				this._iconReadyDrawn = true;
-				Promise.all([iconAtlasesReadyPromise, shapeInitPromise]).then(() => {
-					if (isRegisteredBlockId(this.blockId)) this._drawCube();
-				});
+				iconAtlasesReadyPromise.then(() => this._drawCube());
 				return;
 			}
 			this._drawCube();
@@ -449,10 +423,7 @@ export class Item implements IUsable {
 		const ctx = canvas.getContext("2d");
 		if (ctx === null) return;
 
-		const img = _sharedAtlasImg!; // always non-null after module init
-		const ready = _sharedAtlasLoaded && img.width > 0;
-
-		drawCubeIcon(ctx, this.blockId, img, ready);
+		drawCubeIcon(ctx, this.blockId);
 	}
 
 	// ─── Stack operations (hot path: inventory drag/drop) ───
@@ -493,5 +464,3 @@ export class Item implements IUsable {
 		return this._stackSize;
 	}
 }
-// ─── EAGER LOAD: begin fetching immediately on import ───
-_ensureSharedAtlas();

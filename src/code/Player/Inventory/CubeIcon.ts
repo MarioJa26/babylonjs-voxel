@@ -363,8 +363,6 @@ function _getShadedTile(
 export function drawCubeIcon(
 	ctx: CanvasRenderingContext2D,
 	blockId: number | null,
-	atlasImage: HTMLImageElement | null,
-	atlasReady: boolean,
 	options?: CubeIconOptions,
 ): void {
 	const R = options?.radius ?? R_DEFAULT;
@@ -386,7 +384,7 @@ export function drawCubeIcon(
 	// Diagonal cross plants render edge-on in this projection; show their
 	// sprite flat instead, matching how they read in the world.
 	if (blockId !== null && isCrossDiagonalBlockId(blockId)) {
-		_drawFlatSprite(ctx, blockId, atlasImage, atlasReady, size);
+		_drawFlatSprite(ctx, blockId, size);
 		return;
 	}
 
@@ -595,8 +593,6 @@ export function drawCubeIcon(
 			q.y2,
 			q.x3,
 			q.y3,
-			atlasImage,
-			atlasReady,
 			q.tx,
 			q.ty,
 			q.shade,
@@ -738,8 +734,6 @@ function _pointInHexagon(px: number, py: number, pts: number[]): boolean {
 function _drawFlatSprite(
 	ctx: CanvasRenderingContext2D,
 	blockId: number,
-	img: HTMLImageElement | null,
-	ready: boolean,
 	size: number,
 ): void {
 	const tile =
@@ -757,8 +751,6 @@ function _drawFlatSprite(
 
 	if (shaded !== null) {
 		ctx.drawImage(shaded, 0, 0, TILE, TILE, o, o, s, s);
-	} else if (ready && img !== null) {
-		ctx.drawImage(img, srcX, srcY, TILE, TILE, o, o, s, s);
 	} else {
 		ctx.fillStyle = "#9a9a9a";
 		ctx.fillRect(o, o, s, s);
@@ -768,6 +760,8 @@ function _drawFlatSprite(
 /**
  * Draws one textured quad with optional normal-map lighting.
  * The texture u-axis maps onto edge A→B and the v-axis onto edge A→D.
+ * Callers gate on iconAtlasesReadyPromise, so the shaded tile is expected to
+ * exist; the gray fill is only a defensive fallback.
  */
 function _drawQuad(
 	ctx: CanvasRenderingContext2D,
@@ -779,8 +773,6 @@ function _drawQuad(
 	y2: number,
 	x3: number,
 	y3: number,
-	img: HTMLImageElement | null,
-	ready: boolean,
 	srcX: number,
 	srcY: number,
 	shade: number,
@@ -800,16 +792,6 @@ function _drawQuad(
 	if (shadedTile !== null) {
 		ctx.setTransform(x1 - x0, y1 - y0, x3 - x0, y3 - y0, x0, y0);
 		ctx.drawImage(shadedTile, 0, 0, TILE, TILE, 0, 0, 1, 1);
-	} else if (ready && img !== null) {
-		// Transient fallback while the atlas canvases are still loading: draw
-		// the raw tile and apply the face shade directly over the quad so the
-		// icon never renders unshaded.
-		ctx.setTransform(x1 - x0, y1 - y0, x3 - x0, y3 - y0, x0, y0);
-		ctx.drawImage(img, srcX, srcY, TILE, TILE, 0, 0, 1, 1);
-
-		ctx.setTransform(1, 0, 0, 1, 0, 0);
-		ctx.fillStyle = getShadeFill(shade);
-		ctx.fill();
 	} else {
 		ctx.setTransform(1, 0, 0, 1, 0, 0);
 		ctx.fillStyle = "#9a9a9a";
