@@ -14,12 +14,42 @@ import {
 	DistantOnlyChunkCreationRule,
 	Lod0ChunkCreationRule,
 } from "../LOD/ChunkLodRules";
-import { maxLodForChunkY } from "../Worker/LODUtilities";
+import { UNDERGROUND_SKIP_LOD, maxLodForChunkY } from "../Worker/LODUtilities";
 
 /** Underground (cave) chunks never coarsen: clamp any desired LOD. */
 function clampLodForY(chunkY: number, lod: number): number {
 	const max = maxLodForChunkY(chunkY);
 	return lod > max ? max : lod;
+}
+
+/**
+Whether an underground coordinate should currently have a chunk. Horizontal
+bands decide (vertical distance must not gate caves); depth is bounded by the
+rule set's underground vertical cap (CAVE_VERTICAL_RENDER_DISTANCE outdoors,
+widened while in a cave).
+ */
+function undergroundDesired(
+	chunkY: number,
+	hDist: number,
+	vDist: number,
+	lodRuleSet: ChunkLodRuleSet,
+): boolean {
+	if (chunkY >= 0) return false;
+	if (lodRuleSet.horizontalLodForDistance(hDist) >= UNDERGROUND_SKIP_LOD) {
+		return false;
+	}
+
+	return vDist <= undergroundVerticalRange(lodRuleSet);
+}
+
+function undergroundVerticalRange(lodRuleSet: ChunkLodRuleSet): number {
+	return (
+		lodRuleSet.undergroundVerticalCap ??
+		Math.max(
+			lodRuleSet.verticalRadiusFor(0),
+			lodRuleSet.verticalRadiusFor(UNDERGROUND_SKIP_LOD - 1),
+		)
+	);
 }
 
 export type QueuedChunkRequest = {
@@ -188,6 +218,7 @@ export class ChunkStreamingController {
 					[lod0HorizontalRadius, 0, 0, 0, 0, 0],
 					[lod0VerticalRadius, 0, 0, 0, 0, 0],
 					this.nextRuleGeneration(),
+					lod0VerticalRadius,
 				);
 			}
 
@@ -310,7 +341,10 @@ export class ChunkStreamingController {
 			const hDist = absX > absZ ? absX : absZ;
 			const vDist = absY;
 
-			if (hDist > operationalRadius || vDist > operationalVerticalRadius) {
+			if (
+				hDist > operationalRadius ||
+				(chunk.chunkY >= 0 && vDist > operationalVerticalRadius)
+			) {
 				chunk.isTerrainScheduled = false;
 				continue;
 			}
@@ -339,6 +373,14 @@ export class ChunkStreamingController {
 						chunk.isDirty,
 					);
 				}
+			}
+
+			if (
+				chunk.chunkY < 0 &&
+				!undergroundDesired(chunk.chunkY, hDist, vDist, lodRuleSet)
+			) {
+				chunk.isTerrainScheduled = false;
+				continue;
 			}
 
 			desiredLod = clampLodForY(chunk.chunkY, desiredLod);
@@ -377,18 +419,13 @@ export class ChunkStreamingController {
 			const hDist = absX > absZ ? absX : absZ;
 			const vDist = absY;
 
-			const effectiveVerticalAllowance =
-				!caveState && chunk.chunkY < 0
-					? Math.min(
-							lodRuleSet.maxVerticalRadius(),
-							SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE,
-						)
-					: lodRuleSet.maxVerticalRadius();
+			const keep =
+				chunk.chunkY < 0
+					? undergroundDesired(chunk.chunkY, hDist, vDist, lodRuleSet)
+					: hDist <= lodRuleSet.maxHorizontalRadius() &&
+						vDist <= lodRuleSet.maxVerticalRadius();
 
-			if (
-				hDist <= lodRuleSet.maxHorizontalRadius() &&
-				vDist <= effectiveVerticalAllowance
-			) {
+			if (keep) {
 				unloadQueueSet.delete(chunk);
 			}
 		}
@@ -410,15 +447,19 @@ export class ChunkStreamingController {
 				prevChunkY,
 				prevChunkZ,
 				lodRuleSet,
-				caveState,
 			);
 		} else {
-			this.processInitialShell(chunkX, chunkY, chunkZ, lodRuleSet, caveState);
+			this.processInitialShell(chunkX, chunkY, chunkZ, lodRuleSet);
 		}
+
+		this.ensureUndergroundBand(chunkX, chunkY, chunkZ, lodRuleSet);
 
 		const unloadBuffer = SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER + 8;
 		const unloadScanRadius = operationalRadius + unloadBuffer;
-		const unloadScanVertical = operationalVerticalRadius + unloadBuffer;
+		const unloadScanVertical = Math.max(
+			operationalVerticalRadius + unloadBuffer,
+			chunkY - SETTING_PARAMS.MIN_CHUNK_Y,
+		);
 
 		_queryScratch.length = 0;
 		Chunk.loadedChunkIndex.queryCollect(
@@ -456,7 +497,7 @@ export class ChunkStreamingController {
 			chunkZ,
 			operationalRadius,
 			operationalVerticalRadius,
-			caveState,
+			lodRuleSet,
 		);
 
 		if (!caveState) {
@@ -535,11 +576,22 @@ export class ChunkStreamingController {
 			let decisionLod = this.getCachedDecisionLod(key, chunk.isDirty);
 
 			if (decisionLod < 0) {
-				decisionLod = clampLodForY(
-					chunk.chunkY,
-					lodRuleSet.resolveWithHysteresisFromDistance(hDist, vDist, chunkLod)
-						.lodLevel,
-				);
+				if (chunk.chunkY < 0) {
+					if (!undergroundDesired(chunk.chunkY, hDist, vDist, lodRuleSet)) {
+						continue;
+					}
+
+					decisionLod = clampLodForY(
+						chunk.chunkY,
+						lodRuleSet.horizontalLodForDistance(hDist),
+					);
+				} else {
+					decisionLod = lodRuleSet.resolveWithHysteresisFromDistance(
+						hDist,
+						vDist,
+						chunkLod,
+					).lodLevel;
+				}
 				this.setCachedDecisionLod(key, decisionLod, chunk.isDirty);
 			}
 
@@ -641,20 +693,12 @@ export class ChunkStreamingController {
 		const vDist = relY < 0 ? -relY : relY;
 
 		// ALLOCATION GUARD (profile: 45% of heap churn flowed through here
-		// via `new Chunk` for sky/void cells). For cells that would resolve
-		// to a downsampled far band (LOD>=2), skip provably-empty columns:
-		// above the terrain surface, or deep underground beyond cave reach.
-		// Near bands (LOD<=1) always process — gameplay depends on them.
+		// via `new Chunk` for empty sky cells): skip columns provably above
+		// the terrain surface in the far vertical bands. Underground bands
+		// are governed by undergroundDesired during LOD resolution below.
 		const nearVertical = lodRuleSet.verticalRadiusFor(1);
-		if (vDist > nearVertical || y < 0) {
-			const nearHorizontal =
-				SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_1_OFFSET;
-			const isFarBand = vDist > nearVertical || hDist > nearHorizontal;
-
-			if (isFarBand) {
-				if (y < 0 && hDist > nearHorizontal) return; // void caves
-				if (y >= 0 && y > columnTopChunkY(x, z) + 1) return; // sky
-			}
+		if (vDist > nearVertical && y >= 0 && y > columnTopChunkY(x, z) + 1) {
+			return;
 		}
 
 		const chunk = getChunk(x, y, z);
@@ -665,15 +709,27 @@ export class ChunkStreamingController {
 		let desiredLod = this.getCachedDecisionLod(cacheKey, isDirty);
 
 		if (desiredLod < 0) {
-			const decision = lodRuleSet.resolveWithHysteresisFromDistance(
-				hDist,
-				vDist,
-				previousLod,
-			);
+			if (y < 0) {
+				if (!undergroundDesired(y, hDist, vDist, lodRuleSet)) {
+					return;
+				}
 
-			if (!decision.allowsChunkCreation) return;
+				desiredLod = clampLodForY(
+					y,
+					lodRuleSet.horizontalLodForDistance(hDist),
+				);
+			} else {
+				const decision = lodRuleSet.resolveWithHysteresisFromDistance(
+					hDist,
+					vDist,
+					previousLod,
+				);
 
-			desiredLod = clampLodForY(y, decision.lodLevel);
+				if (!decision.allowsChunkCreation) return;
+
+				desiredLod = clampLodForY(y, decision.lodLevel);
+			}
+
 			this.setCachedDecisionLod(cacheKey, desiredLod, isDirty);
 		}
 
@@ -769,6 +825,38 @@ export class ChunkStreamingController {
 			);
 		}
 	}
+	private ensureUndergroundBand(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		lodRuleSet: ChunkLodRuleSet,
+	): void {
+		const bandH = lodRuleSet.horizontalRadiusFor(UNDERGROUND_SKIP_LOD - 1);
+		const verticalRange = undergroundVerticalRange(lodRuleSet);
+
+		const startY = Math.max(SETTING_PARAMS.MIN_CHUNK_Y, chunkY - verticalRange);
+		const startX = chunkX - bandH;
+		const endX = chunkX + bandH;
+		const startZ = chunkZ - bandH;
+		const endZ = chunkZ + bandH;
+
+		for (let x = startX; x <= endX; x++) {
+			for (let z = startZ; z <= endZ; z++) {
+				for (let y = startY; y <= -1; y++) {
+					this.processTargetChunkCoordinate(
+						x,
+						y,
+						z,
+						chunkX,
+						chunkY,
+						chunkZ,
+						lodRuleSet,
+					);
+				}
+			}
+		}
+	}
+
 	private processMovementRings(
 		chunkX: number,
 		chunkY: number,
@@ -777,7 +865,6 @@ export class ChunkStreamingController {
 		prevChunkY: number,
 		prevChunkZ: number,
 		lodRuleSet: ChunkLodRuleSet,
-		caveState: boolean,
 	): void {
 		const dx = chunkX - prevChunkX;
 		const dy = chunkY - prevChunkY;
@@ -786,12 +873,7 @@ export class ChunkStreamingController {
 		const r = lodRuleSet.maxHorizontalRadius();
 		const ry = lodRuleSet.maxVerticalRadius();
 
-		const downwardRy = caveState
-			? ry
-			: Math.min(
-					ry,
-					Math.max(chunkY, 0) + SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE,
-				);
+		const downwardRy = ry;
 
 		const minY = SETTING_PARAMS.MIN_CHUNK_Y;
 		const maxY = minY + SETTING_PARAMS.MAX_CHUNK_HEIGHT;
@@ -871,17 +953,11 @@ export class ChunkStreamingController {
 		chunkY: number,
 		chunkZ: number,
 		lodRuleSet: ChunkLodRuleSet,
-		caveState: boolean,
 	): void {
 		const r = lodRuleSet.maxHorizontalRadius();
 		const ry = lodRuleSet.maxVerticalRadius();
 
-		const downwardRy = caveState
-			? ry
-			: Math.min(
-					ry,
-					Math.max(chunkY, 0) + SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE,
-				);
+		const downwardRy = ry;
 
 		const minY = SETTING_PARAMS.MIN_CHUNK_Y;
 		const maxY = minY + SETTING_PARAMS.MAX_CHUNK_HEIGHT;
@@ -916,17 +992,29 @@ export class ChunkStreamingController {
 					let desiredLod = this.getCachedDecisionLod(cacheKey, isDirty);
 
 					if (desiredLod < 0) {
-						const decision = lodRuleSet.resolveWithHysteresisFromDistance(
-							hDist,
-							vDist,
-							previousLod,
-						);
+						if (y < 0) {
+							if (!undergroundDesired(y, hDist, vDist, lodRuleSet)) {
+								continue;
+							}
 
-						if (!decision.allowsChunkCreation) {
-							continue;
+							desiredLod = clampLodForY(
+								y,
+								lodRuleSet.horizontalLodForDistance(hDist),
+							);
+						} else {
+							const decision = lodRuleSet.resolveWithHysteresisFromDistance(
+								hDist,
+								vDist,
+								previousLod,
+							);
+
+							if (!decision.allowsChunkCreation) {
+								continue;
+							}
+
+							desiredLod = clampLodForY(y, decision.lodLevel);
 						}
 
-						desiredLod = clampLodForY(y, decision.lodLevel);
 						this.setCachedDecisionLod(cacheKey, desiredLod, isDirty);
 					}
 
@@ -958,14 +1046,13 @@ export class ChunkStreamingController {
 		chunkZ: number,
 		renderDistance: number,
 		verticalRadius: number,
-		caveState = isInCave(),
+		lodRuleSet: ChunkLodRuleSet,
 	): void {
 		const unloadQueueSet = this.adapter.getUnloadQueueSet();
 
 		const unloadBuffer = SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
 		const removeRadius = renderDistance + unloadBuffer;
 		const verticalRemoveRadius = verticalRadius + unloadBuffer;
-		const hardOutdoorMinY = -SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE;
 
 		for (let i = 0; i < _queryScratch.length; i++) {
 			const chunk = _queryScratch[i];
@@ -985,11 +1072,16 @@ export class ChunkStreamingController {
 			const hDist = absX > absZ ? absX : absZ;
 			const vDist = absY;
 
-			if (
-				hDist > removeRadius ||
-				vDist > verticalRemoveRadius ||
-				(!caveState && chunk.chunkY < hardOutdoorMinY)
-			) {
+			if (chunk.chunkY < 0) {
+				if (
+					lodRuleSet.horizontalLodForDistance(hDist) >= UNDERGROUND_SKIP_LOD
+				) {
+					unloadQueueSet.add(chunk);
+				}
+				continue;
+			}
+
+			if (hDist > removeRadius || vDist > verticalRemoveRadius) {
 				unloadQueueSet.add(chunk);
 			}
 		}

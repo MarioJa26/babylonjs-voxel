@@ -98,7 +98,17 @@ export class PlayerHud {
 		};
 	} = {};
 	private static itemTooltipDiv: HTMLDivElement;
-	private static itemTooltipMouseMove?: (e: MouseEvent) => void;
+
+	// Tooltip positioning: one persistent mousemove listener buffers cursor
+	// coords, and a single rAF callback applies them via transform. Transform
+	// writes never invalidate layout, so hovering items can no longer force
+	// the engine's per-frame resize read into a synchronous layout flush.
+	// (Previously every mousemove wrote left/top and listeners were swapped
+	// per hover — 128 forced layouts in a 4.85s capture.)
+	static #tooltipPendingX = 0;
+	static #tooltipPendingY = 0;
+	static #tooltipRafId: number | null = null;
+	static #tooltipVisible = false;
 
 	#healthBarFill!: HTMLDivElement;
 	#hungerBarFill!: HTMLDivElement;
@@ -1222,9 +1232,12 @@ export class PlayerHud {
 
 		const tooltip = document.createElement("div");
 		tooltip.id = "item-tooltip";
-		tooltip.style.display = "none";
 		document.body.appendChild(tooltip);
 		PlayerHud.itemTooltipDiv = tooltip;
+
+		// Bound once for the tooltip's lifetime. While the tooltip is hidden
+		// this only writes two numbers per event.
+		document.addEventListener("mousemove", PlayerHud.#onTooltipMouseMove);
 	}
 
 	public static showItemTooltip(text: string, event: MouseEvent): void {
@@ -1271,39 +1284,55 @@ export class PlayerHud {
 			tooltip.textContent = text;
 		}
 
-		if (tooltip.style.display !== "block") {
-			tooltip.style.display = "block";
-		}
+		PlayerHud.#tooltipVisible = true;
+		tooltip.classList.add("visible");
 
-		const updatePos = (e: MouseEvent) => {
-			const left = `${e.clientX + 12}px`;
-			const top = `${e.clientY - 32}px`;
-
-			if (tooltip.style.left !== left) tooltip.style.left = left;
-			if (tooltip.style.top !== top) tooltip.style.top = top;
-		};
-
-		updatePos(event);
-
-		if (PlayerHud.itemTooltipMouseMove) {
-			document.removeEventListener("mousemove", PlayerHud.itemTooltipMouseMove);
-		}
-
-		PlayerHud.itemTooltipMouseMove = updatePos;
-		document.addEventListener("mousemove", updatePos);
+		// Place immediately from this event so the tooltip never appears at a
+		// stale position; a transform write does not invalidate layout.
+		PlayerHud.#tooltipPendingX = event.clientX + 12;
+		PlayerHud.#tooltipPendingY = event.clientY - 32;
+		PlayerHud.#applyTooltipPosition();
 	}
+
+	static #onTooltipMouseMove = (event: MouseEvent): void => {
+		PlayerHud.#tooltipPendingX = event.clientX + 12;
+		PlayerHud.#tooltipPendingY = event.clientY - 32;
+
+		if (!PlayerHud.#tooltipVisible) {
+			// Drop any pending write for a tooltip that is no longer shown.
+			if (PlayerHud.#tooltipRafId !== null) {
+				cancelAnimationFrame(PlayerHud.#tooltipRafId);
+				PlayerHud.#tooltipRafId = null;
+			}
+			return;
+		}
+
+		if (PlayerHud.#tooltipRafId === null) {
+			PlayerHud.#tooltipRafId = requestAnimationFrame(
+				PlayerHud.#applyTooltipPosition,
+			);
+		}
+	};
+
+	static #applyTooltipPosition = (): void => {
+		PlayerHud.#tooltipRafId = null;
+
+		const tooltip = PlayerHud.itemTooltipDiv;
+		if (!tooltip || !PlayerHud.#tooltipVisible) return;
+
+		tooltip.style.transform = `translate3d(${PlayerHud.#tooltipPendingX}px, ${PlayerHud.#tooltipPendingY}px, 0)`;
+	};
 
 	public static hideItemTooltip(): void {
 		const tooltip = PlayerHud.itemTooltipDiv;
 		if (!tooltip) return;
 
-		if (tooltip.style.display !== "none") {
-			tooltip.style.display = "none";
-		}
+		PlayerHud.#tooltipVisible = false;
+		tooltip.classList.remove("visible");
 
-		if (PlayerHud.itemTooltipMouseMove) {
-			document.removeEventListener("mousemove", PlayerHud.itemTooltipMouseMove);
-			PlayerHud.itemTooltipMouseMove = undefined;
+		if (PlayerHud.#tooltipRafId !== null) {
+			cancelAnimationFrame(PlayerHud.#tooltipRafId);
+			PlayerHud.#tooltipRafId = null;
 		}
 	}
 
@@ -1321,7 +1350,7 @@ export class PlayerHud {
 
 		if (healthPct !== this.#prevHealthPct) {
 			this.#prevHealthPct = healthPct;
-			this.#healthBarFill.style.width = `${healthPct}%`;
+			this.#healthBarFill.style.transform = `scaleX(${healthPct / 100})`;
 		}
 
 		const hungerPct =
@@ -1334,7 +1363,7 @@ export class PlayerHud {
 
 		if (hungerPct !== this.#prevHungerPct) {
 			this.#prevHungerPct = hungerPct;
-			this.#hungerBarFill.style.width = `${hungerPct}%`;
+			this.#hungerBarFill.style.transform = `scaleX(${hungerPct / 100})`;
 		}
 
 		const staminaPct =
@@ -1347,7 +1376,7 @@ export class PlayerHud {
 
 		if (staminaPct !== this.#prevStaminaPct) {
 			this.#prevStaminaPct = staminaPct;
-			this.#staminaBarFill.style.width = `${staminaPct}%`;
+			this.#staminaBarFill.style.transform = `scaleX(${staminaPct / 100})`;
 		}
 
 		const manaPct =
@@ -1360,7 +1389,7 @@ export class PlayerHud {
 
 		if (manaPct !== this.#prevManaPct) {
 			this.#prevManaPct = manaPct;
-			this.#manaBarFill.style.width = `${manaPct}%`;
+			this.#manaBarFill.style.transform = `scaleX(${manaPct / 100} )`;
 		}
 	}
 }

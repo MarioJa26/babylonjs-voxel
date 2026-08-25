@@ -43,10 +43,6 @@ import {
 } from "./DataStructures/WorkerMessageType";
 import { flushDirtyMergedGroups, setRequestFlush } from "./MergedMeshManager";
 import {
-	normalizeChunkLod,
-	shouldSkipLodForChunk,
-} from "./Worker/LODUtilities";
-import {
 	hasStableVoxelNeighborsForCachedMesh,
 	maybeRemeshNeighborsNowStable,
 	scheduleChunkAndNeighborsRemesh,
@@ -106,7 +102,6 @@ export type ChunkWorkerPoolDebugStats = {
 	meshCachedForOtherLodTotal: number;
 	meshStaleDroppedTotal: number;
 	meshUnknownChunkDroppedTotal: number;
-	meshLodSkippedDroppedTotal: number;
 	// Overflow discards whose owner was re-queued for a fresh build instead of
 	// silently missing its update (backpressure drop policy).
 	meshOverflowRequeuedTotal: number;
@@ -472,7 +467,6 @@ export class ChunkWorkerPool {
 		meshCachedForOtherLodTotal: 0,
 		meshStaleDroppedTotal: 0,
 		meshUnknownChunkDroppedTotal: 0,
-		meshLodSkippedDroppedTotal: 0,
 		meshOverflowRequeuedTotal: 0,
 		meshRecycledBuffersTotal: 0,
 		meshRecycledBytesTotal: 0,
@@ -1897,18 +1891,6 @@ export class ChunkWorkerPool {
 					continue;
 				}
 
-				if (shouldSkipLodForChunk(chunk, lod)) {
-					this.debugStats.meshLodSkippedDroppedTotal++;
-					this._summaryDropped++;
-					this.recycleMeshBuffers(workerIdx, data);
-					normalizeChunkLod(chunk);
-					chunk.isDirty = true;
-					chunk.remeshQueued = false;
-					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
-					processed++;
-					continue;
-				}
-
 				const opaqueData = opaque ?? null;
 				const waterData = water ?? null;
 				const cutoutData = cutout ?? null;
@@ -2156,7 +2138,6 @@ export class ChunkWorkerPool {
 		// while a build is queued/in-flight must not advance meshRevision, or
 		// the drain discards the in-flight result and pays a duplicate rebuild.
 		if (bumpRevision && !chunk.remeshQueued) chunk.meshRevision++;
-		normalizeChunkLod(chunk);
 		if (!chunk.hasVoxelData) {
 			if (!this.tryApplyCachedLODMesh(chunk, true)) {
 				chunk.isDirty = true;
@@ -3842,7 +3823,6 @@ export class ChunkWorkerPool {
 					!taskChunk.isLoaded ||
 					!taskChunk.hasVoxelData ||
 					precomputeLod === undefined ||
-					shouldSkipLodForChunk(taskChunk, precomputeLod) ||
 					taskChunk.hasCachedLODMesh(precomputeLod)
 				) {
 					continue;
@@ -3943,8 +3923,6 @@ export class ChunkWorkerPool {
 				this.debugStats.totalTerrainDispatches++;
 				dispatchedThisTick++;
 			} else if (taskType === TaskType.Remesh) {
-				normalizeChunkLod(taskChunk!);
-
 				const lod = taskChunk!.lodLevel ?? 0;
 
 				this.setWorkerTaskContext(
@@ -3981,8 +3959,6 @@ export class ChunkWorkerPool {
 				this.debugStats.totalLodPrecomputeDispatches++;
 				dispatchedThisTick++;
 			} else if (taskType === TaskType.Relight) {
-				normalizeChunkLod(taskChunk!);
-
 				const lod = taskChunk!.lodLevel ?? 0;
 
 				this.setWorkerTaskContext(

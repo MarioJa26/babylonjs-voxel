@@ -208,7 +208,12 @@
 }
 
 .inventory-slot {
-	transition: 100ms;
+	/* No transition here on purpose. Border-color must NOT animate: color is
+	   a paint property and can never run on the compositor (DevTools reports
+	   it as "Compositing failed: Unsupported CSS property"), so an animated
+	   border is a main-thread style-recalc + repaint every frame of the
+	   transition. An instant swap costs exactly one recalc + one paint.
+	   The hover zoom easing lives on .inventory-item (transform only). */
 	flex: 0 0 auto;
 	aspect-ratio: 1 / 1; /* keeps them square */
 	width: var(--slot-size);
@@ -233,8 +238,13 @@
 
 .inventory-slot:hover {
 	border-color: var(--hud-accent);
-	transition-duration: 150ms;
-	transform: scale(1.1);
+}
+
+/* Zoom the item, not the slot: the border frame stays anchored (no moving
+   layout box over neighbours), and the animated surface is just the icon.
+   Deliberately not clipped — the zoomed icon may overflow the slot. */
+.inventory-slot:hover .inventory-item {
+	transform: scale(1.15);
 }
 
 /* ─── Hotbar ──────────────────────────────────────────────────────────────── */
@@ -1133,7 +1143,11 @@
 .stat-bar-fill {
 	width: 100%;
 	height: 100%;
-	transition: width 0.1s;
+
+	/* Filled via scaleX (not width) so bar updates never invalidate layout;
+	   transform-origin keeps the fill anchored to the left edge */
+	transform-origin: left center;
+	transition: transform 0.1s;
 }
 
 .stat-bar-fill.health {
@@ -1251,8 +1265,15 @@
 
 /* ─── Item Tooltip ────────────────────────────────────────────────────────── */
 
+/* Hidden/visible via visibility+opacity, positioned purely with transform:
+   none of these invalidate layout, so a cursor sweeping over items (or the
+   engine's per-frame resize check) can never be forced into a sync layout */
 #item-tooltip {
 	position: absolute;
+	left: 0;
+	top: 0;
+	will-change: transform;
+
 	background-color: var(--hud-bg-modal);
 	border: var(--hud-border-width) solid var(--hud-frame);
 	border-radius: var(--hud-radius-sm);
@@ -1266,6 +1287,14 @@
 	z-index: 200; /* on top of other UI */
 	pointer-events: none; /* must not block mouse events */
 	white-space: nowrap; /* keep the name on a single line */
+
+	visibility: hidden;
+	opacity: 0;
+}
+
+#item-tooltip.visible {
+	visibility: visible;
+	opacity: 1;
 }
 
 .item-tooltip-name {

@@ -124,52 +124,24 @@ function setFrustumPlane(
 	_frustumPacked[off + 3] = d / len;
 }
 
-// Lite's Mat4 is column-major (m[col*4 + row]); Babylon's Matrix is row-major.
-// Frustum planes come from clip-space half-space inequalities, which are built
-// Babylon Lite runs on WebGPU, whose clip space is 0 <= z <= w (not the
-// OpenGL -w <= z <= w). The side planes (left/right/top/bottom) and the far
-// plane are the standard half-spaces (col3 +/- colN). The near plane is simply
-// col2 (z >= 0); col3 + col2 would be the OpenGL near (z >= -w) and is WRONG here.
+// Lite's Mat4 is column-major (m[col*4 + row]). Frustum planes come from
+// clip-space half-space inequalities on VP = P*V. Babylon Lite runs on WebGPU,
+// whose clip space is 0 <= z <= w (not OpenGL's -w <= z <= w), and its
+// projection is REVERSE-Z (mat4PerspectiveLH: depth 1 at near, 0 at far).
+// Reverse-Z swaps which row maps to which boundary: row2 (z_clip >= 0) is the
+// FAR plane and row3 - row2 (z_clip <= w) is the NEAR plane. Both are
+// extracted below, so the 6-plane set is correct regardless; col3 + col2
+// (the OpenGL -w <= z near) must NOT be used.
 function cacheFrustumPlanes(vp: Mat4): void {
 	const m = vp;
-	// Clip-space half-space extraction (column-major VP): side planes and far
-	// are (col3 +/- colN); near is col2 (see note above).
-	setFrustumPlane(
-		0,
-		m[3]! + m[0]!,
-		m[7]! + m[4]!,
-		m[11]! + m[8]!,
-		m[15]! + m[12]!,
-	); // left
-	setFrustumPlane(
-		4,
-		m[3]! - m[0]!,
-		m[7]! - m[4]!,
-		m[11]! - m[8]!,
-		m[15]! - m[12]!,
-	); // right
-	setFrustumPlane(
-		8,
-		m[3]! + m[1]!,
-		m[7]! + m[5]!,
-		m[11]! + m[9]!,
-		m[15]! + m[13]!,
-	); // bottom
-	setFrustumPlane(
-		12,
-		m[3]! - m[1]!,
-		m[7]! - m[5]!,
-		m[11]! - m[9]!,
-		m[15]! - m[13]!,
-	); // top
-	setFrustumPlane(16, m[2]!, m[6]!, m[10]!, m[14]!); // near (WebGPU clip: z >= 0)
-	setFrustumPlane(
-		20,
-		m[3]! - m[2]!,
-		m[7]! - m[6]!,
-		m[11]! - m[10]!,
-		m[15]! - m[14]!,
-	); // far
+	// Clip-space half-space extraction (column-major VP): side planes are
+	// (col3 +/- colN); the two z boundaries are col2 and col3 - col2.
+	setFrustumPlane(0, m[3] + m[0], m[7] + m[4], m[11] + m[8], m[15] + m[12]); // left
+	setFrustumPlane(4, m[3] - m[0], m[7] - m[4], m[11] - m[8], m[15] - m[12]); // right
+	setFrustumPlane(8, m[3] + m[1], m[7] + m[5], m[11] + m[9], m[15] + m[13]); // bottom
+	setFrustumPlane(12, m[3] - m[1], m[7] - m[5], m[11] - m[9], m[15] - m[13]); // top
+	setFrustumPlane(16, m[2], m[6], m[10], m[14]); // far (reverse-Z: z_clip >= 0)
+	setFrustumPlane(20, m[3] - m[2], m[7] - m[6], m[11] - m[10], m[15] - m[14]); // near (reverse-Z: z_clip <= w)
 	_frustumValid = true;
 }
 
@@ -395,7 +367,7 @@ export class OcclusionCuller {
 			const vis = this._topoVisibleChunks;
 			const len = vis.length;
 			for (let i = 0; i < len; i++) {
-				const chunk = vis[i]!;
+				const chunk = vis[i];
 				if (chunk.connectivityDirty && !chunk.bfsQueuedForConnectivity) {
 					chunk.bfsQueuedForConnectivity = true;
 					this._dirtyConnectivityChunks.push(chunk);
@@ -448,7 +420,7 @@ export class OcclusionCuller {
 		let vpChanged = !_frustumValid;
 		if (!vpChanged) {
 			for (let i = 0; i < 16; i++) {
-				if (Math.abs(vp[i]! - _lastVP[i]!) > 1e-6) {
+				if (Math.abs(vp[i] - _lastVP[i]) > 1e-6) {
 					vpChanged = true;
 					break;
 				}
@@ -504,7 +476,7 @@ export class OcclusionCuller {
 		const nearDistSq = OcclusionCuller.SWEEP_NEAR_DIST_SQ;
 
 		for (let i = 0; i < allGroups.length; i++) {
-			const group = allGroups[i]!;
+			const group = allGroups[i];
 			const minGX = group.gridX * groupExtent;
 			const minGY = group.gridY * groupExtent;
 			const minGZ = group.gridZ * groupExtent;
@@ -599,7 +571,12 @@ export class OcclusionCuller {
 				}
 
 				// Keep last-known visibility while the BFS is still spreading.
+				// The group still counts toward sweep totals; its occluded
+				// state is whatever its meshes currently render.
 				if (!bfsReachable && bfsPrevious && bfsInProgress) {
+					groupTotal++;
+					const mesh = group.opaqueMeshRef;
+					if (!mesh || mesh.isVisible === false) groupHidden++;
 					continue;
 				}
 
@@ -717,8 +694,8 @@ export class OcclusionCuller {
 		// BFS propagation from newChunk outward
 		while (qHead !== qTail) {
 			const current = _incBfsChunks[qHead]!;
-			const entryFace = _incBfsEntry[qHead]!;
-			const steps = _incBfsSteps[qHead]!;
+			const entryFace = _incBfsEntry[qHead];
+			const steps = _incBfsSteps[qHead];
 			qHead = (qHead + 1) & BFS_MASK;
 
 			const curFc = current.faceConnectivity;
@@ -799,7 +776,7 @@ export class OcclusionCuller {
 		const dirty = this._dirtyConnectivityChunks;
 		const dirtyLen = dirty.length;
 		for (let i = 0; i < dirtyLen; i++) {
-			const c = dirty[i]!;
+			const c = dirty[i];
 			if (c.connectivityDirty) c.computeFaceConnectivity();
 			c.bfsQueuedForConnectivity = false;
 		}
@@ -872,8 +849,8 @@ export class OcclusionCuller {
 
 		while (qHead !== qTail && processed < budget) {
 			const current = _bfsChunks[qHead]!;
-			const entryFace = _bfsEntry[qHead]!;
-			const steps = _bfsSteps[qHead]!;
+			const entryFace = _bfsEntry[qHead];
+			const steps = _bfsSteps[qHead];
 			qHead = (qHead + 1) & BFS_MASK;
 			processed++;
 
@@ -913,7 +890,7 @@ export class OcclusionCuller {
 
 				// Connectivity gate
 				if (entryFace >= 0) {
-					const bit = FACE_PAIR_FLAT[entryFace * 6 + exitFace]!;
+					const bit = FACE_PAIR_FLAT[entryFace * 6 + exitFace];
 					if (!(curFc & (1 << bit))) continue;
 				}
 				if (nbr.bfsQueryId !== queryId) {
@@ -947,7 +924,7 @@ export class OcclusionCuller {
 			const vis = this._topoVisibleChunks;
 			let writeIdx = 0;
 			for (let i = 0; i < vis.length; i++) {
-				const chunk = vis[i]!;
+				const chunk = vis[i];
 				if (chunk.bfsQueryId === queryId) {
 					vis[writeIdx++] = chunk;
 				}

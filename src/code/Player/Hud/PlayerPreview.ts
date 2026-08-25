@@ -8,6 +8,7 @@ import {
 	disposeMeshGpu,
 	disposeScene,
 	type EngineContext,
+	enableSurfaceResizeObserver,
 	loadTexture2D,
 	type Mesh,
 	onBeforeRender,
@@ -222,6 +223,9 @@ export class PlayerPreview {
 
 	async #init(): Promise<void> {
 		const engine = await createEngine(this.canvas, {});
+		// Same reason as the main engine in TestScene: keep the per-frame
+		// resize check off the DOM layout path.
+		enableSurfaceResizeObserver(engine);
 
 		/*
 		 * dispose() may run while createEngine() is awaiting.

@@ -2,6 +2,8 @@ export const SETTING_PARAMS = {
 	// --- World Generation & Loading ---
 	RENDER_DISTANCE: 3,
 	VERTICAL_RENDER_DISTANCE: 5,
+	// Max chunks below y=0 that render caves while on the surface.
+	// While isInCave, the cave-mode rule set widens this instead.
 	CAVE_VERTICAL_RENDER_DISTANCE: 2,
 	MIN_CHUNK_Y: -32,
 	MAX_CHUNK_HEIGHT: 64,
@@ -61,7 +63,10 @@ export const SETTING_PARAMS = {
 	// fragment-cost lever on HiDPI displays).
 	RENDER_SCALE: 1,
 	// 4x MSAA on the main surface. Costly (~4x raster + resolve); voxel
-	// geometry barely benefits — keep false unless edges look jaggy.
+	// geometry barely benefits AND measured profiling shows it starves the
+	// GPU so hard that DOM UI (inventory palette) scrolling drops to ~20fps
+	// even while the world render is throttled. Keep false unless edges look
+	// jaggy on a beefy GPU.
 	ENABLE_MSAA: true,
 	// Frame-rate cap. The engine loop is an uncapped requestAnimationFrame,
 	// so on 120Hz+ monitors the GPU renders flat-out even when each frame is

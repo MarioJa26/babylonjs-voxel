@@ -2,6 +2,7 @@ import {
 	createEngine,
 	createSceneContext,
 	type EngineContext,
+	enableSurfaceResizeObserver,
 	onBeforeRender,
 	registerScene,
 	type SceneContext,
@@ -70,6 +71,13 @@ export class TestScene {
 			msaaSamples: savedSettings.msaaEnabled ? 4 : 1,
 			maxDevicePixelRatio: Math.max(0.5, dpr * savedSettings.renderScale),
 		});
+		// The engine's rAF loop polls resizeSurface() every frame; without this
+		// it reads canvas.clientWidth/clientHeight each time, so any HUD style
+		// write that dirtied layout earlier in the frame (tooltip position,
+		// stat bars) forces a synchronous layout flush on the main thread. With
+		// a ResizeObserver feeding surface._w/_h the per-frame check compares
+		// cached numbers instead and never touches layout.
+		enableSurfaceResizeObserver(engine);
 		const scene = createSceneContext(engine, {
 			defaultRenderTask: true,
 		});
@@ -122,18 +130,19 @@ export class TestScene {
 	 * when a frame is due we call the original (which re-schedules our
 	 * wrapper — exactly one chain), and when skipped WE re-schedule instead.
 	 */
-	#installFpsCap(engine: EngineContext, fpsCap: number): void {
-		if (!fpsCap || fpsCap <= 0) return; // 0 = uncapped
+	#installFpsCap(engine: EngineContext, fpsCap: number = 0): void {
+		if (fpsCap <= 0) return; // 0 = uncapped
 		const anyEngine = engine as unknown as {
 			_renderFn: ((now: number) => void) | null;
 			_animFrameId: number;
 		};
 		const original = anyEngine._renderFn;
 		if (!original) return;
-		const minInterval = 1000 / Math.min(fpsCap, 240) - 1;
+		const minInterval = fpsCap > 0 ? 1000 / Math.min(fpsCap, 240) - 1 : 0;
 		let lastRender = -Infinity;
 		const wrapped = (now: number): void => {
 			if (anyEngine._renderFn !== wrapped) return; // engine stopped
+
 			if (now - lastRender >= minInterval || now < lastRender) {
 				lastRender = now;
 				original(now); // re-schedules `wrapped`

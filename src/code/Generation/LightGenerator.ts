@@ -20,7 +20,14 @@ const PACKED_ID_MASK = 0x3ff;
  * Face of OUR border cell that touches the neighbor, per face index
  * [+X, -X, +Y, -Y, +Z, -Z]. Light crossing the boundary enters through it.
  */
-const BORDER_ENTER_BITS = [FACE_PX, FACE_NX, FACE_PY, FACE_NY, FACE_PZ, FACE_NZ];
+const BORDER_ENTER_BITS = [
+	FACE_PX,
+	FACE_NX,
+	FACE_PY,
+	FACE_NY,
+	FACE_PZ,
+	FACE_NZ,
+];
 
 export type LightSeedState = {
 	/**
@@ -681,8 +688,7 @@ export class LightGenerator {
 		if (lut) {
 			enterable = (lut[targetPacked & 0xffff] & enterBit) === 0;
 		} else {
-			enterable =
-				targetBlockId < 1024 && transparentLUT[targetBlockId] !== 0;
+			enterable = targetBlockId < 1024 && transparentLUT[targetBlockId] !== 0;
 		}
 		if (!enterable) {
 			return tail;

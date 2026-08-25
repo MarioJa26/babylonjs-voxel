@@ -182,6 +182,7 @@ export class ChunkLodRuleSet {
 			horizontalRadii,
 			verticalRadii,
 			revision,
+			SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE,
 		);
 	}
 
@@ -198,6 +199,13 @@ export class ChunkLodRuleSet {
 		 * from this rule set can use `revision` to invalidate their cache.
 		 */
 		public readonly revision: number = 0,
+		/**
+		 * Vertical window (in chunks, from the player) in which underground
+		 * chunks are desired. Outdoor sets use CAVE_VERTICAL_RENDER_DISTANCE;
+		 * cave-mode sets widen it to their lod0 vertical radius. When omitted,
+		 * consumers fall back to deriving a window from the vertical radii.
+		 */
+		public readonly undergroundVerticalCap?: number,
 	) {}
 
 	/** Widest chunk-creating horizontal band of this rule set. */
@@ -216,6 +224,18 @@ export class ChunkLodRuleSet {
 
 	public verticalRadiusFor(lod: number): number {
 		return this.verticalRadiiArr[lod] ?? Number.MAX_SAFE_INTEGER;
+	}
+
+	/**
+	 * Innermost band whose HORIZONTAL radius contains hDist, ignoring vertical
+	 * distance. Used for underground (cave) chunks, whose depth range is
+	 * governed by streaming caps rather than vertical LOD bands.
+	 */
+	public horizontalLodForDistance(hDist: number): number {
+		for (let lod = 0; lod <= MAX_CHUNK_LOD; lod++) {
+			if (hDist <= this.horizontalRadiiArr[lod]) return lod;
+		}
+		return DISTANT_LOD_LEVEL;
 	}
 
 	// PERF: reused across resolveWithDistance calls (single-threaded) so we
