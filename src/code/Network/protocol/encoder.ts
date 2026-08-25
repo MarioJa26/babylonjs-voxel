@@ -38,7 +38,7 @@ const _textEncoder = new TextEncoder();
 const _textDecoder = new TextDecoder();
 
 const PLAYER_STATE_BATCH_ENTRY_BYTES = 16; // index:u8 + x/y/z:f32 + yaw/pitch/anim:u8
-const BLOCK_EDIT_ENTRY_BYTES = 15; // x/y/z:i32 + blockId:u16 + action:u8
+const BLOCK_EDIT_ENTRY_BYTES = 16; // x/y/z:i32 + blockId:u16 + blockState:u8 + action:u8
 const CHUNK_REQUEST_ENTRY_BYTES = 17; // cx/cy/cz:i32 + lod:u8 + cachedVersion:u32
 const MOB_UPDATE_ENTRY_BYTES = 15; // mobId:u16 + x/y/z:f32 + yaw:u8
 const CHUNK_VOLUME = 32 * 32 * 32; // Chunk.SIZE^3 — light arrays are this size
@@ -157,6 +157,7 @@ export class BinaryEncoder {
 		this.writeInt32(data.y);
 		this.writeInt32(data.z);
 		this.writeUint16(data.blockId);
+		this.writeUint8(data.blockState);
 		this.writeUint8(data.action);
 	}
 
@@ -382,8 +383,9 @@ export class BinaryDecoder {
 		const y = this.readInt32();
 		const z = this.readInt32();
 		const blockId = this.readUint16();
+		const blockState = this.readUint8();
 		const action = this.readUint8();
-		return { sessionId: "", x, y, z, blockId, action };
+		return { sessionId: "", x, y, z, blockId, blockState, action };
 	}
 
 	/**
@@ -395,6 +397,7 @@ export class BinaryDecoder {
 		target.y = this.readInt32();
 		target.z = this.readInt32();
 		target.blockId = this.readUint16();
+		target.blockState = this.readUint8();
 		target.action = this.readUint8();
 		return target;
 	}
@@ -616,6 +619,7 @@ export function encodeBlockEditBatch(edits: BlockEditData[]): Uint8Array {
 		enc.writeInt32(e.y);
 		enc.writeInt32(e.z);
 		enc.writeUint16(e.blockId);
+		enc.writeUint8(e.blockState);
 		enc.writeUint8(e.action);
 	}
 
@@ -634,6 +638,7 @@ export function decodeBlockEditBatch(buffer: Uint8Array): BlockEditData[] {
 			y: dec.readInt32(),
 			z: dec.readInt32(),
 			blockId: dec.readUint16(),
+			blockState: dec.readUint8(),
 			action: dec.readUint8(),
 		};
 	}
@@ -720,7 +725,7 @@ export function decodePlayerSkin(buffer: Uint8Array): PlayerSkinData {
 
 /**
  * S→C: broadcast of one player's block edit.
- * [type:1][sessionId:str][x:i32][y:i32][z:i32][blockId:u16][action:u8]
+ * [type:1][sessionId:str][x:i32][y:i32][z:i32][blockId:u16][blockState:u8][action:u8]
  * Keeps the sessionId string — block edits are rare, so the overhead is fine.
  */
 export function encodeBlockEditBroadcast(data: BlockEditData): Uint8Array {
@@ -731,6 +736,7 @@ export function encodeBlockEditBroadcast(data: BlockEditData): Uint8Array {
 	enc.writeInt32(data.y);
 	enc.writeInt32(data.z);
 	enc.writeUint16(data.blockId);
+	enc.writeUint8(data.blockState);
 	enc.writeUint8(data.action);
 	return enc.getBytes();
 }
@@ -748,25 +754,27 @@ export function decodeBlockEditBroadcastFrom(
 		y: dec.readInt32(),
 		z: dec.readInt32(),
 		blockId: dec.readUint16(),
+		blockState: dec.readUint8(),
 		action: dec.readUint8(),
 	};
 }
 
 /**
  * S→C: the server rejected one of this client's block edits.
- * [type:1][x:i32][y:i32][z:i32][blockId:u16][action:u8][reason:u8]
- * blockId echoes the client's edit so a rejected Break can be restored.
+ * [type:1][x:i32][y:i32][z:i32][blockId:u16][blockState:u8][action:u8][reason:u8]
+ * blockId/blockState echo the client's edit so a rejected Break can be restored.
  */
 export function encodeBlockEditRejected(
 	data: BlockEditRejectedData,
 ): Uint8Array {
-	const enc = new BinaryEncoder(17);
+	const enc = new BinaryEncoder(18);
 
 	enc.writeUint8(MessageType.BlockEditRejected);
 	enc.writeInt32(data.x);
 	enc.writeInt32(data.y);
 	enc.writeInt32(data.z);
 	enc.writeUint16(data.blockId);
+	enc.writeUint8(data.blockState);
 	enc.writeUint8(data.action);
 	enc.writeUint8(data.reason);
 
@@ -787,6 +795,7 @@ export function decodeBlockEditRejectedFrom(
 		y: dec.readInt32(),
 		z: dec.readInt32(),
 		blockId: dec.readUint16(),
+		blockState: dec.readUint8(),
 		action: dec.readUint8(),
 		reason: dec.readUint8(),
 	};

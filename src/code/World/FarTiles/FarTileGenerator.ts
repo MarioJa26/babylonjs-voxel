@@ -265,7 +265,15 @@ export function generateFarTile(
 				);
 
 				// -Z skirt (neighbor toward smaller z)
-				const nzMax = colPairMax(cz - 1, cx);
+				// Skirt sizing — the wall at each boundary plane is viewed from
+				// the LOWER side, so it must span from this cell's top down to
+				// the NEIGHBOR CELL's own top surface: the max of all four of
+				// the neighbor's corners. The original code used only the
+				// neighbor's far pair (undershoots when the neighbor rises
+				// toward its interior -> cracks). Overshoot is harmless: the
+				// extra depth is buried below the neighbor's surface.
+				// -Z neighbor cell (cx, cz-1): corner rows cz-1 and cz.
+				const nzMax = Math.max(colPairMax(cz - 1, cx), colPairMax(cz, cx));
 				if (nzMax < cellMax) {
 					opaque.emit(
 						x0,
@@ -283,7 +291,8 @@ export function generateFarTile(
 				}
 
 				// +Z skirt
-				const pzMax = colPairMax(cz + 2, cx);
+				// +Z neighbor cell (cx, cz+1): corner rows cz+1 and cz+2.
+				const pzMax = Math.max(colPairMax(cz + 1, cx), colPairMax(cz + 2, cx));
 				if (pzMax < cellMax) {
 					opaque.emit(
 						x0,
@@ -301,7 +310,8 @@ export function generateFarTile(
 				}
 
 				// -X skirt
-				const nxMax = rowPairMax(cz, cx - 1);
+				// -X neighbor cell (cx-1, cz): corner cols cx-1 and cx.
+				const nxMax = Math.max(rowPairMax(cz, cx - 1), rowPairMax(cz, cx));
 				if (nxMax < cellMax) {
 					opaque.emit(
 						x0,
@@ -319,7 +329,8 @@ export function generateFarTile(
 				}
 
 				// +X skirt
-				const pxMax = rowPairMax(cz, cx + 2);
+				// +X neighbor cell (cx+1, cz): corner cols cx+1 and cx+2.
+				const pxMax = Math.max(rowPairMax(cz, cx + 1), rowPairMax(cz, cx + 2));
 				if (pxMax < cellMax) {
 					opaque.emit(
 						x0 + step,

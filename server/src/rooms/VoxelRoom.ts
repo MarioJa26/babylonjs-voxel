@@ -186,6 +186,7 @@ const MAX_CHUNK_COORD = WORLD_BOUNDARY >> 5;
 // 10-bit block ids, matching the client's BlockEncoding (mason shape
 // variants occupy the 500+ range).
 const MAX_BLOCK_ID = 1023;
+const MAX_BLOCK_STATE = 63;
 const MAX_PROTOCOL_VIOLATIONS = 16;
 const FLUSH_CONCURRENCY = 8;
 const CHUNK_BATCH_BYTE_LIMIT = 256 * 1024;
@@ -193,6 +194,16 @@ const MAX_POOLED_EDIT_ENTRIES = 8192;
 const PREWARM_HORIZONTAL_RADIUS = 3;
 const PREWARM_MIN_CHUNK_Y = -5;
 const PREWARM_MAX_CHUNK_Y = 7;
+
+/** One pending voxel edit queued for persistence. blockId/blockState are the
+ * raw (unpacked) fields — applyBlockEdits packs them for storage. */
+type PendingBlockEdit = {
+	x: number;
+	y: number;
+	z: number;
+	blockId: number;
+	blockState: number;
+};
 
 export class VoxelRoom extends Room {
 	private players = new Map<string, ServerPlayerState>();
@@ -221,10 +232,7 @@ export class VoxelRoom extends Room {
 	private worldName = "default";
 	private seed = "default";
 	private dirtyChunks = new Set<number>();
-	private pendingChunkEdits = new Map<
-		number,
-		Map<number, { x: number; y: number; z: number; blockId: number }>
-	>();
+	private pendingChunkEdits = new Map<number, Map<number, PendingBlockEdit>>();
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
 	private flushPromise: Promise<void> | null = null;
 	private flushRequested = false;
@@ -318,6 +326,7 @@ export class VoxelRoom extends Room {
 		y: 0,
 		z: 0,
 		blockId: 0,
+		blockState: 0,
 		action: 0,
 	};
 	private readonly chunkRequestScratch = {
@@ -333,6 +342,7 @@ export class VoxelRoom extends Room {
 		y: number;
 		z: number;
 		blockId: number;
+		blockState: number;
 	}> = [];
 	private nextPlayerIndex = 0;
 	private freedIndices: number[] = [];
@@ -360,7 +370,7 @@ export class VoxelRoom extends Room {
 	private readonly batchKeysScratch: number[] = [];
 	private readonly appliedEditsScratch: Array<{
 		key: number;
-		editMap: Map<number, { x: number; y: number; z: number; blockId: number }>;
+		editMap: Map<number, PendingBlockEdit>;
 	}> = [];
 	private readonly deflatePromises: Promise<void>[] = [];
 
@@ -788,10 +798,7 @@ export class VoxelRoom extends Room {
 
 	private async applyFlushedEdits(
 		dirty: Set<number>,
-		edits: Map<
-			number,
-			Map<number, { x: number; y: number; z: number; blockId: number }>
-		>,
+		edits: Map<number, Map<number, PendingBlockEdit>>,
 	): Promise<void> {
 		try {
 			await runWithConcurrency(
@@ -834,37 +841,30 @@ export class VoxelRoom extends Room {
 		}
 	}
 
-	private acquireEditEntry(): {
-		x: number;
-		y: number;
-		z: number;
-		blockId: number;
-	} {
-		return this.editEntryPool.pop() ?? { x: 0, y: 0, z: 0, blockId: 0 };
+	private acquireEditEntry(): PendingBlockEdit {
+		return this.editEntryPool.pop() ?? {
+			x: 0,
+			y: 0,
+			z: 0,
+			blockId: 0,
+			blockState: 0,
+		};
 	}
 
-	private releaseEditEntry(entry: {
-		x: number;
-		y: number;
-		z: number;
-		blockId: number;
-	}): void {
+	private releaseEditEntry(entry: PendingBlockEdit): void {
 		if (this.editEntryPool.length < MAX_POOLED_EDIT_ENTRIES)
 			this.editEntryPool.push(entry);
 	}
 
 	private releaseEditEntries(
-		editMap: Map<number, { x: number; y: number; z: number; blockId: number }>,
+		editMap: Map<number, PendingBlockEdit>,
 	): void {
 		for (const entry of editMap.values()) this.releaseEditEntry(entry);
 	}
 
 	private mergeFailedChunkEdits(
 		dirty: Set<number>,
-		failed: Map<
-			number,
-			Map<number, { x: number; y: number; z: number; blockId: number }>
-		>,
+		failed: Map<number, Map<number, PendingBlockEdit>>,
 	): void {
 		for (const key of dirty) {
 			const failedMap = failed.get(key);
@@ -1272,6 +1272,7 @@ export class VoxelRoom extends Room {
 		y: number;
 		z: number;
 		blockId: number;
+		blockState: number;
 		action: number;
 	}): boolean {
 		return (
@@ -1284,6 +1285,9 @@ export class VoxelRoom extends Room {
 			Number.isInteger(edit.blockId) &&
 			edit.blockId >= 0 &&
 			edit.blockId <= MAX_BLOCK_ID &&
+			Number.isInteger(edit.blockState) &&
+			edit.blockState >= 0 &&
+			edit.blockState <= MAX_BLOCK_STATE &&
 			(edit.action === BlockActionType.Place ||
 				edit.action === BlockActionType.Break)
 		);
@@ -1340,6 +1344,7 @@ export class VoxelRoom extends Room {
 			y: number;
 			z: number;
 			blockId: number;
+			blockState: number;
 			action: number;
 		},
 		reason: number,
@@ -1351,6 +1356,7 @@ export class VoxelRoom extends Room {
 				y: edit.y,
 				z: edit.z,
 				blockId: edit.blockId,
+				blockState: edit.blockState,
 				action: edit.action,
 				reason,
 			}),
@@ -1662,12 +1668,15 @@ export class VoxelRoom extends Room {
 
 				const blockId =
 					edit.action === BlockActionType.Break ? 0 : edit.blockId;
+				const blockState =
+					edit.action === BlockActionType.Break ? 0 : edit.blockState;
 				const storedEdit: BlockEditData = {
 					sessionId: client.sessionId,
 					x: edit.x,
 					y: edit.y,
 					z: edit.z,
 					blockId,
+					blockState,
 					action: edit.action,
 				};
 				this.recordBlockEdit(storedEdit);
@@ -1694,6 +1703,7 @@ export class VoxelRoom extends Room {
 				entry.y = edit.y;
 				entry.z = edit.z;
 				entry.blockId = blockId;
+				entry.blockState = blockState;
 				editMap.set(voxelIndex, entry);
 				this.dirtyChunks.add(key);
 				this.scheduleChunkFlush();
@@ -1705,6 +1715,7 @@ export class VoxelRoom extends Room {
 				this.editBroadcastEncoder.writeInt32(storedEdit.y);
 				this.editBroadcastEncoder.writeInt32(storedEdit.z);
 				this.editBroadcastEncoder.writeUint16(storedEdit.blockId);
+				this.editBroadcastEncoder.writeUint8(storedEdit.blockState);
 				this.editBroadcastEncoder.writeUint8(storedEdit.action);
 				this.broadcastBytes("binary", this.editBroadcastEncoder.getBytes(), {
 					except: client,
@@ -1997,10 +2008,7 @@ export class VoxelRoom extends Room {
 
 		const claimed: Array<{
 			key: number;
-			editMap: Map<
-				number,
-				{ x: number; y: number; z: number; blockId: number }
-			>;
+			editMap: Map<number, PendingBlockEdit>;
 		}> = [];
 
 		let claimedCount = 0;

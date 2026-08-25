@@ -48,11 +48,23 @@ let _boatCtx: BoatCtx | null = null;
 
 // Multiplayer callback: called when a block is placed locally
 let _onBlockPlaced:
-	| ((x: number, y: number, z: number, blockId: number) => void)
+	| ((
+			x: number,
+			y: number,
+			z: number,
+			blockId: number,
+			blockState: number,
+	  ) => void)
 	| null = null;
 
 export function setOnBlockPlaced(
-	callback: (x: number, y: number, z: number, blockId: number) => void,
+	callback: (
+		x: number,
+		y: number,
+		z: number,
+		blockId: number,
+		blockState: number,
+	) => void,
 ): void {
 	_onBlockPlaced = callback;
 }
@@ -311,7 +323,7 @@ export class Item implements IUsable {
 		}
 
 		setBlock(x, y, z, blockId, blockState);
-		_onBlockPlaced?.(x, y, z, blockId);
+		_onBlockPlaced?.(x, y, z, blockId, blockState);
 	}
 
 	// ─── Zero-allocation boat context extraction ───

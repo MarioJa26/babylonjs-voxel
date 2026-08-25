@@ -404,7 +404,13 @@ export class Player {
 	 * Called by TestScene when multiplayer is active.
 	 */
 	public setDefaultBlockEditCallbacks(net: {
-		onBlockPlaced: (x: number, y: number, z: number, blockId: number) => void;
+		onBlockPlaced: (
+			x: number,
+			y: number,
+			z: number,
+			blockId: number,
+			blockState: number,
+		) => void;
 		onBlockBroken: (x: number, y: number, z: number, blockId: number) => void;
 	}): void {
 		setOnBlockPlaced(net.onBlockPlaced);

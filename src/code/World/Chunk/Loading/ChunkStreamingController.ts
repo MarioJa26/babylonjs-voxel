@@ -107,6 +107,9 @@ function columnTopChunkY(x: number, z: number): number {
 
 export class ChunkStreamingController {
 	private static readonly DESIRED_STATE_REVISION_RETENTION = 8;
+	/** Full-band refresh scan runs every Nth player-chunk-move (near window
+	 *  scans every move — see enqueueLoadedChunksForRefresh). */
+	private static readonly OUTER_SCAN_INTERVAL = 4;
 
 	private streamRevision = 0;
 
@@ -427,7 +430,23 @@ export class ChunkStreamingController {
 			_queryScratch,
 		);
 
-		this.enqueueLoadedChunksForRefresh(chunkX, chunkY, chunkZ, lodRuleSet);
+		// PERF: staged refresh cadence. The near window (LOD0-2, where band
+		// transitions actually happen during play) is rescanned every chunk
+		// move; the far LOD3-5 bands only every OUTER_SCAN_INTERVAL-th move.
+		// A full-window scan over thousands of loaded chunks measured up to
+		// 32ms in one frame; outer-band transitions are rare and tolerate a
+		// few moves of latency, so this keeps the LOD-freeze fix while
+		// amortizing its cost.
+		const outerScan =
+			revision % ChunkStreamingController.OUTER_SCAN_INTERVAL === 0;
+
+		this.enqueueLoadedChunksForRefresh(
+			chunkX,
+			chunkY,
+			chunkZ,
+			lodRuleSet,
+			outerScan,
+		);
 
 		this.sortLoadQueue();
 
@@ -472,6 +491,7 @@ export class ChunkStreamingController {
 		chunkY: number,
 		chunkZ: number,
 		lodRuleSet: ChunkLodRuleSet,
+		includeOuterBands: boolean,
 	): void {
 		// BUGFIX: the refresh window must span EVERY chunk-creating band, not
 		// just LOD0-2. It previously capped at lod2Radius+2, so chunks pushed
@@ -480,8 +500,12 @@ export class ChunkStreamingController {
 		// lod3-5 rings until unload. Chunks are collected below out to
 		// unloadScanRadius (operationalRadius+9), so the only limiter needed
 		// here is the rule set's outermost radius (+ hysteresis margin).
+		// PERF: on non-full passes only the near window (LOD0-2 + margin) is
+		// scanned — outer bands are covered by the periodic full scan.
 		const maxH = lodRuleSet.maxHorizontalRadius() + 2;
 		const maxV = lodRuleSet.maxVerticalRadius() + 2;
+		const nearH = lodRuleSet.horizontalRadiusFor(2) + 2;
+		const nearV = lodRuleSet.verticalRadiusFor(2) + 2;
 
 		for (let i = 0; i < _queryScratch.length; i++) {
 			const chunk = _queryScratch[i];
@@ -501,6 +525,9 @@ export class ChunkStreamingController {
 			const vDist = absY;
 
 			if (hDist > maxH || vDist > maxV) continue;
+			if (!includeOuterBands && (hDist > nearH || vDist > nearV)) {
+				continue;
+			}
 
 			const chunkLod = chunk.lodLevel ?? 3;
 			const key = packOffsetKey(relX, relY, relZ, chunkLod);

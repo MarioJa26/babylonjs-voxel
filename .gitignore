@@ -55,7 +55,7 @@ src/code_bundle.txt
 code_js_bundle.txt
 src/composer.bat
 
-/.tmp-selftest
+/.tmp*
 tools/generate-coal-icon.mjs
 tools/generate-spawn-egg-icons.mjs
 /scripts

@@ -12,13 +12,19 @@
  * stored chunk: edits target world coordinates, so the full array must be
  * materialized first.
  *
- * Block ids are 10-bit (0..1023), matching the client's BlockEncoding.
+ * Entries are packed block values: a 10-bit block id with its 6-bit shape
+ * state (rotation/flipY/slice) packed above it — see BlockEncoding.
+ * packBlockValue. Values fit a u16; raw generated ids are packed values
+ * with state 0, so unedited chunks need no conversion.
  */
 
 export const CHUNK_VOLUME = 32 * 32 * 32;
 
 /** Matches the client's BLOCK_ID_BITS (World/Chunk/DataStructures/BlockEncoding.ts). */
 export const MAX_BLOCK_ID = 1023;
+
+/** Largest storable packed value: id | state << 10 (u16 range). */
+const MAX_PACKED_VALUE = 65535;
 
 export interface CompressedBlocks {
 	data: Uint8Array | Uint16Array;
@@ -28,13 +34,15 @@ export interface CompressedBlocks {
 }
 
 // Module-level scratch buffers reused across calls instead of allocating a
-// fresh Uint16Array(1024)/Uint8Array(1024) on every single chunk compressed.
+// fresh Uint16Array(65536)/Uint8Array(65536) on every single chunk compressed.
 // Safe to share: compressBlocks is fully synchronous (no `await` inside),
 // and JS run-to-completion semantics guarantee one call always finishes
 // before the next starts, even when many "concurrent" callers invoke it
 // back-to-back via Promise.all — there's never mid-function interleaving.
-const _countsScratch = new Uint16Array(MAX_BLOCK_ID + 1);
-const _blockToPaletteScratch = new Uint8Array(MAX_BLOCK_ID + 1);
+const _countsScratch = new Uint16Array(MAX_PACKED_VALUE + 1);
+const _blockToPaletteScratch = new Uint8Array(MAX_PACKED_VALUE + 1);
+// First-seen order collection of unique values (palette build input).
+const _uniqueValuesScratch = new Uint16Array(17);
 
 // Small pool of pre-allocated 32KB decompression buffers. Avoids GC pressure
 // from allocating a fresh Uint8Array(32768) on every decompressBlocks call.
@@ -62,17 +70,23 @@ export function compressBlocks(
 	counts.fill(0);
 
 	let uniqueCount = 0;
+	let uniqueValueCount = 0;
 	let firstBlockId = -1;
+	const uniqueValues = _uniqueValuesScratch;
 
 	for (let i = 0; i < len; i++) {
-		const id = blocks[i];
+		const value = blocks[i];
 
-		if (counts[id] === 0) {
-			counts[id] = 1;
+		if (counts[value] === 0) {
+			counts[value] = 1;
 			uniqueCount++;
 
+			if (uniqueValueCount < uniqueValues.length) {
+				uniqueValues[uniqueValueCount++] = value;
+			}
+
 			if (firstBlockId === -1) {
-				firstBlockId = id;
+				firstBlockId = value;
 			}
 
 			if (uniqueCount > 16) {
@@ -83,7 +97,7 @@ export function compressBlocks(
 				};
 			}
 		} else {
-			counts[id]++;
+			counts[value]++;
 		}
 	}
 
@@ -98,15 +112,12 @@ export function compressBlocks(
 	const palette: number[] = [];
 	const blockToPalette = _blockToPaletteScratch;
 
-	for (
-		let id = 0;
-		id <= MAX_BLOCK_ID && palette.length < uniqueCount;
-		id++
-	) {
-		if (counts[id] !== 0) {
-			blockToPalette[id] = palette.length;
-			palette.push(id);
-		}
+	// Build the palette from the tracked unique values (first-seen order)
+	// instead of scanning a 64K range — values may be packed id|state.
+	for (let i = 0; i < uniqueValueCount; i++) {
+		const value = uniqueValues[i];
+		blockToPalette[value] = palette.length;
+		palette.push(value);
 	}
 
 	const packed = new Uint8Array(len >> 1);

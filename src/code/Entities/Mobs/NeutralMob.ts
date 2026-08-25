@@ -6,6 +6,7 @@ import {
 	type Vec3,
 } from "@babylonjs/lite";
 import { MetadataContainer } from "@/code/Entities/MetadataContainer";
+import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
@@ -133,6 +134,7 @@ export abstract class NeutralMob {
 
 			NeutralMob.#pathSlotsRemaining = NeutralMob.PATH_SLOTS_PER_TICK;
 
+			frameProfiler.begin("mobs");
 			for (const mob of NeutralMob.#allMobs) {
 				const mesh = mob.#bodyMesh;
 				if (!mesh) continue;
@@ -148,6 +150,7 @@ export abstract class NeutralMob {
 
 				mob.tick(dt);
 			}
+			frameProfiler.end("mobs");
 		});
 	}
 

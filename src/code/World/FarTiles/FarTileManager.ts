@@ -18,6 +18,7 @@ import {
 import MapFog from "@/code/Maps/MapFog";
 import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
+import { frameProfiler } from "../../Lib/FrameProfiler";
 import { ChunkWorkerPool } from "../Chunk/ChunkWorkerPool";
 import type { FarTileGeneratedMessage } from "../Chunk/DataStructures/WorkerMessageType";
 import {
@@ -69,6 +70,9 @@ const FT_FACE_WORDS = 4;
 const QUAD_POSITIONS = new Float32Array([0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]);
 const QUAD_NORMALS = new Float32Array(12);
 
+// GPU upload bytes flushed during the current frame (reset in frame()).
+let _farUploadBytesThisFrame = 0;
+
 interface FarSlot {
 	base: number; // first face index in the arena
 	count: number; // face count
@@ -80,6 +84,7 @@ interface DirtyRange {
 }
 
 interface FarMeshLike extends Mesh {
+	isVisible?: boolean;
 	thinInstances?: {
 		matrices: Float32Array;
 		count: number;
@@ -171,10 +176,13 @@ class FaceWordArena {
 
 	free(slot: FarSlot): void {
 		if (slot.count === 0) return;
+		// CPU-side zero-fill only (hygiene: growth wholesale-copies the prefix,
+		// so cleared holes keep the buffer deterministic). PERF: no GPU upload
+		// — both winding lists drop their references to these faces BEFORE
+		// free() runs, so the stale GPU words are never consumed.
 		const b4 = slot.base * FT_FACE_WORDS;
 		const n4 = slot.count * FT_FACE_WORDS;
 		this.cpu.fill(0, b4, b4 + n4);
-		this.pushDirty(slot.base, slot.count);
 		this.insertHole(slot.base, slot.count);
 	}
 
@@ -205,6 +213,7 @@ class FaceWordArena {
 				),
 				r.start * FT_FACE_BYTES,
 			);
+			_farUploadBytesThisFrame += r.count * FT_FACE_BYTES;
 		}
 		this.dirtyRanges.length = 0;
 	}
@@ -239,7 +248,11 @@ class WindingMesh {
 	records = new Float32Array(0);
 	count = 0;
 	capacityFaces = 0;
-	dirtyMin = 0;
+	// PERF: half-open dirty range [dirtyMin, dirtyMax) with an Infinity
+	// sentinel. Resetting dirtyMin to 0 pins the range start there after the
+	// first sync, so every append re-uploads the ENTIRE instance prefix; with
+	// the sentinel only the actually-written records are uploaded.
+	dirtyMin = Number.POSITIVE_INFINITY;
 	dirtyMax = 0;
 	readonly straight: boolean;
 
@@ -248,39 +261,55 @@ class WindingMesh {
 	}
 
 	appendFace(faceIndex: number): void {
-		if (this.count * 4 >= this.records.length) {
-			let cap = this.records.length > 0 ? this.records.length : 1024;
-			while (cap < (this.count + 1) * 4) cap *= 2;
-			const next = new Float32Array(cap);
-			next.set(this.records);
-			this.records = next;
-		}
+		this.ensureRecordCapacity(this.count + 1);
+
 		const o = this.count * 4;
 		this.records[o] = faceIndex;
-		// lanes y/z/w stay zero
-		this.dirtyMin = Math.min(this.dirtyMin, this.count);
-		this.dirtyMax = Math.max(this.dirtyMax, this.count + 1);
+		this.records[o + 1] = 0;
+		this.records[o + 2] = 0;
+		this.records[o + 3] = 0;
 		this.count++;
+		this.markDirty(this.count - 1, this.count);
 	}
 
 	/** Order-preserving removal of every face index inside `slot`. */
 	removeSlot(slot: FarSlot): void {
-		if (slot.count === 0 || this.count === 0) return;
+		const oldCount = this.count;
+		if (slot.count === 0 || oldCount === 0) return;
 		const lo = slot.base;
 		const hi = slot.base + slot.count;
-		let write = 0;
-		for (let r = 0; r < this.count; r++) {
-			const fi = this.records[r * 4];
+
+		// Find the first removed record — everything before it is untouched
+		// and must not be re-uploaded.
+		let read = 0;
+		while (read < oldCount) {
+			const fi = this.records[read * 4];
+			if (fi >= lo && fi < hi) break;
+			read++;
+		}
+		if (read === oldCount) return;
+
+		const firstChanged = read;
+		let write = read;
+		for (; read < oldCount; read++) {
+			const src = read * 4;
+			const fi = this.records[src];
 			if (fi >= lo && fi < hi) continue;
-			if (write !== r) {
-				this.records[write * 4] = fi;
+			if (write !== read) {
+				const dst = write * 4;
+				this.records[dst] = fi;
+				this.records[dst + 1] = this.records[src + 1];
+				this.records[dst + 2] = this.records[src + 2];
+				this.records[dst + 3] = this.records[src + 3];
 			}
 			write++;
 		}
-		if (write !== this.count) {
-			this.count = write;
-			this.dirtyMin = 0;
-			this.dirtyMax = Math.max(this.dirtyMax, write);
+
+		this.count = write;
+		// Only the shifted surviving suffix needs uploading; records beyond
+		// the new draw count are never consumed by the GPU.
+		if (write > firstChanged) {
+			this.markDirty(firstChanged, write);
 		}
 	}
 
@@ -299,10 +328,39 @@ class WindingMesh {
 			const next = new Float32Array(Math.max(1024, needLen));
 			next.set(this.records.subarray(0, needLen));
 			this.records = next;
-			this.dirtyMin = 0;
-			this.dirtyMax = this.count;
+			// Fresh CPU buffer — the replacement GPU buffer needs the active
+			// records re-uploaded in full.
+			this.markDirty(0, this.count);
 		}
 		this.capacityFaces = this.records.length / 4;
+	}
+
+	clearDirty(): void {
+		this.dirtyMin = Number.POSITIVE_INFINITY;
+		this.dirtyMax = 0;
+	}
+
+	private ensureRecordCapacity(requiredFaces: number): void {
+		if (requiredFaces * 4 <= this.records.length) return;
+
+		let cap = this.records.length > 0 ? this.records.length : 1024;
+		while (cap < requiredFaces * 4) cap *= 2;
+		const next = new Float32Array(cap);
+		next.set(this.records.subarray(0, this.count * 4));
+		this.records = next;
+
+		// Replacement CPU buffer — the GPU buffer must be re-seeded with the
+		// active records (syncThinInstanceCount's growth path handles the
+		// full upload).
+		if (this.count > 0) {
+			this.markDirty(0, this.count);
+		}
+	}
+
+	private markDirty(start: number, end: number): void {
+		if (end <= start) return;
+		if (start < this.dirtyMin) this.dirtyMin = start;
+		if (end > this.dirtyMax) this.dirtyMax = end;
 	}
 }
 
@@ -336,7 +394,15 @@ class FarTileManagerImpl {
 	private originsBuffer: StorageBuffer | null = null;
 	private originCapacitySlots = 0;
 	private nextOriginSlot = 0;
-	private originsDirty = false;
+	// BUGFIX: origin slots are REUSED via this free list. They used to be
+	// monotonic-only, and the face-word origin index is only 16 bits wide —
+	// after 65,536 tile arrivals the packed index wrapped onto stale origins
+	// and tiles rendered at wrong world positions. Live tiles number in the
+	// hundreds, so reuse keeps every handed-out id far below the wrap.
+	private originFreeSlots: number[] = [];
+	// Half-open dirty SLOT range for ranged GPU uploads (Infinity = clean).
+	private originsDirtyMin = Number.POSITIVE_INFINITY;
+	private originsDirtyMax = 0;
 
 	private readonly tiles = new Map<string, TileEntry>();
 	private readonly pendingByKey = new Set<string>();
@@ -407,11 +473,14 @@ class FarTileManagerImpl {
 	public update(playerWorldX: number, playerWorldZ: number): void {
 		if (!this.engine) return;
 
+		frameProfiler.begin("farTiles");
+
 		const levels = getFarTileLevels();
 		const pcx = Math.floor(playerWorldX / 32);
 		const pcz = Math.floor(playerWorldZ / 32);
 
 		if (pcx === this.lastPlayerChunkX && pcz === this.lastPlayerChunkZ) {
+			frameProfiler.end("farTiles");
 			return;
 		}
 		this.lastPlayerChunkX = pcx;
@@ -489,6 +558,8 @@ class FarTileManagerImpl {
 				this.tiles.delete(key);
 			}
 		}
+
+		frameProfiler.end("farTiles");
 	}
 
 	public handleResult(data: FarTileGeneratedMessage): void {
@@ -518,7 +589,10 @@ class FarTileManagerImpl {
 		const waterSlot = waterCount > 0 ? this.waterArena.alloc(waterCount) : null;
 		if ((opaqueCount > 0 && !opaqueSlot) || (waterCount > 0 && !waterSlot)) {
 			// Arena full (binding-size cap) — drop the tile rather than
-			// partially populating it.
+			// partially populating it. BUGFIX: roll back the side that DID
+			// allocate, otherwise its faces leak (hole never recovered).
+			if (opaqueSlot) arena.free(opaqueSlot);
+			if (waterSlot) this.waterArena.free(waterSlot);
 			console.warn(
 				`[FarTileManager] arena full, dropping tile ${key} ` +
 					`(opaque ${opaqueCount}, water ${waterCount}).`,
@@ -580,8 +654,64 @@ class FarTileManagerImpl {
 			this.waterArena.free(entry.water);
 			this.waterReversed.removeSlot(entry.water);
 		}
-		// Origin slots are never reused — stale entries stay unreferenced and
-		// the table simply grows with the monotonic slot counter.
+		// Recycle the origin slot so the 16-bit face-word index can never
+		// wrap (see the originFreeSlots note above).
+		this.releaseOrigin(entry.originSlot);
+	}
+
+	/** Debug/profiling snapshot (HUD "Far" lines). */
+	public getDebugStats(): {
+		tiles: number;
+		pending: number;
+		uploadBytes: number;
+		levels: {
+			faces: number;
+			capacity: number;
+			straight: number;
+			reversed: number;
+		}[];
+		water: { faces: number; capacity: number; instances: number };
+		origins: { used: number; capacity: number; free: number };
+	} {
+		const levels = this.terrainArenas.map((arena, i) => ({
+			faces: arena.appendedFaces,
+			capacity: arena.capacityFaces,
+			straight: this.terrainStraight[i]?.count ?? 0,
+			reversed: this.terrainReversed[i]?.count ?? 0,
+		}));
+		return {
+			tiles: this.tiles.size,
+			pending: this.pendingByKey.size,
+			uploadBytes: _farUploadBytesThisFrame,
+			levels,
+			water: {
+				faces: this.waterArena.appendedFaces,
+				capacity: this.waterArena.capacityFaces,
+				instances: this.waterReversed.count,
+			},
+			origins: {
+				used: this.nextOriginSlot - this.originFreeSlots.length,
+				capacity: this.originCapacitySlots,
+				free: this.originFreeSlots.length,
+			},
+		};
+	}
+
+	public setFarTilesVisible(visible: boolean): void {
+		for (const wm of this.terrainStraight) {
+			if (wm.mesh) (wm.mesh as FarMeshLike).isVisible = visible;
+		}
+		for (const wm of this.terrainReversed) {
+			if (wm.mesh) (wm.mesh as FarMeshLike).isVisible = visible;
+		}
+		if (this.waterReversed.mesh) {
+			(this.waterReversed.mesh as FarMeshLike).isVisible = visible;
+		}
+	}
+
+	public isFarTilesVisible(): boolean {
+		const mesh = this.terrainReversed.find((wm) => wm.mesh)?.mesh;
+		return mesh ? (mesh as FarMeshLike).isVisible !== false : true;
 	}
 
 	private pendingIsStillWanted(
@@ -616,6 +746,9 @@ class FarTileManagerImpl {
 	private frame(): void {
 		if (!this.engine) return;
 
+		frameProfiler.begin("farTiles");
+		_farUploadBytesThisFrame = 0;
+
 		this.updateUniforms();
 
 		for (const arena of this.terrainArenas) {
@@ -631,6 +764,8 @@ class FarTileManagerImpl {
 			this.ensureLevelMesh(i);
 		}
 		this.ensureWaterMesh();
+
+		frameProfiler.end("farTiles");
 	}
 
 	private ensureLevelMesh(levelIndex: number): void {
@@ -736,22 +871,48 @@ class FarTileManagerImpl {
 				this.originsBuffer,
 			);
 		}
-		this.originsDirty = true;
+		// createStorageBuffer seeded the new GPU buffer with the full CPU
+		// contents — no re-upload needed.
+		this.originsDirtyMin = Number.POSITIVE_INFINITY;
+		this.originsDirtyMax = 0;
 	}
 
 	private allocOrigin(worldX: number, worldZ: number): number {
-		const slot = this.nextOriginSlot++;
+		const popped = this.originFreeSlots.pop();
+		const slot = popped !== undefined ? popped : this.nextOriginSlot++;
 		if (slot + 1 > this.originCapacitySlots) this.ensureOrigins(slot + 1);
 		this.origins[slot * 2] = worldX;
 		this.origins[slot * 2 + 1] = worldZ;
-		this.originsDirty = true;
+		// PERF: ranged dirty tracking — flushOrigins used to re-upload the
+		// ENTIRE origins buffer on every tile arrival.
+		if (slot < this.originsDirtyMin) this.originsDirtyMin = slot;
+		if (slot + 1 > this.originsDirtyMax) this.originsDirtyMax = slot + 1;
 		return slot;
 	}
 
+	private releaseOrigin(slot: number): void {
+		this.originFreeSlots.push(slot);
+	}
+
 	private flushOrigins(): void {
-		if (!this.originsDirty || !engineRef || !this.originsBuffer) return;
-		this.originsDirty = false;
-		updateStorageBuffer(engineRef, this.originsBuffer, this.origins, 0);
+		if (
+			!engineRef ||
+			!this.originsBuffer ||
+			!Number.isFinite(this.originsDirtyMin)
+		) {
+			return;
+		}
+		const lo = this.originsDirtyMin * 2;
+		const hi = this.originsDirtyMax * 2;
+		this.originsDirtyMin = Number.POSITIVE_INFINITY;
+		this.originsDirtyMax = 0;
+		updateStorageBuffer(
+			engineRef,
+			this.originsBuffer,
+			this.origins.subarray(lo, hi),
+			lo * 4,
+		);
+		_farUploadBytesThisFrame += (hi - lo) * 4;
 	}
 
 	// ------------------------------------------------------------------
@@ -907,12 +1068,16 @@ function createQuadInstanceMesh(
  * setThinInstancesRange: full setThinInstances only when the GPU buffer must
  * (re)grow, otherwise mutate count/dirty-range in place so lite uploads just
  * the changed lanes. Records carry absolute face indices (written by
- * WindingMesh.appendFace/removeSlot, which also track the dirty lanes).
+ * WindingMesh.appendFace/removeSlot, which track the dirty lane range with
+ * an Infinity sentinel).
  */
 function syncThinInstanceCount(mesh: FarMeshLike, wm: WindingMesh): void {
 	const count = wm.count;
 	const capacity = wm.capacityFaces;
-	if (capacity === 0 && count === 0) return;
+	if (capacity === 0 && count === 0) {
+		wm.clearDirty();
+		return;
+	}
 
 	const anyMesh = mesh as FarMeshLike;
 	let ti = anyMesh.thinInstances;
@@ -928,25 +1093,26 @@ function syncThinInstanceCount(mesh: FarMeshLike, wm: WindingMesh): void {
 			ti._dirtyMin = 0;
 			ti._dirtyMax = count;
 		}
-		wm.dirtyMin = 0;
-		wm.dirtyMax = 0;
+		wm.clearDirty();
 		return;
 	}
 
-	if (!ti) return;
+	if (!ti) {
+		wm.clearDirty();
+		return;
+	}
 	ti.matrices = wm.records;
 	ti.count = count;
 
-	if (wm.dirtyMax > wm.dirtyMin && capacity > 0) {
+	if (wm.dirtyMax > wm.dirtyMin && Number.isFinite(wm.dirtyMin)) {
 		const lo = Math.max(0, wm.dirtyMin);
-		const hi = Math.min(capacity, Math.max(wm.dirtyMax, count));
+		const hi = Math.min(count, wm.dirtyMax);
 		if (hi > lo) {
 			ti._dirtyMin = Math.min(ti._dirtyMin, lo);
 			ti._dirtyMax = Math.max(ti._dirtyMax, hi);
 		}
 	}
-	wm.dirtyMin = 0;
-	wm.dirtyMax = 0;
+	wm.clearDirty();
 }
 
 function maxFarFacesPerArena(): number {
@@ -981,5 +1147,33 @@ export const FarTileManager = {
 
 	isInitialized(): boolean {
 		return FarTileManagerImpl.peekInstance()?.isReady() === true;
+	},
+
+	/** Debug/profiling snapshot (HUD "Far" lines). */
+	getDebugStats(): {
+		tiles: number;
+		pending: number;
+		uploadBytes: number;
+		levels: {
+			faces: number;
+			capacity: number;
+			straight: number;
+			reversed: number;
+		}[];
+		water: { faces: number; capacity: number; instances: number };
+		origins: { used: number; capacity: number; free: number };
+	} | null {
+		const impl = FarTileManagerImpl.peekInstance();
+		if (!impl) return null;
+		return impl.getDebugStats();
+	},
+
+	/** A/B toggle for GPU-side profiling (F6). */
+	setFarTilesVisible(visible: boolean): void {
+		FarTileManagerImpl.peekInstance()?.setFarTilesVisible(visible);
+	},
+
+	isFarTilesVisible(): boolean {
+		return FarTileManagerImpl.peekInstance()?.isFarTilesVisible() ?? true;
 	},
 };

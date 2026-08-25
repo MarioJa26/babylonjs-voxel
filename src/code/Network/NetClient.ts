@@ -488,6 +488,7 @@ export class NetClient {
 		z: number,
 		blockId: number,
 		action: number,
+		blockState = 0,
 	): void {
 		const room = this.getConnectedRoom();
 		if (!room) return;
@@ -499,6 +500,7 @@ export class NetClient {
 			y,
 			z,
 			blockId,
+			blockState,
 			action,
 		});
 

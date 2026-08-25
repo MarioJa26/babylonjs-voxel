@@ -579,6 +579,38 @@ function emitLOD2CrossBillboard(
 	);
 }
 
+/**
+ * Light lookup for custom-shape faces.
+ *
+ * Preference order:
+ * 1. The cell the face points toward — the correct environmental sample when
+ *    it carries light (open air, water, torches, ...).
+ * 2. The voxel above the block and the voxel above that cell — solid
+ *    neighbors store 0 in persisted light arrays, so a dark face-direction
+ *    sample falls back to the nearest likely-lit entrances.
+ * 3. The block's own byte (baseLight) — last resort, keeps buried shapes
+ *    consistent instead of forcing them darker than their cell.
+ */
+function pickShapeFaceLight(
+	session: MeshBuildSession,
+	nx: number,
+	ny: number,
+	nz: number,
+	voxelX: number,
+	voxelY: number,
+	voxelZ: number,
+	baseLight: number,
+): number {
+	const dirLight = session.getLight(nx, ny, nz, 0);
+	if (dirLight !== 0) return dirLight;
+
+	const upLight = session.getLight(voxelX, voxelY + 1, voxelZ, 0);
+	const nUpLight = session.getLight(nx, ny + 1, nz, 0);
+	const best = upLight > nUpLight ? upLight : nUpLight;
+
+	return best !== 0 ? best : baseLight;
+}
+
 function emitBoxFace(
 	session: MeshBuildSession,
 	voxelX: number,
@@ -642,8 +674,6 @@ function emitBoxFace(
 			return;
 		}
 
-		light = session.getLight(nx, ny, nz, baseLight);
-
 		if (!session.disableAO) {
 			// AO anchor must be on the outside side of the emitted face.
 			const uAxis = (axis + 1) % 3;
@@ -652,6 +682,22 @@ function emitBoxFace(
 			ao = computeAO(session, nx, ny, nz, uAxis, vAxis);
 		}
 	}
+
+	// Light sampling for custom-shape faces (boundary AND internal).
+	//
+	// The naive sample is the light byte at the cell the face points toward —
+	// but when that cell is another solid block (shape stacked on shape), the
+	// persisted light arrays hold 0 there: the storage/light-generation path
+	// treats multi-box shapes as fully opaque, while the live incremental
+	// engine keeps those cells lit through their open halves. After a cold
+	// load every such face rendered pitch black until an edit re-lit the
+	// cell.
+	//
+	// So: trust the face-direction cell only when it actually carries light;
+	// otherwise fall back to the open air above the block and above that
+	// cell (the usual light entrances), and only then to the block's own
+	// byte. Genuinely buried shapes stay dark.
+	light = pickShapeFaceLight(session, nx, ny, nz, voxelX, voxelY, voxelZ, baseLight);
 
 	const faceName = getFaceName(axis, isBackFace);
 

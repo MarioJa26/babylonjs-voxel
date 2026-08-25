@@ -169,6 +169,7 @@ export class NetworkManager {
 					edit.z,
 					edit.blockId,
 					edit.action,
+					edit.blockState,
 				);
 			},
 			onBlockEditRejected: (rejection) => {
@@ -334,9 +335,22 @@ export class NetworkManager {
 	 * Called when the local player places a block.
 	 * Sends the edit to the server for broadcast.
 	 */
-	onBlockPlaced = (x: number, y: number, z: number, blockId: number): void => {
+	onBlockPlaced = (
+		x: number,
+		y: number,
+		z: number,
+		blockId: number,
+		blockState = 0,
+	): void => {
 		if (this.client.isConnected) {
-			this.client.sendBlockEdit(x, y, z, blockId, BlockActionType.Place);
+			this.client.sendBlockEdit(
+				x,
+				y,
+				z,
+				blockId,
+				BlockActionType.Place,
+				blockState,
+			);
 		}
 	};
 
@@ -346,7 +360,7 @@ export class NetworkManager {
 	 */
 	onBlockBroken = (x: number, y: number, z: number, blockId: number): void => {
 		if (this.client.isConnected) {
-			this.client.sendBlockEdit(x, y, z, blockId, BlockActionType.Break);
+			this.client.sendBlockEdit(x, y, z, blockId, BlockActionType.Break, 0);
 		}
 	};
 
@@ -360,17 +374,18 @@ export class NetworkManager {
 		z: number,
 		blockId: number,
 		action: number,
+		blockState = 0,
 	): void {
 		if (NET_DEBUG) {
 			debugLog(
 				`[NetworkManager] applyRemoteBlockEdit: ${
 					action === BlockActionType.Place ? "PLACE" : "BREAK"
-				} blockId=${blockId} at ${x},${y},${z}`,
+				} blockId=${blockId} blockState=${blockState} at ${x},${y},${z}`,
 			);
 		}
 
 		if (action === BlockActionType.Place) {
-			setBlock(x, y, z, blockId, 0);
+			setBlock(x, y, z, blockId, blockState);
 			return;
 		}
 
@@ -409,15 +424,16 @@ export class NetworkManager {
 		y: number;
 		z: number;
 		blockId: number;
+		blockState: number;
 		action: number;
 		reason: number;
 	}): void {
-		const { x, y, z, blockId, action, reason } = rejection;
+		const { x, y, z, blockId, blockState, action, reason } = rejection;
 
 		if (action === BlockActionType.Place) {
 			deleteBlock(x, y, z);
 		} else if (action === BlockActionType.Break) {
-			setBlock(x, y, z, blockId, 0);
+			setBlock(x, y, z, blockId, blockState);
 		}
 
 		let reasonText = "unknown reason";

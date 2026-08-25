@@ -366,9 +366,18 @@ export class ChunkGenerationService {
 		cy: number,
 		cz: number,
 		blocks: Uint8Array | Uint16Array,
+		topSunlightMask?: Uint8Array,
+		neighborLight?: ReadonlyArray<Uint8Array | null>,
 	): Promise<Uint8Array> {
 		await this.ensurePool();
-		return this.pool.postRelight(cx, cy, cz, blocks);
+		return this.pool.postRelight(
+			cx,
+			cy,
+			cz,
+			blocks,
+			topSunlightMask,
+			neighborLight,
+		);
 	}
 
 	async terminate(): Promise<void> {

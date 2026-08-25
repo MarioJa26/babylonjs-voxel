@@ -481,12 +481,21 @@ export class WorldGenerator {
 	/**
 	 * Recalculate light for a chunk from scratch given its current blocks.
 	 * Used after block edits (player placement/breaking) to update lighting.
+	 *
+	 * `topSunlightMask` (1024 bytes, 1 = column open to sky) overrides the
+	 * default every-column-sunlit assumption — required for underground
+	 * chunks, where the default would flood them with skylight.
+	 *
+	 * `neighborLight` ([+X,-X,+Y,-Y,+Z,-Z], each the neighbor's full light
+	 * array or null) seeds cross-chunk border light before BFS propagation.
 	 */
 	public relightChunk(
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
 		blocks: Uint8Array | Uint16Array,
+		topSunlightMask?: Uint8Array,
+		neighborLight?: ReadonlyArray<Uint8Array | null>,
 	): Uint8Array {
 		const chunkVolume = this.chunkVolume;
 		const light = this.createBuffer(chunkVolume);
@@ -496,12 +505,26 @@ export class WorldGenerator {
 			return light;
 		}
 
+		if (neighborLight) {
+			this.lightGenerator.seedAndPropagateLightWithNeighbors(
+				chunkX,
+				chunkY,
+				chunkZ,
+				blocks,
+				light,
+				topSunlightMask,
+				neighborLight,
+			);
+			return light;
+		}
+
 		this.lightGenerator.seedAndPropagateLightImmediate(
 			chunkX,
 			chunkY,
 			chunkZ,
 			blocks,
 			light,
+			topSunlightMask,
 		);
 		return light;
 	}

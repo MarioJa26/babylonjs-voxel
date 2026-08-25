@@ -19,6 +19,7 @@
  */
 
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
+import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding";
 import { MobTypeId } from "@/code/Network/protocol/messages.ts";
 import {
 	packChunkKeyFast,
@@ -158,7 +159,11 @@ class TickBlockSampler {
 		const localY = y - cy * CHUNK_SIZE;
 		const localZ = z - cz * CHUNK_SIZE;
 		// Block layout matches generation: index = x + (y << 5) + (z << 10).
-		return blocks[localX + (localY << 5) + (localZ << 10)];
+		// Entries are packed id|state values — return the raw block id so
+		// every BlockType/isCollidableBlock comparison keeps working.
+		return unpackBlockId(
+			blocks[localX + (localY << 5) + (localZ << 10)],
+		);
 	}
 }
 
@@ -1041,13 +1046,15 @@ export class ServerMobSimulation {
 			const columnBase = localX + (localZ << 10);
 
 			for (let localY = startLocalY; localY >= 0; localY--) {
-				const blockId = blocks[columnBase + (localY << 5)];
+				// Entries are packed values — match the set on the raw block id.
+				const blockId = unpackBlockId(blocks[columnBase + (localY << 5)]);
 				if (!SPAWNABLE_BLOCK_ID_SET.has(blockId)) continue;
 
 				const wy = chunkBaseY + localY;
 
 				// Preserve the original air-above rule. This intentionally uses
 				// the sampler because wy + 1 may cross into the next chunk section.
+				// Air is always packed 0, so the raw comparison stays valid.
 				if (this.sampler.sample(wx, wy + 1, wz) !== 0) continue;
 
 				if (this.isSpawnTooClose(wx, wz)) continue;

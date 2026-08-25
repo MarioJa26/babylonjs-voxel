@@ -105,6 +105,8 @@ export interface BlockEditRejectedData {
 	z: number;
 	/** The block the client tried to place, or the block it broke. */
 	blockId: number;
+	/** Shape state bits of the rejected edit (restores a broken block exactly). */
+	blockState: number;
 	action: number;
 	reason: number;
 }
@@ -130,6 +132,12 @@ export interface BlockEditData {
 	y: number;
 	z: number;
 	blockId: number;
+	/**
+	 * Shape state bits carried with the edit (rotation/flipY/slice, see
+	 * BlockEncoding.packBlockValue). Required so placed blocks keep their
+	 * orientation across server persistence, broadcasts, and client reloads.
+	 */
+	blockState: number;
 	action: number;
 }
 

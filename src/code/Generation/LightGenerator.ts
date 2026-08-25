@@ -2,8 +2,25 @@
 	filtersFullSunlight,
 	WATER_BLOCK_ID,
 } from "../World/Chunk/Worker/ChunkMesherConstants";
+import {
+	FACE_NX,
+	FACE_NY,
+	FACE_NZ,
+	FACE_PX,
+	FACE_PY,
+	FACE_PZ,
+} from "../World/Shape/BlockShapes";
 import type { Biome } from "./Biome/BiomeTypes";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
+
+/** Low 10 bits of a packed block value (id | state << 10). */
+const PACKED_ID_MASK = 0x3ff;
+
+/**
+ * Face of OUR border cell that touches the neighbor, per face index
+ * [+X, -X, +Y, -Y, +Z, -Z]. Light crossing the boundary enters through it.
+ */
+const BORDER_ENTER_BITS = [FACE_PX, FACE_NX, FACE_PY, FACE_NY, FACE_PZ, FACE_NZ];
 
 export type LightSeedState = {
 	/**
@@ -71,6 +88,24 @@ export class LightGenerator {
 		lut[94] = 15;
 		return lut;
 	})();
+
+	/**
+	 * Optional per-face closed-mask LUT indexed by packed block value
+	 * (id | state << 10, exactly the layout of ChunkFaceMasks.
+	 * precomputeClosedFaceMasks). When set, BFS light enters/exits cells
+	 * through their OPEN faces only — multi-box shapes (slabs, stairs, ...)
+	 * light up through their open halves exactly like the client's
+	 * incremental engine. When null, legacy whole-block transparency applies.
+	 */
+	private static closedFaceMaskLUT: Uint8Array | null = null;
+
+	public static setClosedFaceMaskLUT(lut: Uint8Array | null): void {
+		LightGenerator.closedFaceMaskLUT = lut;
+	}
+
+	public static getClosedFaceMaskLUT(): Uint8Array | null {
+		return LightGenerator.closedFaceMaskLUT;
+	}
 
 	constructor(params: GenerationParamsType) {
 		const chunkSize = params.CHUNK_SIZE;
@@ -155,7 +190,7 @@ export class LightGenerator {
 	}
 
 	/**
-	 * Immediate full-lighting path.
+	 * Immediate full-light path.
 	 */
 	public seedAndPropagateLightImmediate(
 		chunkX: number,
@@ -177,6 +212,136 @@ export class LightGenerator {
 		if (tail > 0) {
 			this.propagateLightFromQueue(blocks, light, this.lightQueue, tail);
 		}
+	}
+
+	/**
+	 * Immediate full-light path with cross-chunk border seeding.
+	 *
+	 * Identical to seedAndPropagateLightImmediate, except light values from
+	 * the six face-adjacent chunks are ingested before BFS propagation so
+	 * light flows across chunk borders (torch glow reaching into this chunk,
+	 * lateral skylight under overhangs, etc.).
+	 *
+	 * `neighborLight` is indexed [0:+X, 1:-X, 2:+Y, 3:-Y, 4:+Z, 5:-Z]; each
+	 * entry is the neighbor's full 32³ light array (same voxel layout), or
+	 * null when the neighbor has no stored light (treated as dark).
+	 */
+	public seedAndPropagateLightWithNeighbors(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		blocks: Uint8Array | Uint16Array,
+		light: Uint8Array,
+		topSunlightMask: Uint8Array | undefined,
+		neighborLight: ReadonlyArray<Uint8Array | null>,
+	): void {
+		let tail = this.seedInitialLightIntoSharedQueue(
+			chunkX,
+			chunkY,
+			chunkZ,
+			blocks,
+			light,
+			topSunlightMask,
+		);
+
+		tail = this.seedFromNeighborBorders(blocks, light, neighborLight, tail);
+
+		if (tail > 0) {
+			this.propagateLightFromQueue(blocks, light, this.lightQueue, tail);
+		}
+	}
+
+	/**
+	 * Ingest the six neighbors' border light values into the seed queue.
+	 *
+	 * Crossing a chunk boundary costs one attenuation step, so a border cell
+	 * receives max(current, neighborValue - 1) per nibble — matching how
+	 * propagateLightFromQueue spreads between cells. Only transparent target
+	 * cells accept seeds; opaque cells stay dark.
+	 */
+	private seedFromNeighborBorders(
+		blocks: Uint8Array | Uint16Array,
+		light: Uint8Array,
+		neighborLight: ReadonlyArray<Uint8Array | null>,
+		tail: number,
+	): number {
+		const queue = this.lightQueue;
+		const CS = this.chunkSize;
+		const CSSQ = this.chunkSizeSq;
+		const csMask = CS - 1;
+		const transparentLUT = LightGenerator._transparentLUT;
+		const lut = LightGenerator.closedFaceMaskLUT;
+
+		let t = tail;
+
+		for (let face = 0; face < 6; face++) {
+			const nl = neighborLight[face];
+			if (!nl || nl.length < CSSQ * CS) continue;
+
+			// Light enters the border cell through the face that touches the
+			// neighbor: +X neighbor -> our FACE_PX, etc.
+			const enterBit = BORDER_ENTER_BITS[face];
+
+			for (let a = 0; a < CS; a++) {
+				for (let b = 0; b < CS; b++) {
+					let targetIdx: number;
+					let srcIdx: number;
+
+					switch (face) {
+						case 0: // +X: our x=31 plane ↔ neighbor x=0 plane
+							targetIdx = csMask | (a << this.csShift) | (b << this.csShift2);
+							srcIdx = (a << this.csShift) | (b << this.csShift2);
+							break;
+						case 1: // -X
+							targetIdx = (a << this.csShift) | (b << this.csShift2);
+							srcIdx = csMask | (a << this.csShift) | (b << this.csShift2);
+							break;
+						case 2: // +Y: our y=31 ↔ neighbor y=0
+							targetIdx = a | (csMask << this.csShift) | (b << this.csShift2);
+							srcIdx = a | (b << this.csShift2);
+							break;
+						case 3: // -Y
+							targetIdx = a | (b << this.csShift2);
+							srcIdx = a | (csMask << this.csShift) | (b << this.csShift2);
+							break;
+						case 4: // +Z: our z=31 ↔ neighbor z=0
+							targetIdx = a | (b << this.csShift) | (csMask << this.csShift2);
+							srcIdx = a | (b << this.csShift);
+							break;
+						default: // -Z
+							targetIdx = a | (b << this.csShift);
+							srcIdx = a | (b << this.csShift) | (csMask << this.csShift2);
+							break;
+					}
+
+					const packed = blocks[targetIdx];
+					const blockId = packed & PACKED_ID_MASK;
+					const open = lut
+						? (lut[packed & 0xffff] & enterBit) === 0
+						: blockId < 1024 && transparentLUT[blockId] !== 0;
+					if (!open) continue;
+
+					const srcVal = nl[srcIdx];
+					const srcSky = (srcVal >> 4) - 1;
+					const srcBlock = (srcVal & 0x0f) - 1;
+					if (srcSky <= 0 && srcBlock <= 0) continue;
+
+					const cur = light[targetIdx];
+					const curSky = cur >> 4;
+					const curBlock = cur & 0x0f;
+					const newSky = srcSky > curSky ? srcSky : curSky;
+					const newBlock = srcBlock > curBlock ? srcBlock : curBlock;
+
+					if (newSky !== curSky || newBlock !== curBlock) {
+						light[targetIdx] = (newSky << 4) | newBlock;
+						queue[t & this.queueMask] = targetIdx;
+						t++;
+					}
+				}
+			}
+		}
+
+		return t;
 	}
 
 	/**
@@ -233,9 +398,18 @@ export class LightGenerator {
 						continue;
 					}
 
-					const blockId = blocks[idx];
+					const packed = blocks[idx];
+					const blockId = packed & PACKED_ID_MASK;
+					const lut = LightGenerator.closedFaceMaskLUT;
 
-					if (blockId >= 1024 || transparentLUT[blockId] === 0) {
+					// Sky descends into a cell through its TOP face. With the
+					// shape LUT, multi-box blocks whose top half is open (e.g.
+					// bottom slabs) accept skylight like the live engine.
+					const blocked = lut
+						? (lut[packed & 0xffff] & FACE_PY) !== 0
+						: blockId >= 1024 || transparentLUT[blockId] === 0;
+
+					if (blocked) {
 						incomingSkyLight = 0;
 						sourceFiltersFullSun = 0;
 
@@ -277,7 +451,14 @@ export class LightGenerator {
 						queue[tail++] = idx;
 					}
 
-					incomingSkyLight = cellSkyLight;
+					// The column continues downward only if this cell is open
+					// at its BOTTOM face as well (shape-aware parity: a slab's
+					// closed underside stops the vertical sun column).
+					if (lut && (lut[packed & 0xffff] & FACE_NY) !== 0) {
+						incomingSkyLight = 0;
+					} else {
+						incomingSkyLight = cellSkyLight;
+					}
 					sourceFiltersFullSun = blockFiltersFullSun;
 				}
 			}
@@ -285,7 +466,7 @@ export class LightGenerator {
 
 		// Seed block light from all emission sources.
 		for (let i = 0, len = blocks.length; i < len; i++) {
-			const emission = emissionLUT[blocks[i]];
+			const emission = emissionLUT[blocks[i] & PACKED_ID_MASK];
 
 			if (emission > 0 && (light[i] & 0x0f) < emission) {
 				light[i] = (light[i] & 0xf0) | emission;
@@ -331,7 +512,8 @@ export class LightGenerator {
 				continue;
 			}
 
-			const sourceBlockId = blocks[idx];
+			const sourcePacked = blocks[idx];
+			const sourceBlockId = sourcePacked & PACKED_ID_MASK;
 			const sourceFiltersFullSun =
 				sourceBlockId < 1024 ? filtersFullSunLUT[sourceBlockId] : 0;
 
@@ -345,6 +527,9 @@ export class LightGenerator {
 					blkM1,
 					sourceFiltersFullSun,
 					false,
+					FACE_NX,
+					FACE_PX,
+					sourcePacked,
 					blocks,
 					light,
 					queue,
@@ -362,6 +547,9 @@ export class LightGenerator {
 					blkM1,
 					sourceFiltersFullSun,
 					false,
+					FACE_PX,
+					FACE_NX,
+					sourcePacked,
 					blocks,
 					light,
 					queue,
@@ -379,6 +567,9 @@ export class LightGenerator {
 					blkM1,
 					sourceFiltersFullSun,
 					false,
+					FACE_NY,
+					FACE_PY,
+					sourcePacked,
 					blocks,
 					light,
 					queue,
@@ -391,9 +582,10 @@ export class LightGenerator {
 
 			if (((idx >> csShift) & csMask) !== 0) {
 				const belowIdx = idx - CHUNK_SIZE;
-				const belowBlockId = blocks[belowIdx];
 				const belowFiltersFullSun =
-					belowBlockId < 1024 ? filtersFullSunLUT[belowBlockId] : 0;
+					(blocks[belowIdx] & PACKED_ID_MASK) < 1024
+						? filtersFullSunLUT[blocks[belowIdx] & PACKED_ID_MASK]
+						: 0;
 
 				const preservesFullSunDown =
 					skyLight === 15 &&
@@ -406,6 +598,9 @@ export class LightGenerator {
 					blkM1,
 					sourceFiltersFullSun,
 					true,
+					FACE_PY,
+					FACE_NY,
+					sourcePacked,
 					blocks,
 					light,
 					queue,
@@ -423,6 +618,9 @@ export class LightGenerator {
 					blkM1,
 					sourceFiltersFullSun,
 					false,
+					FACE_NZ,
+					FACE_PZ,
+					sourcePacked,
 					blocks,
 					light,
 					queue,
@@ -440,6 +638,9 @@ export class LightGenerator {
 					blkM1,
 					sourceFiltersFullSun,
 					false,
+					FACE_PZ,
+					FACE_NZ,
+					sourcePacked,
 					blocks,
 					light,
 					queue,
@@ -458,6 +659,9 @@ export class LightGenerator {
 		targetBlock: number,
 		sourceFiltersFullSun: number,
 		isDown: boolean,
+		enterBit: number,
+		exitBit: number,
+		sourcePacked: number,
 		blocks: Uint8Array | Uint16Array,
 		light: Uint8Array,
 		queue: Uint16Array,
@@ -466,10 +670,34 @@ export class LightGenerator {
 		transparentLUT: Uint8Array,
 		filtersFullSunLUT: Uint8Array,
 	): number {
-		const targetBlockId = blocks[nIdx];
+		const targetPacked = blocks[nIdx];
+		const targetBlockId = targetPacked & PACKED_ID_MASK;
+		const lut = LightGenerator.closedFaceMaskLUT;
 
-		if (targetBlockId >= 1024 || transparentLUT[targetBlockId] === 0) {
+		// Light enters the target through the face opposite the travel
+		// direction. With the shape LUT, open halves of multi-box blocks
+		// accept light exactly like the client's incremental engine.
+		let enterable: boolean;
+		if (lut) {
+			enterable = (lut[targetPacked & 0xffff] & enterBit) === 0;
+		} else {
+			enterable =
+				targetBlockId < 1024 && transparentLUT[targetBlockId] !== 0;
+		}
+		if (!enterable) {
 			return tail;
+		}
+
+		// ...and exits the source through its travel-direction face, unless
+		// the source itself emits (lava/torch cells store light but are
+		// otherwise closed).
+		if (lut) {
+			const sourceOpens =
+				(lut[sourcePacked & 0xffff] & exitBit) === 0 ||
+				LightGenerator._emissionLUT[sourcePacked & PACKED_ID_MASK] > 0;
+			if (!sourceOpens) {
+				return tail;
+			}
 		}
 
 		// Skylight water/filter rules:
@@ -504,6 +732,27 @@ export class LightGenerator {
 		return blockId >= 0 && blockId < 256
 			? LightGenerator._emissionLUT[blockId]
 			: 0;
+	}
+
+	/** True when the block lets light pass (air, water, glass, ...). */
+	public static isBlockTransparent(blockId: number): boolean {
+		return (
+			blockId >= 0 &&
+			blockId < 1024 &&
+			LightGenerator._transparentLUT[blockId] !== 0
+		);
+	}
+
+	/**
+	 * True when the block filters full sunlight (e.g. leaves/water): light
+	 * passing through decrements instead of propagating at full strength.
+	 */
+	public static blockFiltersFullSunlight(blockId: number): boolean {
+		return (
+			blockId >= 0 &&
+			blockId < 1024 &&
+			LightGenerator._filtersFullSunLUT[blockId] !== 0
+		);
 	}
 }
 

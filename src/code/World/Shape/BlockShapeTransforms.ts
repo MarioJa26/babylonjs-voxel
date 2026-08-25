@@ -186,57 +186,6 @@ for (let mask = 0; mask < 64; mask++) {
 	}
 }
 
-const transformFaceMask = (
-	faceMask: number,
-	rotation: number,
-	flipY: boolean,
-): number => {
-	return FACE_MASK_TRANSFORM_LUT[
-		(faceMask & 63) | ((rotation & 3) << 6) | ((flipY ? 1 : 0) << 8)
-	];
-};
-
-const applySliceToBox = (
-	min: [number, number, number],
-	max: [number, number, number],
-	state: number,
-): {
-	min: [number, number, number];
-	max: [number, number, number];
-} => {
-	const slice = (state >> 3) & 7;
-	if (slice === 0) {
-		return { min, max };
-	}
-
-	const rotation = state & 7;
-	const sliceAxis = getSliceAxis(rotation);
-	const flip = (rotation & 4) !== 0;
-	const heightScale = slice / 8;
-
-	const outMin: [number, number, number] = [min[0], min[1], min[2]];
-	const outMax: [number, number, number] = [max[0], max[1], max[2]];
-
-	if (flip) {
-		outMin[sliceAxis] = 1 - (1 - min[sliceAxis]) * heightScale;
-		outMax[sliceAxis] = 1 - (1 - max[sliceAxis]) * heightScale;
-	} else {
-		outMin[sliceAxis] = min[sliceAxis] * heightScale;
-		outMax[sliceAxis] = max[sliceAxis] * heightScale;
-	}
-
-	if (outMin[sliceAxis] > outMax[sliceAxis]) {
-		const tmp = outMin[sliceAxis];
-		outMin[sliceAxis] = outMax[sliceAxis];
-		outMax[sliceAxis] = tmp;
-	}
-
-	return {
-		min: outMin,
-		max: outMax,
-	};
-};
-
 const transformedShapeCache = new Map<number, ShapeBounds[]>();
 
 function getRelevantStateForShape(

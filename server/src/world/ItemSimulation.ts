@@ -12,6 +12,7 @@
  */
 
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
+import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding";
 import { packChunkKeyFast } from "@/code/World/Storage/ChunkKey.ts";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import type { ServerWorldStorage } from "./ServerWorldStorage.ts";
@@ -79,7 +80,11 @@ class ItemBlockSampler {
 		const localY = y - cy * CHUNK_SIZE;
 		const localZ = z - cz * CHUNK_SIZE;
 		// Block layout matches generation: index = x + (y << 5) + (z << 10).
-		return blocks[localX + (localY << 5) + (localZ << 10)];
+		// Entries are packed id|state values — return the raw block id so
+		// BlockType/isCollidableBlock comparisons keep working.
+		return unpackBlockId(
+			blocks[localX + (localY << 5) + (localZ << 10)],
+		);
 	}
 }
 

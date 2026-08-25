@@ -57,6 +57,8 @@ type RelightRequest = {
 	chunkY: number;
 	chunkZ: number;
 	blocks: Uint8Array | Uint16Array;
+	topSunlightMask?: Uint8Array;
+	neighborLight?: (Uint8Array | null)[];
 	seed: string;
 	wasmEnabled: boolean;
 };
@@ -98,6 +100,8 @@ let generator: {
 		chunkY: number,
 		chunkZ: number,
 		blocks: Uint8Array | Uint16Array,
+		topSunlightMask?: Uint8Array,
+		neighborLight?: ReadonlyArray<Uint8Array | null>,
 	) => Uint8Array;
 } | null = null;
 
@@ -167,6 +171,19 @@ async function ensureInit(seed: string, wasmEnabled: boolean): Promise<void> {
 		const { GenerationParams } = await import(
 			"@/code/Generation/NoiseAndParameters/GenerationParams"
 		);
+		const { precomputeClosedFaceMasks } = await import(
+			"@/code/World/Chunk/ChunkFaceMasks"
+		);
+		const { LightGenerator } = await import("@/code/Generation/LightGenerator");
+		const { shapeInitPromise } = await import("@/code/World/Shape/BlockShapes");
+
+		// Shape-aware lighting: light enters/exits multi-box blocks through
+		// their open faces, matching the client's incremental engine so the
+		// persisted light arrays match what players saw live (torch glow
+		// inside slabs/stairs survives reloads). The shape registry loads
+		// asynchronously — wait for it or the LUT degrades to all-cubes.
+		await shapeInitPromise;
+		LightGenerator.setClosedFaceMaskLUT(precomputeClosedFaceMasks());
 
 		const params = { ...GenerationParams, SEED: seed };
 		generator = new WG(params as any);
@@ -338,6 +355,8 @@ function doRelight(req: RelightRequest): void {
 		req.chunkY,
 		req.chunkZ,
 		req.blocks,
+		req.topSunlightMask,
+		req.neighborLight,
 	);
 
 	const msg: RelightResult = { id: req.id, light };

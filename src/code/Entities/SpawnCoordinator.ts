@@ -1,4 +1,5 @@
 import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
+import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import {
 	getBlockByWorldCoords,
 	getLightByWorldCoords,
@@ -38,7 +39,9 @@ export class SpawnCoordinator {
 
 		onBeforeRender(this.#scene, () => {
 			if (this.#disposed) return;
+			frameProfiler.begin("mobSpawn");
 			this.#tick();
+			frameProfiler.end("mobSpawn");
 		});
 	}
 

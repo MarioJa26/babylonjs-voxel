@@ -47,6 +47,8 @@ type PendingTask =
 			chunkY: number;
 			chunkZ: number;
 			blocks: Uint8Array | Uint16Array;
+			topSunlightMask?: Uint8Array;
+			neighborLight?: (Uint8Array | null)[];
 			resolve: (light: Uint8Array) => void;
 			reject: (error: Error) => void;
 	  };
@@ -281,6 +283,8 @@ export class ChunkWorkerPool {
 		chunkY: number,
 		chunkZ: number,
 		blocks: Uint8Array | Uint16Array,
+		topSunlightMask?: Uint8Array,
+		neighborLight?: ReadonlyArray<Uint8Array | null>,
 	): Promise<Uint8Array> {
 		const unavailable = this.getUnavailableError();
 		if (unavailable) return Promise.reject(unavailable);
@@ -295,6 +299,10 @@ export class ChunkWorkerPool {
 				chunkY,
 				chunkZ,
 				blocks,
+				topSunlightMask,
+				neighborLight: neighborLight
+					? (neighborLight as (Uint8Array | null)[]).slice()
+					: undefined,
 				resolve,
 				reject,
 			});
@@ -494,6 +502,8 @@ export class ChunkWorkerPool {
 			const buffer = task.blocks.buffer;
 			const transferList = buffer instanceof SharedArrayBuffer ? [] : [buffer];
 
+			// Only `blocks` is transferred — the mask and neighbor light arrays
+			// are structured-cloned so they stay owned by the caller.
 			worker.postMessage(
 				{
 					id: task.id,
@@ -501,6 +511,8 @@ export class ChunkWorkerPool {
 					chunkY: task.chunkY,
 					chunkZ: task.chunkZ,
 					blocks: task.blocks,
+					topSunlightMask: task.topSunlightMask,
+					neighborLight: task.neighborLight,
 					seed: this.seed,
 					wasmEnabled: this.wasmEnabled,
 				},

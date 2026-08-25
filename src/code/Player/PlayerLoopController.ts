@@ -9,6 +9,7 @@ import {
 	getTerrainNoiseDebug,
 } from "../Generation/TerrainHeightMap";
 import type { IControls } from "../Interface/IControls";
+import { frameProfiler } from "../Lib/FrameProfiler";
 import { isUiOpen, setInCave } from "../Lib/GameRuntimeState";
 import { worldToChunkCoord } from "../Lib/VoxelMath";
 import { playSprint } from "../Maps/BlockBreakParticles";
@@ -30,6 +31,8 @@ import { BlockTickScheduler } from "../World/Chunk/Worker/BlockTickScheduler";
 import { processWaterUpdate } from "../World/Chunk/Worker/WaterSimulation";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
 import { onSpawnPrepared } from "../World/SpawnPoint";
+import { FarTileManager } from "../World/FarTiles/FarTileManager";
+import { onGpuWorkDone } from "../World/Light/liteGpuBuffer";
 import {
 	type BlockRaycastHit,
 	pickTarget,
@@ -129,7 +132,32 @@ export class PlayerLoopController {
 			this.#previousOnChunkLoaded?.(chunk);
 			this.#occlusionCuller.incrementalAdd(chunk);
 		};
+
+		// Profiling keys: F5 dumps a frame-section report, F6 toggles far-tile
+		// visibility for GPU-side A/B comparison (CPU sections vs rAF delta).
+		window.addEventListener("keydown", this.#profilerKeyDown);
 	}
+
+	#profilerKeyDown = (e: KeyboardEvent): void => {
+		const key = e.key.toLowerCase();
+		if (key === "f5") {
+			e.preventDefault();
+			frameProfiler.logReport();
+			PlayerHud.updateDebugInfo(
+				"Profiler",
+				frameProfiler.summaryLine(),
+				"profiler",
+			);
+		} else if (key === "f6") {
+			e.preventDefault();
+			const next = !FarTileManager.isFarTilesVisible();
+			FarTileManager.setFarTilesVisible(next);
+			console.info(`[Profiler] far tiles visible: ${next}`);
+		}
+	};
+
+	#gpuLagFrameCounter = 0;
+	#pendingGpuLagMs = 0;
 
 	public tick(deltaMs: number): void {
 		const frameStart = performance.now();
@@ -138,12 +166,14 @@ export class PlayerLoopController {
 		// Batch the whole tick wave: a flood tick can write hundreds of blocks;
 		// coalescing turns that into one remesh per touched chunk instead of
 		// dozens of intermediate rebuilds.
+		frameProfiler.begin("blockTicks");
 		Chunk.beginBlockEditBatch();
 		try {
 			this.#blockTickScheduler.processFrame();
 		} finally {
 			Chunk.endBlockEditBatch();
 		}
+		frameProfiler.end("blockTicks");
 
 		const vehicle = this.playerVehicle;
 		const stats = this.playerStats;
@@ -159,12 +189,18 @@ export class PlayerLoopController {
 
 		const uiOpen = isUiOpen();
 		const playerPos = this.getPlayerPosition();
+
+		frameProfiler.begin("pick");
 		const pickHit = uiOpen ? null : this.#pickTargetGated(playerPos);
+		frameProfiler.end("pick");
 
 		this.playerHud.crossHair.setTargetHit(pickHit);
 
+		frameProfiler.begin("boats");
 		CustomBoat.tickAllActiveBoats(this.scene, playerPos);
+		frameProfiler.end("boats");
 
+		frameProfiler.begin("physics");
 		vehicle.update(deltaMs);
 
 		this.#updateSprintParticles(uiOpen, playerPos);
@@ -176,7 +212,11 @@ export class PlayerLoopController {
 		);
 
 		vehicle.updateCameraAndVisuals(deltaMs);
+		frameProfiler.end("physics");
+
+		frameProfiler.begin("controls");
 		this.#updateControls(uiOpen, pickHit);
+		frameProfiler.end("controls");
 
 		if (this.#updateCaveState(playerPos.y)) {
 			this.#loadLastCx = -99999;
@@ -191,16 +231,41 @@ export class PlayerLoopController {
 
 		this.#updateActiveMeshSelection(cx, cy, cz);
 
+		frameProfiler.begin("occlusion");
 		this.#occlusionCuller.update(this.#lastOcclusionStats);
+		frameProfiler.end("occlusion");
+
+		// Best-effort GPU-lag probe: how long the queue takes to drain all
+		// work submitted so far. Sampled every 30th frame — the promise itself
+		// is cheap but not free. The async result is buffered and injected
+		// into the frame right before endFrame (noteSectionValue drops
+		// samples that land inside an open section).
+		if (++this.#gpuLagFrameCounter % 30 === 0 && Map1.engine) {
+			const submittedAt = performance.now();
+			void onGpuWorkDone(Map1.engine).then(() => {
+				this.#pendingGpuLagMs = performance.now() - submittedAt;
+			});
+		}
 
 		const frameMs = performance.now() - frameStart;
 		this.#mainThreadMs = this.#mainThreadMs * 0.9 + frameMs * 0.1;
 
+		frameProfiler.begin("hud");
 		this.#updateDebugHud(deltaMs, cx, cy, cz);
+		frameProfiler.end("hud");
+
 		this.#freezeActiveMeshes();
+
+		if (this.#pendingGpuLagMs > 0) {
+			frameProfiler.noteSectionValue("gpuLag", this.#pendingGpuLagMs);
+			this.#pendingGpuLagMs = 0;
+		}
+
+		frameProfiler.endFrame(deltaMs);
 	}
 
 	public dispose(): void {
+		window.removeEventListener("keydown", this.#profilerKeyDown);
 		if (this.#offSpawnPrepared) {
 			this.#offSpawnPrepared();
 			this.#offSpawnPrepared = null;
@@ -358,6 +423,7 @@ export class PlayerLoopController {
 	}
 
 	#streamTick(): void {
+		frameProfiler.begin("streaming");
 		const pos = this.getPlayerPosition();
 		updateDistantTerrain(pos.x, pos.z);
 		const cx = worldToChunkCoord(pos.x);
@@ -369,6 +435,7 @@ export class PlayerLoopController {
 		} catch (err) {
 			console.error("[T0-ERR] processFrameBudgetedStreamingWork threw:", err);
 		}
+		frameProfiler.end("streaming");
 	}
 
 	#frozenOnce = false;
@@ -622,6 +689,33 @@ export class PlayerLoopController {
 			"Mesh Drain",
 			`${workerStats.lastMeshProcessed} in ${workerStats.lastMeshDrainMs.toFixed(2)}ms`,
 			"workers",
+		);
+
+		const farStats = FarTileManager.getDebugStats();
+		if (farStats) {
+			const kib = (b: number) => `${(b / 1024).toFixed(0)}KiB`;
+			const levelSummary = farStats.levels
+				.map(
+					(l, i) =>
+						`L${i}:${l.faces}/${l.capacity}f(${l.straight}+${l.reversed})`,
+				)
+				.join(" ");
+			PlayerHud.updateDebugInfo(
+				"Far Tiles",
+				`tiles:${farStats.tiles} pend:${farStats.pending} water:${farStats.water.faces}f origins:${farStats.origins.used}/${farStats.origins.capacity}`,
+				"far",
+			);
+			PlayerHud.updateDebugInfo(
+				"Far Detail",
+				`${levelSummary} up:${kib(farStats.uploadBytes)}/f`,
+				"far",
+			);
+		}
+
+		PlayerHud.updateDebugInfo(
+			"Profiler",
+			frameProfiler.summaryLine(),
+			"profiler",
 		);
 
 		PlayerHud.updateDebugInfo(
