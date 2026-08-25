@@ -338,7 +338,7 @@ function getBillboardQuadGeometry() {
 			-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0,
 		]),
 		normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
-		uvs: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]),
+		uvs: new Float32Array([1, 0, 0, 0, 0, 1, 1, 1]),
 		indices: new Uint32Array([0, 2, 1, 0, 3, 2]),
 	};
 	return billboardQuadGeometryCache;
