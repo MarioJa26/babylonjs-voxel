@@ -20,7 +20,6 @@ import MapFog from "@/code/Maps/MapFog";
 import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
-import { farTileOutermostRingChunks } from "@/code/World/FarTiles/FarTileLadder";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import {
 	createDistantTerrainMaterial,
@@ -358,11 +357,14 @@ export async function initDistantTerrain(): Promise<void> {
 
 	mesh = createEmptyGridMesh(engine, "distantTerrain");
 
-	// The flat water plane spans the FULL far-tile horizon so oceans don't
-	// hard-cut at the clip-map edge; the terrain heightmap keeps its own
-	// (smaller) radius as a streaming underlay.
-	const waterReach = Math.max(radius, farTileOutermostRingChunks());
-	const size = waterReach * 2 * Chunk.SIZE;
+	// PERF: the flat water plane used to span the FULL far-tile horizon
+	// (512 chunks) as a placeholder while far tiles streamed in. At steady
+	// state far-tile geometry + water completely cover it, so nearly every
+	// fragment it shaded was overdrawn — a full-horizon blended pass wasted
+	// every frame. Keep it at the clip-map radius only: it still fills the
+	// ocean inside the streaming underlay, and beyond that edge far tiles
+	// render the horizon themselves.
+	const size = radius * 2 * Chunk.SIZE;
 	waterMesh = createGround(engine, {
 		width: size,
 		height: size,

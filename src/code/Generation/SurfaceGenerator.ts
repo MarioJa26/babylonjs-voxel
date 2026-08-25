@@ -72,6 +72,15 @@ export type PlaceBlockFn = (
 	overwrite?: boolean,
 ) => void;
 
+/**
+ * Max vertical deviation of the TRUE generated surface (the 3D density sign
+ * flip found by findTopSurfaceY) from the 2D heightmap estimate. Outside this
+ * window getDensity early-returns the plain baseHeight-y term, so no sign
+ * transition can occur. Consumers that reason about burial from the cheap 2D
+ * heightmap alone (e.g. streaming-time cave culling) must allow for this lift.
+ */
+export const SURFACE_DENSITY_INFLUENCE_RANGE = 32;
+
 export type SurfaceGenerationResult = {
 	topSunlightMask: Uint8Array;
 	topSurfaceYMap: Int16Array;
@@ -167,7 +176,8 @@ export class SurfaceGenerator {
 	private static readonly DENSITY_BASE_AMPLITUDE = 32;
 	private static readonly DENSITY_OVERHANG_AMPLITUDE = 64;
 	private static readonly DENSITY_CLIFF_AMPLITUDE = 32;
-	private static readonly DENSITY_INFLUENCE_RANGE = 32;
+	private static readonly DENSITY_INFLUENCE_RANGE =
+		SURFACE_DENSITY_INFLUENCE_RANGE;
 
 	/**
 	 * Important:

@@ -1,7 +1,7 @@
 ﻿/**
  * Babylon Lite (native) port of WorldEnvironment.
- * Creates the hemispheric + directional lights, the skybox (sphere +
- * SkyShaderLite material), and drives the day/night sun direction.
+ * Creates the hemispheric + directional lights, the skybox (camera-centred
+ * box + SkyShaderLite material), and drives the day/night sun direction.
  *
  * Note: the chunk shaders receive the sun direction via their own uniforms
  * (updated from GLOBAL_VALUES.skyLightDirection in ChunkMesher's
@@ -11,7 +11,7 @@
 import {
 	addToScene,
 	createDirectionalLight,
-	createSphere,
+	createMeshFromData,
 	type DirectionalLight,
 	type EngineContext,
 	getCameraPosition,
@@ -26,9 +26,74 @@ import { createSkyMaterial } from "../World/Light/SkyShaderLite";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 
 const DOME_MOVE_THRESHOLD = 1.25;
-const SKY_DOME_FAR_SCALE = 0.9;
+/**
+ * Uniform scale applied to the unit sky box (half-extent 1). A ray from the
+ * box centre exits through a corner at √3 × scale, which MUST stay inside the
+ * camera far plane or the sky clips open. 0.5 → worst-case exit 0.87 × far.
+ * (The old dome was a sphere where exit distance == scale, hence the old 0.9.)
+ */
+const SKY_BOX_FAR_SCALE = 0.5;
 const MAX_SUN_ELEVATION = 1.1;
 const TWO_PI = Math.PI * 2;
+
+/**
+ * Camera-centred unit cube (half-extent 1): 24 verts / 12 tris.
+ *
+ * The sky fragment shader only computes normalize(vPosition) — the
+ * camera-local view ray — so ANY star-shaped surface around the camera
+ * yields bit-identical pixels. Each face is a flat quad, and
+ * perspective-correct interpolation across a flat quad lands exactly on the
+ * face plane, so normalize() reproduces the true per-pixel ray direction
+ * (same guarantee as a cubemap). The previous 32-segment sphere shaded the
+ * same gradient through 2415 verts / 4624 tris every frame.
+ * Winding is irrelevant: the material disables back-face culling.
+ */
+const SKY_BOX_POSITIONS = new Float32Array([
+	// -Z
+	-1, -1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1,
+	// +Z
+	-1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1,
+	// -X
+	-1, -1, -1, -1, 1, -1, -1, 1, 1, -1, -1, 1,
+	// +X
+	1, -1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1,
+	// -Y
+	-1, -1, -1, 1, -1, -1, 1, -1, 1, -1, -1, 1,
+	// +Y
+	-1, 1, -1, 1, 1, -1, 1, 1, 1, -1, 1, 1,
+]);
+const SKY_BOX_NORMALS = new Float32Array(24 * 3);
+for (let face = 0; face < 6; face++) {
+	const n =
+		face === 0
+			? [0, 0, -1]
+			: face === 1
+				? [0, 0, 1]
+				: face === 2
+					? [-1, 0, 0]
+					: face === 3
+						? [1, 0, 0]
+						: face === 4
+							? [0, -1, 0]
+							: /* 5 */ [0, 1, 0];
+	for (let v = 0; v < 4; v++) {
+		const i = (face * 4 + v) * 3;
+		SKY_BOX_NORMALS[i] = n[0];
+		SKY_BOX_NORMALS[i + 1] = n[1];
+		SKY_BOX_NORMALS[i + 2] = n[2];
+	}
+}
+const SKY_BOX_INDICES = new Uint32Array(36);
+for (let face = 0; face < 6; face++) {
+	const b = face * 4;
+	const o = face * 6;
+	SKY_BOX_INDICES[o] = b;
+	SKY_BOX_INDICES[o + 1] = b + 1;
+	SKY_BOX_INDICES[o + 2] = b + 2;
+	SKY_BOX_INDICES[o + 3] = b;
+	SKY_BOX_INDICES[o + 4] = b + 2;
+	SKY_BOX_INDICES[o + 5] = b + 3;
+}
 
 export class WorldEnvironment {
 	public static instance: WorldEnvironment;
@@ -83,15 +148,24 @@ export class WorldEnvironment {
 	}
 
 	private createSkybox(): void {
-		const skybox = createSphere(this.engine);
+		const skybox = createMeshFromData(
+			this.engine,
+			"skyBox",
+			SKY_BOX_POSITIONS,
+			SKY_BOX_NORMALS,
+			SKY_BOX_INDICES,
+		);
 		const skyMaterial = createSkyMaterial();
 
 		skybox.material = skyMaterial;
+		skybox.pickable = false;
+		skybox.receiveShadows = false;
+		skybox.renderOrder = 300;
 
 		this.skybox = skybox;
 		this.skyMaterial = skyMaterial;
 
-		// Lite has no infiniteDistance flag, so we keep the dome centred on the
+		// Lite has no infiniteDistance flag, so we keep the box centred on the
 		// camera and size it just inside the camera far plane.
 		this.syncDome();
 
@@ -131,7 +205,7 @@ export class WorldEnvironment {
 		const farPlane = cam.farPlane;
 
 		if (farPlane !== this.lastFarPlane) {
-			const r = SKY_DOME_FAR_SCALE * farPlane;
+			const r = SKY_BOX_FAR_SCALE * farPlane;
 			skybox.scaling.set(r, r, r);
 			this.lastFarPlane = farPlane;
 		}

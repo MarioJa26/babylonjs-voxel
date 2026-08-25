@@ -1,7 +1,9 @@
 /**
  * Babylon Lite (native) port of the sky shader.
- * Only needs `position` + a `sunDirection` uniform. The skybox mesh is a sphere
- * (createSphere) centered on the camera — WorldEnvironment keeps it camera-locked.
+ * Only needs `position` + a `sunDirection` uniform. The skybox mesh is a
+ * camera-centred box (WorldEnvironment keeps it camera-locked); any
+ * star-shaped surface around the camera produces identical output because
+ * the fragment shader only uses normalize(vPosition).
  */
 import {
 	createShaderMaterial,

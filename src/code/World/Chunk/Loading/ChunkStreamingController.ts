@@ -2,6 +2,7 @@ import {
 	isInitialized as isDistantTerrainReady,
 	update as updateDistantTerrain,
 } from "@/code/Generation/DistantTerrain/DistantTerrain";
+import { SURFACE_DENSITY_INFLUENCE_RANGE } from "@/code/Generation/SurfaceGenerator";
 import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
 import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { FarTileManager } from "../../FarTiles/FarTileManager";
@@ -14,7 +15,11 @@ import {
 	DistantOnlyChunkCreationRule,
 	Lod0ChunkCreationRule,
 } from "../LOD/ChunkLodRules";
-import { UNDERGROUND_SKIP_LOD, maxLodForChunkY } from "../Worker/LODUtilities";
+import {
+	maxLodForChunkY,
+	UNDERGROUND_CULL_EXEMPT_RADIUS,
+	UNDERGROUND_SKIP_LOD,
+} from "../Worker/LODUtilities";
 
 /** Underground (cave) chunks never coarsen: clamp any desired LOD. */
 function clampLodForY(chunkY: number, lod: number): number {
@@ -27,15 +32,27 @@ Whether an underground coordinate should currently have a chunk. Horizontal
 bands decide (vertical distance must not gate caves); depth is bounded by the
 rule set's underground vertical cap (CAVE_VERTICAL_RENDER_DISTANCE outdoors,
 widened while in a cave).
+
+Fully-buried chunks beyond a small exempt core around the player are culled
+at every horizontal distance: below the heightmap surface they can only
+contain sealed cave interiors, which are invisible from outside at that
+distance (DistantHorizons-style surface-only far terrain). Without this,
+climbing tall mountains renders their entire buried cave systems. Cave mode
+bypasses the cull so the surrounding tunnels keep rendering.
  */
 function undergroundDesired(
+	chunkX: number,
 	chunkY: number,
+	chunkZ: number,
 	hDist: number,
 	vDist: number,
 	lodRuleSet: ChunkLodRuleSet,
 ): boolean {
 	if (chunkY >= 0) return false;
 	if (lodRuleSet.horizontalLodForDistance(hDist) >= UNDERGROUND_SKIP_LOD) {
+		return false;
+	}
+	if (buriedChunkCulled(chunkX, chunkY, chunkZ, hDist)) {
 		return false;
 	}
 
@@ -133,6 +150,71 @@ function columnTopChunkY(x: number, z: number): number {
 	}
 
 	return topY;
+}
+
+// Burial cache for the far-band underground cull in undergroundDesired.
+// Value is the largest chunkY whose entire volume lies below the true surface
+// over the column pair's chunk footprint; a target chunk is fully buried when
+// chunkY < value.
+const BURIED_CACHE_MAX = COL_TOP_CACHE_MAX;
+const buriedCache = new Map<number, number>();
+
+// Two allowances on top of the raw 2D heightmap minimum:
+// - half a chunk absorbs terrain dips narrower than the corner sampling grid;
+// - SURFACE_DENSITY_INFLUENCE_RANGE is how far the TRUE surface (3D density
+//   sign flip, see SurfaceGenerator.findTopSurfaceY) can rise above the 2D
+//   heightmap estimate. Without it, tall density-amplified mountains keep
+//   their whole interior rendered.
+const BURIED_SAFETY_MARGIN = Chunk.SIZE / 2 + SURFACE_DENSITY_INFLUENCE_RANGE;
+
+function buriedTopChunkY(x: number, z: number): number {
+	const key = (x & 0xffff) | ((z & 0xffff) << 16);
+	const cached = buriedCache.get(key);
+	if (cached !== undefined) return cached;
+
+	const wx = x * Chunk.SIZE;
+	const wz = z * Chunk.SIZE;
+	const mid = Chunk.SIZE / 2;
+	let minH = getFinalTerrainHeight(wx, wz);
+	minH = Math.min(minH, getFinalTerrainHeight(wx + Chunk.SIZE, wz));
+	minH = Math.min(minH, getFinalTerrainHeight(wx, wz + Chunk.SIZE));
+	minH = Math.min(
+		minH,
+		getFinalTerrainHeight(wx + Chunk.SIZE, wz + Chunk.SIZE),
+	);
+	minH = Math.min(minH, getFinalTerrainHeight(wx + mid, wz + mid));
+
+	const topY = Math.floor((minH - BURIED_SAFETY_MARGIN) / Chunk.SIZE);
+	buriedCache.set(key, topY);
+
+	if (buriedCache.size > BURIED_CACHE_MAX) {
+		let toEvict = BURIED_CACHE_MAX >> 2;
+		for (const k of buriedCache.keys()) {
+			buriedCache.delete(k);
+			if (--toEvict <= 0) break;
+		}
+	}
+
+	return topY;
+}
+
+/**
+ * True when the coordinate lies fully below the heightmap surface and is far
+ * enough from the player that its (necessarily sealed) interior cannot be
+ * seen: DistantHorizons-style surface-only culling. Applies at ALL Y —
+ * mountain interiors live in positive chunkY, deep caves below y=0.
+ */
+function buriedChunkCulled(
+	chunkX: number,
+	chunkY: number,
+	chunkZ: number,
+	hDist: number,
+): boolean {
+	return (
+		hDist > UNDERGROUND_CULL_EXEMPT_RADIUS &&
+		!isInCave() &&
+		chunkY < buriedTopChunkY(chunkX, chunkZ)
+	);
 }
 
 export class ChunkStreamingController {
@@ -375,10 +457,18 @@ export class ChunkStreamingController {
 				}
 			}
 
-			if (
-				chunk.chunkY < 0 &&
-				!undergroundDesired(chunk.chunkY, hDist, vDist, lodRuleSet)
-			) {
+			const loadUndesired =
+				chunk.chunkY < 0
+					? !undergroundDesired(
+							chunk.chunkX,
+							chunk.chunkY,
+							chunk.chunkZ,
+							hDist,
+							vDist,
+							lodRuleSet,
+						)
+					: buriedChunkCulled(chunk.chunkX, chunk.chunkY, chunk.chunkZ, hDist);
+			if (loadUndesired) {
 				chunk.isTerrainScheduled = false;
 				continue;
 			}
@@ -421,8 +511,21 @@ export class ChunkStreamingController {
 
 			const keep =
 				chunk.chunkY < 0
-					? undergroundDesired(chunk.chunkY, hDist, vDist, lodRuleSet)
-					: hDist <= lodRuleSet.maxHorizontalRadius() &&
+					? undergroundDesired(
+							chunk.chunkX,
+							chunk.chunkY,
+							chunk.chunkZ,
+							hDist,
+							vDist,
+							lodRuleSet,
+						)
+					: !buriedChunkCulled(
+							chunk.chunkX,
+							chunk.chunkY,
+							chunk.chunkZ,
+							hDist,
+						) &&
+						hDist <= lodRuleSet.maxHorizontalRadius() &&
 						vDist <= lodRuleSet.maxVerticalRadius();
 
 			if (keep) {
@@ -570,6 +673,13 @@ export class ChunkStreamingController {
 				continue;
 			}
 
+			// Must run before the cached-decision lookup: offsets are
+			// player-relative, so climbing straight up reuses the same keys
+			// and would otherwise keep serving pre-cull desired LODs.
+			if (buriedChunkCulled(chunk.chunkX, chunk.chunkY, chunk.chunkZ, hDist)) {
+				continue;
+			}
+
 			const chunkLod = chunk.lodLevel ?? 3;
 			const key = packOffsetKey(relX, relY, relZ, chunkLod);
 
@@ -577,7 +687,16 @@ export class ChunkStreamingController {
 
 			if (decisionLod < 0) {
 				if (chunk.chunkY < 0) {
-					if (!undergroundDesired(chunk.chunkY, hDist, vDist, lodRuleSet)) {
+					if (
+						!undergroundDesired(
+							chunk.chunkX,
+							chunk.chunkY,
+							chunk.chunkZ,
+							hDist,
+							vDist,
+							lodRuleSet,
+						)
+					) {
 						continue;
 					}
 
@@ -701,6 +820,12 @@ export class ChunkStreamingController {
 			return;
 		}
 
+		// Surface-only cull: fully-buried coordinates beyond the exempt core
+		// are invisible from outside at any Y — never create or refresh them.
+		if (buriedChunkCulled(x, y, z, hDist)) {
+			return;
+		}
+
 		const chunk = getChunk(x, y, z);
 		const previousLod = chunk?.lodLevel ?? 3;
 		const isDirty = chunk?.isDirty === true;
@@ -710,7 +835,7 @@ export class ChunkStreamingController {
 
 		if (desiredLod < 0) {
 			if (y < 0) {
-				if (!undergroundDesired(y, hDist, vDist, lodRuleSet)) {
+				if (!undergroundDesired(x, y, z, hDist, vDist, lodRuleSet)) {
 					return;
 				}
 
@@ -984,6 +1109,16 @@ export class ChunkStreamingController {
 					const absZ = relZ < 0 ? -relZ : relZ;
 					const hDist = absX > absZ ? absX : absZ;
 
+					// Spawn-time surface-only cull. This shell resolves LODs
+					// inline instead of via processTargetChunkCoordinate, so
+					// without this every buried interior chunk materializes
+					// on boot and only clears after the first move. Must run
+					// before the cached-decision lookup (player-relative keys
+					// repeat across spawns at the same position).
+					if (buriedChunkCulled(x, y, z, hDist)) {
+						continue;
+					}
+
 					const existing = getChunk(x, y, z);
 					const previousLod = existing?.lodLevel ?? 3;
 					const isDirty = existing?.isDirty === true;
@@ -993,7 +1128,7 @@ export class ChunkStreamingController {
 
 					if (desiredLod < 0) {
 						if (y < 0) {
-							if (!undergroundDesired(y, hDist, vDist, lodRuleSet)) {
+							if (!undergroundDesired(x, y, z, hDist, vDist, lodRuleSet)) {
 								continue;
 							}
 
@@ -1074,14 +1209,19 @@ export class ChunkStreamingController {
 
 			if (chunk.chunkY < 0) {
 				if (
-					lodRuleSet.horizontalLodForDistance(hDist) >= UNDERGROUND_SKIP_LOD
+					lodRuleSet.horizontalLodForDistance(hDist) >= UNDERGROUND_SKIP_LOD ||
+					buriedChunkCulled(chunk.chunkX, chunk.chunkY, chunk.chunkZ, hDist)
 				) {
 					unloadQueueSet.add(chunk);
 				}
 				continue;
 			}
 
-			if (hDist > removeRadius || vDist > verticalRemoveRadius) {
+			if (
+				hDist > removeRadius ||
+				vDist > verticalRemoveRadius ||
+				buriedChunkCulled(chunk.chunkX, chunk.chunkY, chunk.chunkZ, hDist)
+			) {
 				unloadQueueSet.add(chunk);
 			}
 		}
