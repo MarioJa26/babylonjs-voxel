@@ -19,6 +19,7 @@ import type { IUsable } from "../Interface/IUsable";
 import { CustomBoatControls } from "../Player/Controls/CustomBoatControls";
 import type { Player } from "../Player/Player";
 import {
+	type DynamicBlockQueryOptions,
 	type DynamicBlockSample,
 	getBlockByWorldCoords,
 	registerChunkBoundEntity,
@@ -238,6 +239,14 @@ export class CustomBoat implements IUsable {
 	#boatChunkCollisionProviderHandle?: symbol;
 	#boatChunkBlockChangeUnsubscribe?: () => void;
 	#ignoredDynamicBlockProviders = new Set<symbol>();
+
+	// PERF: single query-options object reused by every voxel probe in the
+	// physics tick (#getWorldBlockForBoatPhysics runs ~1k+/s while floating).
+	// Safe to share because #ignoredDynamicBlockProviders is only mutated
+	// in place (.add/.clear), never reassigned.
+	#worldQueryOptions: DynamicBlockQueryOptions = {
+		ignoredDynamicBlockProviders: this.#ignoredDynamicBlockProviders,
+	};
 
 	// Reused by #sampleBoatChunkBlock — see the allocation note there.
 	static #sampleScratch: DynamicBlockSample = {
@@ -962,8 +971,6 @@ export class CustomBoat implements IUsable {
 	}
 
 	#getWorldBlockForBoatPhysics(x: number, y: number, z: number): number {
-		return getBlockByWorldCoords(x, y, z, {
-			ignoredDynamicBlockProviders: this.#ignoredDynamicBlockProviders,
-		});
+		return getBlockByWorldCoords(x, y, z, this.#worldQueryOptions);
 	}
 }

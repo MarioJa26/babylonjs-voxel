@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 export {
+	type DynamicBlockQueryOptions,
 	type DynamicBlockSample,
 	getBlockByWorldCoords,
 	getBlockStateByWorldCoords,

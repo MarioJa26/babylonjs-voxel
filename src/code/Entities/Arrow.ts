@@ -18,10 +18,7 @@ import {
 	removeFromScene,
 } from "@babylonjs/lite";
 import type { Mob } from "@/code/Entities/Mobs/Mob";
-import {
-	mobLocalToWorld,
-	segmentMobHit,
-} from "@/code/Entities/Mobs/MobHitTest";
+import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
 import { createBoxMobMesh } from "@/code/Entities/Mobs/MobMesh";
 import { getPRNGUnit2 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
@@ -54,6 +51,8 @@ const MAX_LIFETIME_S = 25;
 const STICK_TIME_S = 15;
 const MAX_SUBSTEP = 0.5;
 const INV_MAX_SUBSTEP = 1 / MAX_SUBSTEP;
+/** Frame-spike guard: never simulate more than this in one tick. */
+const MAX_TICK_DT = 0.1;
 
 const MIN_DIRECTION_LENGTH_SQ = 1e-6;
 const VERTICAL_DIRECTION_THRESHOLD = 0.99;
@@ -224,6 +223,9 @@ export class Arrow {
 
 	tick(dt: number): void {
 		if (this.#disposed) return;
+
+		// Clamp frame spikes so a hitch never turns into a substep storm.
+		dt = Math.min(dt, MAX_TICK_DT);
 
 		this.#age += dt;
 
@@ -441,51 +443,42 @@ export class Arrow {
 		let bestT = Number.POSITIVE_INFINITY;
 		let bestMob: Mob | null = null;
 
-		/*
-		 * Store the local hit coordinates instead of allocating a world-point
-		 * object every time a better candidate is found.
-		 */
-		let bestLocalX = 0;
-		let bestLocalY = 0;
-		let bestLocalZ = 0;
-
 		for (const mob of registry.getAllMobs()) {
-			const hit = segmentMobHit(
+			const t = segmentMobHit(
 				startX,
 				startY,
 				startZ,
 				endX,
 				endY,
 				endZ,
-				mob.position,
+				mob.position.x,
+				mob.position.y,
+				mob.position.z,
 				mob.facingYaw,
-				mob.hitHalfExtents,
+				mob.hitHalfExtents.x,
+				mob.hitHalfExtents.y,
+				mob.hitHalfExtents.z,
 			);
 
-			if (hit !== null && hit !== undefined && hit.t < bestT) {
-				bestT = hit.t;
+			if (t !== null && t < bestT) {
+				bestT = t;
 				bestMob = mob;
-				bestLocalX = hit.lx;
-				bestLocalY = hit.ly;
-				bestLocalZ = hit.lz;
 			}
 		}
 
 		if (bestMob === null) return false;
 
-		const bestPoint = mobLocalToWorld(
-			bestMob.position,
-			bestMob.facingYaw,
-			bestLocalX,
-			bestLocalY,
-			bestLocalZ,
-		);
+		// `t` is invariant under the mob's yaw rotation, so the world impact
+		// point is simply the segment lerp at t — no local→world round trip.
+		const hitX = startX + (endX - startX) * bestT;
+		const hitY = startY + (endY - startY) * bestT;
+		const hitZ = startZ + (endZ - startZ) * bestT;
 
 		bestMob.takeDamage(ARROW_DAMAGE);
 
 		const hitMob = bestMob;
 
-		this.#stickTipAt(bestPoint.x, bestPoint.y, bestPoint.z, () =>
+		this.#stickTipAt(hitX, hitY, hitZ, () =>
 			hitMob.isDisposed
 				? null
 				: {

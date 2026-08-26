@@ -57,6 +57,13 @@ interface RemoteMobInstance {
 	targetZ: number;
 	currentYawRad: number;
 	targetYawRad: number;
+	/** Last transform written to the instance lane — unchanged mobs skip the
+	 * write entirely (no dirty marking, no GPU upload). NaN sentinels at
+	 * spawn-time are replaced by real values immediately. */
+	writtenX: number;
+	writtenY: number;
+	writtenZ: number;
+	writtenYawRad: number;
 }
 
 export class RemoteMobManager {
@@ -86,7 +93,8 @@ export class RemoteMobManager {
 	/**
 	 * Precise hit test: sweep the segment start→end against every remote
 	 * mob's yaw-oriented body box. Returns the NEAREST hit (mob id + exact
-	 * world-space impact point), or null on miss.
+	 * world-space impact point, derived from the entry parameter), or null
+	 * on miss. Allocation-free until a hit is actually found.
 	 */
 	findSegmentHit(
 		startX: number,
@@ -96,45 +104,41 @@ export class RemoteMobManager {
 		endY: number,
 		endZ: number,
 	): { id: number; x: number; y: number; z: number } | null {
-		let bestId: number | null = null;
 		let bestT = Number.POSITIVE_INFINITY;
-		let bestLx = 0;
-		let bestLy = 0;
-		let bestLz = 0;
+		let bestId: number | null = null;
 		let bestMob: RemoteMobInstance | null = null;
 
 		for (const [id, mob] of this.mobs) {
-			const hit = segmentMobHit(
+			const t = segmentMobHit(
 				startX,
 				startY,
 				startZ,
 				endX,
 				endY,
 				endZ,
-				{ x: mob.currentX, y: mob.currentY, z: mob.currentZ },
+				mob.currentX,
+				mob.currentY,
+				mob.currentZ,
 				mob.currentYawRad,
-				{ x: mob.halfX, y: mob.halfY, z: mob.halfZ },
+				mob.halfX,
+				mob.halfY,
+				mob.halfZ,
 			);
 
-			if (hit && hit.t < bestT) {
-				bestT = hit.t;
+			if (t !== null && t < bestT) {
+				bestT = t;
 				bestId = id;
-				bestLx = hit.lx;
-				bestLy = hit.ly;
-				bestLz = hit.lz;
 				bestMob = mob;
 			}
 		}
 
 		if (bestId === null || !bestMob) return null;
 
-		const c = Math.cos(bestMob.currentYawRad);
-		const s = Math.sin(bestMob.currentYawRad);
 		return {
 			id: bestId,
-			x: bestMob.currentX + c * bestLx + s * bestLz,
-			y: bestMob.currentY + bestLy,
-			z: bestMob.currentZ - s * bestLx + c * bestLz,
+			x: startX + (endX - startX) * bestT,
+			y: startY + (endY - startY) * bestT,
+			z: startZ + (endZ - startZ) * bestT,
 		};
 	}
 
@@ -265,6 +269,12 @@ export class RemoteMobManager {
 			targetZ: z,
 			currentYawRad: yawRad,
 			targetYawRad: yawRad,
+			// Matches the just-written matrix, so the next update() skips the
+			// redundant write until the mob actually moves.
+			writtenX: x,
+			writtenY: y,
+			writtenZ: z,
+			writtenYawRad: yawRad,
 		});
 	}
 
@@ -313,6 +323,18 @@ export class RemoteMobManager {
 			diff = Math.atan2(Math.sin(diff), Math.cos(diff));
 			mob.currentYawRad += diff * alpha;
 
+			// Skip the lane write (and its dirty marking / GPU upload) while
+			// the interpolated transform hasn't changed — stationary mobs cost
+			// nothing per frame.
+			if (
+				mob.currentX === mob.writtenX &&
+				mob.currentY === mob.writtenY &&
+				mob.currentZ === mob.writtenZ &&
+				mob.currentYawRad === mob.writtenYawRad
+			) {
+				continue;
+			}
+
 			mob.pool.writeMatrix(
 				mob.slot,
 				mob.currentX,
@@ -320,6 +342,10 @@ export class RemoteMobManager {
 				mob.currentZ,
 				mob.currentYawRad,
 			);
+			mob.writtenX = mob.currentX;
+			mob.writtenY = mob.currentY;
+			mob.writtenZ = mob.currentZ;
+			mob.writtenYawRad = mob.currentYawRad;
 		}
 	}
 

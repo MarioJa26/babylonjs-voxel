@@ -58,7 +58,7 @@ type DynamicBlockProviderEntry = {
 	mutator?: DynamicBlockMutator;
 };
 
-type DynamicBlockQueryOptions = {
+export type DynamicBlockQueryOptions = {
 	ignoredDynamicBlockProviders?: ReadonlySet<symbol>;
 };
 
