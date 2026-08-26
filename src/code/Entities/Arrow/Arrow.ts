@@ -17,7 +17,10 @@ import {
 	quatFromLookDirectionRH,
 	removeFromScene,
 } from "@babylonjs/lite";
-import { type ArrowTypeDef, getArrowTypeDef } from "@/code/Entities/ArrowTypes";
+import {
+	type ArrowTypeDef,
+	getArrowTypeDef,
+} from "@/code/Entities/Arrow/ArrowTypes";
 import type { Mob } from "@/code/Entities/Mobs/Mob";
 import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
 import { createBoxMobMesh } from "@/code/Entities/Mobs/MobMesh";
@@ -36,7 +39,7 @@ import { dropWorldItem } from "@/code/Player/Inventory/dropWorldItem";
 import { Item } from "@/code/Player/Inventory/Item";
 import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
-import type { Player } from "../Player/Player";
+import type { Player } from "../../Player/Player";
 
 const ARROW_MESH_NAME = "arrow";
 const ARROW_MATERIAL_NAME = "arrowMat";
@@ -344,7 +347,8 @@ export class Arrow {
 
 			if (now - this.#lastDripEmitMs >= MOB_DRIP_INTERVAL_MS) {
 				this.#lastDripEmitMs = now;
-				playMobDrip(tipX, tipY, tipZ);
+				// Scale particle count with bleed rate — harder-hitting arrows bleed more.
+				playMobDrip(tipX, tipY, tipZ, this.#arrowDef.bleedPerSecond);
 			}
 		}
 

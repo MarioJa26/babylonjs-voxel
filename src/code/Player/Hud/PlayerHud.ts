@@ -1,6 +1,6 @@
 ﻿import type { SceneContext } from "@babylonjs/lite";
 import { onSceneDispose } from "@babylonjs/lite";
-import { getArrowTooltipStats } from "@/code/Entities/ArrowTypes";
+import { getArrowTooltipStats } from "@/code/Entities/Arrow/ArrowTypes";
 import {
 	closeUi,
 	isUiOpen,

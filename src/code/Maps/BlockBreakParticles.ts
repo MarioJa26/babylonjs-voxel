@@ -72,7 +72,7 @@ const ARROW_PARTICLE_INTERVAL_MS = 75;
 // Throttling is CALLER-side (per stuck arrow), so any number of wounded mobs
 // can drip simultaneously — see MOB_DRIP_INTERVAL_MS.
 export const MOB_DRIP_INTERVAL_MS = 240;
-const MOB_DRIPS_PER_EMIT = 10;
+const MOB_DRIPS_PER_EMIT = 24;
 
 const GRAVITY = -16;
 const MAX_DT = 0.1;
@@ -370,20 +370,33 @@ export function playArrowHit(
 }
 
 /**
- * Slow red trickle from a wound — spawns MOB_DRIPS_PER_EMIT droplets at the
- * given point. Stateless by design: the CALLER throttles per emitter (each
- * stuck arrow keeps its own timer against MOB_DRIP_INTERVAL_MS), so any
- * number of wounded mobs can drip at the same time. `x/y/z` is the arrow
- * tip. Drips fall under gravity, collide with the voxel world and settle
- * briefly before fading.
+ * Slow red trickle from a wound — spawns droplets at the given point.
+ * Stateless by design: the CALLER throttles per emitter (each stuck arrow
+ * keeps its own timer against MOB_DRIP_INTERVAL_MS), so any number of wounded
+ * mobs can drip at the same time. `x/y/z` is the arrow tip. Drips fall under
+ * gravity, collide with the voxel world and settle briefly before fading.
+ *
+ * @param damage Dealt per emit — scales the number of droplets so harder
+ *   hits bleed more. Defaults to 1 (base MOB_DRIPS_PER_EMIT droplets).
  */
-export function playMobDrip(x: number, y: number, z: number): void {
+export function playMobDrip(
+	x: number,
+	y: number,
+	z: number,
+	damage = 0.5,
+): void {
 	if (!billboard) return;
 
 	const frame = getBlockFrame(BlockType.CoralBlock);
 	const light = computeLight(getLightByWorldCoords(x, y - 0.25, z));
+	// Scale particle count with damage, clamped to a sane range.
+	const count = Math.min(
+		MOB_DRIPS_PER_EMIT,
+		Math.round(MOB_DRIPS_PER_EMIT * damage),
+	);
+
 	let life = 0.33 + getPRNGUnit2();
-	for (let i = 0; i < MOB_DRIPS_PER_EMIT; i++) {
+	for (let i = 0; i < count; i++) {
 		life += 0.1;
 		addParticle(
 			x + (getPRNGUnit2() - 0.5) * 0.1,

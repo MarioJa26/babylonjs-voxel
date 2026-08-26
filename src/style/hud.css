@@ -218,6 +218,13 @@
 	aspect-ratio: 1 / 1; /* keeps them square */
 	width: var(--slot-size);
 
+	/* Native off-screen skipping: the browser skips layout/paint/hit-test for
+	   slots scrolled out of view. Slots are fixed square, so the intrinsic
+	   size matches exactly and the scrollbar never jumps. This is the biggest
+	   Layerize win when the creative palette has hundreds of items. */
+	content-visibility: auto;
+	contain-intrinsic-size: var(--slot-size) var(--slot-size);
+
 	border: var(--slot-frame-w) solid var(--hud-frame);
 	border-radius: var(--hud-radius-sm);
 	background-color: var(--hud-bg-slot);
@@ -238,6 +245,20 @@
 
 .inventory-slot:hover {
 	border-color: var(--hud-accent);
+}
+
+/* While the inventory pane is scrolling, kill hover/hit-testing so the
+   cursor sweeping across slots does not promote each item to its own
+   compositor layer (which caused ~1.8s of Layerize during scroll).
+   pointer-events:none blocks :hover + the per-slot mouseover listeners;
+   the transform override guarantees no layer promotion mid-scroll. */
+.inventory-container.is-scrolling .inventory-slot {
+	pointer-events: none;
+}
+
+.inventory-container.is-scrolling .inventory-item {
+	transition: none;
+	transform: none;
 }
 
 /* Zoom the item, not the slot: the border frame stays anchored (no moving
@@ -481,7 +502,7 @@
 
 .crafting-recipe.not-craftable {
 	opacity: 0.45;
-	filter: grayscale(100%);
+	filter: grayscale(80%);
 	border-color: var(--hud-border-soft);
 	cursor: not-allowed;
 }

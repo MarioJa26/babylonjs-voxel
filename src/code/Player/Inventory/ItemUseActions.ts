@@ -1,9 +1,9 @@
 import { vec3 } from "@babylonjs/lite";
-import { Arrow } from "@/code/Entities/Arrow";
+import { Arrow } from "@/code/Entities/Arrow/Arrow";
 import {
 	ARROW_TYPES,
 	getArrowTypeIndexByItemId,
-} from "@/code/Entities/ArrowTypes";
+} from "@/code/Entities/Arrow/ArrowTypes";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "@/code/Maps/Map1";
