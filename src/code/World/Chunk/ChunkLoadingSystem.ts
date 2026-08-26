@@ -15,7 +15,6 @@ import { ChunkHydration } from "./Loading/ChunkHydration";
 import { ChunkLoadingDebug } from "./Loading/ChunkLoadingDebug";
 import { ChunkPersistenceCoordinator } from "./Loading/ChunkPersistenceCoordinator";
 import { ChunkProcessScheduler } from "./Loading/ChunkProcessScheduler";
-import { ChunkReadiness } from "./Loading/ChunkReadinessAdapter";
 import {
 	ChunkStreamingController,
 	type QueuedChunkRequest,
@@ -143,16 +142,6 @@ const worldMutations = new ChunkWorldMutations({
 		if (chunk) {
 			scheduleChunkAndNeighborsRemesh(chunk);
 		}
-	},
-});
-
-const readiness = new ChunkReadiness({
-	isChunkLoaded: (chunk: Chunk) => chunk.isLoaded && chunk.hasVoxelData,
-	isChunkLod0Ready: (chunk: Chunk) => {
-		if (chunk.lodLevel === undefined || chunk.lodLevel === null) {
-			return false;
-		}
-		return chunk.isLoaded && chunk.hasVoxelData && chunk.lodLevel === 0;
 	},
 });
 
@@ -886,37 +875,10 @@ export function getLightByWorldCoords(
 	return worldMutations.getLightByWorldCoords(worldX, worldY, worldZ);
 }
 
-export function areChunksLoadedAround(
-	chunkX: number,
-	chunkY: number,
-	chunkZ: number,
-	horizontalRadius = 1,
-	verticalRadius = 0,
-): boolean {
-	return readiness.areChunksLoadedAround(
-		chunkX,
-		chunkY,
-		chunkZ,
-		horizontalRadius,
-		verticalRadius,
-	);
-}
-
-export function areChunksLod0ReadyAround(
-	chunkX: number,
-	chunkY: number,
-	chunkZ: number,
-	horizontalRadius = 1,
-	verticalRadius = 0,
-): boolean {
-	return readiness.areChunksLod0ReadyAround(
-		chunkX,
-		chunkY,
-		chunkZ,
-		horizontalRadius,
-		verticalRadius,
-	);
-}
+export {
+	areChunksLoadedAround,
+	areChunksLod0ReadyAround,
+} from "./Loading/ChunkReadiness";
 
 function collectChunkEntityPayloads(): ReadonlyMap<
 	bigint,

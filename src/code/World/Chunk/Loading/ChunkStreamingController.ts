@@ -88,20 +88,26 @@ function compareQueuedChunkRequestPriority(
 const _queryScratch: Chunk[] = [];
 
 // PERF: relative-offset key for the refresh decision cache.
-// Mask every byte so unexpected offsets cannot bleed into neighboring fields.
-const _OFFSET_BIAS = 128;
-
+// Multiplicative fields stay float-exact (< 2^53) while widening the ranges:
+// rx/rz hold ±2047 (render radii beyond that are unrealistic), ry ±127, and
+// prevLod 0..7 (DISTANT_LOD_LEVEL = 6). The absolute-y sign bit exists
+// because decisions are not purely player-relative: y < 0 routes through
+// clampLodForY's LOD-1 cap, so a cached surface-band LOD must never be
+// served to an underground coordinate sharing the same relative offsets
+// (and vice versa).
 function packOffsetKey(
 	rx: number,
 	ry: number,
 	rz: number,
+	chunkY: number,
 	chunkLod: number,
 ): number {
 	return (
-		((rx + _OFFSET_BIAS) & 0xff) |
-		(((ry + _OFFSET_BIAS) & 0xff) << 8) |
-		(((rz + _OFFSET_BIAS) & 0xff) << 16) |
-		((chunkLod & 0xff) << 24)
+		((rz + 2048) & 0xfff) * 16777216 +
+		((rx + 2048) & 0xfff) * 4096 +
+		((ry + 128) & 0xff) * 16 +
+		((chunkY < 0 ? 1 : 0) << 3) +
+		(chunkLod & 7)
 	);
 }
 
@@ -127,8 +133,19 @@ export interface ChunkStreamingControllerAdapter {
 const COL_TOP_CACHE_MAX = 16384;
 const colTopCache = new Map<number, number>();
 
+// Collision-free column key for signed 32-bit chunk coordinates: 26 bits per
+// axis (aliases only beyond ±33.5M chunks — far outside any playable range,
+// unlike the old 16-bit XOR-style packing). The stride is 1 << 26, but the
+// combine must stay multiplicative: `<<` coerces through signed 32-bit and
+// the composite key exceeds 2^31 (see packLodRevision note below).
+const COLUMN_KEY_AXIS_STRIDE = 1 << 26;
+
+function packColumnKey(x: number, z: number): number {
+	return (x & 0x3ffffff) * COLUMN_KEY_AXIS_STRIDE + (z & 0x3ffffff);
+}
+
 function columnTopChunkY(x: number, z: number): number {
-	const key = (x & 0xffff) | ((z & 0xffff) << 16);
+	const key = packColumnKey(x, z);
 	const cached = colTopCache.get(key);
 	if (cached !== undefined) return cached;
 
@@ -168,7 +185,7 @@ const buriedCache = new Map<number, number>();
 const BURIED_SAFETY_MARGIN = Chunk.SIZE / 2 + SURFACE_DENSITY_INFLUENCE_RANGE;
 
 function buriedTopChunkY(x: number, z: number): number {
-	const key = (x & 0xffff) | ((z & 0xffff) << 16);
+	const key = packColumnKey(x, z);
 	const cached = buriedCache.get(key);
 	if (cached !== undefined) return cached;
 
@@ -438,7 +455,7 @@ export class ChunkStreamingController {
 				(hDist <= nearZoneRadius && vDist <= nearZoneVertical)
 			) {
 				const previousLod = chunk.lodLevel ?? request.desiredLod;
-				const key = packOffsetKey(relX, relY, relZ, previousLod);
+				const key = packOffsetKey(relX, relY, relZ, chunk.chunkY, previousLod);
 
 				desiredLod = this.getCachedDecisionLod(key, chunk.isDirty);
 				if (desiredLod < 0) {
@@ -681,7 +698,7 @@ export class ChunkStreamingController {
 			}
 
 			const chunkLod = chunk.lodLevel ?? 3;
-			const key = packOffsetKey(relX, relY, relZ, chunkLod);
+			const key = packOffsetKey(relX, relY, relZ, chunk.chunkY, chunkLod);
 
 			let decisionLod = this.getCachedDecisionLod(key, chunk.isDirty);
 
@@ -830,7 +847,7 @@ export class ChunkStreamingController {
 		const previousLod = chunk?.lodLevel ?? 3;
 		const isDirty = chunk?.isDirty === true;
 
-		const cacheKey = packOffsetKey(relX, relY, relZ, previousLod);
+		const cacheKey = packOffsetKey(relX, relY, relZ, y, previousLod);
 		let desiredLod = this.getCachedDecisionLod(cacheKey, isDirty);
 
 		if (desiredLod < 0) {
@@ -965,9 +982,26 @@ export class ChunkStreamingController {
 		const startZ = chunkZ - bandH;
 		const endZ = chunkZ + bandH;
 
+		// Hoisted: buriedChunkCulled consults the same flag per coordinate.
+		const caveState = isInCave();
+
 		for (let x = startX; x <= endX; x++) {
+			const absX = Math.abs(x - chunkX);
+
 			for (let z = startZ; z <= endZ; z++) {
-				for (let y = startY; y <= -1; y++) {
+				const absZ = Math.abs(z - chunkZ);
+				const hDist = absX > absZ ? absX : absZ;
+
+				// Outdoors beyond the exempt core, every Y below the burial
+				// boundary is guaranteed rejected — skip straight past it
+				// instead of paying a rejection pass per coordinate.
+				let scanStart = startY;
+				if (!caveState && hDist > UNDERGROUND_CULL_EXEMPT_RADIUS) {
+					const boundary = buriedTopChunkY(x, z);
+					if (scanStart < boundary) scanStart = boundary;
+				}
+
+				for (let y = scanStart; y <= -1; y++) {
 					this.processTargetChunkCoordinate(
 						x,
 						y,
@@ -1122,7 +1156,7 @@ export class ChunkStreamingController {
 					const existing = getChunk(x, y, z);
 					const previousLod = existing?.lodLevel ?? 3;
 					const isDirty = existing?.isDirty === true;
-					const cacheKey = packOffsetKey(relX, relY, relZ, previousLod);
+					const cacheKey = packOffsetKey(relX, relY, relZ, y, previousLod);
 
 					let desiredLod = this.getCachedDecisionLod(cacheKey, isDirty);
 
