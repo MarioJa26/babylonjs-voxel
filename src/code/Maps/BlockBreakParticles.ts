@@ -62,6 +62,7 @@ const DEBRIS_RADIUS_SCALE = 0.4;
 
 let lastMiningEmitMs = 0;
 let lastSprintEmitMs = 0;
+let lastArrowHitEmitMs = 0;
 
 // ---------------------------------------------------------------------------
 // Particle pool (SoA / typed-array layout).
@@ -326,8 +327,8 @@ export function playArrowHit(
 	if (!ready) return;
 
 	const now = performance.now();
-	if (now - lastMiningEmitMs < ARROW_PARTICLE_INTERVAL_MS) return;
-	lastMiningEmitMs = now;
+	if (now - lastArrowHitEmitMs < ARROW_PARTICLE_INTERVAL_MS) return;
+	lastArrowHitEmitMs = now;
 
 	const frame = getBlockFrame(blockId);
 

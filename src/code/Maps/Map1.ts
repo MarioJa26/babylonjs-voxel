@@ -1,5 +1,6 @@
 import type { EngineContext, SceneContext } from "@babylonjs/lite";
 import type { MobRegistry } from "../Entities/Mobs/Mob";
+import { preloadMobSkin } from "../Entities/Mobs/MobInstancePool";
 import { initDistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import { setGameTimeScale } from "../Lib/GameRuntimeState";
 import type { RemoteMobManager } from "../Network/RemoteMobManager";
@@ -49,6 +50,9 @@ export class Map1 {
 	async asyncInit() {
 		try {
 			await initAtlas();
+			// Mob skins must exist before any pool constructor runs — the
+			// instanced shader bind group throws on an unbound sampler.
+			await preloadMobSkin();
 			await initDistantTerrain();
 			// Far tiles (LOD6+): real decimated geometry out to the horizon.
 			FarTileManager.init(Map1.engine, Map1.mainScene);

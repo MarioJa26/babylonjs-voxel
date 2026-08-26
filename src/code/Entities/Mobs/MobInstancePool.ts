@@ -7,6 +7,7 @@ import {
 	onBeforeRender,
 	setShaderTexture,
 	setThinInstances,
+	type Texture2D,
 } from "@babylonjs/lite";
 import { MetadataContainer } from "@/code/Entities/MetadataContainer";
 import { Color3 } from "@/code/Lib/Math";
@@ -61,6 +62,43 @@ export type InstanceSlotHandle = {
 const MAT4_FLOATS = 16;
 const COLOR_FLOATS = 4;
 const DEFAULT_INITIAL_CAPACITY = 16;
+
+// ─── Shared mob-skin loader ─────────────────────────────────────────────────
+// Awaited once in Map1.asyncInit(), so every pool constructor can bind the
+// skin synchronously — lite builds the instanced shader bind group at group-
+// build time and throws on an unbound sampler.
+
+let mobSkin: Texture2D | null = null;
+let mobSkinPromise: Promise<void> | null = null;
+
+/** Preload the dedicated mob skin. Called from Map1.asyncInit() before any
+ * mob can exist; subsequent calls return the same promise instantly. */
+export function preloadMobSkin(): Promise<void> {
+	mobSkinPromise ??= loadTexture2D(Map1.engine, MOB_SKIN_PATH, {
+		mipMaps: true,
+		magFilter: "nearest",
+		minFilter: "nearest",
+	})
+		.catch(() => null)
+		.then((tex) => {
+			mobSkin = tex;
+			if (tex) {
+				console.debug("[mobs] mob skin bound:", MOB_SKIN_PATH);
+			} else {
+				console.error(`[mobs] failed to load ${MOB_SKIN_PATH}`);
+			}
+		});
+	return mobSkinPromise;
+}
+
+function getMobSkin(): Texture2D {
+	if (!mobSkin) {
+		throw new Error(
+			`[mobs] ${MOB_SKIN_PATH} not loaded — Map1.asyncInit must await preloadMobSkin() before spawning mobs`,
+		);
+	}
+	return mobSkin;
+}
 
 type MobInstancePoolOptions = {
 	name: string;
@@ -119,7 +157,11 @@ export class MobInstancePool {
 			options.tint ?? Color3.White(),
 		);
 		mesh.material = this.#material;
-		this.#bindDiffuseTexture();
+
+		// Skin is guaranteed loaded (Map1.asyncInit awaits preloadMobSkin)
+		// BEFORE any pool is constructed — bind before the group build so the
+		// instanced shader's bind group can never see a missing sampler.
+		setShaderTexture(this.#material, "diffuseTexture", getMobSkin());
 
 		let meta = mesh.metadata as MetadataContainer | undefined;
 		if (!meta) {
@@ -128,15 +170,12 @@ export class MobInstancePool {
 		}
 		meta.set("mob", this);
 
-		// Seed count-0 instances so an empty pool draws nothing (without
-		// thinInstances the base box itself would render at the origin).
+		// Seed thin instances at count 0 — lanes sync in per frame.
 		setThinInstances(mesh, this.#matrices, 0);
 		const ti = mesh.thinInstances as PackedThinInstances | undefined;
 		if (ti) {
 			if (this.#colors) {
 				ti.colors = this.#colors;
-				// Bump the color version or the GPU uploader never creates the
-				// color buffer → its vertex slot goes unset → WebGPU draw error.
 				ti._colorVersion = (ti._colorVersion ?? 0) + 1;
 			}
 			ti._capacity = this.#capacity;
@@ -149,7 +188,7 @@ export class MobInstancePool {
 		this.mesh = mesh;
 
 		registerPool(this);
-		this.#ensureInstancedGroupBuild();
+		this.ensureInstancedGroupBuild(mesh);
 	}
 
 	/** Scene-registered ShaderMaterial groups only run their deferred builder
@@ -157,14 +196,14 @@ export class MobInstancePool {
 	 * by an instanced group build. Without this force-build, every pooled mesh
 	 * AFTER the first one silently never renders (same fix as
 	 * PackedChunkMesh.ensureInstancedBuild). */
-	#ensureInstancedGroupBuild(): void {
+	private ensureInstancedGroupBuild(mesh: Mesh): void {
 		const bg = (
 			this.#material as unknown as {
 				_buildGroup?: (scene: unknown, meshes: unknown[]) => Promise<unknown>;
 			}
 		)._buildGroup;
 		if (typeof bg === "function") {
-			void bg(Map1.mainScene, [this.mesh]).catch(() => {});
+			void bg(Map1.mainScene, [mesh]).catch(() => {});
 		}
 	}
 
@@ -282,9 +321,6 @@ export class MobInstancePool {
 	}
 
 	sync(): void {
-		// Retry until the async atlas pack has finished; cheap null check.
-		this.#bindDiffuseTexture();
-
 		if (!this.#needsSync) return;
 		this.#needsSync = false;
 
@@ -414,33 +450,6 @@ export class MobInstancePool {
 		this.#colorDirtyMin = 0;
 		this.#colorDirtyMax = this.#count;
 		this.#needsSync = true;
-	}
-
-	/** Load and bind the dedicated mob skin exactly once (same pattern as
-	 * PlayerModel's skin loading). Bind EXACTLY once — rebinding bumps lite's
-	 * visibility epoch and forces mesh rebuilds (see PackedChunkMesh). */
-	#diffuseBound = false;
-	#skinLoadStarted = false;
-	#bindDiffuseTexture(): void {
-		if (this.#diffuseBound || this.#skinLoadStarted) return;
-		this.#skinLoadStarted = true;
-
-		const material = this.#material;
-		void loadTexture2D(Map1.engine, MOB_SKIN_PATH, {
-			mipMaps: true,
-			magFilter: "nearest",
-			minFilter: "nearest",
-		})
-			.catch(() => null)
-			.then((tex) => {
-				if (!tex) {
-					console.error(`[mobs] failed to load ${MOB_SKIN_PATH}`);
-					return;
-				}
-				setShaderTexture(material, "diffuseTexture", tex);
-				this.#diffuseBound = true;
-				console.debug("[mobs] mob skin bound:", MOB_SKIN_PATH);
-			});
 	}
 }
 

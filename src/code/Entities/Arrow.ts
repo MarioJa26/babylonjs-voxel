@@ -27,7 +27,7 @@ import type { NetClient } from "@/code/Network/NetClient";
 import { decodeArrowSpawn } from "@/code/Network/protocol/encoder";
 import { MessageType } from "@/code/Network/protocol/messages";
 import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { isCollidableBlock } from "@/code/World/Texture/BlockType";
+import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import type { Player } from "../Player/Player";
 
 const ARROW_MESH_NAME = "arrow";
@@ -326,6 +326,8 @@ export class Arrow {
 
 			if (mobId === null) return false;
 
+			this.emitMobHitParticles();
+
 			this.#shooter?.networkManager?.netClient?.sendMobDamage(
 				mobId,
 				ARROW_DAMAGE,
@@ -348,12 +350,42 @@ export class Arrow {
 				continue;
 			}
 
+			this.emitMobHitParticles();
+
 			mob.takeDamage(ARROW_DAMAGE);
 			this.dispose();
 			return true;
 		}
 
 		return false;
+	}
+
+	/**
+	 * Red impact burst when an arrow lands on a mob. Uses the coral block
+	 * texture as a stand-in "blood" tile; particles spray back along the
+	 * arrow's incoming direction. Called before dispose() so velocity is
+	 * still intact.
+	 */
+	private emitMobHitParticles(): void {
+		const vx = this.#vx;
+		const vy = this.#vy;
+		const vz = this.#vz;
+		const lengthSq = vx * vx + vy * vy + vz * vz;
+		if (lengthSq <= MIN_DIRECTION_LENGTH_SQ) return;
+
+		const invLength = 1 / Math.sqrt(lengthSq);
+		const position = this.#mesh.position;
+
+		playArrowHit(
+			Map1.mainScene,
+			position.x,
+			position.y,
+			position.z,
+			-vx * invLength,
+			-vy * invLength,
+			-vz * invLength,
+			BlockType.CoralBlock,
+		);
 	}
 
 	dispose(): void {
