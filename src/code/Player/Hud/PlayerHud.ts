@@ -28,6 +28,7 @@ import type { ItemSlot } from "../Inventory/ItemSlot";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
 import { PLAYER_LIGHT_SAMPLE_Y_OFFSET } from "../PlayerModel";
+import { Gamemodes } from "../PlayerStats";
 import { Chat } from "./Chat";
 import { Crosshair } from "./Crosshair/Crosshair";
 import { PlayerPreview } from "./PlayerPreview";
@@ -224,6 +225,7 @@ export class PlayerHud {
 		this.#creativePalette = palette;
 		inventoryContainer.appendChild(palette.container);
 		void palette.build();
+		this.updateCreativePaletteVisibility();
 
 		return inventoryContainer;
 	}
@@ -304,6 +306,12 @@ export class PlayerHud {
 		return PlayerHud.#inventory.inventory[row][column].divItemSlot;
 	}
 
+	public updateCreativePaletteVisibility(): void {
+		if (!this.#creativePalette) return;
+		const show = this.#player.stats.gamemode === Gamemodes.Creative;
+		this.#creativePalette.container.style.display = show ? "" : "none";
+	}
+
 	public toggleInventory(): void {
 		if (this.#masonTableOpen) {
 			this.hideMasonTableUI();
@@ -324,6 +332,7 @@ export class PlayerHud {
 			PlayerHud.#heldItemNameDiv.classList.remove("visible");
 			this.#overlayDiv.style.display = "flex";
 			this.#playerPreview.show();
+			this.updateCreativePaletteVisibility();
 			this.#exitPointerLock();
 		} else {
 			closeUi(UiFocus.inventory);

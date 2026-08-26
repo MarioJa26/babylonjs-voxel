@@ -128,6 +128,7 @@ export class Chat {
 				const gm = this.#parseGamemode(parts[1]);
 				if (gm !== null) {
 					this.#player.stats.gamemode = gm;
+					this.#player.playerHud.updateCreativePaletteVisibility();
 					this.#addSystem(`Gamemode set to ${gamemodeName(gm)}`);
 				} else {
 					this.#addSystem(

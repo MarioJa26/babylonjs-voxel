@@ -503,6 +503,7 @@ export class NetworkManager {
 
 				if (gm !== null) {
 					this.player.stats.gamemode = gm;
+					this.player.playerHud.updateCreativePaletteVisibility();
 					this.hud.addSystemMessage(`Gamemode set to ${gamemodeName(gm)}`);
 				} else {
 					this.hud.addSystemMessage(
