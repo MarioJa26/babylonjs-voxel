@@ -10,12 +10,19 @@
  * instance lanes.
  */
 
-import { getChickenInstancePool } from "@/code/Entities/Mobs/Chicken";
+import {
+	CHICKEN_HIT_HALF,
+	getChickenInstancePool,
+} from "@/code/Entities/Mobs/Chicken";
+import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
 import type {
 	InstanceSlotHandle,
 	MobInstancePool,
 } from "@/code/Entities/Mobs/MobInstancePool";
-import { getSheepInstancePool } from "@/code/Entities/Mobs/Sheep";
+import {
+	getSheepInstancePool,
+	SHEEP_HIT_HALF,
+} from "@/code/Entities/Mobs/Sheep";
 import { Color3 } from "@/code/Lib/Math";
 import type { NetClient } from "./NetClient";
 import {
@@ -39,6 +46,9 @@ interface RemoteMobInstance {
 	slot: InstanceSlotHandle;
 	pool: MobInstancePool;
 	typeId: number;
+	halfX: number;
+	halfY: number;
+	halfZ: number;
 	currentX: number;
 	currentY: number;
 	currentZ: number;
@@ -74,31 +84,73 @@ export class RemoteMobManager {
 	}
 
 	/**
-	 * Find the server mob id whose interpolated position is within radiusSq of
-	 * the given point (projectile hit-scan). Returns null on miss.
+	 * Precise hit test: sweep the segment start→end against every remote
+	 * mob's yaw-oriented body box. Returns the NEAREST hit (mob id + exact
+	 * world-space impact point), or null on miss.
 	 */
-	getMobIdNear(
-		x: number,
-		y: number,
-		z: number,
-		radiusSq: number,
-	): number | null {
+	findSegmentHit(
+		startX: number,
+		startY: number,
+		startZ: number,
+		endX: number,
+		endY: number,
+		endZ: number,
+	): { id: number; x: number; y: number; z: number } | null {
 		let bestId: number | null = null;
-		let bestDistSq = radiusSq;
+		let bestT = Number.POSITIVE_INFINITY;
+		let bestLx = 0;
+		let bestLy = 0;
+		let bestLz = 0;
+		let bestMob: RemoteMobInstance | null = null;
 
 		for (const [id, mob] of this.mobs) {
-			const dx = mob.currentX - x;
-			const dy = mob.currentY - y;
-			const dz = mob.currentZ - z;
-			const distSq = dx * dx + dy * dy + dz * dz;
+			const hit = segmentMobHit(
+				startX,
+				startY,
+				startZ,
+				endX,
+				endY,
+				endZ,
+				{ x: mob.currentX, y: mob.currentY, z: mob.currentZ },
+				mob.currentYawRad,
+				{ x: mob.halfX, y: mob.halfY, z: mob.halfZ },
+			);
 
-			if (distSq <= bestDistSq) {
-				bestDistSq = distSq;
+			if (hit && hit.t < bestT) {
+				bestT = hit.t;
 				bestId = id;
+				bestLx = hit.lx;
+				bestLy = hit.ly;
+				bestLz = hit.lz;
+				bestMob = mob;
 			}
 		}
 
-		return bestId;
+		if (bestId === null || !bestMob) return null;
+
+		const c = Math.cos(bestMob.currentYawRad);
+		const s = Math.sin(bestMob.currentYawRad);
+		return {
+			id: bestId,
+			x: bestMob.currentX + c * bestLx + s * bestLz,
+			y: bestMob.currentY + bestLy,
+			z: bestMob.currentZ - s * bestLx + c * bestLz,
+		};
+	}
+
+	/** Live interpolated transform of a server mob, or null once it despawns
+	 * (lets stuck arrows stop following their target). */
+	getMobPosition(
+		id: number,
+	): { x: number; y: number; z: number; yaw: number } | null {
+		const mob = this.mobs.get(id);
+		if (!mob) return null;
+		return {
+			x: mob.currentX,
+			y: mob.currentY,
+			z: mob.currentZ,
+			yaw: mob.currentYawRad,
+		};
 	}
 
 	getDebugStats(): {
@@ -192,6 +244,9 @@ export class RemoteMobManager {
 			);
 		}
 
+		// Hit box matches the shared species model (see Chicken/Sheep exports).
+		const half = typeId === MobTypeId.Sheep ? SHEEP_HIT_HALF : CHICKEN_HIT_HALF;
+
 		const yawRad = yaw * YAW_BYTE_TO_RAD;
 		pool.writeMatrix(slot, x, y, z, yawRad);
 
@@ -199,6 +254,9 @@ export class RemoteMobManager {
 			slot,
 			pool,
 			typeId,
+			halfX: half.x,
+			halfY: half.y,
+			halfZ: half.z,
 			currentX: x,
 			currentY: y,
 			currentZ: z,

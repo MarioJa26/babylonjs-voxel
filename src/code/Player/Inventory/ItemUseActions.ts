@@ -11,6 +11,7 @@ import {
 	pickWaterTarget,
 } from "../Hud/BlockHighlight/BlockRaycaster";
 import type { Player } from "../Player";
+import { Gamemodes } from "../PlayerStats";
 import { getRegisteredItemById } from "./ItemRegistry";
 
 export type ItemUseAction = (player: Player) => void;
@@ -59,9 +60,10 @@ function openCrafting(player: Player): void {
 
 function useBow(player: Player): void {
 	const inventory = player.playerInventory;
+	const isCreative = player.stats.gamemode === Gamemodes.Creative;
 
-	// The bow consumes one Arrow from the inventory per successful shot.
-	if (!inventory.hasItem(ARROW_ITEM_ID, 1)) {
+	// Creative fires freely (testing); survival consumes one Arrow per shot.
+	if (!isCreative && !inventory.hasItem(ARROW_ITEM_ID, 1)) {
 		return;
 	}
 
@@ -101,7 +103,9 @@ function useBow(player: Player): void {
 		Arrow.ensureNetworkHandler(netClient);
 	}
 
-	inventory.removeItems(ARROW_ITEM_ID, 1);
+	if (!isCreative) {
+		inventory.removeItems(ARROW_ITEM_ID, 1);
+	}
 }
 
 function useSpawnEgg(player: Player): void {

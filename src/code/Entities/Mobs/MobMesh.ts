@@ -7,6 +7,7 @@ import {
 } from "@babylonjs/lite";
 import type { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
+import { MOB_SKIN_SIZE, type MobUvSet } from "./MobSkin";
 
 const MOB_VERTEX_WGSL = /* wgsl */ `
 struct VSOut {
@@ -37,14 +38,9 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 }
 `;
 
-// Dedicated mob skin (/texture/mobs/skin.png, 64x64): a 2x2 grid of 32x32
-// cells — 0 chicken feathers (TL), 1 beak/legs (TR), 2 sheep wool (BL),
-// 3 sheep face/legs (BR). UVs are baked CPU-side into final texture space
-// with a half-texel inset so mips never bleed between cells.
-const SKIN_CELLS = 2;
-const MOB_SKIN_PATH = "/texture/mobs/skin.png";
-
-export { MOB_SKIN_PATH };
+// Dedicated mob skin (/texture/mobs/skin.png, 128x128) — Minecraft-style
+// per-face UV layout, defined in MobSkin.ts. UVs are baked CPU-side into
+// final texture space with a half-texel inset so mips never bleed.
 
 function makeInstancedMobAtlasVertexWgsl(useInstanceColor: boolean): string {
 	const tintExpr = useInstanceColor
@@ -362,8 +358,8 @@ export type MobPartSpec = {
 	x: number;
 	y: number;
 	z: number;
-	/** Mob skin cell index (see MOB_SKIN_PATH layout). */
-	tile: number;
+	/** Per-face skin rects (Minecraft-style unwrap — see MobSkin.ts). */
+	uv: MobUvSet;
 };
 
 export type MobModelGeometry = {
@@ -375,13 +371,17 @@ export type MobModelGeometry = {
 
 // Faces copied VERBATIM from DroppedItem.getUnitCubeGeometry (the proven
 // loadTexture2D convention): vertex order bottom-left, bottom-right,
-// top-right, top-left per face; matching index winding below.
+// top-right, top-left per face; matching index winding below. `rect` is the
+// MobUvSet field each face samples (PlayerModel convention: +X = skin left,
+// -X = skin right).
 const UNIT_FACES: {
 	normal: [number, number, number];
 	verts: [number, number, number][];
+	rect: keyof MobUvSet;
 }[] = [
 	{
 		normal: [1, 0, 0],
+		rect: "left",
 		verts: [
 			[0.5, -0.5, 0.5],
 			[0.5, -0.5, -0.5],
@@ -391,6 +391,7 @@ const UNIT_FACES: {
 	},
 	{
 		normal: [-1, 0, 0],
+		rect: "right",
 		verts: [
 			[-0.5, -0.5, -0.5],
 			[-0.5, -0.5, 0.5],
@@ -400,6 +401,7 @@ const UNIT_FACES: {
 	},
 	{
 		normal: [0, 1, 0],
+		rect: "top",
 		verts: [
 			[-0.5, 0.5, 0.5],
 			[0.5, 0.5, 0.5],
@@ -409,6 +411,7 @@ const UNIT_FACES: {
 	},
 	{
 		normal: [0, -1, 0],
+		rect: "bottom",
 		verts: [
 			[-0.5, -0.5, -0.5],
 			[0.5, -0.5, -0.5],
@@ -418,6 +421,7 @@ const UNIT_FACES: {
 	},
 	{
 		normal: [0, 0, 1],
+		rect: "front",
 		verts: [
 			[-0.5, -0.5, 0.5],
 			[0.5, -0.5, 0.5],
@@ -427,6 +431,7 @@ const UNIT_FACES: {
 	},
 	{
 		normal: [0, 0, -1],
+		rect: "back",
 		verts: [
 			[0.5, -0.5, -0.5],
 			[-0.5, -0.5, -0.5],
@@ -436,18 +441,11 @@ const UNIT_FACES: {
 	},
 ];
 
-const FACE_UV_CORNERS: [number, number][] = [
-	[0, 0],
-	[1, 0],
-	[1, 1],
-	[0, 1],
-];
-
 /**
  * Concatenate axis-aligned boxes into one geometry so an entire animal model
  * (body + head + legs + wings) renders as a single thin-instanced draw call.
- * Each face maps its part's full 32x32 skin cell (half-texel inset against
- * mip bleed). Same CPU-side-UV philosophy as PlayerModel's box builder.
+ * Each face maps to its own rect in the mob skin PNG (Minecraft-style unwrap,
+ * see MobSkin.ts) — same CPU-side-UV philosophy as PlayerModel's box builder.
  */
 export function buildMobModelGeometry(
 	parts: readonly MobPartSpec[],
@@ -457,14 +455,18 @@ export function buildMobModelGeometry(
 	const uvs: number[] = [];
 	const indices: number[] = [];
 
-	const inset = 0.5 / 32;
+	const size = MOB_SKIN_SIZE;
+	// Half-texel inset so mip bleeding never crosses face borders.
+	const inset = 0.5;
 
 	for (const part of parts) {
-		const cx = part.tile % SKIN_CELLS;
-		const cy = Math.floor(part.tile / SKIN_CELLS);
-		//const base = positions.length / 3;
-
 		for (const face of UNIT_FACES) {
+			const rect = part.uv[face.rect];
+			const u0 = (rect[0] + inset) / size;
+			const u1 = (rect[2] - inset) / size;
+			const vBottom = 1 - (rect[3] - inset) / size;
+			const vTop = 1 - (rect[1] + inset) / size;
+
 			for (let i = 0; i < 4; i++) {
 				const v = face.verts[i];
 				positions.push(
@@ -474,10 +476,11 @@ export function buildMobModelGeometry(
 				);
 				normals.push(face.normal[0], face.normal[1], face.normal[2]);
 
-				const [fu, fv] = FACE_UV_CORNERS[i];
-				const cu = inset + fu * (1 - inset * 2);
-				const cv = inset + fv * (1 - inset * 2);
-				uvs.push((cx + cu) / SKIN_CELLS, 1 - (cy + cv) / SKIN_CELLS);
+				// Corner order: bottom-left, bottom-right, top-right, top-left.
+				uvs.push(
+					i === 0 || i === 3 ? u0 : u1,
+					i === 0 || i === 1 ? vBottom : vTop,
+				);
 			}
 
 			const b = positions.length / 3 - 4;

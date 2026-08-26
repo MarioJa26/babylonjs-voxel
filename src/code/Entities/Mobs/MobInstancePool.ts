@@ -15,9 +15,9 @@ import { Map1 } from "@/code/Maps/Map1";
 import {
 	buildMobModelGeometry,
 	createInstancedMobAtlasMaterial,
-	MOB_SKIN_PATH,
 	type MobPartSpec,
 } from "./MobMesh";
+import { MOB_CHICKEN_SKIN_PATH, MOB_SHEEP_SKIN_PATH } from "./MobSkin";
 import type { NeutralMob } from "./NeutralMob";
 
 /**
@@ -63,45 +63,59 @@ const MAT4_FLOATS = 16;
 const COLOR_FLOATS = 4;
 const DEFAULT_INITIAL_CAPACITY = 16;
 
-// ─── Shared mob-skin loader ─────────────────────────────────────────────────
-// Awaited once in Map1.asyncInit(), so every pool constructor can bind the
+// ─── Mob-skin loader (one texture file per mob) ────────────────────────────
+// Awaited once in Map1.asyncInit(), so every pool constructor can bind its
 // skin synchronously — lite builds the instanced shader bind group at group-
 // build time and throws on an unbound sampler.
 
-let mobSkin: Texture2D | null = null;
-let mobSkinPromise: Promise<void> | null = null;
+const mobSkins = new Map<string, Texture2D>();
+const mobSkinPromises = new Map<string, Promise<void>>();
 
-/** Preload the dedicated mob skin. Called from Map1.asyncInit() before any
- * mob can exist; subsequent calls return the same promise instantly. */
-export function preloadMobSkin(): Promise<void> {
-	mobSkinPromise ??= loadTexture2D(Map1.engine, MOB_SKIN_PATH, {
+function loadMobSkin(path: string): Promise<void> {
+	let promise = mobSkinPromises.get(path);
+	if (promise) return promise;
+
+	promise = loadTexture2D(Map1.engine, path, {
 		mipMaps: true,
 		magFilter: "nearest",
 		minFilter: "nearest",
 	})
 		.catch(() => null)
 		.then((tex) => {
-			mobSkin = tex;
 			if (tex) {
-				console.debug("[mobs] mob skin bound:", MOB_SKIN_PATH);
+				mobSkins.set(path, tex);
+				console.debug("[mobs] mob skin bound:", path);
 			} else {
-				console.error(`[mobs] failed to load ${MOB_SKIN_PATH}`);
+				console.error(`[mobs] failed to load ${path}`);
 			}
 		});
-	return mobSkinPromise;
+	mobSkinPromises.set(path, promise);
+	return promise;
 }
 
-function getMobSkin(): Texture2D {
-	if (!mobSkin) {
+/** Preload every mob skin. Called from Map1.asyncInit() before any mob can
+ * exist; later calls resolve instantly. */
+export function preloadMobSkins(): Promise<void> {
+	return Promise.all([
+		loadMobSkin(MOB_CHICKEN_SKIN_PATH),
+		loadMobSkin(MOB_SHEEP_SKIN_PATH),
+	]).then(() => undefined);
+}
+
+function getMobSkin(path: string): Texture2D {
+	const tex = mobSkins.get(path);
+	if (!tex) {
 		throw new Error(
-			`[mobs] ${MOB_SKIN_PATH} not loaded — Map1.asyncInit must await preloadMobSkin() before spawning mobs`,
+			`[mobs] ${path} not loaded — Map1.asyncInit must await preloadMobSkins() before spawning mobs`,
 		);
 	}
-	return mobSkin;
+	return tex;
 }
 
 type MobInstancePoolOptions = {
 	name: string;
+	/** Texture file for this species (one skin per mob). */
+	skinPath: string;
 	/** Boxes making up the animal model (body, head, legs, wings...). */
 	parts: readonly MobPartSpec[];
 	/**
@@ -117,6 +131,7 @@ export class MobInstancePool {
 	readonly mesh: Mesh;
 
 	#material: ReturnType<typeof createInstancedMobAtlasMaterial>;
+	#skinPath: string;
 	#matrices: Float32Array;
 	#colors: Float32Array | null;
 	#laneHolders: (InstanceSlotHandle | null)[];
@@ -130,6 +145,7 @@ export class MobInstancePool {
 	#needsSync = false;
 
 	constructor(options: MobInstancePoolOptions) {
+		this.#skinPath = options.skinPath;
 		this.#capacity = options.initialCapacity ?? DEFAULT_INITIAL_CAPACITY;
 		this.#matrices = new Float32Array(this.#capacity * MAT4_FLOATS);
 		this.#colors = options.instanceColors
@@ -161,7 +177,11 @@ export class MobInstancePool {
 		// Skin is guaranteed loaded (Map1.asyncInit awaits preloadMobSkin)
 		// BEFORE any pool is constructed — bind before the group build so the
 		// instanced shader's bind group can never see a missing sampler.
-		setShaderTexture(this.#material, "diffuseTexture", getMobSkin());
+		setShaderTexture(
+			this.#material,
+			"diffuseTexture",
+			getMobSkin(this.#skinPath),
+		);
 
 		let meta = mesh.metadata as MetadataContainer | undefined;
 		if (!meta) {

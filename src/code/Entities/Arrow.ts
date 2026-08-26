@@ -10,7 +10,6 @@
  *   applies HP and broadcasts the despawn on death.
  * - Singleplayer: hits call takeDamage() on local MobRegistry mobs directly.
  */
-
 import {
 	addToScene,
 	type Mesh,
@@ -18,14 +17,26 @@ import {
 	quatFromLookDirectionRH,
 	removeFromScene,
 } from "@babylonjs/lite";
+import type { Mob } from "@/code/Entities/Mobs/Mob";
+import {
+	mobLocalToWorld,
+	segmentMobHit,
+} from "@/code/Entities/Mobs/MobHitTest";
 import { createBoxMobMesh } from "@/code/Entities/Mobs/MobMesh";
+import { getPRNGUnit2 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
 import { Color3 } from "@/code/Lib/Math";
-import { playArrowHit } from "@/code/Maps/BlockBreakParticles";
+import {
+	MOB_DRIP_INTERVAL_MS,
+	playArrowHit,
+	playMobDrip,
+} from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import type { NetClient } from "@/code/Network/NetClient";
 import { decodeArrowSpawn } from "@/code/Network/protocol/encoder";
 import { MessageType } from "@/code/Network/protocol/messages";
+import { dropWorldItem } from "@/code/Player/Inventory/dropWorldItem";
+import { Item } from "@/code/Player/Inventory/Item";
 import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import type { Player } from "../Player/Player";
@@ -34,27 +45,34 @@ const ARROW_MESH_NAME = "arrow";
 const ARROW_MATERIAL_NAME = "arrowMat";
 const ARROW_COLOR = new Color3(0.45, 0.32, 0.18);
 
-// Physics.
+const ARROW_LENGTH = 0.55;
+const ARROW_HALF_LENGTH = ARROW_LENGTH * 0.5;
+const ARROW_TIP_OFFSET = ARROW_HALF_LENGTH - ARROW_LENGTH * 0.2;
+
 const GRAVITY = -18;
 const MAX_LIFETIME_S = 25;
 const STICK_TIME_S = 15;
 const MAX_SUBSTEP = 0.5;
 const INV_MAX_SUBSTEP = 1 / MAX_SUBSTEP;
 
-// Avoid repeated multiplication and square-root thresholds.
 const MIN_DIRECTION_LENGTH_SQ = 1e-6;
 const VERTICAL_DIRECTION_THRESHOLD = 0.99;
 
-// Hit-scan radius around the arrow tip.
-const MOB_HIT_RADIUS = 0.55;
-const MOB_HIT_RADIUS_SQ = MOB_HIT_RADIUS * MOB_HIT_RADIUS;
+const ARROW_ITEM_ID = 1023;
 
-// Shared immutable orientation vectors avoid allocating an up vector each tick.
 const WORLD_UP = Object.freeze({ x: 0, y: 1, z: 0 });
 const VERTICAL_UP = Object.freeze({ x: 0, y: 0, z: 1 });
 
-/** Damage dealt per arrow hit. */
 export const ARROW_DAMAGE = 2;
+
+interface ArrowMobTransform {
+	x: number;
+	y: number;
+	z: number;
+	yaw: number;
+}
+
+type ArrowMobFollow = () => ArrowMobTransform | null;
 
 export class Arrow {
 	readonly #mesh: Mesh;
@@ -69,28 +87,21 @@ export class Arrow {
 	#age = 0;
 	#disposed = false;
 
-	/**
-	 * Index inside #allArrows.
-	 *
-	 * This lets dispose() use O(1) swap-removal instead of calling indexOf(),
-	 * which becomes expensive when many arrows expire in the same frame.
-	 */
+	#stuckMobFollow: ArrowMobFollow | null = null;
+
+	readonly #stuckLocalOffset = { x: 0, y: 0, z: 0 };
+	readonly #stuckDirLocal = { x: 0, y: 1, z: 0 };
+
+	#lastDripEmitMs = 0;
 	#arrayIndex = -1;
 
-	/**
-	 * Reused direction object for orientation. quatFromLookDirectionRH reads
-	 * this synchronously, so no per-frame direction object is required.
-	 */
 	readonly #lookDirection = { x: 0, y: 0, z: 1 };
+	readonly #tip = { x: 0, y: 0, z: 0 };
 
 	static readonly #allArrows: Arrow[] = [];
 	static #observerRegistered = false;
 	static readonly #networkClients = new WeakSet<NetClient>();
 
-	/**
-	 * Register the ArrowSpawn relay handler on a NetClient.
-	 * Registration is idempotent for each live NetClient.
-	 */
 	static ensureNetworkHandler(net: NetClient): void {
 		if (Arrow.#networkClients.has(net)) return;
 
@@ -113,14 +124,20 @@ export class Arrow {
 		Arrow.#observerRegistered = true;
 
 		onBeforeRender(Map1.mainScene, (deltaMs: number) => {
-			if (deltaMs <= 0 || isUiOpen(UiFocus.pauseMenu)) return;
+			if (
+				deltaMs <= 0 ||
+				Arrow.#allArrows.length === 0 ||
+				isUiOpen(UiFocus.pauseMenu)
+			) {
+				return;
+			}
 
 			const dt = deltaMs * 0.001;
 			const arrows = Arrow.#allArrows;
 
 			/*
-			 * Iterate backward because tick() can remove the current arrow by
-			 * swapping the last element into its array position.
+			 * The moved arrow in a swap-removal came from a larger index and
+			 * has therefore already been updated during this reverse pass.
 			 */
 			for (let i = arrows.length - 1; i >= 0; i--) {
 				arrows[i].tick(dt);
@@ -142,12 +159,11 @@ export class Arrow {
 		this.#vy = vy;
 		this.#vz = vz;
 
-		// Long axis is Z; tick() orients the mesh along the velocity.
 		const mesh = createBoxMobMesh(
 			ARROW_MESH_NAME,
 			0.06,
 			0.06,
-			0.55,
+			ARROW_LENGTH,
 			ARROW_COLOR,
 			ARROW_MATERIAL_NAME,
 		);
@@ -167,67 +183,76 @@ export class Arrow {
 		Arrow.#ensureObserver();
 	}
 
-	#orient(): void {
+	#orient(): boolean {
 		const vx = this.#vx;
 		const vy = this.#vy;
 		const vz = this.#vz;
 		const lengthSq = vx * vx + vy * vy + vz * vz;
 
-		if (lengthSq < MIN_DIRECTION_LENGTH_SQ) return;
+		if (lengthSq < MIN_DIRECTION_LENGTH_SQ) return false;
 
 		const invLength = 1 / Math.sqrt(lengthSq);
+
+		this.applyLookOrientation(vx * invLength, vy * invLength, vz * invLength);
+
+		return true;
+	}
+
+	applyLookOrientation(dx: number, dy: number, dz: number): void {
 		const direction = this.#lookDirection;
 
-		direction.x = vx * invLength;
-		direction.y = vy * invLength;
-		direction.z = vz * invLength;
+		direction.x = dx;
+		direction.y = dy;
+		direction.z = dz;
 
-		/*
-		 * Near-vertical flight needs an up vector that is not parallel to the
-		 * flight direction.
-		 */
 		const up =
-			Math.abs(direction.y) > VERTICAL_DIRECTION_THRESHOLD
-				? VERTICAL_UP
-				: WORLD_UP;
+			Math.abs(dy) > VERTICAL_DIRECTION_THRESHOLD ? VERTICAL_UP : WORLD_UP;
 
 		this.#mesh.rotationQuaternion.copyFrom(
 			quatFromLookDirectionRH(direction, up),
 		);
 	}
 
+	#updateTip(): void {
+		const position = this.#mesh.position;
+		const direction = this.#lookDirection;
+
+		this.#tip.x = position.x + direction.x * ARROW_TIP_OFFSET;
+		this.#tip.y = position.y + direction.y * ARROW_TIP_OFFSET;
+		this.#tip.z = position.z + direction.z * ARROW_TIP_OFFSET;
+	}
+
 	tick(dt: number): void {
 		if (this.#disposed) return;
 
-		const age = this.#age + dt;
-		this.#age = age;
+		this.#age += dt;
 
-		if (age > MAX_LIFETIME_S) {
+		if (this.#age > MAX_LIFETIME_S) {
 			this.dispose();
 			return;
 		}
 
 		if (this.#stuck) {
-			const remaining = this.#stuckTimer - dt;
-			this.#stuckTimer = remaining;
-
-			if (remaining <= 0) {
-				this.dispose();
-			}
-
+			this.#tickStuck(dt);
 			return;
 		}
 
-		// Apply gravity once per rendered simulation interval.
-		const vy = this.#vy + GRAVITY * dt;
-		this.#vy = vy;
+		/*
+		 * Semi-implicit Euler integration. Orient immediately after gravity so
+		 * the swept tip and rendered shaft use the same current velocity.
+		 *
+		 * Previously, collision sweeps used the preceding frame's direction
+		 * and orientation was updated only after all movement had completed.
+		 */
+		this.#vy += GRAVITY * dt;
+		this.#orient();
 
 		const vx = this.#vx;
+		const vy = this.#vy;
 		const vz = this.#vz;
+
 		const speedSq = vx * vx + vy * vy + vz * vz;
 		const travel = Math.sqrt(speedSq) * dt;
-
-		// Multiplication is slightly cheaper than division in this hot path.
 		const steps = Math.max(1, Math.ceil(travel * INV_MAX_SUBSTEP));
 		const stepDt = dt / steps;
 
@@ -236,27 +261,87 @@ export class Arrow {
 		const stepZ = vz * stepDt;
 
 		const position = this.#mesh.position;
+		const tip = this.#tip;
 
 		for (let i = 0; i < steps; i++) {
+			this.#updateTip();
+
+			const startX = tip.x;
+			const startY = tip.y;
+			const startZ = tip.z;
+
 			position.x += stepX;
 			position.y += stepY;
 			position.z += stepZ;
 
-			// Preserve the original collision priority: blocks before mobs.
-			if (this.#checkBlockHit() || this.#checkMobHit()) {
+			this.#updateTip();
+
+			if (this.#checkBlockHit() || this.#checkMobHit(startX, startY, startZ)) {
 				return;
 			}
 		}
+	}
 
-		this.#orient();
+	#tickStuck(dt: number): void {
+		const follow = this.#stuckMobFollow;
+
+		if (follow !== null) {
+			const mob = follow();
+
+			if (mob === null) {
+				this.dropAsItem();
+				this.dispose();
+				return;
+			}
+
+			const cosYaw = Math.cos(mob.yaw);
+			const sinYaw = Math.sin(mob.yaw);
+			const offset = this.#stuckLocalOffset;
+			const localDirection = this.#stuckDirLocal;
+
+			const tipX = mob.x + cosYaw * offset.x + sinYaw * offset.z;
+			const tipY = mob.y + offset.y;
+			const tipZ = mob.z - sinYaw * offset.x + cosYaw * offset.z;
+
+			this.applyLookOrientation(
+				cosYaw * localDirection.x + sinYaw * localDirection.z,
+				localDirection.y,
+				-sinYaw * localDirection.x + cosYaw * localDirection.z,
+			);
+
+			const direction = this.#lookDirection;
+			const position = this.#mesh.position;
+
+			position.x = tipX - direction.x * ARROW_TIP_OFFSET;
+			position.y = tipY - direction.y * ARROW_TIP_OFFSET;
+			position.z = tipZ - direction.z * ARROW_TIP_OFFSET;
+
+			const now = performance.now();
+
+			if (now - this.#lastDripEmitMs >= MOB_DRIP_INTERVAL_MS) {
+				this.#lastDripEmitMs = now;
+				playMobDrip(tipX, tipY, tipZ);
+			}
+		}
+
+		this.#stuckTimer -= dt;
+
+		if (this.#stuckTimer <= 0) {
+			this.dropAsItem();
+			this.dispose();
+		}
 	}
 
 	#checkBlockHit(): boolean {
-		const position = this.#mesh.position;
+		const tip = this.#tip;
+		const tipX = tip.x;
+		const tipY = tip.y;
+		const tipZ = tip.z;
+
 		const blockId = getBlockByWorldCoords(
-			Math.floor(position.x),
-			Math.floor(position.y),
-			Math.floor(position.z),
+			Math.floor(tipX),
+			Math.floor(tipY),
+			Math.floor(tipZ),
 		);
 
 		if (!isCollidableBlock(blockId)) return false;
@@ -292,16 +377,22 @@ export class Arrow {
 			}
 
 			playArrowHit(
-				Map1.mainScene,
-				position.x + nx * 0.3,
-				position.y + ny * 0.3,
-				position.z + nz * 0.3,
+				tipX + nx * 0.3,
+				tipY + ny * 0.3,
+				tipZ + nz * 0.3,
 				nx,
 				ny,
 				nz,
 				blockId,
 			);
 		}
+
+		const direction = this.#lookDirection;
+		const position = this.#mesh.position;
+
+		position.x -= direction.x * ARROW_TIP_OFFSET;
+		position.y -= direction.y * ARROW_TIP_OFFSET;
+		position.z -= direction.z * ARROW_TIP_OFFSET;
 
 		this.#vx = 0;
 		this.#vy = 0;
@@ -312,75 +403,209 @@ export class Arrow {
 		return true;
 	}
 
-	#checkMobHit(): boolean {
-		const position = this.#mesh.position;
-		const x = position.x;
-		const y = position.y;
-		const z = position.z;
+	#checkMobHit(startX: number, startY: number, startZ: number): boolean {
+		const tip = this.#tip;
+		const endX = tip.x;
+		const endY = tip.y;
+		const endZ = tip.z;
 
-		// Multiplayer targets are authoritative server mobs.
 		const remoteManager = Map1.remoteMobManager;
 
-		if (remoteManager != null) {
-			const mobId = remoteManager.getMobIdNear(x, y, z, MOB_HIT_RADIUS_SQ);
-
-			if (mobId === null) return false;
-
-			this.emitMobHitParticles();
-
-			this.#shooter?.networkManager?.netClient?.sendMobDamage(
-				mobId,
-				ARROW_DAMAGE,
+		if (remoteManager !== null) {
+			const hit = remoteManager.findSegmentHit(
+				startX,
+				startY,
+				startZ,
+				endX,
+				endY,
+				endZ,
 			);
 
-			this.dispose();
+			if (hit === null || hit === undefined) return false;
+
+			const shooter = this.#shooter;
+
+			shooter?.networkManager?.netClient?.sendMobDamage(hit.id, ARROW_DAMAGE);
+
+			this.#stickTipAt(hit.x, hit.y, hit.z, () =>
+				remoteManager.getMobPosition(hit.id),
+			);
+
 			return true;
 		}
 
 		const registry = Map1.mobRegistry;
-		if (registry == null) return false;
+
+		if (registry === null) return false;
+
+		let bestT = Number.POSITIVE_INFINITY;
+		let bestMob: Mob | null = null;
+
+		/*
+		 * Store the local hit coordinates instead of allocating a world-point
+		 * object every time a better candidate is found.
+		 */
+		let bestLocalX = 0;
+		let bestLocalY = 0;
+		let bestLocalZ = 0;
 
 		for (const mob of registry.getAllMobs()) {
-			const mobPosition = mob.position;
-			const dx = mobPosition.x - x;
-			const dy = mobPosition.y - y;
-			const dz = mobPosition.z - z;
+			const hit = segmentMobHit(
+				startX,
+				startY,
+				startZ,
+				endX,
+				endY,
+				endZ,
+				mob.position,
+				mob.facingYaw,
+				mob.hitHalfExtents,
+			);
 
-			if (dx * dx + dy * dy + dz * dz > MOB_HIT_RADIUS_SQ) {
-				continue;
+			if (hit !== null && hit !== undefined && hit.t < bestT) {
+				bestT = hit.t;
+				bestMob = mob;
+				bestLocalX = hit.lx;
+				bestLocalY = hit.ly;
+				bestLocalZ = hit.lz;
 			}
-
-			this.emitMobHitParticles();
-
-			mob.takeDamage(ARROW_DAMAGE);
-			this.dispose();
-			return true;
 		}
 
-		return false;
+		if (bestMob === null) return false;
+
+		const bestPoint = mobLocalToWorld(
+			bestMob.position,
+			bestMob.facingYaw,
+			bestLocalX,
+			bestLocalY,
+			bestLocalZ,
+		);
+
+		bestMob.takeDamage(ARROW_DAMAGE);
+
+		const hitMob = bestMob;
+
+		this.#stickTipAt(bestPoint.x, bestPoint.y, bestPoint.z, () =>
+			hitMob.isDisposed
+				? null
+				: {
+						x: hitMob.position.x,
+						y: hitMob.position.y,
+						z: hitMob.position.z,
+						yaw: hitMob.facingYaw,
+					},
+		);
+
+		return true;
 	}
 
-	/**
-	 * Red impact burst when an arrow lands on a mob. Uses the coral block
-	 * texture as a stand-in "blood" tile; particles spray back along the
-	 * arrow's incoming direction. Called before dispose() so velocity is
-	 * still intact.
-	 */
+	#stickTipAt(x: number, y: number, z: number, follow: ArrowMobFollow): void {
+		const tip = this.#tip;
+
+		tip.x = x;
+		tip.y = y;
+		tip.z = z;
+
+		const direction = this.#lookDirection;
+		const position = this.#mesh.position;
+
+		position.x = x - direction.x * ARROW_TIP_OFFSET;
+		position.y = y - direction.y * ARROW_TIP_OFFSET;
+		position.z = z - direction.z * ARROW_TIP_OFFSET;
+
+		this.#beginStickInMob(follow);
+	}
+
+	#beginStickInMob(follow: ArrowMobFollow): void {
+		this.emitMobHitParticles();
+
+		const mob = follow();
+
+		if (mob !== null) {
+			const tip = this.#tip;
+			const relativeX = tip.x - mob.x;
+			const relativeZ = tip.z - mob.z;
+			const cosYaw = Math.cos(mob.yaw);
+			const sinYaw = Math.sin(mob.yaw);
+
+			const localOffset = this.#stuckLocalOffset;
+
+			localOffset.x = cosYaw * relativeX - sinYaw * relativeZ;
+			localOffset.y = tip.y - mob.y;
+			localOffset.z = sinYaw * relativeX + cosYaw * relativeZ;
+
+			const vx = this.#vx;
+			const vy = this.#vy;
+			const vz = this.#vz;
+			const lengthSq = vx * vx + vy * vy + vz * vz;
+
+			if (lengthSq > MIN_DIRECTION_LENGTH_SQ) {
+				const invLength = 1 / Math.sqrt(lengthSq);
+				const dx = vx * invLength;
+				const dy = vy * invLength;
+				const dz = vz * invLength;
+				const localDirection = this.#stuckDirLocal;
+
+				localDirection.x = cosYaw * dx - sinYaw * dz;
+				localDirection.y = dy;
+				localDirection.z = sinYaw * dx + cosYaw * dz;
+			} else {
+				/*
+				 * Defensive fallback. In normal operation velocity is nonzero
+				 * because this method is entered during an active flight hit.
+				 */
+				const direction = this.#lookDirection;
+				const localDirection = this.#stuckDirLocal;
+
+				localDirection.x = cosYaw * direction.x - sinYaw * direction.z;
+				localDirection.y = direction.y;
+				localDirection.z = sinYaw * direction.x + cosYaw * direction.z;
+			}
+		}
+
+		this.#stuckMobFollow = follow;
+		this.#vx = 0;
+		this.#vy = 0;
+		this.#vz = 0;
+		this.#stuck = true;
+		this.#stuckTimer = STICK_TIME_S;
+	}
+
+	dropAsItem(): void {
+		if (this.#disposed) return;
+
+		const position = this.#mesh.position;
+		const item = Item.createById(ARROW_ITEM_ID);
+
+		item.stackSize = 1;
+
+		dropWorldItem(
+			item,
+			position.x,
+			position.y,
+			position.z,
+			(getPRNGUnit2() - 0.5) * 1.5,
+			2,
+			(getPRNGUnit2() - 0.5) * 1.5,
+			Map1.mainPlayer ?? undefined,
+		);
+	}
+
 	private emitMobHitParticles(): void {
 		const vx = this.#vx;
 		const vy = this.#vy;
 		const vz = this.#vz;
 		const lengthSq = vx * vx + vy * vy + vz * vz;
+
 		if (lengthSq <= MIN_DIRECTION_LENGTH_SQ) return;
 
 		const invLength = 1 / Math.sqrt(lengthSq);
-		const position = this.#mesh.position;
+		const tip = this.#tip;
 
 		playArrowHit(
-			Map1.mainScene,
-			position.x,
-			position.y,
-			position.z,
+			tip.x,
+			tip.y,
+			tip.z,
 			-vx * invLength,
 			-vy * invLength,
 			-vz * invLength,
@@ -392,6 +617,7 @@ export class Arrow {
 		if (this.#disposed) return;
 
 		this.#disposed = true;
+		this.#stuckMobFollow = null;
 
 		const arrows = Arrow.#allArrows;
 		const index = this.#arrayIndex;
@@ -400,6 +626,7 @@ export class Arrow {
 		if (index >= 0 && index <= lastIndex) {
 			if (index !== lastIndex) {
 				const movedArrow = arrows[lastIndex];
+
 				arrows[index] = movedArrow;
 				movedArrow.#arrayIndex = index;
 			}
@@ -408,6 +635,7 @@ export class Arrow {
 		}
 
 		this.#arrayIndex = -1;
+
 		removeFromScene(Map1.mainScene, this.#mesh);
 	}
 }

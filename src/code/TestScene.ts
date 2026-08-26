@@ -12,6 +12,7 @@ import {
 } from "@babylonjs/lite";
 import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
 import { setTerrainSeed } from "./Generation/TerrainHeightMap";
+import { initBlockBreakParticles } from "./Maps/BlockBreakParticles";
 import { Map1 } from "./Maps/Map1";
 import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
 import { NetworkManager } from "./Network/NetworkManager";
@@ -115,6 +116,7 @@ export class TestScene {
 
 		await registerScene(scene);
 		await startEngine(engine);
+		await initBlockBreakParticles(scene);
 		this.#installFpsCap(engine, savedSettings.fpsCap);
 
 		if (ENABLE_LITE_EXPLORER) {
@@ -201,7 +203,18 @@ export class TestScene {
 		this.initSharedPlayerSystems(scene, player);
 		player.respawn();
 
+		// Inventory persistence for multiplayer (client-localStorage, keyed
+		// per server). Position stays server-authoritative, so only the
+		// inventory is restored — items obtained in creative survive rejoin.
+		this.#playerStatePersistence = new PlayerStatePersistence(
+			scene,
+			player,
+			this.worldName,
+			{ persistPosition: false },
+		);
+
 		this.registerFrameUpdate(scene, playerCamera, (deltaMs) => {
+			this.#playerStatePersistence?.update();
 			this.#networkManager?.tick(deltaMs);
 			this.#remoteMobManager?.update(deltaMs);
 			this.#remoteItemManager?.update(deltaMs);

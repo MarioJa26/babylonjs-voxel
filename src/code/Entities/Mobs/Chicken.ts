@@ -3,6 +3,16 @@ import { Map1 } from "@/code/Maps/Map1";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import type { MobPartSpec } from "./MobMesh";
+import {
+	CHICKEN_BEAK_UV,
+	CHICKEN_BODY_UV,
+	CHICKEN_HEAD_UV,
+	CHICKEN_LEG_L_UV,
+	CHICKEN_LEG_R_UV,
+	CHICKEN_WING_L_UV,
+	CHICKEN_WING_R_UV,
+	MOB_CHICKEN_SKIN_PATH,
+} from "./MobSkin";
 import { NeutralMob } from "./NeutralMob";
 
 const CHICKEN_MOB_TYPE = "chicken";
@@ -10,15 +20,9 @@ const CHICKEN_CHUNK_ENTITY_TYPE = "chicken_v1";
 const CHICKEN_DEFAULT_HP = 4;
 const CHICKEN_WANDER_SPEED = 1.8;
 
-// Mob skin cells (/texture/mobs/skin.png): 0 feathers, 1 beak/legs.
-const FEATHER_TILE = 0;
-const BEAK_TILE = 1;
-
-// Model space: origin = body center, feet on the ground at y = -GROUND_Y.
-const GROUND_Y = 0.45;
-
 // Chicken anatomy: body + head + beak + two wings + two legs. Every chicken
 // renders through this ONE shared thin-instanced mesh (1 draw call total).
+// UVs reference the editable skin layout in MobSkin.ts.
 const CHICKEN_PARTS: readonly MobPartSpec[] = [
 	{
 		width: 0.5,
@@ -27,7 +31,7 @@ const CHICKEN_PARTS: readonly MobPartSpec[] = [
 		x: 0,
 		y: 0,
 		z: 0,
-		tile: FEATHER_TILE,
+		uv: CHICKEN_BODY_UV,
 	},
 	{
 		width: 0.22,
@@ -36,7 +40,7 @@ const CHICKEN_PARTS: readonly MobPartSpec[] = [
 		x: 0,
 		y: 0.3,
 		z: 0.13,
-		tile: FEATHER_TILE,
+		uv: CHICKEN_HEAD_UV,
 	},
 	{
 		width: 0.1,
@@ -45,7 +49,7 @@ const CHICKEN_PARTS: readonly MobPartSpec[] = [
 		x: 0,
 		y: 0.28,
 		z: 0.3,
-		tile: BEAK_TILE,
+		uv: CHICKEN_BEAK_UV,
 	},
 	{
 		width: 0.06,
@@ -54,7 +58,7 @@ const CHICKEN_PARTS: readonly MobPartSpec[] = [
 		x: -0.285,
 		y: 0.03,
 		z: -0.02,
-		tile: FEATHER_TILE,
+		uv: CHICKEN_WING_L_UV,
 	},
 	{
 		width: 0.06,
@@ -63,7 +67,7 @@ const CHICKEN_PARTS: readonly MobPartSpec[] = [
 		x: 0.285,
 		y: 0.03,
 		z: -0.02,
-		tile: FEATHER_TILE,
+		uv: CHICKEN_WING_R_UV,
 	},
 	{
 		width: 0.07,
@@ -72,7 +76,7 @@ const CHICKEN_PARTS: readonly MobPartSpec[] = [
 		x: -0.09,
 		y: -0.325,
 		z: 0,
-		tile: BEAK_TILE,
+		uv: CHICKEN_LEG_L_UV,
 	},
 	{
 		width: 0.07,
@@ -81,12 +85,17 @@ const CHICKEN_PARTS: readonly MobPartSpec[] = [
 		x: 0.09,
 		y: -0.325,
 		z: 0,
-		tile: BEAK_TILE,
+		uv: CHICKEN_LEG_R_UV,
 	},
 ];
 
 // Collider spans the whole animal so feet rest exactly on the ground.
-const CHICKEN_BODY_HALF_SIZE = vec3(0.31, GROUND_Y, 0.3);
+export const CHICKEN_HIT_HALF = { x: 0.31, y: 0.45, z: 0.3 };
+const CHICKEN_BODY_HALF_SIZE = vec3(
+	CHICKEN_HIT_HALF.x,
+	CHICKEN_HIT_HALF.y,
+	CHICKEN_HIT_HALF.z,
+);
 
 let bodyPool: MobInstancePool | null = null;
 
@@ -94,6 +103,7 @@ function getBodyPool(): MobInstancePool {
 	bodyPool ??= new MobInstancePool({
 		name: "chickenInstances",
 		parts: CHICKEN_PARTS,
+		skinPath: MOB_CHICKEN_SKIN_PATH,
 	});
 	return bodyPool;
 }

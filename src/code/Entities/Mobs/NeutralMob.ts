@@ -70,6 +70,7 @@ export abstract class NeutralMob {
 	#hp: number;
 	#maxHp: number;
 	#position = vec3Zero();
+	#hitHalfExtents: Vec3;
 	#velocity = vec3Zero();
 	#collider: VoxelAabbCollider;
 	#state: NeutralMobState = NeutralMobState.Idle;
@@ -156,6 +157,7 @@ export abstract class NeutralMob {
 		this.#hp = hp;
 		this.#maxHp = hp;
 		this.#scene = scene;
+		this.#hitHalfExtents = { x: halfSize.x, y: halfSize.y, z: halfSize.z };
 		this.#wanderSpeed = this.getWanderSpeed();
 		this.#halfHeight = halfSize.y;
 		this.#requiredHeadroom = Math.max(1, Math.ceil(halfSize.y * 2));
@@ -190,8 +192,12 @@ export abstract class NeutralMob {
 		setVec3(this.#position, x, y, z);
 	}
 
-	protected get facingYaw(): number {
+	get facingYaw(): number {
 		return this.#facingAngle;
+	}
+
+	get hitHalfExtents(): Vec3 {
+		return this.#hitHalfExtents;
 	}
 
 	/** Register chunk binding + tick loop after instance slots are claimed. */

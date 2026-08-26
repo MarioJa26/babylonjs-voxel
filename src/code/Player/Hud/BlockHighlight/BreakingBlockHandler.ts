@@ -341,7 +341,6 @@ export class BlockBreakingHandler {
 		);
 
 		playMining(
-			this.#player.sceneRef,
 			miningPos.x,
 			miningPos.y,
 			miningPos.z,
@@ -360,25 +359,39 @@ export class BlockBreakingHandler {
 		packedLight: number,
 		boatContext: BoatBlockHitContext | null,
 	): void {
-		const info = getBlockInfo(blockId);
-		if (!info) return;
+		const isCreative = this.#player.stats.gamemode === Gamemodes.Creative;
+
+		// Blocks without a blocks.json definition (coral, experimental ids...)
+		// have no hardness/drop data, so survival can't mine them — but
+		// CREATIVE CAN ALWAYS MINE EVERY BLOCK.
+		if (!getBlockInfo(blockId) && !isCreative) return;
 
 		const dropId = getDroppedBlockId(blockId);
-		const worldItem = Item.createById(dropId);
-		worldItem.stackSize = 1;
-		worldItem.itemId = dropId;
+
+		// The drop may not exist as an item (unregistered block id) — still
+		// break the block, just without a drop.
+		let worldItem: Item | null = null;
+		try {
+			worldItem = Item.createById(dropId);
+			worldItem.stackSize = 1;
+			worldItem.itemId = dropId;
+		} catch {
+			worldItem = null;
+		}
 
 		const v = computeDeterministicDropVelocity(blockId, 0.67);
-		const di = dropWorldItem(
-			worldItem,
-			x + 0.5,
-			y + 0.5,
-			z + 0.5,
-			v.x,
-			v.y,
-			v.z,
-			this.#player,
-		);
+		const di = worldItem
+			? dropWorldItem(
+					worldItem,
+					x + 0.5,
+					y + 0.5,
+					z + 0.5,
+					v.x,
+					v.y,
+					v.z,
+					this.#player,
+				)
+			: null;
 
 		// The item spawns inside the still-solid block, whose voxel stores no
 		// light until the deferred light propagation lands. Tint it from the
@@ -388,9 +401,8 @@ export class BlockBreakingHandler {
 		const particlePos = _scratchParticlePos;
 		setVec3(particlePos, x + 0.5, y + 0.5, z + 0.5);
 
-		play(this.#player.sceneRef, particlePos, blockId, packedLight);
+		play(particlePos, blockId, packedLight);
 		playDebris(
-			this.#player.sceneRef,
 			particlePos.x,
 			particlePos.y,
 			particlePos.z,

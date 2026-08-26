@@ -406,13 +406,8 @@ export class NetworkManager {
 
 		deleteBlock(x, y, z);
 
-		play(
-			this.player.sceneRef,
-			setVec3(this._scratchVec, px, py, pz),
-			visualBlockId,
-			packedLight,
-		);
-		playDebris(this.player.sceneRef, px, py, pz, visualBlockId, packedLight);
+		play(setVec3(this._scratchVec, px, py, pz), visualBlockId, packedLight);
+		playDebris(px, py, pz, visualBlockId, packedLight);
 	}
 
 	/**

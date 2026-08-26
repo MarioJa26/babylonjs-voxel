@@ -7,7 +7,15 @@ import { worldLocalStorageKey } from "../World/WorldContext";
 import { WorldStorage } from "../World/WorldStorage";
 import type { SavedInventoryState } from "./Inventory/Types/InventoryTypes";
 import type { Player } from "./Player";
-import { Gamemodes } from "./PlayerStats";
+
+export interface PlayerPersistenceOptions {
+	/**
+	 * Save/restore the player position from localStorage. Disable for
+	 * multiplayer, where the server is position-authoritative — the
+	 * inventory is still persisted client-side.
+	 */
+	readonly persistPosition?: boolean;
+}
 
 export class PlayerStatePersistence {
 	private static readonly PLAYER_POSITION_STORAGE_KEY =
@@ -39,6 +47,7 @@ export class PlayerStatePersistence {
 		private readonly scene: SceneContext,
 		private readonly player: Player,
 		private readonly worldName: string,
+		private readonly options: PlayerPersistenceOptions = {},
 	) {
 		this.restoreFromLocalStorage();
 		this.setupPersistence();
@@ -143,6 +152,7 @@ export class PlayerStatePersistence {
 	}
 
 	private savePosition(): void {
+		if (!this.options.persistPosition) return;
 		if (this.isDisposed || typeof window === "undefined") return;
 		if (this.player.playerVehicle.isMovementLocked) return;
 
@@ -179,6 +189,7 @@ export class PlayerStatePersistence {
 	}
 
 	private restorePosition(): void {
+		if (!this.options.persistPosition) return;
 		try {
 			const raw = window.localStorage.getItem(
 				this.storageKey(PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY),
@@ -208,8 +219,6 @@ export class PlayerStatePersistence {
 	}
 
 	private restoreInventory(): void {
-		if (this.player.stats.gamemode === Gamemodes.Creative) return;
-
 		try {
 			const raw = window.localStorage.getItem(
 				this.storageKey(PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY),

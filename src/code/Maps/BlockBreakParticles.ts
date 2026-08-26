@@ -9,7 +9,6 @@ import {
 	loadTexture2D,
 	onBeforeRender,
 	type SceneContext,
-	type Texture2D,
 	type Vec3,
 } from "@babylonjs/lite";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
@@ -29,7 +28,7 @@ import {
 	getFenceDynamicShape,
 	isFenceBlockId,
 } from "@/code/World/Shape/FenceConnect";
-import { isCollidableBlock } from "@/code/World/Texture/BlockType";
+import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { getPRNGUnit2 } from "../Generation/NoiseAndParameters/Squirrel13";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { BlockTextures } from "../World/Texture/BlockTextures";
@@ -49,10 +48,15 @@ const SPRINT_PARTICLE_INTERVAL_MS = 120;
 const ARROW_PARTICLES_PER_EMIT = 8;
 const ARROW_PARTICLE_INTERVAL_MS = 75;
 
+// Wound drip while an arrow rides a mob: slow red trickle from the impact.
+// Throttling is CALLER-side (per stuck arrow), so any number of wounded mobs
+// can drip simultaneously — see MOB_DRIP_INTERVAL_MS.
+export const MOB_DRIP_INTERVAL_MS = 240;
+const MOB_DRIPS_PER_EMIT = 10;
+
 const GRAVITY = -16;
 const MAX_DT = 0.1;
 const FADE_START = 0.85;
-const MAX_PENDING_BURSTS = 8;
 
 const DEBRIS_PER_BREAK = 32;
 const DEBRIS_RESTITUTION = 0.35;
@@ -98,19 +102,6 @@ const COLLIDE_BIT = 1;
 const SETTLED_BIT = 2;
 
 let aliveCount = 0;
-
-type PendingBurst = {
-	x: number;
-	y: number;
-	z: number;
-	frame: number;
-	r: number;
-	g: number;
-	b: number;
-};
-
-const pendingBursts: PendingBurst[] = [];
-const pendingDebris: PendingBurst[] = [];
 
 // Scratch props reused across every `addBillboardSpriteIndex` call so the
 // per-frame billboard rebuild allocates nothing.
@@ -181,42 +172,27 @@ function buildBlockFrameLUT(): Uint16Array {
 	return lut;
 }
 
-let initScene: SceneContext | null = null;
 let billboard: FacingBillboardSpriteSystem | null = null;
-let ready = false;
 
 export function play(
-	scene: SceneContext,
 	position: Vec3,
 	blockId: number,
 	packedLight: number,
-) {
-	ensureInit(scene);
+): void {
+	if (!billboard) return;
 
 	const frame = getBlockFrame(blockId);
 	const light = computeLight(packedLight);
 
-	if (ready) {
-		spawnBurst(
-			position.x,
-			position.y,
-			position.z,
-			frame,
-			light.r,
-			light.g,
-			light.b,
-		);
-	} else if (pendingBursts.length < MAX_PENDING_BURSTS) {
-		pendingBursts.push({
-			x: position.x,
-			y: position.y,
-			z: position.z,
-			frame,
-			r: light.r,
-			g: light.g,
-			b: light.b,
-		});
-	}
+	spawnBurst(
+		position.x,
+		position.y,
+		position.z,
+		frame,
+		light.r,
+		light.g,
+		light.b,
+	);
 }
 
 /**
@@ -225,31 +201,18 @@ export function play(
  * to rest on surfaces where they fade out. `x/y/z` is the broken block center.
  */
 export function playDebris(
-	scene: SceneContext,
 	x: number,
 	y: number,
 	z: number,
 	blockId: number,
 	packedLight: number,
 ): void {
-	ensureInit(scene);
+	if (!billboard) return;
 
 	const frame = getBlockFrame(blockId);
 	const light = computeLight(packedLight);
 
-	if (ready) {
-		spawnDebrisBurst(x, y, z, frame, light.r, light.g, light.b);
-	} else if (pendingDebris.length < MAX_PENDING_BURSTS) {
-		pendingDebris.push({
-			x,
-			y,
-			z,
-			frame,
-			r: light.r,
-			g: light.g,
-			b: light.b,
-		});
-	}
+	spawnDebrisBurst(x, y, z, frame, light.r, light.g, light.b);
 }
 
 /**
@@ -258,7 +221,6 @@ export function playDebris(
  * face center (block center + normal * 0.5) and `nx/ny/nz` the face normal.
  */
 export function playMining(
-	scene: SceneContext,
 	x: number,
 	y: number,
 	z: number,
@@ -267,8 +229,7 @@ export function playMining(
 	nz: number,
 	blockId: number,
 ): void {
-	ensureInit(scene);
-	if (!ready) return;
+	if (!billboard) return;
 
 	const now = performance.now();
 	if (now - lastMiningEmitMs < MINING_PARTICLE_INTERVAL_MS) return;
@@ -314,7 +275,6 @@ export function playMining(
 	}
 }
 export function playArrowHit(
-	scene: SceneContext,
 	x: number,
 	y: number,
 	z: number,
@@ -323,8 +283,7 @@ export function playArrowHit(
 	nz: number,
 	blockId: number,
 ): void {
-	ensureInit(scene);
-	if (!ready) return;
+	if (!billboard) return;
 
 	const now = performance.now();
 	if (now - lastArrowHitEmitMs < ARROW_PARTICLE_INTERVAL_MS) return;
@@ -392,20 +351,56 @@ export function playArrowHit(
 }
 
 /**
+ * Slow red trickle from a wound — spawns MOB_DRIPS_PER_EMIT droplets at the
+ * given point. Stateless by design: the CALLER throttles per emitter (each
+ * stuck arrow keeps its own timer against MOB_DRIP_INTERVAL_MS), so any
+ * number of wounded mobs can drip at the same time. `x/y/z` is the arrow
+ * tip. Drips fall under gravity, collide with the voxel world and settle
+ * briefly before fading.
+ */
+export function playMobDrip(x: number, y: number, z: number): void {
+	if (!billboard) return;
+
+	const frame = getBlockFrame(BlockType.CoralBlock);
+	const light = computeLight(getLightByWorldCoords(x, y - 0.25, z));
+	let life = 0.33 + getPRNGUnit2();
+	for (let i = 0; i < MOB_DRIPS_PER_EMIT; i++) {
+		life += 0.1;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.1,
+			y + (getPRNGUnit2() - 0.5) * 0.1,
+			z + (getPRNGUnit2() - 0.5) * 0.1,
+			(getPRNGUnit2() - 0.5) * 0.4,
+			getPRNGUnit2() * 2,
+			(getPRNGUnit2() - 0.5) * 0.4,
+			life,
+			0.04 + getPRNGUnit2() * 0.02,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 2,
+			frame,
+			light.r,
+			light.g,
+			light.b,
+			1,
+			1,
+			1,
+		);
+	}
+}
+
+/**
  * Footstep dust kicked up behind a sprinting player. `x/y/z` is the feet
  * position and `velX/velZ` the world-space horizontal movement vector; dust
  * drifts opposite to it.
  */
 export function playSprint(
-	scene: SceneContext,
 	x: number,
 	y: number,
 	z: number,
 	velX: number,
 	velZ: number,
 ): void {
-	ensureInit(scene);
-	if (!ready) return;
+	if (!billboard) return;
 
 	const now = performance.now();
 	if (now - lastSprintEmitMs < SPRINT_PARTICLE_INTERVAL_MS) return;
@@ -456,74 +451,47 @@ export function playSprint(
 	}
 }
 
-function ensureInit(scene: SceneContext): void {
-	if (initScene) return;
-	initScene = scene;
+/**
+ * Explicit one-time init, awaited by TestScene after scene registration.
+ * Registers the per-frame tick, loads the block atlas, and builds the
+ * billboard system. Until this resolves, every play* call is a no-op.
+ */
+export async function initBlockBreakParticles(
+	scene: SceneContext,
+): Promise<void> {
 	onBeforeRender(scene, tick);
 
-	void loadTexture2D(scene.surface.engine, ATLAS_URL, {
-		mipMaps: false,
-		magFilter: "nearest",
-		minFilter: "nearest",
-		invertY: false,
-		addressModeU: "clamp-to-edge",
-		addressModeV: "clamp-to-edge",
-	})
-		.then((texture: Texture2D | null) => setup(texture))
-		.catch((error: unknown) => {
-			console.warn("[BlockBreakParticles] failed to load atlas:", error);
-		});
-}
-
-async function setup(texture: Texture2D | null): Promise<void> {
-	if (!texture) return;
-
-	const atlas = createGridSpriteAtlas(texture, {
-		cellWidthPx: tileSize,
-		cellHeightPx: tileSize,
-	});
-	billboard = createFacingBillboardSystem(atlas, {
-		capacity: POOL_SIZE,
-		blendMode: billboardBlendAlpha,
-	});
-	addFacingBillboardSystem(initScene!, billboard);
-
-	// `addFacingBillboardSystem` registers a deferred renderable builder that
-	// Lite only flushes during `buildScene` (at scene registration). The scene
-	// is long registered by the time the first block breaks, so flush the
-	// builder ourselves or the billboard never gets a GPU renderable.
 	try {
-		await flushDeferredRenderables(initScene!);
-	} catch {
-		return;
-	}
-	ready = true;
+		const texture = await loadTexture2D(scene.surface.engine, ATLAS_URL, {
+			mipMaps: false,
+			magFilter: "nearest",
+			minFilter: "nearest",
+			invertY: false,
+			addressModeU: "clamp-to-edge",
+			addressModeV: "clamp-to-edge",
+		});
+		if (!texture) return;
 
-	for (const burst of pendingBursts) {
-		spawnBurst(
-			burst.x,
-			burst.y,
-			burst.z,
-			burst.frame,
-			burst.r,
-			burst.g,
-			burst.b,
-		);
-	}
-	pendingBursts.length = 0;
+		const atlas = createGridSpriteAtlas(texture, {
+			cellWidthPx: tileSize,
+			cellHeightPx: tileSize,
+		});
+		const system = createFacingBillboardSystem(atlas, {
+			capacity: POOL_SIZE,
+			blendMode: billboardBlendAlpha,
+		});
+		addFacingBillboardSystem(scene, system);
 
-	for (const burst of pendingDebris) {
-		spawnDebrisBurst(
-			burst.x,
-			burst.y,
-			burst.z,
-			burst.frame,
-			burst.r,
-			burst.g,
-			burst.b,
-		);
+		// `addFacingBillboardSystem` registers a deferred renderable builder
+		// that Lite only flushes during `buildScene` (at scene registration).
+		// Init runs right after `registerScene`, so flush the builder here or
+		// the billboard never gets a GPU renderable.
+		await flushDeferredRenderables(scene);
+
+		billboard = system;
+	} catch (error: unknown) {
+		console.warn("[BlockBreakParticles] failed to initialise:", error);
 	}
-	pendingDebris.length = 0;
 }
 
 function flushDeferredRenderables(scene: SceneContext): Promise<void> {

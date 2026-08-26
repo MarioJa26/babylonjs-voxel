@@ -200,7 +200,13 @@ export class Item implements IUsable {
 		const action = this._useAction;
 		if (action !== null) {
 			action(player);
-		} else {
+			return;
+		}
+
+		// Only items backed by a REGISTERED BLOCK are placeable. Everything
+		// else (arrows, tools, materials without a use action) does nothing on
+		// right-click instead of placing an unregistered garbage block id.
+		if (this.blockId !== null && isRegisteredBlockId(this.blockId)) {
 			Item._placeAction(player);
 		}
 	}

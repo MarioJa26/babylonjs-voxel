@@ -29,10 +29,10 @@ import {
 import { getPackedMeshMemoryStats } from "../World/Chunk/PackedChunkMesh";
 import { BlockTickScheduler } from "../World/Chunk/Worker/BlockTickScheduler";
 import { processWaterUpdate } from "../World/Chunk/Worker/WaterSimulation";
-import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
-import { onSpawnPrepared } from "../World/SpawnPoint";
 import { FarTileManager } from "../World/FarTiles/FarTileManager";
 import { onGpuWorkDone } from "../World/Light/liteGpuBuffer";
+import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
+import { onSpawnPrepared } from "../World/SpawnPoint";
 import {
 	type BlockRaycastHit,
 	pickTarget,
@@ -345,14 +345,7 @@ export class PlayerLoopController {
 			return;
 		}
 
-		playSprint(
-			this.scene,
-			playerPos.x,
-			playerPos.y - 0.85,
-			playerPos.z,
-			vel.x,
-			vel.z,
-		);
+		playSprint(playerPos.x, playerPos.y - 0.85, playerPos.z, vel.x, vel.z);
 	}
 
 	#updateCaveState(playerY: number): boolean {

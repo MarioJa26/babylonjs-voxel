@@ -501,8 +501,6 @@ export class DroppedItem implements IUsable {
 			geometry.uvs,
 		);
 
-		addToScene(Map1.mainScene, this.#boxMesh);
-
 		const meta = new MetadataContainer();
 		meta.set("use", this.use);
 		this.#boxMesh.metadata = meta as unknown as LiteMetadata;
@@ -545,6 +543,7 @@ export class DroppedItem implements IUsable {
 				setShaderTexture(this.#material, "diffuseTexture", sharedAtlas);
 				this.#applyAtlasTile(item);
 				this.#boxMesh.visible = true;
+				this.#ensureAddedToScene();
 			} else {
 				// Capture the material identity: if this item is disposed before
 				// the atlas resolves, its material returns to the pool and may be
@@ -562,6 +561,7 @@ export class DroppedItem implements IUsable {
 
 					setShaderTexture(this.#material, "diffuseTexture", atlas);
 					this.#applyAtlasTile(item);
+					this.#ensureAddedToScene();
 					this.#boxMesh.visible = true;
 				});
 			}
@@ -592,8 +592,22 @@ export class DroppedItem implements IUsable {
 				return;
 
 			setShaderTexture(this.#material, "diffuseTexture", tex);
+			this.#ensureAddedToScene();
 			this.#boxMesh.visible = true;
 		});
+	}
+
+	/**
+	 * Add the mesh to the scene only AFTER its material's sampler has a bound
+	 * texture. Lite builds the shader bind group whenever a mesh (re)enters a
+	 * material group, and an unbound sampler throws (#241) — so the previous
+	 * add-early/bind-later order crashed on every first-of-a-kind drop.
+	 */
+	#sceneAdded = false;
+	#ensureAddedToScene(): void {
+		if (this.#sceneAdded) return;
+		this.#sceneAdded = true;
+		addToScene(Map1.mainScene, this.#boxMesh);
 	}
 
 	/** Yaw-only billboarding: keep the sprite quad facing the camera. */
@@ -682,7 +696,9 @@ export class DroppedItem implements IUsable {
 		}
 
 		this.#voxelCollider.dispose();
-		removeFromScene(Map1.mainScene, this.#boxMesh);
+		if (this.#sceneAdded) {
+			removeFromScene(Map1.mainScene, this.#boxMesh);
+		}
 
 		// PERF/LEAKFIX: return the material to its pool instead of leaking
 		// one ShaderMaterial (pipeline + bind groups) per despawn. The epoch

@@ -3,6 +3,10 @@ import type { SavedChunkEntityData } from "@/code/World/WorldStorage";
 
 export interface Mob {
 	position: Vec3;
+	/** Facing angle around Y (radians); rotates with wandering AI. */
+	readonly facingYaw: number;
+	/** Half-extents of the mob's hit box (matches its visual body). */
+	readonly hitHalfExtents: Vec3;
 	hp: number;
 	maxHp: number;
 	readonly mobType: string;
@@ -17,6 +21,8 @@ export interface Mob {
 	takeDamage(amount: number): void;
 	setPlayerPosition(pos: Vec3): void;
 	dispose(): void;
+	/** True once disposed — stuck projectiles stop following after this. */
+	readonly isDisposed: boolean;
 	serializeForChunkReload(): SavedChunkEntityData | null;
 }
 

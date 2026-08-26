@@ -19,8 +19,8 @@
  */
 
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
-import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding";
 import { MobTypeId } from "@/code/Network/protocol/messages.ts";
+import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding";
 import {
 	packChunkKeyFast,
 	unpackChunkKeyFast,
@@ -80,13 +80,16 @@ const MOB_TYPE_CONFIGS: Record<number, MobTypeConfig> = {
 	[MobTypeId.Chicken]: {
 		maxCount: 30,
 		speed: 1.8,
-		halfHeight: 0.25,
+		// Half heights match the client's multi-part models (CHICKEN_HIT_HALF /
+		// SHEEP_HIT_HALF) so settleHeight anchors the body exactly where the
+		// client renders it — otherwise hit boxes and visuals diverge.
+		halfHeight: 0.45,
 		hp: 4,
 	},
 	[MobTypeId.Sheep]: {
 		maxCount: 20,
 		speed: 1.5,
-		halfHeight: 0.35,
+		halfHeight: 0.55,
 		hp: 8,
 	},
 };
@@ -129,7 +132,10 @@ const FLEE_SPEED = 5;
  * chunk for every voxel, and so the storage decompress pool isn't thrashed.
  */
 class TickBlockSampler {
-	private readonly chunkCache = new Map<number, Uint8Array | Uint16Array | null>();
+	private readonly chunkCache = new Map<
+		number,
+		Uint8Array | Uint16Array | null
+	>();
 
 	constructor(private readonly storage: ServerWorldStorage) {}
 
@@ -161,9 +167,7 @@ class TickBlockSampler {
 		// Block layout matches generation: index = x + (y << 5) + (z << 10).
 		// Entries are packed id|state values — return the raw block id so
 		// every BlockType/isCollidableBlock comparison keeps working.
-		return unpackBlockId(
-			blocks[localX + (localY << 5) + (localZ << 10)],
-		);
+		return unpackBlockId(blocks[localX + (localY << 5) + (localZ << 10)]);
 	}
 }
 
@@ -258,8 +262,7 @@ export class ServerMobSimulation {
 		if (!mob.egg) {
 			this.naturalTotal = Math.max(0, this.naturalTotal - 1);
 
-			const naturalNext =
-				(this.naturalTypeCounts.get(mob.typeId) ?? 1) - 1;
+			const naturalNext = (this.naturalTypeCounts.get(mob.typeId) ?? 1) - 1;
 			if (naturalNext > 0) {
 				this.naturalTypeCounts.set(mob.typeId, naturalNext);
 			} else {
@@ -748,7 +751,12 @@ export class ServerMobSimulation {
 	 * the simulation settles the mob onto the ground on subsequent ticks.
 	 * Returns the spawned mob, or null when the request is invalid.
 	 */
-	spawnEggMob(typeId: number, x: number, y: number, z: number): ServerMob | null {
+	spawnEggMob(
+		typeId: number,
+		x: number,
+		y: number,
+		z: number,
+	): ServerMob | null {
 		const config = MOB_TYPE_CONFIGS[typeId];
 		if (!config) return null;
 		if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {

@@ -6,6 +6,15 @@ import { Item } from "../../Player/Inventory/Item";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import type { MobPartSpec } from "./MobMesh";
+import {
+	MOB_SHEEP_SKIN_PATH,
+	SHEEP_BODY_UV,
+	SHEEP_HEAD_UV,
+	SHEEP_LEG_BL_UV,
+	SHEEP_LEG_BR_UV,
+	SHEEP_LEG_FL_UV,
+	SHEEP_LEG_FR_UV,
+} from "./MobSkin";
 import { NeutralMob } from "./NeutralMob";
 
 const SHEEP_MOB_TYPE = "sheep";
@@ -15,17 +24,10 @@ const SHEEP_WANDER_SPEED = 1.5;
 
 const WOOL_DROP_BLOCK_ID = 1;
 
-// Mob skin cells (/texture/mobs/skin.png): 2 wool, 3 face/legs. Wool uses the
-// bright cell so the per-instance wool color tints it cleanly.
-const WOOL_TILE = 2;
-const SKIN_TILE = 3;
-
-// Model space: origin = wool-body center, feet on the ground at y = -GROUND_Y.
-const GROUND_Y = 0.55;
-
 // Sheep anatomy: wool body + wool head + four legs. The whole herd renders
 // through this ONE shared thin-instanced mesh (1 draw call total); wool color
-// comes from the per-instance color buffer.
+// comes from the per-instance color buffer. UVs reference the editable skin
+// layout in MobSkin.ts (each leg has its own region).
 const SHEEP_PARTS: readonly MobPartSpec[] = [
 	{
 		width: 0.7,
@@ -34,7 +36,7 @@ const SHEEP_PARTS: readonly MobPartSpec[] = [
 		x: 0,
 		y: 0,
 		z: 0,
-		tile: WOOL_TILE,
+		uv: SHEEP_BODY_UV,
 	},
 	{
 		width: 0.38,
@@ -43,7 +45,7 @@ const SHEEP_PARTS: readonly MobPartSpec[] = [
 		x: 0,
 		y: 0.16,
 		z: 0.6,
-		tile: WOOL_TILE,
+		uv: SHEEP_HEAD_UV,
 	},
 	{
 		width: 0.16,
@@ -52,7 +54,7 @@ const SHEEP_PARTS: readonly MobPartSpec[] = [
 		x: -0.21,
 		y: -0.33,
 		z: -0.32,
-		tile: SKIN_TILE,
+		uv: SHEEP_LEG_FL_UV,
 	},
 	{
 		width: 0.16,
@@ -61,7 +63,7 @@ const SHEEP_PARTS: readonly MobPartSpec[] = [
 		x: 0.21,
 		y: -0.33,
 		z: -0.32,
-		tile: SKIN_TILE,
+		uv: SHEEP_LEG_FR_UV,
 	},
 	{
 		width: 0.16,
@@ -70,7 +72,7 @@ const SHEEP_PARTS: readonly MobPartSpec[] = [
 		x: -0.21,
 		y: -0.33,
 		z: 0.32,
-		tile: SKIN_TILE,
+		uv: SHEEP_LEG_BL_UV,
 	},
 	{
 		width: 0.16,
@@ -79,13 +81,20 @@ const SHEEP_PARTS: readonly MobPartSpec[] = [
 		x: 0.21,
 		y: -0.33,
 		z: 0.32,
-		tile: SKIN_TILE,
+		uv: SHEEP_LEG_BR_UV,
 	},
 ];
 
 // Collider spans the whole animal so feet rest exactly on the ground.
-const SHEEP_BODY_HALF_SIZE = vec3(0.36, GROUND_Y, 0.52);
-
+// Arrow hit box matches the WOOL BODY only (±0.325 vertically, centered on
+// the body) — not the full model extent, so arrows flying over the back or
+// under the belly don't register.
+export const SHEEP_HIT_HALF = { x: 0.36, y: 0.325, z: 0.52 };
+const SHEEP_BODY_HALF_SIZE = vec3(
+	SHEEP_HIT_HALF.x,
+	SHEEP_HIT_HALF.y,
+	SHEEP_HIT_HALF.z,
+);
 const SHEEP_COLORS = [
 	{ name: "white", color: new Color3(0.95, 0.95, 0.95) },
 	{ name: "black", color: new Color3(0.15, 0.15, 0.15) },
@@ -101,6 +110,7 @@ function getBodyPool(): MobInstancePool {
 		name: "sheepInstances",
 		parts: SHEEP_PARTS,
 		instanceColors: true,
+		skinPath: MOB_SHEEP_SKIN_PATH,
 	});
 	return bodyPool;
 }
