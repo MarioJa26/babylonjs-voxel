@@ -2,17 +2,20 @@ import {
 	addToScene,
 	createMeshFromData,
 	type LiteMetadata,
+	loadTexture2D,
 	type Mesh,
 	onBeforeRender,
+	setShaderTexture,
 	setThinInstances,
 } from "@babylonjs/lite";
 import { MetadataContainer } from "@/code/Entities/MetadataContainer";
-import type { Color3 } from "@/code/Lib/Math";
+import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import {
-	createInstancedMobInstanceColorMaterial,
-	createInstancedMobMaterial,
-	getBoxGeometry,
+	buildMobModelGeometry,
+	createInstancedMobAtlasMaterial,
+	MOB_SKIN_PATH,
+	type MobPartSpec,
 } from "./MobMesh";
 import type { NeutralMob } from "./NeutralMob";
 
@@ -36,6 +39,15 @@ type PackedThinInstances = {
 	_capacity?: number;
 	_dirtyMin: number;
 	_dirtyMax: number;
+	/** Instance-data versioning — lite's own mutator helpers bump _version on
+	 * every write; direct array mutation must do the same or the GPU uploader
+	 * (which only runs when _version !== _gpuVersion) freezes after the first
+	 * upload. Same protocol for colors via _colorVersion. */
+	_version?: number;
+	_colorVersion?: number;
+	_colorGpuVersion?: number;
+	_colorDirtyMin?: number;
+	_colorDirtyMax?: number;
 };
 
 /** Mutable slot reference handed to a mob; the pool rewrites `index` when a
@@ -52,19 +64,21 @@ const DEFAULT_INITIAL_CAPACITY = 16;
 
 type MobInstancePoolOptions = {
 	name: string;
-	width: number;
-	height: number;
-	depth: number;
-	/** Uniform tint — required unless `instanceColors` is set. */
-	color?: Color3;
-	/** Tint each instance from the per-instance color buffer instead. */
+	/** Boxes making up the animal model (body, head, legs, wings...). */
+	parts: readonly MobPartSpec[];
+	/**
+	 * Tint each instance from the per-instance color buffer (e.g. sheep wool
+	 * colors). When false, `tint` (default white) multiplies the texture.
+	 */
 	instanceColors?: boolean;
+	tint?: Color3;
 	initialCapacity?: number;
 };
 
 export class MobInstancePool {
 	readonly mesh: Mesh;
 
+	#material: ReturnType<typeof createInstancedMobAtlasMaterial>;
 	#matrices: Float32Array;
 	#colors: Float32Array | null;
 	#laneHolders: (InstanceSlotHandle | null)[];
@@ -73,15 +87,11 @@ export class MobInstancePool {
 	#count = 0;
 	#dirtyMin = Number.POSITIVE_INFINITY;
 	#dirtyMax = Number.NEGATIVE_INFINITY;
+	#colorDirtyMin = Number.POSITIVE_INFINITY;
+	#colorDirtyMax = Number.NEGATIVE_INFINITY;
 	#needsSync = false;
 
 	constructor(options: MobInstancePoolOptions) {
-		if (!options.instanceColors && !options.color) {
-			throw new Error(
-				`MobInstancePool "${options.name}" needs a tint color or instanceColors`,
-			);
-		}
-
 		this.#capacity = options.initialCapacity ?? DEFAULT_INITIAL_CAPACITY;
 		this.#matrices = new Float32Array(this.#capacity * MAT4_FLOATS);
 		this.#colors = options.instanceColors
@@ -90,11 +100,7 @@ export class MobInstancePool {
 		this.#laneHolders = new Array(this.#capacity).fill(null);
 		this.#laneOwners = new Array(this.#capacity).fill(null);
 
-		const geometry = getBoxGeometry(
-			options.width,
-			options.height,
-			options.depth,
-		);
+		const geometry = buildMobModelGeometry(options.parts);
 
 		const mesh = createMeshFromData(
 			Map1.engine,
@@ -102,15 +108,18 @@ export class MobInstancePool {
 			geometry.positions,
 			geometry.normals,
 			geometry.indices,
+			geometry.uvs,
 		);
 		mesh.pickable = true;
 		mesh.renderOrder = 1;
-		mesh.material = options.instanceColors
-			? createInstancedMobInstanceColorMaterial(`${options.name}Mat`)
-			: createInstancedMobMaterial(
-					options.color as Color3,
-					`${options.name}Mat`,
-				);
+
+		this.#material = createInstancedMobAtlasMaterial(
+			`${options.name}Mat`,
+			!!options.instanceColors,
+			options.tint ?? Color3.White(),
+		);
+		mesh.material = this.#material;
+		this.#bindDiffuseTexture();
 
 		let meta = mesh.metadata as MetadataContainer | undefined;
 		if (!meta) {
@@ -124,7 +133,12 @@ export class MobInstancePool {
 		setThinInstances(mesh, this.#matrices, 0);
 		const ti = mesh.thinInstances as PackedThinInstances | undefined;
 		if (ti) {
-			if (this.#colors) ti.colors = this.#colors;
+			if (this.#colors) {
+				ti.colors = this.#colors;
+				// Bump the color version or the GPU uploader never creates the
+				// color buffer → its vertex slot goes unset → WebGPU draw error.
+				ti._colorVersion = (ti._colorVersion ?? 0) + 1;
+			}
 			ti._capacity = this.#capacity;
 			ti.count = 0;
 			ti._dirtyMin = 0;
@@ -135,14 +149,32 @@ export class MobInstancePool {
 		this.mesh = mesh;
 
 		registerPool(this);
+		this.#ensureInstancedGroupBuild();
+	}
+
+	/** Scene-registered ShaderMaterial groups only run their deferred builder
+	 * once; later meshes fall back to a `_rebuildSingle` that is only captured
+	 * by an instanced group build. Without this force-build, every pooled mesh
+	 * AFTER the first one silently never renders (same fix as
+	 * PackedChunkMesh.ensureInstancedBuild). */
+	#ensureInstancedGroupBuild(): void {
+		const bg = (
+			this.#material as unknown as {
+				_buildGroup?: (scene: unknown, meshes: unknown[]) => Promise<unknown>;
+			}
+		)._buildGroup;
+		if (typeof bg === "function") {
+			void bg(Map1.mainScene, [this.mesh]).catch(() => {});
+		}
 	}
 
 	get activeCount(): number {
 		return this.#count;
 	}
 
-	/** Claim a lane for `owner`. Call {@link writeMatrix} before first render. */
-	acquire(owner: NeutralMob): InstanceSlotHandle {
+	/** Claim a lane for `owner` (null for non-interactive remote mobs).
+	 * Call {@link writeMatrix} before first render. */
+	acquire(owner: NeutralMob | null): InstanceSlotHandle {
 		if (this.#count === this.#capacity) {
 			this.#grow();
 		}
@@ -241,6 +273,7 @@ export class MobInstancePool {
 		this.#colors[o + 2] = b;
 		this.#colors[o + 3] = a;
 		this.#markDirty(index);
+		this.#markColorDirty(index);
 	}
 
 	ownerAt(instanceIndex: number): NeutralMob | null {
@@ -249,6 +282,9 @@ export class MobInstancePool {
 	}
 
 	sync(): void {
+		// Retry until the async atlas pack has finished; cheap null check.
+		this.#bindDiffuseTexture();
+
 		if (!this.#needsSync) return;
 		this.#needsSync = false;
 
@@ -256,9 +292,6 @@ export class MobInstancePool {
 		if (!ti) return;
 
 		ti.matrices = this.#matrices;
-		if (this.#colors) ti.colors = this.#colors;
-		ti.count = this.#count;
-
 		if (Number.isFinite(this.#dirtyMin)) {
 			const lo = Math.max(0, this.#dirtyMin);
 			const hi = Math.min(this.#count, this.#dirtyMax);
@@ -266,9 +299,40 @@ export class MobInstancePool {
 				ti._dirtyMin = Math.min(ti._dirtyMin, lo);
 				ti._dirtyMax = Math.max(ti._dirtyMax, hi);
 			}
+			// MANDATORY: the GPU uploader only runs while _version differs from
+			// _gpuVersion (thin-instance-gpu.js). Lite's own mutator helpers bump
+			// it on every write; direct array mutation must do the same or the
+			// GPU snapshot freezes after the first upload.
+			ti._version = (ti._version ?? 0) + 1;
 		}
 		this.#dirtyMin = Number.POSITIVE_INFINITY;
 		this.#dirtyMax = Number.NEGATIVE_INFINITY;
+
+		if (this.#colors) {
+			ti.colors = this.#colors;
+
+			if (Number.isFinite(this.#colorDirtyMin)) {
+				const lo = Math.max(0, this.#colorDirtyMin);
+				const hi = Math.min(this.#count, this.#colorDirtyMax);
+				if (hi > lo) {
+					ti._colorDirtyMin = Math.min(
+						ti._colorDirtyMin ?? Number.POSITIVE_INFINITY,
+						lo,
+					);
+					ti._colorDirtyMax = Math.max(
+						ti._colorDirtyMax ?? Number.NEGATIVE_INFINITY,
+						hi,
+					);
+				}
+				// Same protocol as matrices: without a version bump the uploader
+				// never creates/refreshes the color buffer (slot-4 error).
+				ti._colorVersion = (ti._colorVersion ?? 0) + 1;
+			}
+			this.#colorDirtyMin = Number.POSITIVE_INFINITY;
+			this.#colorDirtyMax = Number.NEGATIVE_INFINITY;
+		}
+
+		ti.count = this.#count;
 	}
 
 	#copyLane(from: number, to: number): void {
@@ -287,6 +351,7 @@ export class MobInstancePool {
 		}
 
 		this.#markDirty(to);
+		this.#markColorDirty(to);
 	}
 
 	#grow(): void {
@@ -314,23 +379,68 @@ export class MobInstancePool {
 
 		this.#capacity = newCapacity;
 
-		// Rebind the CPU arrays; the version bump forces a full GPU re-upload
-		// of every active lane into the resized buffer.
+		// Rebind the CPU arrays; the version bumps force full GPU re-uploads
+		// of every active lane into the resized buffers.
 		setThinInstances(this.mesh, this.#matrices, this.#count);
 		const ti = this.mesh.thinInstances as PackedThinInstances | undefined;
 		if (ti) {
-			if (this.#colors) ti.colors = this.#colors;
+			if (this.#colors) {
+				ti.colors = this.#colors;
+				ti._colorVersion = (ti._colorVersion ?? 0) + 1;
+				ti._colorDirtyMin = 0;
+				ti._colorDirtyMax = this.#count;
+			}
 			ti._capacity = newCapacity;
 		}
 
 		this.#dirtyMin = 0;
 		this.#dirtyMax = this.#count;
+		this.#markColorDirtyRange();
 	}
 
 	#markDirty(index: number): void {
 		if (index < this.#dirtyMin) this.#dirtyMin = index;
 		if (index + 1 > this.#dirtyMax) this.#dirtyMax = index + 1;
 		this.#needsSync = true;
+	}
+
+	#markColorDirty(index: number): void {
+		if (index < this.#colorDirtyMin) this.#colorDirtyMin = index;
+		if (index + 1 > this.#colorDirtyMax) this.#colorDirtyMax = index + 1;
+		this.#needsSync = true;
+	}
+
+	#markColorDirtyRange(): void {
+		this.#colorDirtyMin = 0;
+		this.#colorDirtyMax = this.#count;
+		this.#needsSync = true;
+	}
+
+	/** Load and bind the dedicated mob skin exactly once (same pattern as
+	 * PlayerModel's skin loading). Bind EXACTLY once — rebinding bumps lite's
+	 * visibility epoch and forces mesh rebuilds (see PackedChunkMesh). */
+	#diffuseBound = false;
+	#skinLoadStarted = false;
+	#bindDiffuseTexture(): void {
+		if (this.#diffuseBound || this.#skinLoadStarted) return;
+		this.#skinLoadStarted = true;
+
+		const material = this.#material;
+		void loadTexture2D(Map1.engine, MOB_SKIN_PATH, {
+			mipMaps: true,
+			magFilter: "nearest",
+			minFilter: "nearest",
+		})
+			.catch(() => null)
+			.then((tex) => {
+				if (!tex) {
+					console.error(`[mobs] failed to load ${MOB_SKIN_PATH}`);
+					return;
+				}
+				setShaderTexture(material, "diffuseTexture", tex);
+				this.#diffuseBound = true;
+				console.debug("[mobs] mob skin bound:", MOB_SKIN_PATH);
+			});
 	}
 }
 

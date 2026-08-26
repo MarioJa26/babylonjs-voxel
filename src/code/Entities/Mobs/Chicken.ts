@@ -1,61 +1,107 @@
 import { type SceneContext, vec3 } from "@babylonjs/lite";
-import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
+import type { MobPartSpec } from "./MobMesh";
 import { NeutralMob } from "./NeutralMob";
-
-const BODY_WIDTH = 0.5;
-const BODY_HEIGHT = 0.4;
-const BODY_DEPTH = 0.3;
-const HEAD_SIZE = 0.2;
 
 const CHICKEN_MOB_TYPE = "chicken";
 const CHICKEN_CHUNK_ENTITY_TYPE = "chicken_v1";
 const CHICKEN_DEFAULT_HP = 4;
 const CHICKEN_WANDER_SPEED = 1.8;
 
-const BODY_HALF_WIDTH = BODY_WIDTH * 0.5;
-const BODY_HALF_HEIGHT = BODY_HEIGHT * 0.5;
-const BODY_HALF_DEPTH = BODY_DEPTH * 0.5;
+// Mob skin cells (/texture/mobs/skin.png): 0 feathers, 1 beak/legs.
+const FEATHER_TILE = 0;
+const BEAK_TILE = 1;
 
-const HEAD_OFFSET_Y = BODY_HEIGHT * 0.5 + HEAD_SIZE * 0.3;
-const HEAD_OFFSET_Z = BODY_DEPTH * 0.45;
+// Model space: origin = body center, feet on the ground at y = -GROUND_Y.
+const GROUND_Y = 0.45;
 
-const CHICKEN_BODY_HALF_SIZE = vec3(
-	BODY_HALF_WIDTH,
-	BODY_HALF_HEIGHT,
-	BODY_HALF_DEPTH,
-);
+// Chicken anatomy: body + head + beak + two wings + two legs. Every chicken
+// renders through this ONE shared thin-instanced mesh (1 draw call total).
+const CHICKEN_PARTS: readonly MobPartSpec[] = [
+	{
+		width: 0.5,
+		height: 0.4,
+		depth: 0.3,
+		x: 0,
+		y: 0,
+		z: 0,
+		tile: FEATHER_TILE,
+	},
+	{
+		width: 0.22,
+		height: 0.28,
+		depth: 0.24,
+		x: 0,
+		y: 0.3,
+		z: 0.13,
+		tile: FEATHER_TILE,
+	},
+	{
+		width: 0.1,
+		height: 0.08,
+		depth: 0.12,
+		x: 0,
+		y: 0.28,
+		z: 0.3,
+		tile: BEAK_TILE,
+	},
+	{
+		width: 0.06,
+		height: 0.26,
+		depth: 0.34,
+		x: -0.285,
+		y: 0.03,
+		z: -0.02,
+		tile: FEATHER_TILE,
+	},
+	{
+		width: 0.06,
+		height: 0.26,
+		depth: 0.34,
+		x: 0.285,
+		y: 0.03,
+		z: -0.02,
+		tile: FEATHER_TILE,
+	},
+	{
+		width: 0.07,
+		height: 0.25,
+		depth: 0.07,
+		x: -0.09,
+		y: -0.325,
+		z: 0,
+		tile: BEAK_TILE,
+	},
+	{
+		width: 0.07,
+		height: 0.25,
+		depth: 0.07,
+		x: 0.09,
+		y: -0.325,
+		z: 0,
+		tile: BEAK_TILE,
+	},
+];
 
-const CHICKEN_BODY_COLOR = Color3.White();
-const CHICKEN_HEAD_COLOR = new Color3(0.95, 0.95, 0.85);
+// Collider spans the whole animal so feet rest exactly on the ground.
+const CHICKEN_BODY_HALF_SIZE = vec3(0.31, GROUND_Y, 0.3);
 
-// Shared thin-instanced meshes — every chicken draws through these two pools
-// (2 draw calls total regardless of flock size).
 let bodyPool: MobInstancePool | null = null;
-let headPool: MobInstancePool | null = null;
 
 function getBodyPool(): MobInstancePool {
 	bodyPool ??= new MobInstancePool({
-		name: "chickenBodyInstances",
-		width: BODY_WIDTH,
-		height: BODY_HEIGHT,
-		depth: BODY_DEPTH,
-		color: CHICKEN_BODY_COLOR,
+		name: "chickenInstances",
+		parts: CHICKEN_PARTS,
 	});
 	return bodyPool;
 }
 
-function getHeadPool(): MobInstancePool {
-	headPool ??= new MobInstancePool({
-		name: "chickenHeadInstances",
-		width: HEAD_SIZE,
-		height: HEAD_SIZE,
-		depth: HEAD_SIZE,
-		color: CHICKEN_HEAD_COLOR,
-	});
-	return headPool;
+/** Shared instance pool — remote (server-authoritative) chickens render
+ * through the same textured instanced mesh as local ones. */
+export function getChickenInstancePool(): MobInstancePool {
+	return getBodyPool();
 }
 
 type ChickenSerializedPayload = {
@@ -71,7 +117,6 @@ export class Chicken extends NeutralMob {
 	static #chunkReloadScene: SceneContext | null = null;
 
 	#bodySlot: InstanceSlotHandle;
-	#headSlot: InstanceSlotHandle;
 
 	constructor(
 		x: number,
@@ -85,26 +130,19 @@ export class Chicken extends NeutralMob {
 		this.setPosition(x, y, z);
 
 		this.#bodySlot = getBodyPool().acquire(this);
-		this.#headSlot = getHeadPool().acquire(this);
 		this.syncToInstances();
 		this.finalizeRegistration();
 	}
 
 	protected override syncToInstances(): void {
 		const pos = this.position;
-		const yaw = this.facingYaw;
 
-		getBodyPool().writeMatrix(this.#bodySlot, pos.x, pos.y, pos.z, yaw);
-
-		// Head rides the body's yaw at its local +Z offset.
-		const sinYaw = Math.sin(yaw);
-		const cosYaw = Math.cos(yaw);
-		getHeadPool().writeMatrix(
-			this.#headSlot,
-			pos.x + sinYaw * HEAD_OFFSET_Z,
-			pos.y + HEAD_OFFSET_Y,
-			pos.z + cosYaw * HEAD_OFFSET_Z,
-			yaw,
+		getBodyPool().writeMatrix(
+			this.#bodySlot,
+			pos.x,
+			pos.y,
+			pos.z,
+			this.facingYaw,
 		);
 	}
 
@@ -138,7 +176,6 @@ export class Chicken extends NeutralMob {
 
 	dispose(): void {
 		if (this.isDisposed) return;
-		getHeadPool().release(this.#headSlot);
 		getBodyPool().release(this.#bodySlot);
 		super.dispose();
 	}

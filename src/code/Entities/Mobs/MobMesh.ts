@@ -37,14 +37,26 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 }
 `;
 
-// Thin-instanced variants: the engine prelude declares world0..world3 (and
-// instanceColor when the material opts into thin-instance colors); the vertex
-// stage must apply the per-instance matrix itself.
-const INSTANCED_MOB_VERTEX_WGSL = /* wgsl */ `
+// Dedicated mob skin (/texture/mobs/skin.png, 64x64): a 2x2 grid of 32x32
+// cells — 0 chicken feathers (TL), 1 beak/legs (TR), 2 sheep wool (BL),
+// 3 sheep face/legs (BR). UVs are baked CPU-side into final texture space
+// with a half-texel inset so mips never bleed between cells.
+const SKIN_CELLS = 2;
+const MOB_SKIN_PATH = "/texture/mobs/skin.png";
+
+export { MOB_SKIN_PATH };
+
+function makeInstancedMobAtlasVertexWgsl(useInstanceColor: boolean): string {
+	const tintExpr = useInstanceColor
+		? "input.instanceColor.rgb"
+		: "shaderUniforms.tintColor";
+
+	return /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
-  @location(0) vColor : vec3<f32>,
-  @location(1) vNormal : vec3<f32>,
+  @location(0) vUV : vec2<f32>,
+  @location(1) vTint : vec3<f32>,
+  @location(2) vNormal : vec3<f32>,
 };
 
 @vertex
@@ -55,47 +67,37 @@ fn mainVertex(input : VertexInput) -> VSOut {
   );
   out.pos = shaderSystem.viewProjection *
     (instanceWorld * vec4<f32>(input.position, 1.0));
-  out.vColor = shaderUniforms.tintColor;
+  out.vUV = input.uv;
+  out.vTint = ${tintExpr};
   out.vNormal = (instanceWorld * vec4<f32>(input.normal, 0.0)).xyz;
   return out;
 }
 `;
-
-const INSTANCED_MOB_INSTANCE_COLOR_VERTEX_WGSL = /* wgsl */ `
-struct VSOut {
-  @builtin(position) pos : vec4<f32>,
-  @location(0) vColor : vec3<f32>,
-  @location(1) vNormal : vec3<f32>,
-};
-
-@vertex
-fn mainVertex(input : VertexInput) -> VSOut {
-  var out : VSOut;
-  let instanceWorld = mat4x4<f32>(
-    input.world0, input.world1, input.world2, input.world3
-  );
-  out.pos = shaderSystem.viewProjection *
-    (instanceWorld * vec4<f32>(input.position, 1.0));
-  out.vColor = input.instanceColor.rgb;
-  out.vNormal = (instanceWorld * vec4<f32>(input.normal, 0.0)).xyz;
-  return out;
 }
-`;
 
-const INSTANCED_MOB_FRAGMENT_WGSL = /* wgsl */ `
+function makeInstancedMobAtlasFragmentWgsl(): string {
+	return /* wgsl */ `
 struct FSIn {
   @builtin(position) pos : vec4<f32>,
-  @location(0) vColor : vec3<f32>,
-  @location(1) vNormal : vec3<f32>,
+  @location(0) vUV : vec2<f32>,
+  @location(1) vTint : vec3<f32>,
+  @location(2) vNormal : vec3<f32>,
 };
 
 @fragment
 fn mainFragment(in : FSIn) -> @location(0) vec4<f32> {
+  let tex = textureSample(diffuseTexture, diffuseTextureSampler, in.vUV);
+
+  if (tex.a < 0.5) {
+    discard;
+  }
+
   let n = normalize(in.vNormal);
   let light = clamp(0.45 + 0.55 * n.y, 0.0, 1.0);
-  return vec4<f32>(in.vColor * light, 1.0);
+  return vec4<f32>(tex.rgb * in.vTint * light, 1.0);
 }
 `;
+}
 
 const BOX_INDICES = new Uint32Array([
 	0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 12, 13, 14, 12, 14,
@@ -171,42 +173,40 @@ export function getMobColorMaterial(
 	return material;
 }
 
-/** ShaderMaterial for a thin-instanced mob mesh with a single uniform tint. */
-export function createInstancedMobMaterial(
-	color: Color3,
+/**
+ * ShaderMaterial for a thin-instanced mob mesh textured from the shared block
+ * atlas. Each vertex picks its atlas tile via `color.a` (layer = BlockType id),
+ * so one draw call can mix tiles across a whole animal model. With
+ * `instanceColors` the tint comes from the per-instance color buffer
+ * (requires `ti.colors` seeded on every mesh using this material); otherwise a
+ * fixed uniform tint is used.
+ */
+export function createInstancedMobAtlasMaterial(
 	name: string,
+	instanceColors: boolean,
+	tint: Color3,
 ): ShaderMaterial {
 	const material = createShaderMaterial({
 		name,
-		vertexSource: INSTANCED_MOB_VERTEX_WGSL,
-		fragmentSource: INSTANCED_MOB_FRAGMENT_WGSL,
-		attributes: ["position", "normal"],
-		uniforms: ["viewProjection", { name: "tintColor", type: "vec3<f32>" }],
+		vertexSource: makeInstancedMobAtlasVertexWgsl(instanceColors),
+		fragmentSource: makeInstancedMobAtlasFragmentWgsl(),
+		attributes: ["position", "normal", "uv"],
+		uniforms: [
+			"viewProjection",
+			...(instanceColors
+				? []
+				: [{ name: "tintColor", type: "vec3<f32>" } as const]),
+		],
+		samplers: ["diffuseTexture"],
+		useThinInstanceColors: instanceColors,
 		backFaceCulling: true,
 	});
 
-	setShaderUniform(material, "tintColor", [color.r, color.g, color.b]);
+	if (!instanceColors) {
+		setShaderUniform(material, "tintColor", [tint.r, tint.g, tint.b]);
+	}
 
 	return material;
-}
-
-/**
- * ShaderMaterial for a thin-instanced mob mesh whose tint comes from the
- * per-instance color buffer (requires `ti.colors` to be seeded on every mesh
- * using this material so the pipeline variant is stable).
- */
-export function createInstancedMobInstanceColorMaterial(
-	name: string,
-): ShaderMaterial {
-	return createShaderMaterial({
-		name,
-		vertexSource: INSTANCED_MOB_INSTANCE_COLOR_VERTEX_WGSL,
-		fragmentSource: INSTANCED_MOB_FRAGMENT_WGSL,
-		attributes: ["position", "normal"],
-		uniforms: ["viewProjection"],
-		useThinInstanceColors: true,
-		backFaceCulling: true,
-	});
 }
 
 export function buildBoxGeometry(
@@ -350,4 +350,145 @@ export function createBoxMobMesh(
 	mesh.material = getMobColorMaterial(color, materialName);
 
 	return mesh;
+}
+
+// ─── Multi-part mob models ──────────────────────────────────────────────────
+
+/** One box of an animal model, centered at (x, y, z) in mob-local space. */
+export type MobPartSpec = {
+	width: number;
+	height: number;
+	depth: number;
+	x: number;
+	y: number;
+	z: number;
+	/** Mob skin cell index (see MOB_SKIN_PATH layout). */
+	tile: number;
+};
+
+export type MobModelGeometry = {
+	positions: Float32Array;
+	normals: Float32Array;
+	uvs: Float32Array;
+	indices: Uint32Array;
+};
+
+// Faces copied VERBATIM from DroppedItem.getUnitCubeGeometry (the proven
+// loadTexture2D convention): vertex order bottom-left, bottom-right,
+// top-right, top-left per face; matching index winding below.
+const UNIT_FACES: {
+	normal: [number, number, number];
+	verts: [number, number, number][];
+}[] = [
+	{
+		normal: [1, 0, 0],
+		verts: [
+			[0.5, -0.5, 0.5],
+			[0.5, -0.5, -0.5],
+			[0.5, 0.5, -0.5],
+			[0.5, 0.5, 0.5],
+		],
+	},
+	{
+		normal: [-1, 0, 0],
+		verts: [
+			[-0.5, -0.5, -0.5],
+			[-0.5, -0.5, 0.5],
+			[-0.5, 0.5, 0.5],
+			[-0.5, 0.5, -0.5],
+		],
+	},
+	{
+		normal: [0, 1, 0],
+		verts: [
+			[-0.5, 0.5, 0.5],
+			[0.5, 0.5, 0.5],
+			[0.5, 0.5, -0.5],
+			[-0.5, 0.5, -0.5],
+		],
+	},
+	{
+		normal: [0, -1, 0],
+		verts: [
+			[-0.5, -0.5, -0.5],
+			[0.5, -0.5, -0.5],
+			[0.5, -0.5, 0.5],
+			[-0.5, -0.5, 0.5],
+		],
+	},
+	{
+		normal: [0, 0, 1],
+		verts: [
+			[-0.5, -0.5, 0.5],
+			[0.5, -0.5, 0.5],
+			[0.5, 0.5, 0.5],
+			[-0.5, 0.5, 0.5],
+		],
+	},
+	{
+		normal: [0, 0, -1],
+		verts: [
+			[0.5, -0.5, -0.5],
+			[-0.5, -0.5, -0.5],
+			[-0.5, 0.5, -0.5],
+			[0.5, 0.5, -0.5],
+		],
+	},
+];
+
+const FACE_UV_CORNERS: [number, number][] = [
+	[0, 0],
+	[1, 0],
+	[1, 1],
+	[0, 1],
+];
+
+/**
+ * Concatenate axis-aligned boxes into one geometry so an entire animal model
+ * (body + head + legs + wings) renders as a single thin-instanced draw call.
+ * Each face maps its part's full 32x32 skin cell (half-texel inset against
+ * mip bleed). Same CPU-side-UV philosophy as PlayerModel's box builder.
+ */
+export function buildMobModelGeometry(
+	parts: readonly MobPartSpec[],
+): MobModelGeometry {
+	const positions: number[] = [];
+	const normals: number[] = [];
+	const uvs: number[] = [];
+	const indices: number[] = [];
+
+	const inset = 0.5 / 32;
+
+	for (const part of parts) {
+		const cx = part.tile % SKIN_CELLS;
+		const cy = Math.floor(part.tile / SKIN_CELLS);
+		//const base = positions.length / 3;
+
+		for (const face of UNIT_FACES) {
+			for (let i = 0; i < 4; i++) {
+				const v = face.verts[i];
+				positions.push(
+					v[0] * part.width + part.x,
+					v[1] * part.height + part.y,
+					v[2] * part.depth + part.z,
+				);
+				normals.push(face.normal[0], face.normal[1], face.normal[2]);
+
+				const [fu, fv] = FACE_UV_CORNERS[i];
+				const cu = inset + fu * (1 - inset * 2);
+				const cv = inset + fv * (1 - inset * 2);
+				uvs.push((cx + cu) / SKIN_CELLS, 1 - (cy + cv) / SKIN_CELLS);
+			}
+
+			const b = positions.length / 3 - 4;
+			indices.push(b, b + 2, b + 1, b, b + 3, b + 2);
+		}
+	}
+
+	return {
+		positions: new Float32Array(positions),
+		normals: new Float32Array(normals),
+		uvs: new Float32Array(uvs),
+		indices: new Uint32Array(indices),
+	};
 }

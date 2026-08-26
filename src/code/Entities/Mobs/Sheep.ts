@@ -5,11 +5,8 @@ import { dropWorldItem } from "../../Player/Inventory/dropWorldItem";
 import { Item } from "../../Player/Inventory/Item";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
+import type { MobPartSpec } from "./MobMesh";
 import { NeutralMob } from "./NeutralMob";
-
-const BODY_WIDTH = 0.6;
-const BODY_HEIGHT = 0.6;
-const BODY_DEPTH = 0.9;
 
 const SHEEP_MOB_TYPE = "sheep";
 const SHEEP_CHUNK_ENTITY_TYPE = "sheep_v1";
@@ -18,15 +15,76 @@ const SHEEP_WANDER_SPEED = 1.5;
 
 const WOOL_DROP_BLOCK_ID = 1;
 
-const BODY_HALF_WIDTH = BODY_WIDTH * 0.5;
-const BODY_HALF_HEIGHT = BODY_HEIGHT * 0.5;
-const BODY_HALF_DEPTH = BODY_DEPTH * 0.5;
+// Mob skin cells (/texture/mobs/skin.png): 2 wool, 3 face/legs. Wool uses the
+// bright cell so the per-instance wool color tints it cleanly.
+const WOOL_TILE = 2;
+const SKIN_TILE = 3;
 
-const SHEEP_BODY_HALF_SIZE = vec3(
-	BODY_HALF_WIDTH,
-	BODY_HALF_HEIGHT,
-	BODY_HALF_DEPTH,
-);
+// Model space: origin = wool-body center, feet on the ground at y = -GROUND_Y.
+const GROUND_Y = 0.55;
+
+// Sheep anatomy: wool body + wool head + four legs. The whole herd renders
+// through this ONE shared thin-instanced mesh (1 draw call total); wool color
+// comes from the per-instance color buffer.
+const SHEEP_PARTS: readonly MobPartSpec[] = [
+	{
+		width: 0.7,
+		height: 0.65,
+		depth: 1.0,
+		x: 0,
+		y: 0,
+		z: 0,
+		tile: WOOL_TILE,
+	},
+	{
+		width: 0.38,
+		height: 0.42,
+		depth: 0.42,
+		x: 0,
+		y: 0.16,
+		z: 0.6,
+		tile: WOOL_TILE,
+	},
+	{
+		width: 0.16,
+		height: 0.45,
+		depth: 0.16,
+		x: -0.21,
+		y: -0.33,
+		z: -0.32,
+		tile: SKIN_TILE,
+	},
+	{
+		width: 0.16,
+		height: 0.45,
+		depth: 0.16,
+		x: 0.21,
+		y: -0.33,
+		z: -0.32,
+		tile: SKIN_TILE,
+	},
+	{
+		width: 0.16,
+		height: 0.45,
+		depth: 0.16,
+		x: -0.21,
+		y: -0.33,
+		z: 0.32,
+		tile: SKIN_TILE,
+	},
+	{
+		width: 0.16,
+		height: 0.45,
+		depth: 0.16,
+		x: 0.21,
+		y: -0.33,
+		z: 0.32,
+		tile: SKIN_TILE,
+	},
+];
+
+// Collider spans the whole animal so feet rest exactly on the ground.
+const SHEEP_BODY_HALF_SIZE = vec3(0.36, GROUND_Y, 0.52);
 
 const SHEEP_COLORS = [
 	{ name: "white", color: new Color3(0.95, 0.95, 0.95) },
@@ -36,19 +94,21 @@ const SHEEP_COLORS = [
 	{ name: "pink", color: new Color3(0.9, 0.5, 0.6) },
 ] as const;
 
-// One shared thin-instanced body mesh for the whole herd; wool color comes
-// from the per-instance color buffer (1 draw call regardless of herd size).
 let bodyPool: MobInstancePool | null = null;
 
 function getBodyPool(): MobInstancePool {
 	bodyPool ??= new MobInstancePool({
-		name: "sheepBodyInstances",
-		width: BODY_WIDTH,
-		height: BODY_HEIGHT,
-		depth: BODY_DEPTH,
+		name: "sheepInstances",
+		parts: SHEEP_PARTS,
 		instanceColors: true,
 	});
 	return bodyPool;
+}
+
+/** Shared instance pool — remote (server-authoritative) sheep render through
+ * the same textured instanced mesh as local ones. */
+export function getSheepInstancePool(): MobInstancePool {
+	return getBodyPool();
 }
 
 type SheepSerializedPayload = {

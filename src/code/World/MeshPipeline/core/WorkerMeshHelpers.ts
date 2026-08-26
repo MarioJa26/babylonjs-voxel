@@ -206,8 +206,9 @@ export class MeshBuildSession implements MeshContext {
 	// --- cached pipeline ---
 	public pipeline: VoxelPipeline | null = null;
 
-	public padIndex = (x: number, y: number, z: number): number =>
-		x + 1 + (y + 1) * this.ps + (z + 1) * this.ps2;
+	public padIndex(x: number, y: number, z: number): number {
+		return x + 1 + (y + 1) * this.ps + (z + 1) * this.ps2;
+	}
 
 	public getBlock = (x: number, y: number, z: number, _fallback = 0): number =>
 		this.block[this.padIndex(x, y, z)];
@@ -215,14 +216,14 @@ export class MeshBuildSession implements MeshContext {
 	public getLight = (x: number, y: number, z: number, _fallback = 0): number =>
 		this.light[this.padIndex(x, y, z)];
 
-	public hasNeighborChunk = (dx: number, dy: number, dz: number): boolean => {
+	public hasNeighborChunk(dx: number, dy: number, dz: number): boolean {
 		if (dx === 0 && dy === 0 && dz === 0) return false;
 
 		const linear = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
 		const neighborIndex = linear < 13 ? linear : linear - 1;
 
 		return this.neighbors[neighborIndex] !== undefined;
-	};
+	}
 
 	public begin(
 		size: number,

@@ -1271,7 +1271,7 @@ export class ChunkWorkerPool {
 		}
 	}
 
-	private processLightDirtyQueue = (): void => {
+	private processLightDirtyQueue(): void {
 		this.lightDirtyPumpScheduled = false;
 		const start = performance.now();
 		let processed = 0;
@@ -1335,7 +1335,7 @@ export class ChunkWorkerPool {
 				slotMap.delete(slot);
 			}
 		}
-	};
+	}
 
 	/**
 	 * T2-8: schedule a light-only remesh for a chunk whose block content is
@@ -1846,13 +1846,13 @@ export class ChunkWorkerPool {
 	// Mesh result drain loop — runs every rAF
 	// -------------------------------------------------------------------------
 
-	private scheduleMeshFlush = (): void => {
+	private scheduleMeshFlush(): void {
 		if (this.meshDrainScheduled || this.insideMeshDrain) return;
 		this.meshDrainScheduled = true;
 		this._scheduleCentralWork(ChunkWorkerPool.WORK_MESH);
-	};
+	}
 
-	private processMeshQueueLoop = (): void => {
+	private processMeshQueueLoop(): void {
 		this.insideMeshDrain = true;
 		try {
 			const start = performance.now();
@@ -1964,7 +1964,7 @@ export class ChunkWorkerPool {
 		} finally {
 			this.insideMeshDrain = false;
 		}
-	};
+	}
 
 	// -------------------------------------------------------------------------
 	// Mesh result queue enqueue — shared by the terrain-worker and mesh-worker

@@ -3,17 +3,20 @@
  *
  * Registers a binary handler on the NetClient (same pattern as
  * RemoteChunkProvider) and turns the MobSpawn / MobUpdateBatch / MobDespawn
- * messages into interpolated box meshes. The server owns all AI and positions;
- * the client only smooths between the ~10 Hz position broadcasts.
- *
- * Meshes are pooled per mob type so despawning and respawning doesn't churn
- * GPU buffers, and geometry/material are shared via createBoxMobMesh's caches.
+ * messages into slots in the shared textured thin-instance pools (the same
+ * meshes local Chicken/Sheep render through — one draw call per species).
+ * The server owns all AI and positions; the client only smooths between the
+ * ~10 Hz position broadcasts and repacks interpolated transforms into its
+ * instance lanes.
  */
 
-import { addToScene, type Mesh, removeFromScene } from "@babylonjs/lite";
-import { createBoxMobMesh } from "@/code/Entities/Mobs/MobMesh";
+import { getChickenInstancePool } from "@/code/Entities/Mobs/Chicken";
+import type {
+	InstanceSlotHandle,
+	MobInstancePool,
+} from "@/code/Entities/Mobs/MobInstancePool";
+import { getSheepInstancePool } from "@/code/Entities/Mobs/Sheep";
 import { Color3 } from "@/code/Lib/Math";
-import { Map1 } from "@/code/Maps/Map1";
 import type { NetClient } from "./NetClient";
 import {
 	BinaryDecoder,
@@ -26,49 +29,28 @@ import {
 	type MobUpdateBatchEntry,
 } from "./protocol/messages";
 
-interface RemoteMobConfig {
-	width: number;
-	height: number;
-	depth: number;
-	color: Color3;
-	meshName: string;
-}
-
-/** Per-type visual config — mirrors the server's MobSimulation species. */
-const REMOTE_MOB_CONFIGS: Record<number, RemoteMobConfig> = {
-	[MobTypeId.Chicken]: {
-		width: 0.5,
-		height: 0.4,
-		depth: 0.3,
-		color: Color3.White(),
-		meshName: "remoteChicken",
-	},
-	[MobTypeId.Sheep]: {
-		width: 0.6,
-		height: 0.6,
-		depth: 0.9,
-		color: new Color3(0.95, 0.95, 0.95),
-		meshName: "remoteSheep",
-	},
-};
-
 /** Server yaw byte (0-255) → radians (0..2π), matching MobSimulation. */
 const YAW_BYTE_TO_RAD = (Math.PI * 2) / 255;
 
+/** Default wool tint for remote sheep (server sends no color). */
+const REMOTE_SHEEP_WOOL = new Color3(0.95, 0.95, 0.95);
+
 interface RemoteMobInstance {
-	mesh: Mesh;
+	slot: InstanceSlotHandle;
+	pool: MobInstancePool;
 	typeId: number;
+	currentX: number;
+	currentY: number;
+	currentZ: number;
 	targetX: number;
 	targetY: number;
 	targetZ: number;
-	targetYawRad: number;
 	currentYawRad: number;
+	targetYawRad: number;
 }
 
 export class RemoteMobManager {
 	private readonly mobs = new Map<number, RemoteMobInstance>();
-	// Freed meshes per type id, reused on the next spawn of that type.
-	private readonly pool = new Map<number, Mesh[]>();
 	private readonly handler: (data: Uint8Array) => void;
 
 	private readonly decoder = new BinaryDecoder(new Uint8Array(0));
@@ -92,8 +74,8 @@ export class RemoteMobManager {
 	}
 
 	/**
-	 * Find the server mob id whose interpolated mesh position is within
-	 * radiusSq of the given point (projectile hit-scan). Returns null on miss.
+	 * Find the server mob id whose interpolated position is within radiusSq of
+	 * the given point (projectile hit-scan). Returns null on miss.
 	 */
 	getMobIdNear(
 		x: number,
@@ -105,10 +87,9 @@ export class RemoteMobManager {
 		let bestDistSq = radiusSq;
 
 		for (const [id, mob] of this.mobs) {
-			const p = mob.mesh.position;
-			const dx = p.x - x;
-			const dy = p.y - y;
-			const dz = p.z - z;
+			const dx = mob.currentX - x;
+			const dy = mob.currentY - y;
+			const dz = mob.currentZ - z;
 			const distSq = dx * dx + dy * dy + dz * dz;
 
 			if (distSq <= bestDistSq) {
@@ -180,6 +161,12 @@ export class RemoteMobManager {
 		}
 	}
 
+	private poolFor(typeId: number): MobInstancePool {
+		return typeId === MobTypeId.Sheep
+			? getSheepInstancePool()
+			: getChickenInstancePool();
+	}
+
 	private spawnMob(
 		id: number,
 		typeId: number,
@@ -194,38 +181,32 @@ export class RemoteMobManager {
 			return;
 		}
 
-		const config =
-			REMOTE_MOB_CONFIGS[typeId] ?? REMOTE_MOB_CONFIGS[MobTypeId.Chicken];
-
-		let mesh = this.pool.get(typeId)?.pop();
-		if (!mesh) {
-			mesh = createBoxMobMesh(
-				config.meshName,
-				config.width,
-				config.height,
-				config.depth,
-				config.color,
-				`${config.meshName}Mat`,
+		const pool = this.poolFor(typeId);
+		const slot = pool.acquire(null);
+		if (typeId === MobTypeId.Sheep) {
+			pool.writeColor(
+				slot,
+				REMOTE_SHEEP_WOOL.r,
+				REMOTE_SHEEP_WOOL.g,
+				REMOTE_SHEEP_WOOL.b,
 			);
-			// Register the mesh in the scene exactly once. In this Babylon lite
-			// build removeFromScene disposes the mesh, so we keep it resident and
-			// toggle visibility with `visible` instead of add/remove.
-			addToScene(Map1.mainScene, mesh);
 		}
 
 		const yawRad = yaw * YAW_BYTE_TO_RAD;
-		mesh.position.set(x, y, z);
-		mesh.rotation.y = yawRad;
-		mesh.visible = true;
+		pool.writeMatrix(slot, x, y, z, yawRad);
 
 		this.mobs.set(id, {
-			mesh,
+			slot,
+			pool,
 			typeId,
+			currentX: x,
+			currentY: y,
+			currentZ: z,
 			targetX: x,
 			targetY: y,
 			targetZ: z,
-			targetYawRad: yawRad,
 			currentYawRad: yawRad,
+			targetYawRad: yawRad,
 		});
 	}
 
@@ -249,20 +230,14 @@ export class RemoteMobManager {
 		if (!mob) return;
 
 		this.mobs.delete(id);
-		mob.mesh.visible = false;
-
-		let pool = this.pool.get(mob.typeId);
-		if (!pool) {
-			pool = [];
-			this.pool.set(mob.typeId, pool);
-		}
-		pool.push(mob.mesh);
+		mob.pool.release(mob.slot);
 	}
 
 	/**
-	 * Interpolate every remote mob toward its latest server state. Called once
-	 * per frame from the game loop. Exponential smoothing gives a stable
-	 * catch-up that matches the server's 10 Hz position cadence.
+	 * Interpolate every remote mob toward its latest server state and repack
+	 * the result into its instance lane. Called once per frame from the game
+	 * loop. Exponential smoothing gives a stable catch-up that matches the
+	 * server's 10 Hz position cadence.
 	 */
 	update(deltaMs: number): void {
 		if (this.mobs.size === 0) return;
@@ -271,33 +246,31 @@ export class RemoteMobManager {
 		const alpha = 1 - Math.exp(-dt * 12);
 
 		for (const mob of this.mobs.values()) {
-			const mesh = mob.mesh;
-
-			mesh.position.x += (mob.targetX - mesh.position.x) * alpha;
-			mesh.position.y += (mob.targetY - mesh.position.y) * alpha;
-			mesh.position.z += (mob.targetZ - mesh.position.z) * alpha;
+			mob.currentX += (mob.targetX - mob.currentX) * alpha;
+			mob.currentY += (mob.targetY - mob.currentY) * alpha;
+			mob.currentZ += (mob.targetZ - mob.currentZ) * alpha;
 
 			// Shortest-arc yaw interpolation.
 			let diff = mob.targetYawRad - mob.currentYawRad;
 			diff = Math.atan2(Math.sin(diff), Math.cos(diff));
 			mob.currentYawRad += diff * alpha;
-			mesh.rotation.y = mob.currentYawRad;
+
+			mob.pool.writeMatrix(
+				mob.slot,
+				mob.currentX,
+				mob.currentY,
+				mob.currentZ,
+				mob.currentYawRad,
+			);
 		}
 	}
 
-	/** Remove every tracked mob + pooled mesh without touching the NetClient. */
+	/** Release every tracked remote mob's instance lane. */
 	clearAll(): void {
 		for (const mob of this.mobs.values()) {
-			removeFromScene(Map1.mainScene, mob.mesh);
-		}
-		// Pooled meshes are still registered in the scene; free them too.
-		for (const list of this.pool.values()) {
-			for (const mesh of list) {
-				removeFromScene(Map1.mainScene, mesh);
-			}
+			mob.pool.release(mob.slot);
 		}
 		this.mobs.clear();
-		this.pool.clear();
 	}
 
 	dispose(): void {
