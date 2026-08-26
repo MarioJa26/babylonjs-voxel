@@ -46,6 +46,8 @@ export interface ServerMob {
 	stuckTimer: number;
 	/** Whether the mob was already fleeing on the previous tick. */
 	fleeing: boolean;
+	/** ms remaining in a damage-triggered panic; 0 = not panicking. */
+	fleeTimer: number;
 	path: ServerWaypoint[];
 	pathIndex: number;
 	pathTimer: number;
@@ -74,7 +76,17 @@ interface MobTypeConfig {
 	halfHeight: number;
 	/** Hit points a freshly spawned mob of this type gets. */
 	hp: number;
+	/**
+	 * Squared radius (meters) within which a nearby player triggers panic.
+	 * Mobs whose proximity panic is disabled only flee when damaged.
+	 */
+	fleeRadiusSq: number;
 }
+
+const FLEE_RADIUS = 8;
+const FLEE_RADIUS_SQ = FLEE_RADIUS * FLEE_RADIUS;
+const FLEE_SPEED = 5;
+const FLEE_DURATION_MS = 3000; // How long a mob flees after being damaged
 
 const MOB_TYPE_CONFIGS: Record<number, MobTypeConfig> = {
 	[MobTypeId.Chicken]: {
@@ -85,12 +97,15 @@ const MOB_TYPE_CONFIGS: Record<number, MobTypeConfig> = {
 		// client renders it — otherwise hit boxes and visuals diverge.
 		halfHeight: 0.45,
 		hp: 4,
+		fleeRadiusSq: FLEE_RADIUS_SQ,
 	},
 	[MobTypeId.Sheep]: {
 		maxCount: 20,
 		speed: 1.5,
 		halfHeight: 0.55,
 		hp: 8,
+		// Sheep don't panic from player proximity — only when damaged.
+		fleeRadiusSq: 0,
 	},
 };
 const MOB_TYPE_IDS = Object.keys(MOB_TYPE_CONFIGS).map(Number);
@@ -122,9 +137,6 @@ const WANDER_MAX_MS = 4000;
 const STUCK_MS = 1500;
 const FALL_LIMIT = 24; // Blocks of free-fall before the mob is removed
 const MAX_SPAWN_SCAN_Y = 1024;
-const FLEE_RADIUS = 8;
-const FLEE_RADIUS_SQ = FLEE_RADIUS * FLEE_RADIUS;
-const FLEE_SPEED = 5;
 
 /**
  * Block sampler for one simulation tick. Caches the decompressed chunk
@@ -320,8 +332,19 @@ export class ServerMobSimulation {
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
 	): void {
 		const config = MOB_TYPE_CONFIGS[mob.typeId];
+
+		// Damage-triggered panic: flee from the nearest player for fleeTimer ms,
+		// regardless of distance. This lets sheep (which have fleeRadiusSq = 0)
+		// still run away when hit.
+		if (mob.fleeTimer > 0) {
+			mob.fleeTimer = Math.max(0, mob.fleeTimer - deltaMs);
+		}
+
 		const threat = this.findNearestThreat(mob, players);
-		const fleeing = threat !== null;
+		// Also flee if damage-panicking — target the nearest player even if
+		// they're outside the normal proximity radius.
+		const damageFleeing = mob.fleeTimer > 0 && players.length > 0;
+		const fleeing = threat !== null || damageFleeing;
 		if (fleeing) {
 			mob.path.length = 0;
 			mob.pathIndex = 0;
@@ -332,12 +355,15 @@ export class ServerMobSimulation {
 			// Refresh the escape vector periodically. When blocked, the heading
 			// is kept long enough to route around the obstacle.
 			if (!mob.fleeing || mob.headingTimer <= 0) {
-				const awayX = mob.x - threat.x;
-				const awayZ = mob.z - threat.z;
-				if (awayX * awayX + awayZ * awayZ > 0.0001) {
-					mob.yaw = this.vectorToYaw(awayX, awayZ);
-				} else {
-					mob.yaw = (mob.yaw + 64) & 255;
+				const target = threat ?? this.findNearestPlayer(mob, players);
+				if (target) {
+					const awayX = mob.x - target.x;
+					const awayZ = mob.z - target.z;
+					if (awayX * awayX + awayZ * awayZ > 0.0001) {
+						mob.yaw = this.vectorToYaw(awayX, awayZ);
+					} else {
+						mob.yaw = (mob.yaw + 64) & 255;
+					}
 				}
 				mob.headingTimer = 250;
 			}
@@ -581,8 +607,33 @@ export class ServerMobSimulation {
 		mob: ServerMob,
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
 	): { x: number; y: number; z: number } | null {
+		const fleeRadiusSq = MOB_TYPE_CONFIGS[mob.typeId].fleeRadiusSq;
+		if (fleeRadiusSq <= 0) return null;
+
 		let nearest: { x: number; y: number; z: number } | null = null;
-		let nearestDistSq = FLEE_RADIUS_SQ;
+		let nearestDistSq = fleeRadiusSq;
+
+		for (const player of players) {
+			const dx = mob.x - player.x;
+			const dy = mob.y - player.y;
+			const dz = mob.z - player.z;
+			const distSq = dx * dx + dy * dy + dz * dz;
+			if (distSq < nearestDistSq) {
+				nearestDistSq = distSq;
+				nearest = player;
+			}
+		}
+
+		return nearest;
+	}
+
+	/** Find the nearest player regardless of distance (for damage-triggered panic). */
+	private findNearestPlayer(
+		mob: ServerMob,
+		players: ReadonlyArray<{ x: number; y: number; z: number }>,
+	): { x: number; y: number; z: number } | null {
+		let nearest: { x: number; y: number; z: number } | null = null;
+		let nearestDistSq = Infinity;
 
 		for (const player of players) {
 			const dx = mob.x - player.x;
@@ -734,6 +785,7 @@ export class ServerMobSimulation {
 					WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
 				stuckTimer: 0,
 				fleeing: false,
+				fleeTimer: 0,
 				path: [],
 				pathIndex: 0,
 				pathTimer: 0,
@@ -780,6 +832,7 @@ export class ServerMobSimulation {
 				WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
 			stuckTimer: 0,
 			fleeing: false,
+			fleeTimer: 0,
 			path: [],
 			pathIndex: 0,
 			pathTimer: 0,
@@ -800,7 +853,11 @@ export class ServerMobSimulation {
 		if (!mob) return false;
 
 		mob.hp -= amount;
-		if (mob.hp > 0) return false;
+		if (mob.hp > 0) {
+			// Survived — trigger a panic response (e.g. sheep flee for a few seconds).
+			mob.fleeTimer = Math.max(mob.fleeTimer, FLEE_DURATION_MS);
+			return false;
+		}
 
 		this.removeActiveMob(mob);
 		return true;
@@ -962,6 +1019,7 @@ export class ServerMobSimulation {
 			headingTimer: mob.headingTimer,
 			stuckTimer: mob.stuckTimer,
 			fleeing: mob.fleeing,
+			fleeTimer: mob.fleeTimer,
 			path: mob.path.map((w) => ({ x: w.x, z: w.z, groundY: w.groundY })),
 			pathIndex: mob.pathIndex,
 			pathTimer: mob.pathTimer,
@@ -986,6 +1044,7 @@ export class ServerMobSimulation {
 			headingTimer: pm.headingTimer,
 			stuckTimer: pm.stuckTimer,
 			fleeing: pm.fleeing,
+			fleeTimer: pm.fleeTimer ?? 0,
 			path: pm.path.map((w) => ({ x: w.x, z: w.z, groundY: w.groundY })),
 			pathIndex: pm.pathIndex,
 			pathTimer: pm.pathTimer,

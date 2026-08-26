@@ -42,6 +42,40 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 // per-face UV layout, defined in MobSkin.ts. UVs are baked CPU-side into
 // final texture space with a half-texel inset so mips never bleed.
 
+/**
+ * Walk-swing shader sources for mob legs. Mirrors the player rig's approach
+ * (PlayerModel.animateRig): each vertex carries a limb id in normal.x, and the
+ * vertex shader rotates leg vertices about the hip pivot by
+ * sin(uWalkPhase) * SWING_MAX * uWalkAmp. The per-instance walk phase is
+ * passed through the instance-color alpha channel (written by
+ * MobInstancePool.writeWalkPhase); uWalkAmp is a per-material uniform so a
+ * whole species shares the same stride amplitude.
+ *
+ * The rotation pivots about the X axis (swings the leg forward/back in Z) at
+ * HIP_PIVOT_Y — the Y line where the legs meet the body.
+ */
+const MOB_LEG_VERTEX_WGSL = /* wgsl */ `
+const SWING_MAX : f32 = 0.85;
+
+fn animateMobLegs(p : vec3<f32>, partId : f32, walkPhase : f32) -> vec3<f32> {
+  // partId 0 = static, 3 = leg-left, 4 = leg-right. Only leg parts swing.
+  if (partId < 2.5 || partId > 4.5) {
+    return p;
+  }
+  let amp = shaderUniforms.uWalkAmp;
+  if (amp <= 0.0) {
+    return p;
+  }
+  let osc = sin(walkPhase) * SWING_MAX * amp;
+  // Right leg (id 4) in phase with left arm; left leg (id 3) opposite.
+  let ang = osc * select(-1.0, 1.0, partId > 3.5);
+  let s = sin(ang);
+  let c = cos(ang);
+  let cy = p.y - shaderUniforms.uHipPivotY;
+  return vec3<f32>(p.x, shaderUniforms.uHipPivotY + cy * c - p.z * s, cy * s + p.z * c);
+}
+`;
+
 function makeInstancedMobAtlasVertexWgsl(useInstanceColor: boolean): string {
 	const tintExpr = useInstanceColor
 		? "input.instanceColor.rgb"
@@ -55,14 +89,21 @@ struct VSOut {
   @location(2) vNormal : vec3<f32>,
 };
 
+${MOB_LEG_VERTEX_WGSL}
+
 @vertex
 fn mainVertex(input : VertexInput) -> VSOut {
   var out : VSOut;
   let instanceWorld = mat4x4<f32>(
     input.world0, input.world1, input.world2, input.world3
   );
+  // Per-vertex limb tag arrives via the color attribute's R channel.
+  let partId = input.color.r;
+  // Per-instance walk phase arrives via the instance-color alpha channel.
+  let walkPhase = ${useInstanceColor ? "input.instanceColor.a" : "0.0"};
+  let animated = animateMobLegs(input.position, partId, walkPhase);
   out.pos = shaderSystem.viewProjection *
-    (instanceWorld * vec4<f32>(input.position, 1.0));
+    (instanceWorld * vec4<f32>(animated, 1.0));
   out.vUV = input.uv;
   out.vTint = ${tintExpr};
   out.vNormal = (instanceWorld * vec4<f32>(input.normal, 0.0)).xyz;
@@ -181,14 +222,23 @@ export function createInstancedMobAtlasMaterial(
 	name: string,
 	instanceColors: boolean,
 	tint: Color3,
+	/**
+	 * Y coordinate (mob-local space) of the hip pivot line — where legs meet
+	 * the body. Leg vertices rotate about this X axis line during walking.
+	 */
+	hipPivotY: number,
+	/** Walk-stride amplitude 0–1 (1 = full SWING_MAX swing). */
+	walkAmp: number,
 ): ShaderMaterial {
 	const material = createShaderMaterial({
 		name,
 		vertexSource: makeInstancedMobAtlasVertexWgsl(instanceColors),
 		fragmentSource: makeInstancedMobAtlasFragmentWgsl(),
-		attributes: ["position", "normal", "uv"],
+		attributes: ["position", "normal", "uv", "color"],
 		uniforms: [
 			"viewProjection",
+			{ name: "uHipPivotY", type: "f32" },
+			{ name: "uWalkAmp", type: "f32" },
 			...(instanceColors
 				? []
 				: [{ name: "tintColor", type: "vec3<f32>" } as const]),
@@ -197,6 +247,9 @@ export function createInstancedMobAtlasMaterial(
 		useThinInstanceColors: instanceColors,
 		backFaceCulling: true,
 	});
+
+	setShaderUniform(material, "uHipPivotY", hipPivotY);
+	setShaderUniform(material, "uWalkAmp", walkAmp);
 
 	if (!instanceColors) {
 		setShaderUniform(material, "tintColor", [tint.r, tint.g, tint.b]);
@@ -360,12 +413,24 @@ export type MobPartSpec = {
 	z: number;
 	/** Per-face skin rects (Minecraft-style unwrap — see MobSkin.ts). */
 	uv: MobUvSet;
+	/**
+	 * Limb tag baked into normal.x at build time (same trick as PlayerModel:
+	 * the fragment shader only reads n.y for lighting, so normal.x is free).
+	 * 0 = static · 3 = leg-left · 4 = leg-right. Parts with no tag are static.
+	 */
+	partId?: number;
 };
 
 export type MobModelGeometry = {
 	positions: Float32Array;
 	normals: Float32Array;
 	uvs: Float32Array;
+	/**
+	 * Per-vertex limb tag (partId) packed into the R channel of a vec4 color
+	 * attribute. The fragment shader never reads this channel, and normal.x
+	 * stays the real normal so lighting is unaffected.
+	 */
+	colors: Float32Array;
 	indices: Uint32Array;
 };
 
@@ -453,6 +518,7 @@ export function buildMobModelGeometry(
 	const positions: number[] = [];
 	const normals: number[] = [];
 	const uvs: number[] = [];
+	const colors: number[] = [];
 	const indices: number[] = [];
 
 	const size = MOB_SKIN_SIZE;
@@ -460,6 +526,10 @@ export function buildMobModelGeometry(
 	const inset = 0.5;
 
 	for (const part of parts) {
+		// Limb tag packed into the R channel of the color attribute. Normals
+		// stay untouched so lighting is correct on every face.
+		const partId = part.partId ?? 0;
+
 		for (const face of UNIT_FACES) {
 			const rect = part.uv[face.rect];
 			const u0 = (rect[0] + inset) / size;
@@ -475,6 +545,9 @@ export function buildMobModelGeometry(
 					v[2] * part.depth + part.z,
 				);
 				normals.push(face.normal[0], face.normal[1], face.normal[2]);
+
+				// R = partId (limb tag); GBA unused.
+				colors.push(partId, 0, 0, 0);
 
 				// Corner order: bottom-left, bottom-right, top-right, top-left.
 				uvs.push(
@@ -492,6 +565,7 @@ export function buildMobModelGeometry(
 		positions: new Float32Array(positions),
 		normals: new Float32Array(normals),
 		uvs: new Float32Array(uvs),
+		colors: new Float32Array(colors),
 		indices: new Uint32Array(indices),
 	};
 }

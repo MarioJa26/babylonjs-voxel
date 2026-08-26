@@ -45,6 +45,26 @@ const MINING_PARTICLE_INTERVAL_MS = 67;
 const SPRINT_PARTICLES_PER_EMIT = 6;
 const SPRINT_PARTICLE_INTERVAL_MS = 120;
 
+// Minimum horizontal speed before a sprinting player kicks up dust.
+const SPRINT_MIN_SPEED_SQ = 66;
+// Feet offset subtracted from a player's body origin to land dust at the ground.
+const SPRINT_FEET_OFFSET = 0.85;
+
+/**
+ * Per-emitter throttle state. Sprint dust is emitted by the local player and
+ * every remote player from locally-available interpolated motion, so each
+ * emitter keeps its own cadence instead of contending on a shared timer.
+ */
+export interface SprintEmitterState {
+	lastSprintEmitMs: number;
+}
+
+export function makeSprintEmitterState(): SprintEmitterState {
+	return { lastSprintEmitMs: 0 };
+}
+
+export { SPRINT_FEET_OFFSET, SPRINT_MIN_SPEED_SQ };
+
 const ARROW_PARTICLES_PER_EMIT = 8;
 const ARROW_PARTICLE_INTERVAL_MS = 75;
 
@@ -65,7 +85,6 @@ const DEBRIS_SETTLE_SPEED = 1.0;
 const DEBRIS_RADIUS_SCALE = 0.4;
 
 let lastMiningEmitMs = 0;
-let lastSprintEmitMs = 0;
 let lastArrowHitEmitMs = 0;
 
 // ---------------------------------------------------------------------------
@@ -394,6 +413,7 @@ export function playMobDrip(x: number, y: number, z: number): void {
  * drifts opposite to it.
  */
 export function playSprint(
+	emitter: SprintEmitterState,
 	x: number,
 	y: number,
 	z: number,
@@ -403,7 +423,7 @@ export function playSprint(
 	if (!billboard) return;
 
 	const now = performance.now();
-	if (now - lastSprintEmitMs < SPRINT_PARTICLE_INTERVAL_MS) return;
+	if (now - emitter.lastSprintEmitMs < SPRINT_PARTICLE_INTERVAL_MS) return;
 
 	// Dust picks up the block underfoot: frame + tint come from the ground
 	// block at the feet, so it changes with the terrain instead of always
@@ -421,7 +441,7 @@ export function playSprint(
 	const lg = light.g;
 	const lb = light.b;
 
-	lastSprintEmitMs = now;
+	emitter.lastSprintEmitMs = now;
 
 	const speed = Math.max(0.0001, Math.hypot(velX, velZ));
 	const dirX = velX / speed;

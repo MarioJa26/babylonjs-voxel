@@ -121,9 +121,20 @@ type MobInstancePoolOptions = {
 	/**
 	 * Tint each instance from the per-instance color buffer (e.g. sheep wool
 	 * colors). When false, `tint` (default white) multiplies the texture.
+	 *
+	 * NOTE: thin-instance colors must be enabled for walk-phase animation to
+	 * work — the per-instance walk phase is packed into the color alpha
+	 * channel. Pass `instanceColors: true` even for uniformly-tinted species.
 	 */
 	instanceColors?: boolean;
 	tint?: Color3;
+	/**
+	 * Y coordinate (mob-local space) of the hip pivot line — where legs meet
+	 * the body. Leg vertices rotate about this X axis line while walking.
+	 */
+	hipPivotY: number;
+	/** Walk-stride amplitude 0–1 (1 = full SWING_MAX swing). */
+	walkAmp: number;
 	initialCapacity?: number;
 };
 
@@ -163,6 +174,9 @@ export class MobInstancePool {
 			geometry.normals,
 			geometry.indices,
 			geometry.uvs,
+			undefined,
+			undefined,
+			geometry.colors,
 		);
 		mesh.pickable = true;
 		mesh.renderOrder = 1;
@@ -171,6 +185,8 @@ export class MobInstancePool {
 			`${options.name}Mat`,
 			!!options.instanceColors,
 			options.tint ?? Color3.White(),
+			options.hipPivotY,
+			options.walkAmp,
 		);
 		mesh.material = this.#material;
 
@@ -332,6 +348,21 @@ export class MobInstancePool {
 		this.#colors[o + 2] = b;
 		this.#colors[o + 3] = a;
 		this.#markDirty(index);
+		this.#markColorDirty(index);
+	}
+
+	/**
+	 * Pack this mob's current walk-swing phase (radians) into the per-instance
+	 * color alpha channel. The vertex shader reads it back as uWalkPhase to
+	 * rotate leg vertices. Call every frame after writeMatrix.
+	 */
+	writeWalkPhase(holder: InstanceSlotHandle, phase: number): void {
+		if (!this.#colors) return;
+
+		const index = holder.index;
+		if (holder.pool !== this || index < 0 || index >= this.#count) return;
+
+		this.#colors[index * COLOR_FLOATS + 3] = phase;
 		this.#markColorDirty(index);
 	}
 

@@ -39,6 +39,11 @@ import {
 /** Server yaw byte (0-255) → radians (0..2π), matching MobSimulation. */
 const YAW_BYTE_TO_RAD = (Math.PI * 2) / 255;
 
+/** Radians of walk-swing phase accumulated per meter of horizontal travel. */
+const WALK_STRIDE_FACTOR = 2.0;
+/** Phase decay rate (per second) when idle — legs ease back to rest. */
+const WALK_PHASE_DECAY = 6.0;
+
 /** Default wool tint for remote sheep (server sends no color). */
 const REMOTE_SHEEP_WOOL = new Color3(0.95, 0.95, 0.95);
 
@@ -57,6 +62,10 @@ interface RemoteMobInstance {
 	targetZ: number;
 	currentYawRad: number;
 	targetYawRad: number;
+	/** Walk-swing phase (radians) advanced by horizontal travel distance. */
+	walkPhase: number;
+	prevX: number;
+	prevZ: number;
 	/** Last transform written to the instance lane — unchanged mobs skip the
 	 * write entirely (no dirty marking, no GPU upload). NaN sentinels at
 	 * spawn-time are replaced by real values immediately. */
@@ -239,13 +248,19 @@ export class RemoteMobManager {
 
 		const pool = this.poolFor(typeId);
 		const slot = pool.acquire(null);
+		// Both pools now use thin-instance colors: walk phase is packed into
+		// the alpha channel, RGB carries the tint (white for chicken, wool for
+		// sheep).
 		if (typeId === MobTypeId.Sheep) {
 			pool.writeColor(
 				slot,
 				REMOTE_SHEEP_WOOL.r,
 				REMOTE_SHEEP_WOOL.g,
 				REMOTE_SHEEP_WOOL.b,
+				0,
 			);
+		} else {
+			pool.writeColor(slot, 1, 1, 1, 0);
 		}
 
 		// Hit box matches the shared species model (see Chicken/Sheep exports).
@@ -269,6 +284,9 @@ export class RemoteMobManager {
 			targetZ: z,
 			currentYawRad: yawRad,
 			targetYawRad: yawRad,
+			walkPhase: 0,
+			prevX: x,
+			prevZ: z,
 			// Matches the just-written matrix, so the next update() skips the
 			// redundant write until the mob actually moves.
 			writtenX: x,
@@ -323,6 +341,19 @@ export class RemoteMobManager {
 			diff = Math.atan2(Math.sin(diff), Math.cos(diff));
 			mob.currentYawRad += diff * alpha;
 
+			// Advance walk-swing phase by horizontal distance traveled.
+			const dx = mob.currentX - mob.prevX;
+			const dz = mob.currentZ - mob.prevZ;
+			const distSq = dx * dx + dz * dz;
+			if (distSq > 0.0001) {
+				mob.walkPhase += Math.sqrt(distSq) * WALK_STRIDE_FACTOR;
+			} else {
+				mob.walkPhase *= Math.max(0, 1 - WALK_PHASE_DECAY * dt);
+				if (mob.walkPhase < 0.01) mob.walkPhase = 0;
+			}
+			mob.prevX = mob.currentX;
+			mob.prevZ = mob.currentZ;
+
 			// Skip the lane write (and its dirty marking / GPU upload) while
 			// the interpolated transform hasn't changed — stationary mobs cost
 			// nothing per frame.
@@ -342,6 +373,7 @@ export class RemoteMobManager {
 				mob.currentZ,
 				mob.currentYawRad,
 			);
+			mob.pool.writeWalkPhase(mob.slot, mob.walkPhase);
 			mob.writtenX = mob.currentX;
 			mob.writtenY = mob.currentY;
 			mob.writtenZ = mob.currentZ;

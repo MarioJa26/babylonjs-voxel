@@ -31,6 +31,13 @@ import {
 	updateDynamicTexture,
 } from "@babylonjs/lite";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import {
+	makeSprintEmitterState,
+	playSprint,
+	type SprintEmitterState,
+	SPRINT_FEET_OFFSET,
+	SPRINT_MIN_SPEED_SQ,
+} from "@/code/Maps/BlockBreakParticles";
 import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
 import {
 	applyRigSkin,
@@ -278,6 +285,14 @@ export class RemotePlayerVisual {
 
 	private readonly positionScratch: [number, number, number] = [0, 0, 0];
 
+	// Sprint-dust emission, derived entirely from locally-interpolated motion
+	// (no server sprint flag is transmitted). Each remote player keeps its own
+	// throttle state and a per-frame position sample to estimate velocity.
+	private readonly sprintEmitter: SprintEmitterState = makeSprintEmitterState();
+	private sprintPrevX = Number.NaN;
+	private sprintPrevZ = Number.NaN;
+	private sprintPrevMs = Number.NaN;
+
 	private lastFlushMs = -Infinity;
 
 	private static readonly VISUAL_REFRESH_MS = 16;
@@ -517,10 +532,12 @@ export class RemotePlayerVisual {
 			 * movement that occurred while culled could create a one-frame spike.
 			 */
 			this.walkSampleMs = Number.NaN;
+			this.sprintPrevMs = Number.NaN;
 		} else if (distanceSquared >= REMOTE_CULL_ENTER_DIST_SQ) {
 			this.culled = true;
 			this.mesh.visible = false;
 			this.walkSampleMs = Number.NaN;
+			this.sprintPrevMs = Number.NaN;
 
 			if (this.billboardActive) {
 				clearBillboardSprites(this.billboard);
@@ -537,6 +554,32 @@ export class RemotePlayerVisual {
 		 * - walk amplitude needs to ease back to zero;
 		 * - head pitch can change independently of position and yaw.
 		 */
+
+		// Sprint dust is inferred purely from interpolated motion: when the
+		// player's horizontal speed clears the sprint gate, kick up ground dust
+		// behind them. No sprint flag is transmitted — we have the position
+		// stream and that is everything we need.
+		if (Number.isFinite(this.sprintPrevMs)) {
+			const dt = (now - this.sprintPrevMs) / 1000;
+			if (dt > 0) {
+				const velX = (x - this.sprintPrevX) / dt;
+				const velZ = (z - this.sprintPrevZ) / dt;
+				if (velX * velX + velZ * velZ >= SPRINT_MIN_SPEED_SQ) {
+					playSprint(
+						this.sprintEmitter,
+						x,
+						y - SPRINT_FEET_OFFSET,
+						z,
+						velX,
+						velZ,
+					);
+				}
+			}
+		}
+		this.sprintPrevX = x;
+		this.sprintPrevZ = z;
+		this.sprintPrevMs = now;
+
 		this.syncLight(now);
 		this.syncWalk(now);
 		this.syncHeadPitch();

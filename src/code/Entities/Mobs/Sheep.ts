@@ -55,6 +55,7 @@ const SHEEP_PARTS: readonly MobPartSpec[] = [
 		y: -0.33,
 		z: -0.32,
 		uv: SHEEP_LEG_FL_UV,
+		partId: 3,
 	},
 	{
 		width: 0.16,
@@ -64,6 +65,7 @@ const SHEEP_PARTS: readonly MobPartSpec[] = [
 		y: -0.33,
 		z: -0.32,
 		uv: SHEEP_LEG_FR_UV,
+		partId: 4,
 	},
 	{
 		width: 0.16,
@@ -73,6 +75,7 @@ const SHEEP_PARTS: readonly MobPartSpec[] = [
 		y: -0.33,
 		z: 0.32,
 		uv: SHEEP_LEG_BL_UV,
+		partId: 3,
 	},
 	{
 		width: 0.16,
@@ -82,6 +85,7 @@ const SHEEP_PARTS: readonly MobPartSpec[] = [
 		y: -0.33,
 		z: 0.32,
 		uv: SHEEP_LEG_BR_UV,
+		partId: 4,
 	},
 ];
 
@@ -103,6 +107,11 @@ const SHEEP_COLORS = [
 	{ name: "pink", color: new Color3(0.9, 0.5, 0.6) },
 ] as const;
 
+// Hip pivot Y: legs span y ∈ [-0.555, -0.105]; the body underside is at
+// y = -0.325, so the leg-body joint (rotation pivot) sits at y = -0.1.
+const SHEEP_HIP_PIVOT_Y = -0.1;
+const SHEEP_WALK_AMP = 0.6;
+
 let bodyPool: MobInstancePool | null = null;
 
 function getBodyPool(): MobInstancePool {
@@ -111,6 +120,8 @@ function getBodyPool(): MobInstancePool {
 		parts: SHEEP_PARTS,
 		instanceColors: true,
 		skinPath: MOB_SHEEP_SKIN_PATH,
+		hipPivotY: SHEEP_HIP_PIVOT_Y,
+		walkAmp: SHEEP_WALK_AMP,
 	});
 	return bodyPool;
 }
@@ -165,11 +176,13 @@ export class Sheep extends NeutralMob {
 		this.setPosition(x, y, z);
 
 		this.#bodySlot = getBodyPool().acquire(this);
+		// Wool color in RGB; alpha channel carries the walk phase (start at 0).
 		getBodyPool().writeColor(
 			this.#bodySlot,
 			this.#color.r,
 			this.#color.g,
 			this.#color.b,
+			0,
 		);
 		this.syncToInstances();
 		this.finalizeRegistration();
@@ -177,14 +190,10 @@ export class Sheep extends NeutralMob {
 
 	protected override syncToInstances(): void {
 		const pos = this.position;
+		const pool = getBodyPool();
 
-		getBodyPool().writeMatrix(
-			this.#bodySlot,
-			pos.x,
-			pos.y,
-			pos.z,
-			this.facingYaw,
-		);
+		pool.writeMatrix(this.#bodySlot, pos.x, pos.y, pos.z, this.facingYaw);
+		pool.writeWalkPhase(this.#bodySlot, this.walkPhase);
 	}
 
 	configureChunkLoader(scene: SceneContext): void {
@@ -220,6 +229,16 @@ export class Sheep extends NeutralMob {
 
 	getWanderSpeed(): number {
 		return SHEEP_WANDER_SPEED;
+	}
+
+	// Sheep don't panic from player proximity — only when damaged.
+	protected override getPanicRadiusSq(): number {
+		return 0;
+	}
+
+	// When hit, flee for 4 seconds.
+	protected override onDamaged(): void {
+		this.triggerPanic(4);
 	}
 
 	onDeath(): void {

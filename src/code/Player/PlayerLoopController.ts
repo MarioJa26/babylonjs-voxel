@@ -12,7 +12,10 @@ import type { IControls } from "../Interface/IControls";
 import { frameProfiler } from "../Lib/FrameProfiler";
 import { isUiOpen, setInCave } from "../Lib/GameRuntimeState";
 import { worldToChunkCoord } from "../Lib/VoxelMath";
-import { playSprint } from "../Maps/BlockBreakParticles";
+import {
+	makeSprintEmitterState,
+	playSprint,
+} from "../Maps/BlockBreakParticles";
 import { Map1 } from "../Maps/Map1";
 import { MobTypeId } from "../Network/protocol/messages";
 import { Chunk } from "../World/Chunk/Chunk";
@@ -95,6 +98,10 @@ export class PlayerLoopController {
 
 	// Cache singleton instead of resolving it multiple times in hot paths.
 	#blockTickScheduler = BlockTickScheduler.getInstance();
+
+	// Per-emitter throttle state so the local player keeps its own sprint-dust
+	// cadence independent of remote players.
+	#sprintEmitter = makeSprintEmitterState();
 
 	private readonly scene: SceneContext;
 
@@ -345,7 +352,14 @@ export class PlayerLoopController {
 			return;
 		}
 
-		playSprint(playerPos.x, playerPos.y - 0.85, playerPos.z, vel.x, vel.z);
+		playSprint(
+			this.#sprintEmitter,
+			playerPos.x,
+			playerPos.y - 0.85,
+			playerPos.z,
+			vel.x,
+			vel.z,
+		);
 	}
 
 	#updateCaveState(playerY: number): boolean {

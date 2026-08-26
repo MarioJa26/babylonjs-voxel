@@ -1,4 +1,5 @@
 import { type SceneContext, vec3 } from "@babylonjs/lite";
+import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
@@ -77,6 +78,7 @@ const CHICKEN_PARTS: readonly MobPartSpec[] = [
 		y: -0.325,
 		z: 0,
 		uv: CHICKEN_LEG_L_UV,
+		partId: 3,
 	},
 	{
 		width: 0.07,
@@ -86,6 +88,7 @@ const CHICKEN_PARTS: readonly MobPartSpec[] = [
 		y: -0.325,
 		z: 0,
 		uv: CHICKEN_LEG_R_UV,
+		partId: 4,
 	},
 ];
 
@@ -97,6 +100,11 @@ const CHICKEN_BODY_HALF_SIZE = vec3(
 	CHICKEN_HIT_HALF.z,
 );
 
+// Hip pivot Y: legs span y ∈ [-0.45, -0.2]; the body underside is at y = -0.2,
+// so the leg-body joint (rotation pivot) sits at y = -0.2.
+const CHICKEN_HIP_PIVOT_Y = -0.2;
+const CHICKEN_WALK_AMP = 0.7;
+
 let bodyPool: MobInstancePool | null = null;
 
 function getBodyPool(): MobInstancePool {
@@ -104,6 +112,11 @@ function getBodyPool(): MobInstancePool {
 		name: "chickenInstances",
 		parts: CHICKEN_PARTS,
 		skinPath: MOB_CHICKEN_SKIN_PATH,
+		// Instance colors required: walk phase is packed into the alpha channel.
+		instanceColors: true,
+		tint: Color3.White(),
+		hipPivotY: CHICKEN_HIP_PIVOT_Y,
+		walkAmp: CHICKEN_WALK_AMP,
 	});
 	return bodyPool;
 }
@@ -140,20 +153,18 @@ export class Chicken extends NeutralMob {
 		this.setPosition(x, y, z);
 
 		this.#bodySlot = getBodyPool().acquire(this);
+		// White tint (texture shows as-is); alpha channel carries walk phase.
+		getBodyPool().writeColor(this.#bodySlot, 1, 1, 1, 0);
 		this.syncToInstances();
 		this.finalizeRegistration();
 	}
 
 	protected override syncToInstances(): void {
 		const pos = this.position;
+		const pool = getBodyPool();
 
-		getBodyPool().writeMatrix(
-			this.#bodySlot,
-			pos.x,
-			pos.y,
-			pos.z,
-			this.facingYaw,
-		);
+		pool.writeMatrix(this.#bodySlot, pos.x, pos.y, pos.z, this.facingYaw);
+		pool.writeWalkPhase(this.#bodySlot, this.walkPhase);
 	}
 
 	configureChunkLoader(scene: SceneContext): void {

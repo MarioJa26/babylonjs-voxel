@@ -40,6 +40,11 @@ const PANIC_SPEED = 5.0;
 const PANIC_RADIUS = 5;
 const PANIC_RADIUS_SQ = PANIC_RADIUS * PANIC_RADIUS;
 
+/** Radians of walk-swing phase accumulated per meter of horizontal travel. */
+const WALK_STRIDE_FACTOR = 2.0;
+/** Phase decay rate (per second) when idle — legs ease back to rest. */
+const WALK_PHASE_DECAY = 6.0;
+
 const BREATH_MAX = 5.0;
 const DROWN_INTERVAL = 2.0;
 const DROWN_DAMAGE = 1;
@@ -96,11 +101,40 @@ export abstract class NeutralMob {
 	#headSubmergedCached = false;
 	#waterSurfaceY = 0;
 
+	// Walk-swing phase (radians) advanced by horizontal distance traveled and
+	// decayed while idle so legs ease back to rest. Written to the instance
+	// color alpha channel by syncToInstances().
+	#walkPhase = 0;
+	#prevX = Number.NaN;
+	#prevZ = Number.NaN;
+
 	abstract configureChunkLoader(scene: SceneContext): void;
 	abstract getWanderSpeed(): number;
 	abstract onDeath(): void;
 	/** Push the mob's current transform into its instance pool slots. */
 	protected abstract syncToInstances(): void;
+
+	/**
+	 * Squared radius (meters) within which a nearby player triggers panic.
+	 * Return 0 to disable proximity panic (e.g. sheep only panic on damage).
+	 */
+	protected getPanicRadiusSq(): number {
+		return PANIC_RADIUS_SQ;
+	}
+
+	/**
+	 * Called when the mob takes damage. Override to trigger a panic response
+	 * (e.g. sheep flee for a few seconds when hit).
+	 */
+	protected onDamaged(): void {}
+
+	/**
+	 * Trigger a panic response: flee from the player for `duration` seconds.
+	 * Safe to call from onDamaged() or any other context.
+	 */
+	protected triggerPanic(duration: number): void {
+		this.#fleeTimer = Math.max(this.#fleeTimer, duration);
+	}
 
 	static #observerRegistered = false;
 	static readonly #allMobs = new Set<NeutralMob>();
@@ -196,6 +230,11 @@ export abstract class NeutralMob {
 		return this.#facingAngle;
 	}
 
+	/** Current walk-swing phase (radians) for leg animation. */
+	protected get walkPhase(): number {
+		return this.#walkPhase;
+	}
+
 	get hitHalfExtents(): Vec3 {
 		return this.#hitHalfExtents;
 	}
@@ -245,6 +284,8 @@ export abstract class NeutralMob {
 		if (this.#hp <= 0) {
 			this.onDeath();
 			this.dispose();
+		} else {
+			this.onDamaged();
 		}
 	}
 
@@ -347,12 +388,13 @@ export abstract class NeutralMob {
 
 		const playerPosition = this.#playerPosition;
 		if (playerPosition) {
+			const panicRadiusSq = this.getPanicRadiusSq();
 			const dx = pos.x - playerPosition.x;
 			const dy = pos.y - playerPosition.y;
 			const dz = pos.z - playerPosition.z;
 			const distSq = dx * dx + dy * dy + dz * dz;
 
-			if (distSq < PANIC_RADIUS_SQ) {
+			if (panicRadiusSq > 0 && distSq < panicRadiusSq) {
 				this.#fleeTimer = 2.5;
 			}
 
@@ -541,6 +583,27 @@ export abstract class NeutralMob {
 
 		if (Math.abs(velocity.x) < 0.03) velocity.x = 0;
 		if (Math.abs(velocity.z) < 0.03) velocity.z = 0;
+
+		// Advance walk-swing phase by horizontal distance traveled; decay it
+		// while idle so legs ease back to the rest pose. NaN prevX/Z on the
+		// first tick (and after chunk reload) so we never count the spawn jump
+		// as movement.
+		if (Number.isNaN(this.#prevX)) {
+			this.#prevX = pos.x;
+			this.#prevZ = pos.z;
+		}
+		const dx = pos.x - this.#prevX;
+		const dz = pos.z - this.#prevZ;
+		const distSq = dx * dx + dz * dz;
+		if (distSq > 0.0001) {
+			this.#walkPhase += Math.sqrt(distSq) * WALK_STRIDE_FACTOR;
+		} else {
+			// Ease phase back toward 0 (rest) when stationary.
+			this.#walkPhase *= Math.max(0, 1 - WALK_PHASE_DECAY * dt);
+			if (this.#walkPhase < 0.01) this.#walkPhase = 0;
+		}
+		this.#prevX = pos.x;
+		this.#prevZ = pos.z;
 
 		// Publish the (possibly moved) transform to this mob's instance slots.
 		this.syncToInstances();

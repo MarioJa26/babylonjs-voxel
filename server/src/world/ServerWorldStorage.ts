@@ -110,6 +110,8 @@ export interface PersistedMob {
 	headingTimer: number;
 	stuckTimer: number;
 	fleeing: boolean;
+	/** ms remaining in a damage-triggered panic. Optional for pre-existing saved data. */
+	fleeTimer?: number;
 	path: Array<{ x: number; z: number; groundY: number }>;
 	pathIndex: number;
 	pathTimer: number;
