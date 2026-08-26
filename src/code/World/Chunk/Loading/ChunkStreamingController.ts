@@ -191,7 +191,7 @@ function buriedTopChunkY(x: number, z: number): number {
 
 	const wx = x * Chunk.SIZE;
 	const wz = z * Chunk.SIZE;
-	const mid = Chunk.SIZE / 2;
+	const mid = Chunk.SIZE >> 1;
 	let minH = getFinalTerrainHeight(wx, wz);
 	minH = Math.min(minH, getFinalTerrainHeight(wx + Chunk.SIZE, wz));
 	minH = Math.min(minH, getFinalTerrainHeight(wx, wz + Chunk.SIZE));

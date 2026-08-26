@@ -1,14 +1,8 @@
-import {
-	addToScene,
-	type Mesh,
-	removeFromScene,
-	type SceneContext,
-	vec3,
-} from "@babylonjs/lite";
+import { type SceneContext, vec3 } from "@babylonjs/lite";
 import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
-import { createBoxMobMesh } from "./MobMesh";
+import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import { NeutralMob } from "./NeutralMob";
 
 const BODY_WIDTH = 0.5;
@@ -37,6 +31,33 @@ const CHICKEN_BODY_HALF_SIZE = vec3(
 const CHICKEN_BODY_COLOR = Color3.White();
 const CHICKEN_HEAD_COLOR = new Color3(0.95, 0.95, 0.85);
 
+// Shared thin-instanced meshes — every chicken draws through these two pools
+// (2 draw calls total regardless of flock size).
+let bodyPool: MobInstancePool | null = null;
+let headPool: MobInstancePool | null = null;
+
+function getBodyPool(): MobInstancePool {
+	bodyPool ??= new MobInstancePool({
+		name: "chickenBodyInstances",
+		width: BODY_WIDTH,
+		height: BODY_HEIGHT,
+		depth: BODY_DEPTH,
+		color: CHICKEN_BODY_COLOR,
+	});
+	return bodyPool;
+}
+
+function getHeadPool(): MobInstancePool {
+	headPool ??= new MobInstancePool({
+		name: "chickenHeadInstances",
+		width: HEAD_SIZE,
+		height: HEAD_SIZE,
+		depth: HEAD_SIZE,
+		color: CHICKEN_HEAD_COLOR,
+	});
+	return headPool;
+}
+
 type ChickenSerializedPayload = {
 	position: { x: number; y: number; z: number };
 	hp: number;
@@ -49,8 +70,8 @@ export class Chicken extends NeutralMob {
 	static #chunkLoaderRegistered = false;
 	static #chunkReloadScene: SceneContext | null = null;
 
-	#headMesh: Mesh;
-	#bodyMesh: Mesh;
+	#bodySlot: InstanceSlotHandle;
+	#headSlot: InstanceSlotHandle;
 
 	constructor(
 		x: number,
@@ -61,31 +82,30 @@ export class Chicken extends NeutralMob {
 	) {
 		super(hp ?? CHICKEN_DEFAULT_HP, scene, CHICKEN_BODY_HALF_SIZE);
 
-		this.#bodyMesh = createBoxMobMesh(
-			"chickenBody",
-			BODY_WIDTH,
-			BODY_HEIGHT,
-			BODY_DEPTH,
-			CHICKEN_BODY_COLOR,
-			"chickenBodyMat",
+		this.setPosition(x, y, z);
+
+		this.#bodySlot = getBodyPool().acquire(this);
+		this.#headSlot = getHeadPool().acquire(this);
+		this.syncToInstances();
+		this.finalizeRegistration();
+	}
+
+	protected override syncToInstances(): void {
+		const pos = this.position;
+		const yaw = this.facingYaw;
+
+		getBodyPool().writeMatrix(this.#bodySlot, pos.x, pos.y, pos.z, yaw);
+
+		// Head rides the body's yaw at its local +Z offset.
+		const sinYaw = Math.sin(yaw);
+		const cosYaw = Math.cos(yaw);
+		getHeadPool().writeMatrix(
+			this.#headSlot,
+			pos.x + sinYaw * HEAD_OFFSET_Z,
+			pos.y + HEAD_OFFSET_Y,
+			pos.z + cosYaw * HEAD_OFFSET_Z,
+			yaw,
 		);
-		this.#bodyMesh.position.set(x, y, z);
-
-		this.#headMesh = createBoxMobMesh(
-			"chickenHead",
-			HEAD_SIZE,
-			HEAD_SIZE,
-			HEAD_SIZE,
-			CHICKEN_HEAD_COLOR,
-			"chickenHeadMat",
-		);
-		this.#headMesh.parent = this.#bodyMesh;
-		this.#headMesh.position.set(0, HEAD_OFFSET_Y, HEAD_OFFSET_Z);
-		this.#headMesh.pickable = false;
-
-		addToScene(Map1.mainScene, this.#bodyMesh);
-
-		this.setBodyMesh(this.#bodyMesh);
 	}
 
 	configureChunkLoader(scene: SceneContext): void {
@@ -118,8 +138,8 @@ export class Chicken extends NeutralMob {
 
 	dispose(): void {
 		if (this.isDisposed) return;
-		removeFromScene(Map1.mainScene, this.#headMesh);
-		removeFromScene(Map1.mainScene, this.#bodyMesh);
+		getHeadPool().release(this.#headSlot);
+		getBodyPool().release(this.#bodySlot);
 		super.dispose();
 	}
 }

@@ -24,7 +24,10 @@ type LiteRayPickScene = {
 		ray: unknown,
 		predicate?: (mesh: Mesh) => boolean,
 		fast?: boolean,
-	) => { pickedMesh?: Mesh | null } | null;
+	) => {
+		pickedMesh?: Mesh | null;
+		thinInstanceIndex?: number;
+	} | null;
 };
 
 export class Crosshair {
@@ -135,31 +138,41 @@ export class Crosshair {
 		player: Player,
 		maxDistance = REACH_DISTANCE,
 	): Mesh | null {
-		return Crosshair.#rayMarchFirstMesh(
-			player,
-			maxDistance,
-			Crosshair.#usableMeshPredicate,
+		return (
+			Crosshair.#rayMarchFirstInfo(
+				player,
+				maxDistance,
+				Crosshair.#usableMeshPredicate,
+			)?.pickedMesh ?? null
 		);
 	}
 
-	static pickMobMesh(
+	/** Pick a mob, resolving thin-instanced meshes to the owning instance. */
+	static pickMobTarget(
 		player: Player,
 		maxDistance = REACH_DISTANCE,
-	): Mesh | null {
-		return Crosshair.#rayMarchFirstMesh(
+	): { mesh: Mesh; thinInstanceIndex: number } | null {
+		const info = Crosshair.#rayMarchFirstInfo(
 			player,
 			maxDistance,
 			Crosshair.#mobMeshPredicate,
 		);
+
+		if (!info?.pickedMesh) return null;
+
+		return {
+			mesh: info.pickedMesh,
+			thinInstanceIndex: info.thinInstanceIndex ?? -1,
+		};
 	}
 
 	// ─── Mesh ray pick ──────────────────────────────────────────────────────
 
-	static #rayMarchFirstMesh(
+	static #rayMarchFirstInfo(
 		player: Player,
 		maxDistance: number,
 		predicate?: (mesh: Mesh) => boolean,
-	): Mesh | null {
+	): { pickedMesh?: Mesh | null; thinInstanceIndex?: number } | null {
 		// TODO(Lite API): mesh ray picking (getForwardRay / pickWithRay) is not
 		// available in Lite yet; kept as a best-effort dynamic dispatch.
 		const camera = player.playerCamera
@@ -169,6 +182,6 @@ export class Crosshair {
 		const ray = camera.getForwardRay?.(maxDistance);
 		if (!ray || !scene.pickWithRay) return null;
 
-		return scene.pickWithRay(ray, predicate, true)?.pickedMesh ?? null;
+		return scene.pickWithRay(ray, predicate, true) ?? null;
 	}
 }

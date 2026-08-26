@@ -1,16 +1,10 @@
-import {
-	addToScene,
-	type Mesh,
-	removeFromScene,
-	type SceneContext,
-	vec3,
-} from "@babylonjs/lite";
+import { type SceneContext, vec3 } from "@babylonjs/lite";
 import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import { dropWorldItem } from "../../Player/Inventory/dropWorldItem";
 import { Item } from "../../Player/Inventory/Item";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
-import { createBoxMobMesh } from "./MobMesh";
+import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import { NeutralMob } from "./NeutralMob";
 
 const BODY_WIDTH = 0.6;
@@ -42,6 +36,21 @@ const SHEEP_COLORS = [
 	{ name: "pink", color: new Color3(0.9, 0.5, 0.6) },
 ] as const;
 
+// One shared thin-instanced body mesh for the whole herd; wool color comes
+// from the per-instance color buffer (1 draw call regardless of herd size).
+let bodyPool: MobInstancePool | null = null;
+
+function getBodyPool(): MobInstancePool {
+	bodyPool ??= new MobInstancePool({
+		name: "sheepBodyInstances",
+		width: BODY_WIDTH,
+		height: BODY_HEIGHT,
+		depth: BODY_DEPTH,
+		instanceColors: true,
+	});
+	return bodyPool;
+}
+
 type SheepSerializedPayload = {
 	position: { x: number; y: number; z: number };
 	hp: number;
@@ -68,7 +77,7 @@ export class Sheep extends NeutralMob {
 	static #chunkLoaderRegistered = false;
 	static #chunkReloadScene: SceneContext | null = null;
 
-	#bodyMesh: Mesh;
+	#bodySlot: InstanceSlotHandle;
 	#color: Color3;
 
 	constructor(
@@ -83,19 +92,29 @@ export class Sheep extends NeutralMob {
 
 		this.#color = color ?? randomSheepColor();
 
-		this.#bodyMesh = createBoxMobMesh(
-			"sheepBody",
-			BODY_WIDTH,
-			BODY_HEIGHT,
-			BODY_DEPTH,
-			this.#color,
-			"sheepBodyMat",
+		this.setPosition(x, y, z);
+
+		this.#bodySlot = getBodyPool().acquire(this);
+		getBodyPool().writeColor(
+			this.#bodySlot,
+			this.#color.r,
+			this.#color.g,
+			this.#color.b,
 		);
-		this.#bodyMesh.position.set(x, y, z);
+		this.syncToInstances();
+		this.finalizeRegistration();
+	}
 
-		addToScene(Map1.mainScene, this.#bodyMesh);
+	protected override syncToInstances(): void {
+		const pos = this.position;
 
-		this.setBodyMesh(this.#bodyMesh);
+		getBodyPool().writeMatrix(
+			this.#bodySlot,
+			pos.x,
+			pos.y,
+			pos.z,
+			this.facingYaw,
+		);
 	}
 
 	configureChunkLoader(scene: SceneContext): void {
@@ -142,7 +161,7 @@ export class Sheep extends NeutralMob {
 	}
 
 	#dropWool(): void {
-		const pos = this.#bodyMesh.position;
+		const pos = this.position;
 		const item = Item.createById(WOOL_DROP_BLOCK_ID);
 
 		item.stackSize = 1;
@@ -163,7 +182,7 @@ export class Sheep extends NeutralMob {
 
 	dispose(): void {
 		if (this.isDisposed) return;
-		removeFromScene(Map1.mainScene, this.#bodyMesh);
+		getBodyPool().release(this.#bodySlot);
 		super.dispose();
 	}
 }

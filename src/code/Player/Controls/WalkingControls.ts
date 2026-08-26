@@ -1,9 +1,8 @@
 import type { Vec3 } from "@babylonjs/lite";
-import type { Mob } from "@/code/Entities/Mobs/Mob";
+import { resolveMobFromPick } from "@/code/Entities/Mobs/MobInstancePool";
 import type { IControls } from "@/code/Interface/IControls";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { validateChunksAround } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { MetadataContainer } from "../../Entities/MetadataContainer";
 import { isUiOpen, UiFocus } from "../../Lib/GameRuntimeState";
 import type { BlockRaycastHit } from "../Hud/BlockHighlight/BlockRaycaster";
 import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
@@ -95,11 +94,13 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	public handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void {
 		if (WalkingControls.MOUSE1.includes(mouseEvent.button)) {
 			if (isKeyDown) {
-				const mobMesh = Crosshair.pickMobMesh(this.#player);
-				if (mobMesh?.metadata instanceof MetadataContainer) {
-					const mob: Mob | undefined = mobMesh.metadata.get("mob");
-					mob?.takeDamage(1);
-					return;
+				const target = Crosshair.pickMobTarget(this.#player);
+				if (target) {
+					const mob = resolveMobFromPick(target.mesh, target.thinInstanceIndex);
+					if (mob) {
+						mob.takeDamage(1);
+						return;
+					}
 				}
 				this.#blockBreaking.start();
 			} else {

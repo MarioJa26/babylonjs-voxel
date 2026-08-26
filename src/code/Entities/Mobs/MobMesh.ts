@@ -37,6 +37,66 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 }
 `;
 
+// Thin-instanced variants: the engine prelude declares world0..world3 (and
+// instanceColor when the material opts into thin-instance colors); the vertex
+// stage must apply the per-instance matrix itself.
+const INSTANCED_MOB_VERTEX_WGSL = /* wgsl */ `
+struct VSOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) vColor : vec3<f32>,
+  @location(1) vNormal : vec3<f32>,
+};
+
+@vertex
+fn mainVertex(input : VertexInput) -> VSOut {
+  var out : VSOut;
+  let instanceWorld = mat4x4<f32>(
+    input.world0, input.world1, input.world2, input.world3
+  );
+  out.pos = shaderSystem.viewProjection *
+    (instanceWorld * vec4<f32>(input.position, 1.0));
+  out.vColor = shaderUniforms.tintColor;
+  out.vNormal = (instanceWorld * vec4<f32>(input.normal, 0.0)).xyz;
+  return out;
+}
+`;
+
+const INSTANCED_MOB_INSTANCE_COLOR_VERTEX_WGSL = /* wgsl */ `
+struct VSOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) vColor : vec3<f32>,
+  @location(1) vNormal : vec3<f32>,
+};
+
+@vertex
+fn mainVertex(input : VertexInput) -> VSOut {
+  var out : VSOut;
+  let instanceWorld = mat4x4<f32>(
+    input.world0, input.world1, input.world2, input.world3
+  );
+  out.pos = shaderSystem.viewProjection *
+    (instanceWorld * vec4<f32>(input.position, 1.0));
+  out.vColor = input.instanceColor.rgb;
+  out.vNormal = (instanceWorld * vec4<f32>(input.normal, 0.0)).xyz;
+  return out;
+}
+`;
+
+const INSTANCED_MOB_FRAGMENT_WGSL = /* wgsl */ `
+struct FSIn {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) vColor : vec3<f32>,
+  @location(1) vNormal : vec3<f32>,
+};
+
+@fragment
+fn mainFragment(in : FSIn) -> @location(0) vec4<f32> {
+  let n = normalize(in.vNormal);
+  let light = clamp(0.45 + 0.55 * n.y, 0.0, 1.0);
+  return vec4<f32>(in.vColor * light, 1.0);
+}
+`;
+
 const BOX_INDICES = new Uint32Array([
 	0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 12, 13, 14, 12, 14,
 	15, 16, 17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
@@ -109,6 +169,44 @@ export function getMobColorMaterial(
 	}
 
 	return material;
+}
+
+/** ShaderMaterial for a thin-instanced mob mesh with a single uniform tint. */
+export function createInstancedMobMaterial(
+	color: Color3,
+	name: string,
+): ShaderMaterial {
+	const material = createShaderMaterial({
+		name,
+		vertexSource: INSTANCED_MOB_VERTEX_WGSL,
+		fragmentSource: INSTANCED_MOB_FRAGMENT_WGSL,
+		attributes: ["position", "normal"],
+		uniforms: ["viewProjection", { name: "tintColor", type: "vec3<f32>" }],
+		backFaceCulling: true,
+	});
+
+	setShaderUniform(material, "tintColor", [color.r, color.g, color.b]);
+
+	return material;
+}
+
+/**
+ * ShaderMaterial for a thin-instanced mob mesh whose tint comes from the
+ * per-instance color buffer (requires `ti.colors` to be seeded on every mesh
+ * using this material so the pipeline variant is stable).
+ */
+export function createInstancedMobInstanceColorMaterial(
+	name: string,
+): ShaderMaterial {
+	return createShaderMaterial({
+		name,
+		vertexSource: INSTANCED_MOB_INSTANCE_COLOR_VERTEX_WGSL,
+		fragmentSource: INSTANCED_MOB_FRAGMENT_WGSL,
+		attributes: ["position", "normal"],
+		uniforms: ["viewProjection"],
+		useThinInstanceColors: true,
+		backFaceCulling: true,
+	});
 }
 
 export function buildBoxGeometry(

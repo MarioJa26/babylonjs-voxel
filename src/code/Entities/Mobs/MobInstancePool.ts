@@ -1,0 +1,367 @@
+import {
+	addToScene,
+	createMeshFromData,
+	type LiteMetadata,
+	type Mesh,
+	onBeforeRender,
+	setThinInstances,
+} from "@babylonjs/lite";
+import { MetadataContainer } from "@/code/Entities/MetadataContainer";
+import type { Color3 } from "@/code/Lib/Math";
+import { Map1 } from "@/code/Maps/Map1";
+import {
+	createInstancedMobInstanceColorMaterial,
+	createInstancedMobMaterial,
+	getBoxGeometry,
+} from "./MobMesh";
+import type { NeutralMob } from "./NeutralMob";
+
+/**
+ * Per-species thin-instance pools for mob rendering.
+ *
+ * Every chicken/sheep renders through ONE shared mesh per body part instead of
+ * owning individual meshes: all chickens share a single instanced body mesh
+ * (plus one for heads), all sheep share a single instanced body mesh whose
+ * wool color comes from the per-instance color buffer. Each mob owns slots in
+ * the pools and writes its world matrix into its slot; a per-frame sync
+ * uploads only dirty lanes.
+ *
+ * Internal thin-instance fields (`_capacity`, `_dirtyMin`, `_dirtyMax`) are
+ * not in the public typings — same local shape as PackedChunkMesh's PackedMesh.
+ */
+type PackedThinInstances = {
+	matrices: Float32Array;
+	colors?: Float32Array | null;
+	count: number;
+	_capacity?: number;
+	_dirtyMin: number;
+	_dirtyMax: number;
+};
+
+/** Mutable slot reference handed to a mob; the pool rewrites `index` when a
+ * lane is compacted on release, so mobs never store raw lane numbers. */
+export type InstanceSlotHandle = {
+	pool: MobInstancePool;
+	/** Active lane, or -1 once released. */
+	index: number;
+};
+
+const MAT4_FLOATS = 16;
+const COLOR_FLOATS = 4;
+const DEFAULT_INITIAL_CAPACITY = 16;
+
+type MobInstancePoolOptions = {
+	name: string;
+	width: number;
+	height: number;
+	depth: number;
+	/** Uniform tint — required unless `instanceColors` is set. */
+	color?: Color3;
+	/** Tint each instance from the per-instance color buffer instead. */
+	instanceColors?: boolean;
+	initialCapacity?: number;
+};
+
+export class MobInstancePool {
+	readonly mesh: Mesh;
+
+	#matrices: Float32Array;
+	#colors: Float32Array | null;
+	#laneHolders: (InstanceSlotHandle | null)[];
+	#laneOwners: (NeutralMob | null)[];
+	#capacity: number;
+	#count = 0;
+	#dirtyMin = Number.POSITIVE_INFINITY;
+	#dirtyMax = Number.NEGATIVE_INFINITY;
+	#needsSync = false;
+
+	constructor(options: MobInstancePoolOptions) {
+		if (!options.instanceColors && !options.color) {
+			throw new Error(
+				`MobInstancePool "${options.name}" needs a tint color or instanceColors`,
+			);
+		}
+
+		this.#capacity = options.initialCapacity ?? DEFAULT_INITIAL_CAPACITY;
+		this.#matrices = new Float32Array(this.#capacity * MAT4_FLOATS);
+		this.#colors = options.instanceColors
+			? new Float32Array(this.#capacity * COLOR_FLOATS)
+			: null;
+		this.#laneHolders = new Array(this.#capacity).fill(null);
+		this.#laneOwners = new Array(this.#capacity).fill(null);
+
+		const geometry = getBoxGeometry(
+			options.width,
+			options.height,
+			options.depth,
+		);
+
+		const mesh = createMeshFromData(
+			Map1.engine,
+			options.name,
+			geometry.positions,
+			geometry.normals,
+			geometry.indices,
+		);
+		mesh.pickable = true;
+		mesh.renderOrder = 1;
+		mesh.material = options.instanceColors
+			? createInstancedMobInstanceColorMaterial(`${options.name}Mat`)
+			: createInstancedMobMaterial(
+					options.color as Color3,
+					`${options.name}Mat`,
+				);
+
+		let meta = mesh.metadata as MetadataContainer | undefined;
+		if (!meta) {
+			meta = new MetadataContainer();
+			mesh.metadata = meta as unknown as LiteMetadata;
+		}
+		meta.set("mob", this);
+
+		// Seed count-0 instances so an empty pool draws nothing (without
+		// thinInstances the base box itself would render at the origin).
+		setThinInstances(mesh, this.#matrices, 0);
+		const ti = mesh.thinInstances as PackedThinInstances | undefined;
+		if (ti) {
+			if (this.#colors) ti.colors = this.#colors;
+			ti._capacity = this.#capacity;
+			ti.count = 0;
+			ti._dirtyMin = 0;
+			ti._dirtyMax = 0;
+		}
+
+		addToScene(Map1.mainScene, mesh);
+		this.mesh = mesh;
+
+		registerPool(this);
+	}
+
+	get activeCount(): number {
+		return this.#count;
+	}
+
+	/** Claim a lane for `owner`. Call {@link writeMatrix} before first render. */
+	acquire(owner: NeutralMob): InstanceSlotHandle {
+		if (this.#count === this.#capacity) {
+			this.#grow();
+		}
+
+		const index = this.#count++;
+		const holder: InstanceSlotHandle = { pool: this, index };
+		this.#laneHolders[index] = holder;
+		this.#laneOwners[index] = owner;
+		this.#markDirty(index);
+
+		return holder;
+	}
+
+	/** Free a lane, compacting the last active lane into the hole. */
+	release(holder: InstanceSlotHandle): void {
+		if (holder.pool !== this) return;
+
+		const slot = holder.index;
+		if (slot < 0 || slot >= this.#count) return;
+
+		const last = this.#count - 1;
+
+		if (slot !== last) {
+			this.#copyLane(last, slot);
+
+			const movedHolder = this.#laneHolders[last];
+			if (movedHolder) {
+				movedHolder.index = slot;
+				this.#laneHolders[slot] = movedHolder;
+			}
+			this.#laneOwners[slot] = this.#laneOwners[last];
+		}
+
+		this.#laneHolders[last] = null;
+		this.#laneOwners[last] = null;
+		holder.index = -1;
+		this.#count--;
+		this.#markDirty(slot);
+	}
+
+	/** Compose translation + Y rotation into the lane's matrix (column-major:
+	 * local +Z maps to (sin yaw, 0, cos yaw) — matches NeutralMob facing). */
+	writeMatrix(
+		holder: InstanceSlotHandle,
+		x: number,
+		y: number,
+		z: number,
+		yaw: number,
+	): void {
+		const index = holder.index;
+		if (holder.pool !== this || index < 0 || index >= this.#count) return;
+
+		const cos = Math.cos(yaw);
+		const sin = Math.sin(yaw);
+		const m = this.#matrices;
+		const o = index * MAT4_FLOATS;
+
+		m[o] = cos;
+		m[o + 1] = 0;
+		m[o + 2] = -sin;
+		m[o + 3] = 0;
+
+		m[o + 4] = 0;
+		m[o + 5] = 1;
+		m[o + 6] = 0;
+		m[o + 7] = 0;
+
+		m[o + 8] = sin;
+		m[o + 9] = 0;
+		m[o + 10] = cos;
+		m[o + 11] = 0;
+
+		m[o + 12] = x;
+		m[o + 13] = y;
+		m[o + 14] = z;
+		m[o + 15] = 1;
+
+		this.#markDirty(index);
+	}
+
+	writeColor(
+		holder: InstanceSlotHandle,
+		r: number,
+		g: number,
+		b: number,
+		a = 1,
+	): void {
+		if (!this.#colors) return;
+
+		const index = holder.index;
+		if (holder.pool !== this || index < 0 || index >= this.#count) return;
+
+		const o = index * COLOR_FLOATS;
+		this.#colors[o] = r;
+		this.#colors[o + 1] = g;
+		this.#colors[o + 2] = b;
+		this.#colors[o + 3] = a;
+		this.#markDirty(index);
+	}
+
+	ownerAt(instanceIndex: number): NeutralMob | null {
+		if (instanceIndex < 0 || instanceIndex >= this.#count) return null;
+		return this.#laneOwners[instanceIndex] ?? null;
+	}
+
+	sync(): void {
+		if (!this.#needsSync) return;
+		this.#needsSync = false;
+
+		const ti = this.mesh.thinInstances as PackedThinInstances | undefined;
+		if (!ti) return;
+
+		ti.matrices = this.#matrices;
+		if (this.#colors) ti.colors = this.#colors;
+		ti.count = this.#count;
+
+		if (Number.isFinite(this.#dirtyMin)) {
+			const lo = Math.max(0, this.#dirtyMin);
+			const hi = Math.min(this.#count, this.#dirtyMax);
+			if (hi > lo) {
+				ti._dirtyMin = Math.min(ti._dirtyMin, lo);
+				ti._dirtyMax = Math.max(ti._dirtyMax, hi);
+			}
+		}
+		this.#dirtyMin = Number.POSITIVE_INFINITY;
+		this.#dirtyMax = Number.NEGATIVE_INFINITY;
+	}
+
+	#copyLane(from: number, to: number): void {
+		this.#matrices.copyWithin(
+			to * MAT4_FLOATS,
+			from * MAT4_FLOATS,
+			from * MAT4_FLOATS + MAT4_FLOATS,
+		);
+
+		if (this.#colors) {
+			this.#colors.copyWithin(
+				to * COLOR_FLOATS,
+				from * COLOR_FLOATS,
+				from * COLOR_FLOATS + COLOR_FLOATS,
+			);
+		}
+
+		this.#markDirty(to);
+	}
+
+	#grow(): void {
+		const newCapacity = this.#capacity * 2;
+
+		const matrices = new Float32Array(newCapacity * MAT4_FLOATS);
+		matrices.set(this.#matrices);
+		this.#matrices = matrices;
+
+		if (this.#colors) {
+			const colors = new Float32Array(newCapacity * COLOR_FLOATS);
+			colors.set(this.#colors);
+			this.#colors = colors;
+		}
+
+		const laneHolders: (InstanceSlotHandle | null)[] = new Array(
+			newCapacity,
+		).fill(null);
+		laneHolders.splice(0, this.#laneHolders.length, ...this.#laneHolders);
+		this.#laneHolders = laneHolders;
+
+		const laneOwners: (NeutralMob | null)[] = new Array(newCapacity).fill(null);
+		laneOwners.splice(0, this.#laneOwners.length, ...this.#laneOwners);
+		this.#laneOwners = laneOwners;
+
+		this.#capacity = newCapacity;
+
+		// Rebind the CPU arrays; the version bump forces a full GPU re-upload
+		// of every active lane into the resized buffer.
+		setThinInstances(this.mesh, this.#matrices, this.#count);
+		const ti = this.mesh.thinInstances as PackedThinInstances | undefined;
+		if (ti) {
+			if (this.#colors) ti.colors = this.#colors;
+			ti._capacity = newCapacity;
+		}
+
+		this.#dirtyMin = 0;
+		this.#dirtyMax = this.#count;
+	}
+
+	#markDirty(index: number): void {
+		if (index < this.#dirtyMin) this.#dirtyMin = index;
+		if (index + 1 > this.#dirtyMax) this.#dirtyMax = index + 1;
+		this.#needsSync = true;
+	}
+}
+
+// ─── Registry + per-frame sync ──────────────────────────────────────────────
+
+const livePools = new Set<MobInstancePool>();
+const poolByMesh = new Map<Mesh, MobInstancePool>();
+let syncObserverRegistered = false;
+
+function registerPool(pool: MobInstancePool): void {
+	livePools.add(pool);
+	poolByMesh.set(pool.mesh, pool);
+
+	if (syncObserverRegistered) return;
+	syncObserverRegistered = true;
+
+	// Registered after NeutralMob's tick observer (first mob construction
+	// precedes first pool construction), so lanes sync after AI updates.
+	onBeforeRender(Map1.mainScene, () => {
+		for (const pool of livePools) {
+			pool.sync();
+		}
+	});
+}
+
+/** Map a GPU pick result on a pooled mob mesh back to its owning mob. */
+export function resolveMobFromPick(
+	mesh: Mesh,
+	thinInstanceIndex: number,
+): NeutralMob | null {
+	const pool = poolByMesh.get(mesh);
+	if (!pool) return null;
+	return pool.ownerAt(thinInstanceIndex);
+}

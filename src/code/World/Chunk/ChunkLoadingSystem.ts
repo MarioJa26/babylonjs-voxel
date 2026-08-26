@@ -6,10 +6,8 @@ import {
 	WorldStorage,
 } from "../WorldStorage";
 import { addChunkDisposeHook, Chunk, getChunk, getChunkFast } from "./Chunk";
-import { createMeshFromData } from "./ChunkMesher";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { packCoords } from "./DataStructures/ChunkCoords";
-import type { MeshData } from "./DataStructures/MeshData";
 import { ChunkEntityRegistry } from "./Loading/ChunkEntityRegistry";
 import { ChunkHydration } from "./Loading/ChunkHydration";
 import { ChunkLoadingDebug } from "./Loading/ChunkLoadingDebug";
@@ -74,12 +72,6 @@ const _neighborBuffer: (Chunk | undefined)[] = new Array(6);
 
 const _queuedIdSet: Set<bigint> = new Set();
 
-interface SelectedSavedMesh {
-	opaque: MeshData | null;
-	water: MeshData | null;
-	cutout: MeshData | null;
-}
-
 const _entityPayloadMap = new Map<bigint, SavedChunkEntityData[]>();
 
 const debugStats: ChunkLoadingDebugStats = {
@@ -109,8 +101,8 @@ const debugStats: ChunkLoadingDebugStats = {
 };
 
 const chunkEntityRegistry = new ChunkEntityRegistry<ChunkBoundEntity>({
-	getChunkId: (entity) => getEntityChunkId(entity),
-	serialize: (entity) => serializeEntityForReload(entity),
+	getChunkId: getEntityChunkId,
+	serialize: serializeEntityForReload,
 	dispose: (entity) => {
 		entity.unload();
 	},
@@ -130,7 +122,7 @@ const chunkHydration = new ChunkHydration({
 const streamingController = new ChunkStreamingController({
 	getLoadQueue: () => loadQueue,
 	getUnloadQueueSet: () => unloadQueueSet,
-	onQueueSnapshotChanged: () => refreshQueueDebugSnapshot(),
+	onQueueSnapshotChanged: refreshQueueDebugSnapshot,
 });
 
 addChunkDisposeHook((chunk) => {
@@ -147,9 +139,9 @@ const worldMutations = new ChunkWorldMutations({
 
 const persistenceCoordinator = new ChunkPersistenceCoordinator({
 	getModifiedChunks: () => Chunk.chunkInstances.values(),
-	getChunkEntityPayloads: () => collectChunkEntityPayloads(),
-	getChunkSaveBatchSize: () => getUnloadBatchSize(),
-	getChunkEntitySaveBatchSize: () => getUnloadBatchSize(),
+	getChunkEntityPayloads: collectChunkEntityPayloads,
+	getChunkSaveBatchSize: getUnloadBatchSize,
+	getChunkEntitySaveBatchSize: getUnloadBatchSize,
 });
 
 // PERF: Debounce block-edit saves into a single batched save per 500 ms;
@@ -195,22 +187,18 @@ const processScheduler = new ChunkProcessScheduler({
 	getDesiredState: (chunkId) => streamingController.getDesiredState(chunkId),
 
 	unloadChunkBoundEntitiesForChunk: (chunk) =>
-		unloadChunkBoundEntitiesForChunkImpl(chunk),
+		chunkEntityRegistry.unloadEntitiesForChunk(chunk),
 
-	applyLoadedChunkFromSavedData: (state, request, savedData) =>
-		applyLoadedChunkFromSavedData(state, request, savedData),
-
-	applyHydratedChunkFromSavedData: (chunk, savedData) =>
-		applyHydratedChunkFromSavedData(chunk, savedData),
+	applyLoadedChunkFromSavedData,
+	applyHydratedChunkFromSavedData,
 
 	scheduleTerrainGenerationBatch: (chunks) =>
 		ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(chunks),
 
-	updateSliceDebugStats: (state) => updateSliceDebugStats(state),
+	updateSliceDebugStats,
+	finalizeProcessState,
 
-	finalizeProcessState: (state) => finalizeProcessState(state),
-
-	onQueueSnapshotChanged: () => refreshQueueDebugSnapshot(),
+	onQueueSnapshotChanged: refreshQueueDebugSnapshot,
 
 	onLoadRequestsDequeued: (requests) =>
 		streamingController.onLoadRequestsDequeued(requests),
@@ -289,14 +277,6 @@ function getNeighbors(chunk: Chunk): (Chunk | undefined)[] {
 	return n;
 }
 
-function applyMeshToChunk(chunk: Chunk, mesh: SelectedSavedMesh | null): void {
-	if (!mesh || (!mesh.opaque && !mesh.water && !mesh.cutout)) {
-		return;
-	}
-
-	createMeshFromData(chunk, mesh.opaque, mesh.water, mesh.cutout);
-}
-
 function refreshQueueDebugSnapshot(): void {
 	debug.refreshQueueSnapshot({
 		loadQueueLength: loadQueue.length,
@@ -315,10 +295,6 @@ function refreshQueueDebugSnapshot(): void {
 export function getDebugStats(): ChunkLoadingDebugStats {
 	refreshQueueDebugSnapshot();
 	return debugStats;
-}
-
-export async function refreshOpfsDebugStats(): Promise<void> {
-	// OPFS removed — debug stats zeroed out (no-op).
 }
 
 function buildQueuedIdSet(): Set<bigint> {
@@ -366,9 +342,6 @@ export function validateChunksAround(
 	const startZ = centerChunkZ - horizontalRadius;
 	const endZ = centerChunkZ + horizontalRadius;
 
-	const controller = streamingController;
-	const unloadSet = unloadQueueSet;
-
 	for (let y = startY; y <= endY; y++) {
 		for (let x = startX; x <= endX; x++) {
 			for (let z = startZ; z <= endZ; z++) {
@@ -381,9 +354,9 @@ export function validateChunksAround(
 				}
 
 				const hasDesiredState =
-					controller.getDesiredState(chunk.numericId) !== undefined;
+					streamingController.getDesiredState(chunk.numericId) !== undefined;
 
-				if (!hasDesiredState || chunk.isLoaded || unloadSet.has(chunk)) {
+				if (!hasDesiredState || chunk.isLoaded || unloadQueueSet.has(chunk)) {
 					continue;
 				}
 
@@ -538,12 +511,6 @@ function tryMutateDynamicBlock(
 	return false;
 }
 
-async function unloadChunkBoundEntitiesForChunkImpl(
-	chunk: Chunk,
-): Promise<void> {
-	await chunkEntityRegistry.unloadEntitiesForChunk(chunk);
-}
-
 export function flushModifiedChunks(
 	maxChunks = getUnloadBatchSize(),
 ): Promise<void> {
@@ -552,10 +519,6 @@ export function flushModifiedChunks(
 
 export function flushChunkBoundEntities(): Promise<void> {
 	return persistenceCoordinator.flushChunkBoundEntities(getUnloadBatchSize());
-}
-
-export async function flushOpfsStorage(): Promise<void> {
-	await WorldStorage.flush();
 }
 
 function scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
@@ -634,18 +597,7 @@ function applyHydratedChunkFromSavedData(
 	chunkHydration.applyHydratedChunkFromSavedData(chunk, savedData, true);
 }
 
-function loadFarLodChunk(
-	state: InFlightProcessState,
-	chunk: Chunk,
-	selectedMesh: SelectedSavedMesh | null,
-	hasDesiredMesh: boolean,
-): void {
-	if (hasDesiredMesh) {
-		chunk.loadLodOnlyFromStorage(false);
-		applyMeshToChunk(chunk, selectedMesh);
-		return;
-	}
-
+function loadFarLodChunk(state: InFlightProcessState, chunk: Chunk): void {
 	chunk.loadLodOnlyFromStorage(false);
 
 	if (!state.chunksNeedingFullHydration.has(chunk.id)) {
@@ -698,11 +650,8 @@ function applyLoadedChunkFromSavedData(
 	state.loadedFromStorageCount++;
 	chunk.lodLevel = targetLod;
 
-	const selectedMesh = null;
-	const hasDesiredMesh = false;
-
 	if (targetLod >= 2) {
-		loadFarLodChunk(state, chunk, selectedMesh, hasDesiredMesh);
+		loadFarLodChunk(state, chunk);
 		return;
 	}
 
@@ -875,11 +824,6 @@ export function getLightByWorldCoords(
 	return worldMutations.getLightByWorldCoords(worldX, worldY, worldZ);
 }
 
-export {
-	areChunksLoadedAround,
-	areChunksLod0ReadyAround,
-} from "./Loading/ChunkReadiness";
-
 function collectChunkEntityPayloads(): ReadonlyMap<
 	bigint,
 	SavedChunkEntityData[]
@@ -905,3 +849,8 @@ function collectChunkEntityPayloads(): ReadonlyMap<
 
 	return entitiesByChunk;
 }
+
+export {
+	areChunksLoadedAround,
+	areChunksLod0ReadyAround,
+} from "./Loading/ChunkReadiness";

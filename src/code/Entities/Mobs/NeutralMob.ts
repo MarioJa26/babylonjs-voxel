@@ -1,11 +1,4 @@
-import {
-	type LiteMetadata,
-	type Mesh,
-	onBeforeRender,
-	type SceneContext,
-	type Vec3,
-} from "@babylonjs/lite";
-import { MetadataContainer } from "@/code/Entities/MetadataContainer";
+import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
@@ -76,7 +69,7 @@ export abstract class NeutralMob {
 
 	#hp: number;
 	#maxHp: number;
-	#bodyMesh!: Mesh;
+	#position = vec3Zero();
 	#velocity = vec3Zero();
 	#collider: VoxelAabbCollider;
 	#state: NeutralMobState = NeutralMobState.Idle;
@@ -105,6 +98,8 @@ export abstract class NeutralMob {
 	abstract configureChunkLoader(scene: SceneContext): void;
 	abstract getWanderSpeed(): number;
 	abstract onDeath(): void;
+	/** Push the mob's current transform into its instance pool slots. */
+	protected abstract syncToInstances(): void;
 
 	static #observerRegistered = false;
 	static readonly #allMobs = new Set<NeutralMob>();
@@ -136,10 +131,7 @@ export abstract class NeutralMob {
 
 			frameProfiler.begin("mobs");
 			for (const mob of NeutralMob.#allMobs) {
-				const mesh = mob.#bodyMesh;
-				if (!mesh) continue;
-
-				const pos = mesh.position;
+				const pos = mob.#position;
 				const chunk = getChunk(
 					Math.floor(pos.x / Chunk.SIZE),
 					Math.floor(pos.y / Chunk.SIZE),
@@ -193,22 +185,21 @@ export abstract class NeutralMob {
 		);
 	}
 
-	protected setBodyMesh(mesh: Mesh): void {
-		this.#bodyMesh = mesh;
+	/** Spawn position for subclasses that own their instance slots. */
+	protected setPosition(x: number, y: number, z: number): void {
+		setVec3(this.#position, x, y, z);
+	}
 
-		let meta = mesh.metadata as MetadataContainer | undefined;
-		if (!meta) {
-			meta = new MetadataContainer();
-			mesh.metadata = meta as unknown as LiteMetadata;
-		}
+	protected get facingYaw(): number {
+		return this.#facingAngle;
+	}
 
-		meta.set("mob", this);
-		meta.set("use", (player: Player) => this.use(player));
-
+	/** Register chunk binding + tick loop after instance slots are claimed. */
+	protected finalizeRegistration(): void {
 		this.configureChunkLoader(this.#scene);
 
 		this.#chunkBindingHandle = registerChunkBoundEntity({
-			getWorldPosition: () => this.#bodyMesh.position,
+			getWorldPosition: () => this.#position,
 			unload: () => this.dispose(),
 			isAlive: () => !this.#isDisposed,
 			serializeForChunkReload: () => this.#serializeForChunkReload(),
@@ -223,7 +214,7 @@ export abstract class NeutralMob {
 	}
 
 	get position(): Vec3 {
-		return this.#bodyMesh.position as unknown as Vec3;
+		return this.#position;
 	}
 
 	get hp(): number {
@@ -263,8 +254,6 @@ export abstract class NeutralMob {
 		if (this.#isDisposed) return;
 
 		this.#isDisposed = true;
-
-		(this.#bodyMesh.metadata as MetadataContainer | undefined)?.delete("mob");
 
 		unregisterChunkBoundEntity(this.#chunkBindingHandle);
 		this.#chunkBindingHandle = undefined;
@@ -344,7 +333,7 @@ export abstract class NeutralMob {
 			return;
 		}
 
-		const pos = this.#bodyMesh.position as unknown as Vec3;
+		const pos = this.#position;
 		const velocity = this.#velocity;
 
 		let currentSpeed = this.#wanderSpeed;
@@ -547,15 +536,14 @@ export abstract class NeutralMob {
 		if (Math.abs(velocity.x) < 0.03) velocity.x = 0;
 		if (Math.abs(velocity.z) < 0.03) velocity.z = 0;
 
-		if (this.#state === NeutralMobState.Wander) {
-			this.#bodyMesh.rotation.y = this.#facingAngle;
-		}
+		// Publish the (possibly moved) transform to this mob's instance slots.
+		this.syncToInstances();
 	}
 
 	#serializeForChunkReload(): SavedChunkEntityData | null {
 		if (this.#isDisposed) return null;
 
-		const pos = this.#bodyMesh.position;
+		const pos = this.#position;
 		const extra = this.getExtraPayload();
 
 		return {
