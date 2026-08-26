@@ -624,7 +624,7 @@ export class NetClient {
 		this.encoder.reset();
 		this.encoder.writeUint8(MessageType.MobDamage);
 		this.encoder.writeUint16(mobId);
-		this.encoder.writeUint8(damage);
+		this.encoder.writeFloat32(damage);
 		room.sendBytes("binary", this.encoder.getBytes());
 	}
 
@@ -636,6 +636,7 @@ export class NetClient {
 		vx: number,
 		vy: number,
 		vz: number,
+		arrowType: number,
 	): void {
 		const room = this.getConnectedRoom();
 		if (!room) return;
@@ -648,6 +649,7 @@ export class NetClient {
 		this.encoder.writeFloat32(vx);
 		this.encoder.writeFloat32(vy);
 		this.encoder.writeFloat32(vz);
+		this.encoder.writeUint8(arrowType);
 		room.sendBytes("binary", this.encoder.getBytes());
 	}
 

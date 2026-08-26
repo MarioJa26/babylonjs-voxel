@@ -281,6 +281,13 @@ export class PlayerInventory {
 		return false;
 	}
 
+	/** The item currently selected in the hotbar, or null if the slot is empty. */
+	public getSelectedHotbarItem(): Item | null {
+		const slot =
+			this.#inventorySlots[0]?.[this.#player.playerHud.selectedHotbarSlot];
+		return slot?.item ?? null;
+	}
+
 	public removeItems(itemId: number, count: number): void {
 		if (count <= 0) return;
 

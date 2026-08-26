@@ -1,5 +1,6 @@
 ﻿import type { SceneContext } from "@babylonjs/lite";
 import { onSceneDispose } from "@babylonjs/lite";
+import { getArrowTooltipStats } from "@/code/Entities/ArrowTypes";
 import {
 	closeUi,
 	isUiOpen,
@@ -1262,7 +1263,10 @@ export class PlayerHud {
 
 				nameDiv.textContent = item.name;
 
-				const desc = item.description;
+				const arrowStats = getArrowTooltipStats(item.itemId);
+				const desc = arrowStats
+					? `${item.description}\n${arrowStats}`
+					: item.description;
 				let descDiv = nameDiv.nextElementSibling as HTMLDivElement | null;
 
 				if (desc) {

@@ -1,5 +1,9 @@
 import { vec3 } from "@babylonjs/lite";
 import { Arrow } from "@/code/Entities/Arrow";
+import {
+	ARROW_TYPES,
+	getArrowTypeIndexByItemId,
+} from "@/code/Entities/ArrowTypes";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "@/code/Maps/Map1";
@@ -16,8 +20,11 @@ import { getRegisteredItemById } from "./ItemRegistry";
 
 export type ItemUseAction = (player: Player) => void;
 
-/** Item ID of the Arrow consumable the bow shoots. */
-const ARROW_ITEM_ID = 1023;
+/** Item IDs of every arrow ammunition type, in selection priority order. */
+const ARROW_ITEM_IDS: readonly number[] = ARROW_TYPES.map((t) => t.itemId);
+
+/** Item ID of the default (wooden) arrow used in creative mode. */
+const DEFAULT_ARROW_ITEM_ID = ARROW_TYPES[0]!.itemId;
 
 /** Arrow muzzle speed in blocks per second. */
 const ARROW_SPEED = 30;
@@ -62,9 +69,27 @@ function useBow(player: Player): void {
 	const inventory = player.playerInventory;
 	const isCreative = player.stats.gamemode === Gamemodes.Creative;
 
-	// Creative fires freely (testing); survival consumes one Arrow per shot.
-	if (!isCreative && !inventory.hasItem(ARROW_ITEM_ID, 1)) {
-		return;
+	// Pick which arrow to fire: the selected hotbar item if it is an arrow,
+	// otherwise the first available arrow type by priority order.
+	let arrowItemId: number;
+
+	if (isCreative) {
+		const selected = inventory.getSelectedHotbarItem();
+		arrowItemId =
+			selected !== null && ARROW_ITEM_IDS.includes(selected.itemId)
+				? selected.itemId
+				: DEFAULT_ARROW_ITEM_ID;
+	} else {
+		const selected = inventory.getSelectedHotbarItem();
+		const selectedId =
+			selected !== null && ARROW_ITEM_IDS.includes(selected.itemId)
+				? selected.itemId
+				: null;
+
+		arrowItemId =
+			selectedId ?? ARROW_ITEM_IDS.find((id) => inventory.hasItem(id, 1)) ?? -1;
+
+		if (arrowItemId < 0) return;
 	}
 
 	// Both camera getters may return shared scratch objects, so consume their
@@ -85,7 +110,18 @@ function useBow(player: Player): void {
 	const velocityY = forwardY * ARROW_SPEED;
 	const velocityZ = forwardZ * ARROW_SPEED;
 
-	new Arrow(player, spawnX, spawnY, spawnZ, velocityX, velocityY, velocityZ);
+	const arrowTypeIndex = getArrowTypeIndexByItemId(arrowItemId);
+
+	new Arrow(
+		player,
+		spawnX,
+		spawnY,
+		spawnZ,
+		velocityX,
+		velocityY,
+		velocityZ,
+		arrowTypeIndex,
+	);
 
 	// Multiplayer relays the trajectory so other clients render the same
 	// arrow. The server excludes the shooter from the broadcast.
@@ -99,12 +135,13 @@ function useBow(player: Player): void {
 			velocityX,
 			velocityY,
 			velocityZ,
+			arrowTypeIndex,
 		);
 		Arrow.ensureNetworkHandler(netClient);
 	}
 
 	if (!isCreative) {
-		inventory.removeItems(ARROW_ITEM_ID, 1);
+		inventory.removeItems(arrowItemId, 1);
 	}
 }
 

@@ -243,6 +243,8 @@ export interface ArrowTrajectoryData {
 	vx: number;
 	vy: number;
 	vz: number;
+	/** Arrow material type index (see ArrowTypes.ARROW_TYPES). */
+	arrowType: number;
 }
 
 /**

@@ -17,12 +17,12 @@ import {
 	quatFromLookDirectionRH,
 	removeFromScene,
 } from "@babylonjs/lite";
+import { type ArrowTypeDef, getArrowTypeDef } from "@/code/Entities/ArrowTypes";
 import type { Mob } from "@/code/Entities/Mobs/Mob";
 import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
 import { createBoxMobMesh } from "@/code/Entities/Mobs/MobMesh";
 import { getPRNGUnit2 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
-import { Color3 } from "@/code/Lib/Math";
 import {
 	MOB_DRIP_INTERVAL_MS,
 	playArrowHit,
@@ -40,7 +40,6 @@ import type { Player } from "../Player/Player";
 
 const ARROW_MESH_NAME = "arrow";
 const ARROW_MATERIAL_NAME = "arrowMat";
-const ARROW_COLOR = new Color3(0.45, 0.32, 0.18);
 
 const ARROW_LENGTH = 0.55;
 const ARROW_HALF_LENGTH = ARROW_LENGTH * 0.5;
@@ -48,7 +47,6 @@ const ARROW_TIP_OFFSET = ARROW_HALF_LENGTH - ARROW_LENGTH * 0.2;
 
 const GRAVITY = -18;
 const MAX_LIFETIME_S = 25;
-const STICK_TIME_S = 15;
 const MAX_SUBSTEP = 0.5;
 const INV_MAX_SUBSTEP = 1 / MAX_SUBSTEP;
 /** Frame-spike guard: never simulate more than this in one tick. */
@@ -57,12 +55,11 @@ const MAX_TICK_DT = 0.1;
 const MIN_DIRECTION_LENGTH_SQ = 1e-6;
 const VERTICAL_DIRECTION_THRESHOLD = 0.99;
 
-const ARROW_ITEM_ID = 1023;
-
 const WORLD_UP = Object.freeze({ x: 0, y: 1, z: 0 });
 const VERTICAL_UP = Object.freeze({ x: 0, y: 0, z: 1 });
 
-export const ARROW_DAMAGE = 2;
+/** How often buffered remote bleed damage is flushed (seconds). */
+const BLEED_FLUSH_INTERVAL_S = 0.5;
 
 interface ArrowMobTransform {
 	x: number;
@@ -87,6 +84,18 @@ export class Arrow {
 	#disposed = false;
 
 	#stuckMobFollow: ArrowMobFollow | null = null;
+
+	/** Ammunition stats for this arrow's material type. */
+	readonly #arrowDef: ArrowTypeDef;
+
+	/**
+	 * Bleed target. Only the firing client tracks bleed so damage is reported
+	 * once (received/relayed arrows let the shooter's client own the damage).
+	 */
+	#bleedMobId = -1;
+	#bleedMobLocal: Mob | null = null;
+	#bleedAccumulator = 0;
+	#bleedFlushTimer = 0;
 
 	readonly #stuckLocalOffset = { x: 0, y: 0, z: 0 };
 	readonly #stuckDirLocal = { x: 0, y: 1, z: 0 };
@@ -113,7 +122,16 @@ export class Arrow {
 
 			const spawn = decodeArrowSpawn(data);
 
-			new Arrow(null, spawn.x, spawn.y, spawn.z, spawn.vx, spawn.vy, spawn.vz);
+			new Arrow(
+				null,
+				spawn.x,
+				spawn.y,
+				spawn.z,
+				spawn.vx,
+				spawn.vy,
+				spawn.vz,
+				spawn.arrowType,
+			);
 		});
 	}
 
@@ -152,18 +170,20 @@ export class Arrow {
 		vx: number,
 		vy: number,
 		vz: number,
+		arrowTypeIndex = 0,
 	) {
 		this.#shooter = shooter;
 		this.#vx = vx;
 		this.#vy = vy;
 		this.#vz = vz;
+		this.#arrowDef = getArrowTypeDef(arrowTypeIndex);
 
 		const mesh = createBoxMobMesh(
 			ARROW_MESH_NAME,
 			0.06,
 			0.06,
 			ARROW_LENGTH,
-			ARROW_COLOR,
+			this.#arrowDef.color,
 			ARROW_MATERIAL_NAME,
 		);
 
@@ -296,6 +316,8 @@ export class Arrow {
 				return;
 			}
 
+			this.#applyBleed(dt);
+
 			const cosYaw = Math.cos(mob.yaw);
 			const sinYaw = Math.sin(mob.yaw);
 			const offset = this.#stuckLocalOffset;
@@ -400,7 +422,7 @@ export class Arrow {
 		this.#vy = 0;
 		this.#vz = 0;
 		this.#stuck = true;
-		this.#stuckTimer = STICK_TIME_S;
+		this.#stuckTimer = this.#arrowDef.stickTime;
 
 		return true;
 	}
@@ -427,7 +449,16 @@ export class Arrow {
 
 			const shooter = this.#shooter;
 
-			shooter?.networkManager?.netClient?.sendMobDamage(hit.id, ARROW_DAMAGE);
+			shooter?.networkManager?.netClient?.sendMobDamage(
+				hit.id,
+				this.#arrowDef.damage,
+			);
+
+			// Bleed is owned by the firing client; relayed arrows (no shooter)
+			// let the originator report the damage.
+			if (shooter !== null) {
+				this.#bleedMobId = hit.id;
+			}
 
 			this.#stickTipAt(hit.x, hit.y, hit.z, () =>
 				remoteManager.getMobPosition(hit.id),
@@ -474,9 +505,13 @@ export class Arrow {
 		const hitY = startY + (endY - startY) * bestT;
 		const hitZ = startZ + (endZ - startZ) * bestT;
 
-		bestMob.takeDamage(ARROW_DAMAGE);
+		bestMob.takeDamage(this.#arrowDef.damage);
 
 		const hitMob = bestMob;
+
+		if (this.#shooter !== null) {
+			this.#bleedMobLocal = hitMob;
+		}
 
 		this.#stickTipAt(hitX, hitY, hitZ, () =>
 			hitMob.isDisposed
@@ -490,6 +525,46 @@ export class Arrow {
 		);
 
 		return true;
+	}
+
+	#applyBleed(dt: number): void {
+		if (this.#bleedMobId < 0 && this.#bleedMobLocal === null) return;
+
+		this.#bleedAccumulator += dt * this.#arrowDef.bleedPerSecond;
+
+		if (this.#bleedMobId >= 0) {
+			// Network: flush accumulated fractional bleed on a fixed cadence to
+			// bound message volume while still applying sub-integer damage.
+			this.#bleedFlushTimer += dt;
+			if (this.#bleedFlushTimer >= BLEED_FLUSH_INTERVAL_S) {
+				this.#bleedFlushTimer -= BLEED_FLUSH_INTERVAL_S;
+				const amount = this.#bleedAccumulator;
+				this.#bleedAccumulator = 0;
+				if (amount > 0) {
+					this.#shooter?.networkManager?.netClient?.sendMobDamage(
+						this.#bleedMobId,
+						amount,
+					);
+				}
+			}
+		} else if (this.#bleedMobLocal !== null) {
+			// Local: apply the fractional bleed every frame for smooth damage.
+			const amount = this.#bleedAccumulator;
+			this.#bleedAccumulator = 0;
+			if (amount > 0) this.#bleedMobLocal.takeDamage(amount);
+		}
+	}
+
+	/** Send any residual bleed damage still buffered for a remote mob. */
+	#flushBleed(): void {
+		if (this.#bleedMobId >= 0 && this.#bleedAccumulator > 0) {
+			const amount = this.#bleedAccumulator;
+			this.#bleedAccumulator = 0;
+			this.#shooter?.networkManager?.netClient?.sendMobDamage(
+				this.#bleedMobId,
+				amount,
+			);
+		}
 	}
 
 	#stickTipAt(x: number, y: number, z: number, follow: ArrowMobFollow): void {
@@ -561,14 +636,14 @@ export class Arrow {
 		this.#vy = 0;
 		this.#vz = 0;
 		this.#stuck = true;
-		this.#stuckTimer = STICK_TIME_S;
+		this.#stuckTimer = this.#arrowDef.stickTime;
 	}
 
 	dropAsItem(): void {
 		if (this.#disposed) return;
 
 		const position = this.#mesh.position;
-		const item = Item.createById(ARROW_ITEM_ID);
+		const item = Item.createById(this.#arrowDef.itemId);
 
 		item.stackSize = 1;
 
@@ -611,6 +686,7 @@ export class Arrow {
 
 		this.#disposed = true;
 		this.#stuckMobFollow = null;
+		this.#flushBleed();
 
 		const arrows = Arrow.#allArrows;
 		const index = this.#arrayIndex;

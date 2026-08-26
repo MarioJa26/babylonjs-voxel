@@ -1893,8 +1893,8 @@ export class VoxelRoom extends Room {
 				const player = this.players.get(client.sessionId);
 				if (!player) return;
 
-				// Clamp hostile values; arrows deal 2, melee 1.
-				if (damage.damage < 1 || damage.damage > 20) return;
+				// Clamp hostile values; arrows may deal fractional damage (e.g. 0.4).
+				if (damage.damage <= 0 || damage.damage > 20) return;
 
 				const mob = this.mobSim.findMob(damage.mobId);
 				if (!mob) return;
@@ -1944,6 +1944,7 @@ export class VoxelRoom extends Room {
 						vx: arrow.vx,
 						vy: arrow.vy,
 						vz: arrow.vz,
+						arrowType: arrow.arrowType,
 					}),
 					{ except: client },
 				);

@@ -1499,19 +1499,19 @@ export function decodeMobSpawnRequest(buffer: Uint8Array): MobSpawnRequestData {
 	};
 }
 
-// MobDamage (C→S): [type:1][mobId:u16][damage:u8]
+// MobDamage (C→S): [type:1][mobId:u16][damage:f32]  (fractional, e.g. 0.4)
 
 export function encodeMobDamage(data: MobDamageData): Uint8Array {
-	const enc = new BinaryEncoder(1 + 2 + 1);
+	const enc = new BinaryEncoder(1 + 2 + 4);
 	enc.writeUint8(MessageType.MobDamage);
 	enc.writeUint16(data.mobId);
-	enc.writeUint8(data.damage);
+	enc.writeFloat32(data.damage);
 	return enc.getBytes();
 }
 
 export function decodeMobDamage(buffer: Uint8Array): MobDamageData {
 	const dec = new BinaryDecoder(buffer, 1);
-	return { mobId: dec.readUint16(), damage: dec.readUint8() };
+	return { mobId: dec.readUint16(), damage: dec.readFloat32() };
 }
 
 // ArrowShoot (C→S) / ArrowSpawn (S→C):
@@ -1537,7 +1537,7 @@ function encodeArrowTrajectory(
 	type: number,
 	data: ArrowTrajectoryData,
 ): Uint8Array {
-	const enc = new BinaryEncoder(1 + 4 * 6);
+	const enc = new BinaryEncoder(1 + 4 * 6 + 1);
 	enc.writeUint8(type);
 	enc.writeFloat32(data.x);
 	enc.writeFloat32(data.y);
@@ -1545,6 +1545,7 @@ function encodeArrowTrajectory(
 	enc.writeFloat32(data.vx);
 	enc.writeFloat32(data.vy);
 	enc.writeFloat32(data.vz);
+	enc.writeUint8(data.arrowType);
 	return enc.getBytes();
 }
 
@@ -1557,6 +1558,7 @@ function decodeArrowTrajectory(buffer: Uint8Array): ArrowTrajectoryData {
 		vx: dec.readFloat32(),
 		vy: dec.readFloat32(),
 		vz: dec.readFloat32(),
+		arrowType: dec.readUint8(),
 	};
 }
 
