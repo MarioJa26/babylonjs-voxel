@@ -3,9 +3,10 @@ import { Color3 } from "@/code/Lib/Math";
 /**
  * Arrow material types.
  *
- * Each type reuses the same arrow mesh and texture but carries its own
- * combat stats: direct hit damage, how long it stays embedded in a mob
+ * Each type has its own inventory icon (from public/texture/items/item/arrow/)
+ * and combat stats: direct hit damage, how long it stays embedded in a mob
  * (stick time), and how much bleed damage it deals per second while stuck.
+ * The in-flight mesh remains a colored box (tint = color) — icons use textures.
  */
 export type ArrowTypeName =
 	| "wood"
@@ -20,8 +21,12 @@ export interface ArrowTypeDef {
 	type: ArrowTypeName;
 	/** Item id of the matching ammunition item. */
 	itemId: number;
-	/** Tint applied to the shared arrow mesh. */
+	/** Tint applied to the box arrow mesh. */
 	color: Color3;
+	/** Inventory icon path (under /public). */
+	icon: string;
+	/** Texture path for potential future textured mesh (under /public). */
+	texture: string;
 	/** Damage dealt on a direct hit. */
 	damage: number;
 	/** Seconds the arrow remains embedded in a mob before dropping. */
@@ -35,6 +40,8 @@ export const ARROW_TYPES: readonly ArrowTypeDef[] = [
 		type: "wood",
 		itemId: 1023,
 		color: new Color3(0.45, 0.32, 0.18),
+		icon: "/texture/items/item/arrow/woodarrow.png",
+		texture: "/texture/items/item/arrow/woodarrow.png",
 		damage: 0.4,
 		stickTime: 5,
 		bleedPerSecond: 0.2,
@@ -43,6 +50,8 @@ export const ARROW_TYPES: readonly ArrowTypeDef[] = [
 		type: "iron",
 		itemId: 1040,
 		color: new Color3(0.75, 0.78, 0.82),
+		icon: "/texture/items/item/arrow/ironarrow.png",
+		texture: "/texture/items/item/arrow/ironarrow.png",
 		damage: 4.0,
 		stickTime: 12,
 		bleedPerSecond: 1.0,
@@ -51,6 +60,8 @@ export const ARROW_TYPES: readonly ArrowTypeDef[] = [
 		type: "gold",
 		itemId: 1041,
 		color: new Color3(0.95, 0.8, 0.2),
+		icon: "/texture/items/item/arrow/goldarrow.png",
+		texture: "/texture/items/item/arrow/goldarrow.png",
 		damage: 3.0,
 		stickTime: 15,
 		bleedPerSecond: 1.0,
@@ -59,6 +70,8 @@ export const ARROW_TYPES: readonly ArrowTypeDef[] = [
 		type: "coal",
 		itemId: 1042,
 		color: new Color3(0.15, 0.15, 0.18),
+		icon: "/texture/items/item/arrow/coalarrow.png",
+		texture: "/texture/items/item/arrow/coalarrow.png",
 		damage: 2.0,
 		stickTime: 5,
 		bleedPerSecond: 1.5,
@@ -67,6 +80,8 @@ export const ARROW_TYPES: readonly ArrowTypeDef[] = [
 		type: "copper",
 		itemId: 1043,
 		color: new Color3(0.72, 0.45, 0.25),
+		icon: "/texture/items/item/arrow/copperarrow.png",
+		texture: "/texture/items/item/arrow/copperarrow.png",
 		damage: 3.0,
 		stickTime: 14,
 		bleedPerSecond: 1.0,
@@ -75,6 +90,8 @@ export const ARROW_TYPES: readonly ArrowTypeDef[] = [
 		type: "glass",
 		itemId: 1044,
 		color: new Color3(0.55, 0.85, 0.9),
+		icon: "/texture/items/item/arrow/glassarrow.png",
+		texture: "/texture/items/item/arrow/glassarrow.png",
 		damage: 4,
 		stickTime: 4,
 		bleedPerSecond: 2.5,

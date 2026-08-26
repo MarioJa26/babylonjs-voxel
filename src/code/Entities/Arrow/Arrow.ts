@@ -453,6 +453,8 @@ export class Arrow {
 
 			const shooter = this.#shooter;
 
+			shooter?.playerHud.crossHair.showHitMarker();
+
 			shooter?.networkManager?.netClient?.sendMobDamage(
 				hit.id,
 				this.#arrowDef.damage,
@@ -512,6 +514,8 @@ export class Arrow {
 		bestMob.takeDamage(this.#arrowDef.damage);
 
 		const hitMob = bestMob;
+
+		this.#shooter?.playerHud.crossHair.showHitMarker();
 
 		if (this.#shooter !== null) {
 			this.#bleedMobLocal = hitMob;
@@ -645,6 +649,17 @@ export class Arrow {
 
 	dropAsItem(): void {
 		if (this.#disposed) return;
+
+		// In multiplayer, relayed arrows (no local shooter) must not drop
+		// loot locally: the owning client's drop is server-authoritative and
+		// broadcast to everyone. Without this every client that simulated the
+		// same arrow would emit a duplicate dropped item.
+		if (
+			this.#shooter === null &&
+			Map1.mainPlayer?.networkManager?.netClient?.isConnected
+		) {
+			return;
+		}
 
 		const position = this.#mesh.position;
 		const item = Item.createById(this.#arrowDef.itemId);

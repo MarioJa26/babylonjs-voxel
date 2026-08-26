@@ -69,28 +69,50 @@ function useBow(player: Player): void {
 	const inventory = player.playerInventory;
 	const isCreative = player.stats.gamemode === Gamemodes.Creative;
 
-	// Pick which arrow to fire: the selected hotbar item if it is an arrow,
-	// otherwise the first available arrow type by priority order.
+	// Arrow selection priority (Minecraft-like):
+	// 1. Slot to the right of the bow in the hotbar
+	// 2. Slot to the left of the bow in the hotbar
+	// 3. Full inventory search by priority order (wood → iron → gold → ...)
+	// Creative always falls back to wood (unlimited ammo).
 	let arrowItemId: number;
 
-	if (isCreative) {
-		const selected = inventory.getSelectedHotbarItem();
-		arrowItemId =
-			selected !== null && ARROW_ITEM_IDS.includes(selected.itemId)
-				? selected.itemId
-				: DEFAULT_ARROW_ITEM_ID;
-	} else {
-		const selected = inventory.getSelectedHotbarItem();
-		const selectedId =
-			selected !== null && ARROW_ITEM_IDS.includes(selected.itemId)
-				? selected.itemId
-				: null;
+	const hotbarRow = inventory.inventory[0];
+	const bowSlot = player.playerHud.selectedHotbarSlot;
+	const slotCount = hotbarRow.length;
 
-		arrowItemId =
-			selectedId ?? ARROW_ITEM_IDS.find((id) => inventory.hasItem(id, 1)) ?? -1;
+	// Return the arrow item id if the slot holds an arrow, else null.
+	const arrowAtSlot = (slotIndex: number): number | null => {
+		if (slotIndex < 0 || slotIndex >= slotCount) return null;
+		const item = hotbarRow[slotIndex]?.item;
+		if (item === null || item === undefined) return null;
+		return ARROW_ITEM_IDS.includes(item.itemId) ? item.itemId : null;
+	};
 
-		if (arrowItemId < 0) return;
+	// Use the arrow in the slot *closest* to the bow. Scan outward by
+	// distance from the bow slot (1, 2, 3, …), checking the right side
+	// first then the left. This guarantees the nearest ammunition is
+	// consumed, so the dropped arrow keeps the type you actually fired.
+	const maxDistance = Math.max(bowSlot, slotCount - 1 - bowSlot);
+	let selected: number | null = null;
+
+	for (let d = 1; d <= maxDistance && selected === null; d++) {
+		selected = arrowAtSlot(bowSlot + d) ?? arrowAtSlot(bowSlot - d);
 	}
+
+	// Fall back to any arrow anywhere in the inventory if no hotbar slot
+	// holds one.
+	if (selected === null) {
+		selected = ARROW_ITEM_IDS.find((id) => inventory.hasItem(id, 1)) ?? -1;
+	}
+
+	arrowItemId = selected;
+
+	// Creative fallback: unlimited wood arrows if no arrow found
+	if (arrowItemId < 0 && isCreative) {
+		arrowItemId = DEFAULT_ARROW_ITEM_ID;
+	}
+
+	if (arrowItemId < 0) return;
 
 	// Both camera getters may return shared scratch objects, so consume their
 	// values synchronously without retaining the objects.

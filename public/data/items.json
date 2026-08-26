@@ -205,42 +205,42 @@
 		"id": 1023,
 		"name": "Wooden Arrow",
 		"description": "Ammunition for bows.\nLow damage, long embed time.",
-		"icon": "/texture/items/item/arrow/arrow_diff_1k.png",
+		"icon": "/texture/items/item/arrow/woodarrow.png",
 		"maxStack": 64
 	},
 	{
 		"id": 1040,
 		"name": "Iron Arrow",
 		"description": "Ammunition for bows.\nHigh damage, heavy bleed.",
-		"icon": "/texture/items/item/arrow/arrow_diff_1k.png",
+		"icon": "/texture/items/item/arrow/ironarrow.png",
 		"maxStack": 64
 	},
 	{
 		"id": 1041,
 		"name": "Gold Arrow",
 		"description": "Ammunition for bows.\nModerate damage, short embed time.",
-		"icon": "/texture/items/item/arrow/arrow_diff_1k.png",
+		"icon": "/texture/items/item/arrow/goldarrow.png",
 		"maxStack": 64
 	},
 	{
 		"id": 1042,
 		"name": "Coal Arrow",
 		"description": "Ammunition for bows.\nLong embed time, strong bleed.",
-		"icon": "/texture/items/item/arrow/arrow_diff_1k.png",
+		"icon": "/texture/items/item/arrow/coalarrow.png",
 		"maxStack": 64
 	},
 	{
 		"id": 1043,
 		"name": "Copper Arrow",
 		"description": "Ammunition for bows.\nModerate damage, steady bleed.",
-		"icon": "/texture/items/item/arrow/arrow_diff_1k.png",
+		"icon": "/texture/items/item/arrow/copperarrow.png",
 		"maxStack": 64
 	},
 	{
 		"id": 1044,
 		"name": "Glass Arrow",
 		"description": "Ammunition for bows.\nHighest damage, shatters fast.",
-		"icon": "/texture/items/item/arrow/arrow_diff_1k.png",
+		"icon": "/texture/items/item/arrow/glassarrow.png",
 		"maxStack": 64
 	},
 	{
