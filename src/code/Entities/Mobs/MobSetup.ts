@@ -11,14 +11,18 @@ import { MobRegistry, type MobSpawnConfig } from "./Mob";
 import { Sheep } from "./Sheep";
 import { Squid } from "./Squid";
 
+type MobFactoryEntry = {
+	readonly mobType: string;
+	readonly factory: (
+		x: number,
+		y: number,
+		z: number,
+		scene: SceneContext,
+	) => Mob;
+};
+
 /** Map MobTypeId to mob type name and factory function. */
-const MOB_FACTORIES: Record<
-	number,
-	{
-		mobType: string;
-		factory: (x: number, y: number, z: number, scene: SceneContext) => Mob;
-	}
-> = {
+const MOB_FACTORIES: Readonly<Partial<Record<number, MobFactoryEntry>>> = {
 	[MobTypeId.Chicken]: {
 		mobType: "chicken",
 		factory: (x, y, z, scene) => new Chicken(x, y, z, scene),
@@ -45,17 +49,37 @@ const MOB_FACTORIES: Record<
 	},
 };
 
-/** Build client spawn configs from centralized MobConfig. */
-const MOB_SPAWN_CONFIGS_CLIENT: MobSpawnConfig[] = Object.entries(
-	MOB_SPAWN_CONFIGS,
-).map(([typeId, spawnConfig]) => {
-	const factory = MOB_FACTORIES[Number(typeId)];
-	return {
-		mobType: factory.mobType,
-		factory: factory.factory,
-		...spawnConfig,
-	};
-});
+/**
+ * Build client spawn configurations once.
+ *
+ * The resulting objects are reused whenever a coordinator is created, avoiding
+ * repeated factory lookup, key conversion, and configuration allocation.
+ */
+function buildClientSpawnConfigs(): readonly MobSpawnConfig[] {
+	const typeIds = Object.keys(MOB_SPAWN_CONFIGS);
+	const configs = new Array<MobSpawnConfig>(typeIds.length);
+
+	for (let i = 0; i < typeIds.length; i++) {
+		const typeId = Number(typeIds[i]);
+		const factoryEntry = MOB_FACTORIES[typeId];
+
+		if (!factoryEntry) {
+			throw new Error(`Missing client mob factory for MobTypeId ${typeId}`);
+		}
+
+		const spawnConfig = MOB_SPAWN_CONFIGS[typeId];
+
+		configs[i] = {
+			...spawnConfig,
+			mobType: factoryEntry.mobType,
+			factory: factoryEntry.factory,
+		};
+	}
+
+	return configs;
+}
+
+const MOB_SPAWN_CONFIGS_CLIENT = buildClientSpawnConfigs();
 
 export function createMobCoordinator(
 	scene: SceneContext,
@@ -63,8 +87,8 @@ export function createMobCoordinator(
 ): SpawnCoordinator {
 	const registry = new MobRegistry();
 
-	for (const config of MOB_SPAWN_CONFIGS_CLIENT) {
-		registry.register(config);
+	for (let i = 0; i < MOB_SPAWN_CONFIGS_CLIENT.length; i++) {
+		registry.register(MOB_SPAWN_CONFIGS_CLIENT[i]);
 	}
 
 	Map1.mobRegistry = registry;

@@ -515,57 +515,102 @@ const UNIT_FACES: {
 export function buildMobModelGeometry(
 	parts: readonly MobPartSpec[],
 ): MobModelGeometry {
-	const positions: number[] = [];
-	const normals: number[] = [];
-	const uvs: number[] = [];
-	const colors: number[] = [];
-	const indices: number[] = [];
+	const FACE_COUNT = UNIT_FACES.length; // 6
+	const VERTICES_PER_FACE = 4;
+	const INDICES_PER_FACE = 6;
+	const POSITION_COMPONENTS = 3;
+	const NORMAL_COMPONENTS = 3;
+	const UV_COMPONENTS = 2;
+	const COLOR_COMPONENTS = 4;
 
-	const size = MOB_SKIN_SIZE;
-	// Half-texel inset so mip bleeding never crosses face borders.
+	const partCount = parts.length;
+	const verticesPerPart = FACE_COUNT * VERTICES_PER_FACE;
+	const indicesPerPart = FACE_COUNT * INDICES_PER_FACE;
+	const vertexCount = partCount * verticesPerPart;
+
+	const positions = new Float32Array(vertexCount * POSITION_COMPONENTS);
+	const normals = new Float32Array(vertexCount * NORMAL_COMPONENTS);
+	const uvs = new Float32Array(vertexCount * UV_COMPONENTS);
+	const colors = new Float32Array(vertexCount * COLOR_COMPONENTS);
+	const indices = new Uint32Array(partCount * indicesPerPart);
+
+	const inverseSkinSize = 1 / MOB_SKIN_SIZE;
 	const inset = 0.5;
 
-	for (const part of parts) {
-		// Limb tag packed into the R channel of the color attribute. Normals
-		// stay untouched so lighting is correct on every face.
+	let vertexOffset = 0;
+	let positionOffset = 0;
+	let normalOffset = 0;
+	let uvOffset = 0;
+	let colorOffset = 0;
+	let indexOffset = 0;
+
+	for (let partIndex = 0; partIndex < partCount; partIndex++) {
+		const part = parts[partIndex];
 		const partId = part.partId ?? 0;
 
-		for (const face of UNIT_FACES) {
-			const rect = part.uv[face.rect];
-			const u0 = (rect[0] + inset) / size;
-			const u1 = (rect[2] - inset) / size;
-			const vBottom = 1 - (rect[3] - inset) / size;
-			const vTop = 1 - (rect[1] + inset) / size;
+		const width = part.width;
+		const height = part.height;
+		const depth = part.depth;
+		const partX = part.x;
+		const partY = part.y;
+		const partZ = part.z;
+		const partUv = part.uv;
 
-			for (let i = 0; i < 4; i++) {
-				const v = face.verts[i];
-				positions.push(
-					v[0] * part.width + part.x,
-					v[1] * part.height + part.y,
-					v[2] * part.depth + part.z,
-				);
-				normals.push(face.normal[0], face.normal[1], face.normal[2]);
+		for (let faceIndex = 0; faceIndex < FACE_COUNT; faceIndex++) {
+			const face = UNIT_FACES[faceIndex];
+			const rect = partUv[face.rect];
 
-				// R = partId (limb tag); GBA unused.
-				colors.push(partId, 0, 0, 0);
+			const u0 = (rect[0] + inset) * inverseSkinSize;
+			const u1 = (rect[2] - inset) * inverseSkinSize;
+			const vBottom = 1 - (rect[3] - inset) * inverseSkinSize;
+			const vTop = 1 - (rect[1] + inset) * inverseSkinSize;
 
-				// Corner order: bottom-left, bottom-right, top-right, top-left.
-				uvs.push(
-					i === 0 || i === 3 ? u0 : u1,
-					i === 0 || i === 1 ? vBottom : vTop,
-				);
+			const normalX = face.normal[0];
+			const normalY = face.normal[1];
+			const normalZ = face.normal[2];
+			const faceVertexBase = vertexOffset;
+
+			for (
+				let vertexIndex = 0;
+				vertexIndex < VERTICES_PER_FACE;
+				vertexIndex++
+			) {
+				const vertex = face.verts[vertexIndex];
+
+				positions[positionOffset++] = vertex[0] * width + partX;
+				positions[positionOffset++] = vertex[1] * height + partY;
+				positions[positionOffset++] = vertex[2] * depth + partZ;
+
+				normals[normalOffset++] = normalX;
+				normals[normalOffset++] = normalY;
+				normals[normalOffset++] = normalZ;
+
+				uvs[uvOffset++] = vertexIndex === 0 || vertexIndex === 3 ? u0 : u1;
+				uvs[uvOffset++] =
+					vertexIndex === 0 || vertexIndex === 1 ? vBottom : vTop;
+
+				colors[colorOffset++] = partId;
+				colors[colorOffset++] = 0;
+				colors[colorOffset++] = 0;
+				colors[colorOffset++] = 0;
+
+				vertexOffset++;
 			}
 
-			const b = positions.length / 3 - 4;
-			indices.push(b, b + 2, b + 1, b, b + 3, b + 2);
+			indices[indexOffset++] = faceVertexBase;
+			indices[indexOffset++] = faceVertexBase + 2;
+			indices[indexOffset++] = faceVertexBase + 1;
+			indices[indexOffset++] = faceVertexBase;
+			indices[indexOffset++] = faceVertexBase + 3;
+			indices[indexOffset++] = faceVertexBase + 2;
 		}
 	}
 
 	return {
-		positions: new Float32Array(positions),
-		normals: new Float32Array(normals),
-		uvs: new Float32Array(uvs),
-		colors: new Float32Array(colors),
-		indices: new Uint32Array(indices),
+		positions,
+		normals,
+		uvs,
+		colors,
+		indices,
 	};
 }
