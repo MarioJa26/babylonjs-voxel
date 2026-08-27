@@ -38,17 +38,14 @@ import {
 	getSquidInstancePool,
 	SQUID_HIT_HALF,
 } from "@/code/Entities/Mobs/Squid";
+import { MobTypeId } from "../Entities/MobConfig";
 import type { NetClient } from "./NetClient";
 import {
 	BinaryDecoder,
 	decodeMobDespawn,
 	decodeMobSpawn,
 } from "./protocol/encoder";
-import {
-	MessageType,
-	MobTypeId,
-	type MobUpdateBatchEntry,
-} from "./protocol/messages";
+import { MessageType, type MobUpdateBatchEntry } from "./protocol/messages";
 
 /** Server yaw byte (0-255) → radians (0..2π), matching MobSimulation. */
 const YAW_BYTE_TO_RAD = (Math.PI * 2) / 255;

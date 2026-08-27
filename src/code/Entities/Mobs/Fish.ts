@@ -2,6 +2,7 @@ import { type SceneContext, vec3 } from "@babylonjs/lite";
 import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
+import { getMobStats, MobTypeId } from "../MobConfig";
 import { AquaticMob } from "./AquaticMob";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import type { MobPartSpec } from "./MobMesh";
@@ -16,8 +17,9 @@ import {
 
 const FISH_MOB_TYPE = "fish";
 const FISH_CHUNK_ENTITY_TYPE = "fish_v1";
-const FISH_DEFAULT_HP = 3;
-const FISH_WANDER_SPEED = 2.0;
+const FISH_STATS = getMobStats(MobTypeId.Fish);
+const FISH_DEFAULT_HP = FISH_STATS.hp;
+const FISH_WANDER_SPEED = FISH_STATS.speed;
 
 export const FISH_COLORS = [
 	new Color3(0.9, 0.6, 0.2),

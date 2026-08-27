@@ -4,6 +4,7 @@ import { Map1 } from "@/code/Maps/Map1";
 import { dropWorldItem } from "../../Player/Inventory/dropWorldItem";
 import { Item } from "../../Player/Inventory/Item";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
+import { getMobStats, MobTypeId } from "../MobConfig";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import type { MobPartSpec } from "./MobMesh";
 import {
@@ -21,8 +22,9 @@ import { NeutralMob } from "./NeutralMob";
 
 const COW_MOB_TYPE = "cow";
 const COW_CHUNK_ENTITY_TYPE = "cow_v1";
-const COW_DEFAULT_HP = 10;
-const COW_WANDER_SPEED = 1.4;
+const COW_STATS = getMobStats(MobTypeId.Cow);
+const COW_DEFAULT_HP = COW_STATS.hp;
+const COW_WANDER_SPEED = COW_STATS.speed;
 const LEATHER_DROP_BLOCK_ID = 1;
 
 const COW_PARTS: readonly MobPartSpec[] = [

@@ -2,6 +2,7 @@ import { type SceneContext, vec3 } from "@babylonjs/lite";
 import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
+import { getMobStats, MobTypeId } from "../MobConfig";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import type { MobPartSpec } from "./MobMesh";
 import {
@@ -18,8 +19,9 @@ import { NeutralMob } from "./NeutralMob";
 
 const CHICKEN_MOB_TYPE = "chicken";
 const CHICKEN_CHUNK_ENTITY_TYPE = "chicken_v1";
-const CHICKEN_DEFAULT_HP = 4;
-const CHICKEN_WANDER_SPEED = 1.8;
+const CHICKEN_STATS = getMobStats(MobTypeId.Chicken);
+const CHICKEN_DEFAULT_HP = CHICKEN_STATS.hp;
+const CHICKEN_WANDER_SPEED = CHICKEN_STATS.speed;
 
 // Chicken anatomy: body + head + beak + two wings + two legs. Every chicken
 // renders through this ONE shared thin-instanced mesh (1 draw call total).

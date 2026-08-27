@@ -18,8 +18,8 @@
  * blocks new spawns near players.
  */
 
+import { MOB_SPAWN_CONFIGS, MOB_STATS } from "@/code/Entities/MobConfig";
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
-import { MobTypeId } from "@/code/Network/protocol/messages.ts";
 import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding";
 import {
 	packChunkKeyFast,
@@ -69,82 +69,12 @@ export interface ServerMobEvent {
 	mob: ServerMob;
 }
 
-interface MobTypeConfig {
-	maxCount: number;
-	speed: number;
-	/** Half the mob's body height, used for voxel collision. */
-	halfHeight: number;
-	/** Hit points a freshly spawned mob of this type gets. */
-	hp: number;
-	/**
-	 * Squared radius (meters) within which a nearby player triggers panic.
-	 * Mobs whose proximity panic is disabled only flee when damaged.
-	 */
-	fleeRadiusSq: number;
-	/** True for water-native mobs that swim instead of walking on land. */
-	aquatic?: boolean;
-}
-
-const FLEE_RADIUS = 8;
-const FLEE_RADIUS_SQ = FLEE_RADIUS * FLEE_RADIUS;
 const FLEE_SPEED = 5;
 const FLEE_DURATION_MS = 3000; // How long a mob flees after being damaged
 
-const MOB_TYPE_CONFIGS: Record<number, MobTypeConfig> = {
-	[MobTypeId.Chicken]: {
-		maxCount: 30,
-		speed: 1.8,
-		// Half heights match the client's multi-part models (CHICKEN_HIT_HALF /
-		// SHEEP_HIT_HALF) so settleHeight anchors the body exactly where the
-		// client renders it — otherwise hit boxes and visuals diverge.
-		halfHeight: 0.45,
-		hp: 4,
-		fleeRadiusSq: FLEE_RADIUS_SQ,
-	},
-	[MobTypeId.Sheep]: {
-		maxCount: 20,
-		speed: 1.5,
-		halfHeight: 0.55,
-		hp: 8,
-		// Sheep don't panic from player proximity — only when damaged.
-		fleeRadiusSq: 0,
-	},
-	[MobTypeId.Cow]: {
-		maxCount: 10,
-		speed: 1.4,
-		halfHeight: 0.7,
-		hp: 10,
-		// Cows don't panic from player proximity — only when damaged.
-		fleeRadiusSq: 0,
-	},
-	[MobTypeId.Squid]: {
-		maxCount: 8,
-		speed: 1.6,
-		halfHeight: 0.45,
-		hp: 10,
-		fleeRadiusSq: 25,
-		aquatic: true,
-	},
-	[MobTypeId.Fish]: {
-		maxCount: 15,
-		speed: 2.0,
-		halfHeight: 0.15,
-		hp: 3,
-		fleeRadiusSq: 25,
-		aquatic: true,
-	},
-	[MobTypeId.Kraken]: {
-		maxCount: 2,
-		speed: 1.1,
-		halfHeight: 1.0,
-		hp: 80,
-		fleeRadiusSq: 25,
-		aquatic: true,
-	},
-};
-const MOB_TYPE_IDS = Object.keys(MOB_TYPE_CONFIGS).map(Number);
+const MOB_TYPE_IDS = Object.keys(MOB_STATS).map(Number);
 const TOTAL_MOB_CAP = MOB_TYPE_IDS.reduce(
-	(sum, typeId) => sum + MOB_TYPE_CONFIGS[typeId].maxCount,
+	(sum, typeId) => sum + MOB_SPAWN_CONFIGS[typeId].maxCount,
 	0,
 );
 
@@ -365,10 +295,10 @@ export class ServerMobSimulation {
 		deltaMs: number,
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
 	): void {
-		const config = MOB_TYPE_CONFIGS[mob.typeId];
+		const stats = MOB_STATS[mob.typeId];
 
 		// Aquatic mobs use water swimming AI instead of land pathfinding.
-		if (config.aquatic) {
+		if (stats.aquatic) {
 			this.updateAquaticMob(mob, deltaMs, players);
 			return;
 		}
@@ -416,16 +346,16 @@ export class ServerMobSimulation {
 			mob.stuckTimer = 0;
 		}
 		if (!fleeing) {
-			this.followWanderPath(mob, config.halfHeight, deltaMs);
+			this.followWanderPath(mob, stats.halfHeight, deltaMs);
 		}
 
-		const step = (fleeing ? FLEE_SPEED : config.speed) * (deltaMs / 1000);
+		const step = (fleeing ? FLEE_SPEED : stats.speed) * (deltaMs / 1000);
 		if (step > 0) {
 			const radians = (mob.yaw / 255) * Math.PI * 2;
 			const nx = mob.x + Math.sin(radians) * step;
 			const nz = mob.z + Math.cos(radians) * step;
 
-			if (!this.canMoveTo(mob, nx, nz, config.halfHeight)) {
+			if (!this.canMoveTo(mob, nx, nz, stats.halfHeight)) {
 				// Turn around, or sidestep while fleeing so a wall does not
 				// pin the mob while the player remains on the other side.
 				mob.yaw = (mob.yaw + (fleeing ? 64 : 128)) & 255;
@@ -444,7 +374,7 @@ export class ServerMobSimulation {
 
 			// Mobs don't swim — turn back before wading in.
 			if (
-				this.sampler.sample(nx, Math.floor(mob.y - config.halfHeight), nz) ===
+				this.sampler.sample(nx, Math.floor(mob.y - stats.halfHeight), nz) ===
 				BlockType.Water
 			) {
 				mob.yaw = (mob.yaw + 128) & 255;
@@ -452,7 +382,7 @@ export class ServerMobSimulation {
 			}
 		}
 
-		this.settleHeight(mob, config.halfHeight, deltaMs);
+		this.settleHeight(mob, stats.halfHeight, deltaMs);
 	}
 
 	/**
@@ -464,13 +394,13 @@ export class ServerMobSimulation {
 		deltaMs: number,
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
 	): void {
-		const config = MOB_TYPE_CONFIGS[mob.typeId];
+		const stats = MOB_STATS[mob.typeId];
 		const dt = deltaMs / 1000;
 
 		// Check if currently in water
-		const feetY = Math.floor(mob.y - config.halfHeight);
+		const feetY = Math.floor(mob.y - stats.halfHeight);
 		const centerY = Math.floor(mob.y);
-		const headY = Math.floor(mob.y + config.halfHeight - 0.01);
+		const headY = Math.floor(mob.y + stats.halfHeight - 0.01);
 		const feetBlock = this.sampler.sample(mob.x, feetY, mob.z);
 		const centerBlock = this.sampler.sample(mob.x, centerY, mob.z);
 		const headBlock = this.sampler.sample(mob.x, headY, mob.z);
@@ -525,7 +455,7 @@ export class ServerMobSimulation {
 		}
 
 		// Calculate movement
-		const speed = fleeing ? FLEE_SPEED : config.speed;
+		const speed = fleeing ? FLEE_SPEED : stats.speed;
 		const step = speed * dt;
 
 		if (step > 0) {
@@ -554,7 +484,7 @@ export class ServerMobSimulation {
 		// Vertical movement — buoyancy toward surface or sinking if beached
 		if (inWater) {
 			// Float toward water surface
-			const targetY = waterSurfaceY - config.halfHeight + 0.2;
+			const targetY = waterSurfaceY - stats.halfHeight + 0.2;
 			const error = targetY - mob.y;
 			mob.y += error * Math.min(1, dt * 3);
 		} else {
@@ -755,7 +685,7 @@ export class ServerMobSimulation {
 		mob: ServerMob,
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
 	): { x: number; y: number; z: number } | null {
-		const fleeRadiusSq = MOB_TYPE_CONFIGS[mob.typeId].fleeRadiusSq;
+		const fleeRadiusSq = MOB_STATS[mob.typeId].fleeRadiusSq;
 		if (fleeRadiusSq <= 0) return null;
 
 		let nearest: { x: number; y: number; z: number } | null = null;
@@ -917,8 +847,8 @@ export class ServerMobSimulation {
 			const typeId = this.pickSpawnType();
 			if (typeId === null) return;
 
-			const config = MOB_TYPE_CONFIGS[typeId];
-			const pos = this.findSpawnPosition(player, config);
+			const stats = MOB_STATS[typeId];
+			const pos = this.findSpawnPosition(player, typeId);
 			if (!pos) continue;
 
 			const mob: ServerMob = {
@@ -928,7 +858,7 @@ export class ServerMobSimulation {
 				y: pos.y,
 				z: pos.z,
 				yaw: Math.floor(Math.random() * 256),
-				hp: config.hp,
+				hp: stats.hp,
 				headingTimer:
 					WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
 				stuckTimer: 0,
@@ -957,8 +887,8 @@ export class ServerMobSimulation {
 		y: number,
 		z: number,
 	): ServerMob | null {
-		const config = MOB_TYPE_CONFIGS[typeId];
-		if (!config) return null;
+		const stats = MOB_STATS[typeId];
+		if (!stats) return null;
 		if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
 			return null;
 		}
@@ -966,7 +896,7 @@ export class ServerMobSimulation {
 		// Unknown chunk (not cached) — reject.
 		if (this.sampler.sample(x, y, z) === null) return null;
 
-		if (config.aquatic) {
+		if (stats.aquatic) {
 			// Aquatic mobs spawn in water — require water at body and head.
 			const bodyBlock = this.sampler.sample(x, y, z);
 			const headBlock = this.sampler.sample(x, y + 1, z);
@@ -987,7 +917,7 @@ export class ServerMobSimulation {
 			y,
 			z,
 			yaw: Math.floor(Math.random() * 256),
-			hp: config.hp,
+			hp: stats.hp,
 			headingTimer:
 				WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
 			stuckTimer: 0,
@@ -1028,8 +958,8 @@ export class ServerMobSimulation {
 		const available: number[] = [];
 
 		for (const typeId of MOB_TYPE_IDS) {
-			const config = MOB_TYPE_CONFIGS[typeId];
-			if ((this.naturalTypeCounts.get(typeId) ?? 0) < config.maxCount) {
+			const spawnConfig = MOB_SPAWN_CONFIGS[typeId];
+			if ((this.naturalTypeCounts.get(typeId) ?? 0) < spawnConfig.maxCount) {
 				available.push(typeId);
 			}
 		}
@@ -1135,8 +1065,8 @@ export class ServerMobSimulation {
 
 			const kept: PersistedMob[] = [];
 			for (const pm of persisted) {
-				const config = MOB_TYPE_CONFIGS[pm.typeId];
-				if (!config) continue; // Unknown type — drop.
+				const stats = MOB_STATS[pm.typeId];
+				if (!stats) continue; // Unknown type — drop.
 
 				// Already active (id collision) — keep it persisted.
 				if (this.mobs.has(pm.id)) {
@@ -1147,8 +1077,9 @@ export class ServerMobSimulation {
 				// Natural mobs count toward the per-type cap; if it's full,
 				// leave this one persisted until a slot frees up. Spawn-egg
 				// mobs are cap-exempt and always load back.
+				const spawnConfig = MOB_SPAWN_CONFIGS[pm.typeId];
 				const naturalCount = this.naturalTypeCounts.get(pm.typeId) ?? 0;
-				if (!pm.egg && naturalCount >= config.maxCount) {
+				if (!pm.egg && naturalCount >= spawnConfig.maxCount) {
 					kept.push(pm);
 					continue;
 				}
@@ -1200,7 +1131,7 @@ export class ServerMobSimulation {
 			y: pm.y,
 			z: pm.z,
 			yaw: pm.yaw,
-			hp: pm.hp ?? MOB_TYPE_CONFIGS[pm.typeId].hp,
+			hp: pm.hp ?? MOB_STATS[pm.typeId].hp,
 			headingTimer: pm.headingTimer,
 			stuckTimer: pm.stuckTimer,
 			fleeing: pm.fleeing,
@@ -1242,8 +1173,10 @@ export class ServerMobSimulation {
 
 	private findSpawnPosition(
 		player: { x: number; y: number; z: number },
-		config: MobTypeConfig,
+		typeId: number,
 	): { x: number; y: number; z: number } | null {
+		const stats = MOB_STATS[typeId];
+		const isAquatic = stats.aquatic;
 		const angle = Math.random() * Math.PI * 2;
 		const dist =
 			SPAWN_RING_MIN + Math.random() * (SPAWN_RING_MAX - SPAWN_RING_MIN);
@@ -1276,7 +1209,7 @@ export class ServerMobSimulation {
 				// Entries are packed values — match the set on the raw block id.
 				const blockId = unpackBlockId(blocks[columnBase + (localY << 5)]);
 
-				if (config.aquatic) {
+				if (isAquatic) {
 					// Aquatic mobs spawn in water — look for water blocks with
 					// water or air above (so they're not buried).
 					if (blockId !== BlockType.Water) continue;
@@ -1308,7 +1241,7 @@ export class ServerMobSimulation {
 
 					return {
 						x: wx + 0.5,
-						y: wy + 1.02 + config.halfHeight,
+						y: wy + 1.02 + stats.halfHeight,
 						z: wz + 0.5,
 					};
 				}

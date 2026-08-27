@@ -2,6 +2,7 @@
 
 import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import { CustomBoat } from "../Entities/CustomBoat";
+import { MobTypeId } from "../Entities/MobConfig";
 import { update as updateDistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import {
 	getBiome,
@@ -18,7 +19,6 @@ import {
 } from "../Maps/BlockBreakParticles";
 import { Map1 } from "../Maps/Map1";
 import { isEyeUnderwater } from "../Maps/UnderWaterEffect";
-import { MobTypeId } from "../Network/protocol/messages";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
 	getDebugStats,

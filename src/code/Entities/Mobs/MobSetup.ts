@@ -1,79 +1,61 @@
 import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { Map1 } from "../../Maps/Map1";
-import { BlockType } from "../../World/Texture/BlockType";
+import { MOB_SPAWN_CONFIGS, MobTypeId } from "../MobConfig";
 import { SpawnCoordinator } from "../SpawnCoordinator";
 import { Chicken } from "./Chicken";
 import { Cow } from "./Cow";
 import { Fish } from "./Fish";
 import { Kraken } from "./Kraken";
+import type { Mob } from "./Mob";
 import { MobRegistry, type MobSpawnConfig } from "./Mob";
 import { Sheep } from "./Sheep";
 import { Squid } from "./Squid";
 
-const GRASS_SPAWN_BLOCK_ID = BlockType.Grass001;
-const WATER_SPAWN_BLOCK_ID = BlockType.Water;
-
-const MOB_SPAWN_CONFIGS = [
+/** Map MobTypeId to mob type name and factory function. */
+const MOB_FACTORIES: Record<
+	number,
 	{
+		mobType: string;
+		factory: (x: number, y: number, z: number, scene: SceneContext) => Mob;
+	}
+> = {
+	[MobTypeId.Chicken]: {
 		mobType: "chicken",
-		factory: (x: number, y: number, z: number, scene: SceneContext) =>
-			new Chicken(x, y, z, scene),
-		maxCount: 15,
-		spawnWeight: 1,
-		spawnBlockId: GRASS_SPAWN_BLOCK_ID,
-		despawnable: false,
+		factory: (x, y, z, scene) => new Chicken(x, y, z, scene),
 	},
-	{
+	[MobTypeId.Sheep]: {
 		mobType: "sheep",
-		factory: (x: number, y: number, z: number, scene: SceneContext) =>
-			new Sheep(x, y, z, scene),
-		maxCount: 10,
-		spawnWeight: 1,
-		spawnBlockId: GRASS_SPAWN_BLOCK_ID,
-		despawnable: false,
-		spawnYOffset: 0.3,
+		factory: (x, y, z, scene) => new Sheep(x, y, z, scene),
 	},
-	{
+	[MobTypeId.Cow]: {
 		mobType: "cow",
-		factory: (x: number, y: number, z: number, scene: SceneContext) =>
-			new Cow(x, y, z, scene),
-		maxCount: 10,
-		spawnWeight: 1,
-		spawnBlockId: GRASS_SPAWN_BLOCK_ID,
-		despawnable: false,
-		spawnYOffset: 0.3,
+		factory: (x, y, z, scene) => new Cow(x, y, z, scene),
 	},
-	{
+	[MobTypeId.Squid]: {
 		mobType: "squid",
-		factory: (x: number, y: number, z: number, scene: SceneContext) =>
-			new Squid(x, y, z, scene),
-		maxCount: 8,
-		spawnWeight: 1,
-		spawnBlockId: WATER_SPAWN_BLOCK_ID,
-		despawnable: false,
-		spawnYOffset: 0.5,
+		factory: (x, y, z, scene) => new Squid(x, y, z, scene),
 	},
-	{
+	[MobTypeId.Fish]: {
 		mobType: "fish",
-		factory: (x: number, y: number, z: number, scene: SceneContext) =>
-			new Fish(x, y, z, scene),
-		maxCount: 15,
-		spawnWeight: 1.5,
-		spawnBlockId: WATER_SPAWN_BLOCK_ID,
-		despawnable: false,
-		spawnYOffset: 0.5,
+		factory: (x, y, z, scene) => new Fish(x, y, z, scene),
 	},
-	{
+	[MobTypeId.Kraken]: {
 		mobType: "kraken",
-		factory: (x: number, y: number, z: number, scene: SceneContext) =>
-			new Kraken(x, y, z, scene),
-		maxCount: 2,
-		spawnWeight: 0.15,
-		spawnBlockId: WATER_SPAWN_BLOCK_ID,
-		despawnable: false,
-		spawnYOffset: 0.5,
+		factory: (x, y, z, scene) => new Kraken(x, y, z, scene),
 	},
-] satisfies MobSpawnConfig[];
+};
+
+/** Build client spawn configs from centralized MobConfig. */
+const MOB_SPAWN_CONFIGS_CLIENT: MobSpawnConfig[] = Object.entries(
+	MOB_SPAWN_CONFIGS,
+).map(([typeId, spawnConfig]) => {
+	const factory = MOB_FACTORIES[Number(typeId)];
+	return {
+		mobType: factory.mobType,
+		factory: factory.factory,
+		...spawnConfig,
+	};
+});
 
 export function createMobCoordinator(
 	scene: SceneContext,
@@ -81,7 +63,7 @@ export function createMobCoordinator(
 ): SpawnCoordinator {
 	const registry = new MobRegistry();
 
-	for (const config of MOB_SPAWN_CONFIGS) {
+	for (const config of MOB_SPAWN_CONFIGS_CLIENT) {
 		registry.register(config);
 	}
 

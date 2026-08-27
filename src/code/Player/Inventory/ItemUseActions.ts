@@ -5,9 +5,9 @@ import {
 	getArrowTypeIndexByItemId,
 } from "@/code/Entities/Arrow/ArrowTypes";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
+import { MobTypeId } from "@/code/Entities/MobConfig";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "@/code/Maps/Map1";
-import { MobTypeId } from "@/code/Network/protocol/messages";
 import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import {
@@ -49,7 +49,7 @@ const BOAT_CHECK_HEIGHT = 2;
  * Multiplayer spawn eggs reference the server's MobTypeId. Singleplayer
  * spawns locally through client MobRegistry configurations keyed by mobType.
  */
-const SPAWN_EGG_MOB_TYPE_IDS: Readonly<Record<string, MobTypeId>> = {
+const SPAWN_EGG_MOB_TYPE_IDS: Readonly<Record<string, number>> = {
 	chicken: MobTypeId.Chicken,
 	sheep: MobTypeId.Sheep,
 	cow: MobTypeId.Cow,

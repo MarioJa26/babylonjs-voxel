@@ -4,6 +4,7 @@ import { Map1 } from "@/code/Maps/Map1";
 import { dropWorldItem } from "../../Player/Inventory/dropWorldItem";
 import { Item } from "../../Player/Inventory/Item";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
+import { getMobStats, MobTypeId } from "../MobConfig";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import type { MobPartSpec } from "./MobMesh";
 import {
@@ -19,8 +20,9 @@ import { NeutralMob } from "./NeutralMob";
 
 const SHEEP_MOB_TYPE = "sheep";
 const SHEEP_CHUNK_ENTITY_TYPE = "sheep_v1";
-const SHEEP_DEFAULT_HP = 8;
-const SHEEP_WANDER_SPEED = 1.5;
+const SHEEP_STATS = getMobStats(MobTypeId.Sheep);
+const SHEEP_DEFAULT_HP = SHEEP_STATS.hp;
+const SHEEP_WANDER_SPEED = SHEEP_STATS.speed;
 
 const WOOL_DROP_BLOCK_ID = 1;
 

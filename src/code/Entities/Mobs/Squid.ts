@@ -2,6 +2,7 @@ import { type SceneContext, vec3 } from "@babylonjs/lite";
 import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
+import { getMobStats, MobTypeId } from "../MobConfig";
 import { AquaticMob } from "./AquaticMob";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import type { MobPartSpec } from "./MobMesh";
@@ -14,8 +15,9 @@ import {
 
 const SQUID_MOB_TYPE = "squid";
 const SQUID_CHUNK_ENTITY_TYPE = "squid_v1";
-const SQUID_DEFAULT_HP = 10;
-const SQUID_WANDER_SPEED = 1.6;
+const SQUID_STATS = getMobStats(MobTypeId.Squid);
+const SQUID_DEFAULT_HP = SQUID_STATS.hp;
+const SQUID_WANDER_SPEED = SQUID_STATS.speed;
 
 function buildSquidParts(): readonly MobPartSpec[] {
 	const parts: MobPartSpec[] = [

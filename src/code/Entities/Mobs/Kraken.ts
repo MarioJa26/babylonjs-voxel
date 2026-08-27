@@ -2,6 +2,8 @@ import { type SceneContext, vec3 } from "@babylonjs/lite";
 import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
+import { getMobStats, MobTypeId } from "../MobConfig";
+import { AquaticMob } from "./AquaticMob";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import type { MobPartSpec } from "./MobMesh";
 import {
@@ -11,12 +13,12 @@ import {
 	KRAKEN_TENTACLE_UVS,
 	MOB_KRAKEN_SKIN_PATH,
 } from "./MobSkin";
-import { AquaticMob } from "./AquaticMob";
 
 const KRAKEN_MOB_TYPE = "kraken";
 const KRAKEN_CHUNK_ENTITY_TYPE = "kraken_v1";
-const KRAKEN_DEFAULT_HP = 80;
-const KRAKEN_WANDER_SPEED = 1.1;
+const KRAKEN_STATS = getMobStats(MobTypeId.Kraken);
+const KRAKEN_DEFAULT_HP = KRAKEN_STATS.hp;
+const KRAKEN_WANDER_SPEED = KRAKEN_STATS.speed;
 
 function buildKrakenParts(): readonly MobPartSpec[] {
 	const parts: MobPartSpec[] = [

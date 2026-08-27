@@ -172,22 +172,6 @@ export interface ChatMessageData {
 	message: string;
 }
 
-/**
- * Server-authoritative mob species. Mirrors the client's singleplayer mob
- * registry (MobSetup.ts) so both sides agree on what a type id renders as.
- * Pure constants — safe to import from the server (no Babylon dependency).
- */
-export const MobTypeId = {
-	Chicken: 1,
-	Sheep: 2,
-	Cow: 3,
-	Squid: 4,
-	Fish: 5,
-	Kraken: 6,
-} as const;
-
-export type MobTypeId = (typeof MobTypeId)[keyof typeof MobTypeId];
-
 /** One entry of a S→C MobUpdateBatch: identity + snapshot state. */
 export interface MobUpdateBatchEntry {
 	mobId: number;
