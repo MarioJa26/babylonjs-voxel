@@ -1,174 +1,379 @@
 /**
- * MobLighting — voxel light sampling for thin-instanced mobs.
+ * MobLighting: voxel light sampling for thin-instanced mobs.
  *
- * Mirrors DroppedItem lighting (getLightByWorldCoords → packedLightToLightColor → instance color)
- * but with two tunables:
+ * Mirrors DroppedItem lighting:
+ * getLightByWorldCoords -> packedLightToLightColor -> instance color
+ *
+ * Tunables:
  *   SETTING_PARAMS.MOB_LIGHT_UPDATES_PER_FRAME (0 = all)
  *   SETTING_PARAMS.MOB_LIGHT_UPDATE_HZ (0 = every frame)
  *
- * Uses a round-robin cursor so N mobs with budget B at HZ hz are refreshed fairly.
- * Per-entry voxel cache avoids redundant writes; a 1s forced resample keeps
- * day/night sun factor updating while stationary (like Player RemotePlayerRenderer LIGHT_RESAMPLE_MS).
+ * Entries are stored in a circular doubly linked list:
+ *   - O(1) registration
+ *   - O(1) unregistration
+ *   - O(1) base-color lookup
+ *   - fair round-robin traversal without array compaction
  */
 
-import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
-import { packedLightToLightColor } from "@/code/Player/PlayerModel";
-import type { InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import type { Vec3 } from "@babylonjs/lite";
 import { onBeforeRender } from "@babylonjs/lite";
-import { Map1 } from "@/code/Maps/Map1";
 
-/** Y offset for light sampling (chest height, matches Player). */
+import { Map1 } from "@/code/Maps/Map1";
+import { packedLightToLightColor } from "@/code/Player/PlayerModel";
+import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
+
+import type { InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
+
+/** Y offset for light sampling, matching Player chest sampling. */
 const LIGHT_Y_OFFSET = 0.5;
 
+/** Stationary mobs must periodically resample for day/night lighting. */
 const DAY_NIGHT_FORCE_MS = 1000;
+
+type MobPosition =
+	| Vec3
+	| {
+			x: number;
+			y: number;
+			z: number;
+	  };
+
+type BaseColor =
+	| readonly [number, number, number]
+	| {
+			r: number;
+			g: number;
+			b: number;
+	  };
 
 type Entry = {
 	pool: MobInstancePool;
 	slot: InstanceSlotHandle;
-	getPos: () => Vec3 | { x: number; y: number; z: number };
-	baseColor: [number, number, number];
+	getPos: () => MobPosition;
+
+	baseR: number;
+	baseG: number;
+	baseB: number;
+
 	lastLX: number;
 	lastLY: number;
 	lastLZ: number;
 	lastSampleMs: number;
+
+	next: Entry;
+	prev: Entry;
 };
 
-const entries: Entry[] = [];
-let cursor = 0;
+const entriesBySlot = new Map<InstanceSlotHandle, Entry>();
+
+let entryCount = 0;
+
+/**
+ * Next entry to process.
+ *
+ * The entries form a circular doubly linked list, so advancing and removing
+ * entries do not require shifting an array or repairing numeric indices.
+ */
+let cursor: Entry | null = null;
+
 let lastTickMs = Number.NEGATIVE_INFINITY;
 let observerRegistered = false;
 
 function ensureObserver(): void {
-	if (observerRegistered) return;
+	if (observerRegistered) {
+		return;
+	}
+
 	observerRegistered = true;
+
 	onBeforeRender(Map1.mainScene, () => {
 		tick(performance.now());
 	});
 }
 
-function tick(now: number): void {
-	if (entries.length === 0) return;
-
-	const hzRaw = SETTING_PARAMS.MOB_LIGHT_UPDATE_HZ as number;
-	const hz = Number.isFinite(hzRaw) ? hzRaw : 0;
-	if (hz > 0) {
-		const interval = 1000 / hz;
-		if (now - lastTickMs < interval) return;
+function readBaseColor(color: BaseColor): readonly [number, number, number] {
+	if (Array.isArray(color)) {
+		return [color[0], color[1], color[2]];
 	}
-	lastTickMs = now;
 
-	const perFrameRaw = SETTING_PARAMS.MOB_LIGHT_UPDATES_PER_FRAME as number;
-	const perFrame = Math.floor(Number.isFinite(perFrameRaw) ? perFrameRaw : 0);
-	const budget =
-		perFrame > 0 ? Math.min(perFrame, entries.length) : entries.length;
+	const rgb = color as {
+		r: number;
+		g: number;
+		b: number;
+	};
 
-	// Round-robin slice
-	for (let i = 0; i < budget; i++) {
-		if (entries.length === 0) break;
-		if (cursor >= entries.length) cursor = 0;
-		const e = entries[cursor];
-		cursor = (cursor + 1) % Math.max(1, entries.length);
-
-		const pos = e.getPos();
-		// Use y+0.5 chest sampling like Player/remote players
-		const lx = Math.floor(pos.x);
-		const ly = Math.floor(pos.y + LIGHT_Y_OFFSET);
-		const lz = Math.floor(pos.z);
-
-		const voxelChanged = lx !== e.lastLX || ly !== e.lastLY || lz !== e.lastLZ;
-		const force = now - e.lastSampleMs >= DAY_NIGHT_FORCE_MS;
-		if (!voxelChanged && !force) continue;
-
-		e.lastLX = lx;
-		e.lastLY = ly;
-		e.lastLZ = lz;
-		e.lastSampleMs = now;
-
-		// Sample packed light at mob feet+offset
-		const packed = getLightByWorldCoords(pos.x, pos.y + LIGHT_Y_OFFSET, pos.z);
-		const light = packedLightToLightColor(packed);
-		// base * light (preserve walk-phase alpha via writeLitColor)
-		const r = e.baseColor[0] * light[0];
-		const g = e.baseColor[1] * light[1];
-		const b = e.baseColor[2] * light[2];
-		// Clamp to valid 0-1 (packedLightToLightColor already floors at 0.2)
-		e.pool.writeLitColor(e.slot, r, g, b);
-	}
+	return [rgb.r, rgb.g, rgb.b];
 }
 
-export function registerMobLight(entry: {
-	pool: MobInstancePool;
-	slot: InstanceSlotHandle;
-	getPos: () => Vec3 | { x: number; y: number; z: number };
-	baseColor: [number, number, number] | { r: number; g: number; b: number };
-}): void {
-	const base: [number, number, number] = Array.isArray(entry.baseColor)
-		? [entry.baseColor[0], entry.baseColor[1], entry.baseColor[2]]
-		: [entry.baseColor.r, entry.baseColor.g, entry.baseColor.b];
-
-	ensureObserver();
-
-	// Initial light — sample immediately so spawn is correct, then cache voxel
+/**
+ * Sample and write an entry's lighting.
+ *
+ * Returns true when a light sample was performed and false when the cached
+ * voxel remains valid.
+ */
+function refreshEntry(entry: Entry, now: number, force: boolean): boolean {
 	const pos = entry.getPos();
-	const packed = getLightByWorldCoords(pos.x, pos.y + LIGHT_Y_OFFSET, pos.z);
+
+	const sampleX = pos.x;
+	const sampleY = pos.y + LIGHT_Y_OFFSET;
+	const sampleZ = pos.z;
+
+	const lx = Math.floor(sampleX);
+	const ly = Math.floor(sampleY);
+	const lz = Math.floor(sampleZ);
+
+	const voxelChanged =
+		lx !== entry.lastLX || ly !== entry.lastLY || lz !== entry.lastLZ;
+
+	if (
+		!force &&
+		!voxelChanged &&
+		now - entry.lastSampleMs < DAY_NIGHT_FORCE_MS
+	) {
+		return false;
+	}
+
+	const packed = getLightByWorldCoords(sampleX, sampleY, sampleZ);
 	const light = packedLightToLightColor(packed);
+
 	entry.pool.writeLitColor(
 		entry.slot,
-		base[0] * light[0],
-		base[1] * light[1],
-		base[2] * light[2],
+		entry.baseR * light[0],
+		entry.baseG * light[1],
+		entry.baseB * light[2],
 	);
 
-	const e: Entry = {
-		pool: entry.pool,
-		slot: entry.slot,
-		getPos: entry.getPos,
-		baseColor: base,
-		lastLX: Math.floor(pos.x),
-		lastLY: Math.floor(pos.y + LIGHT_Y_OFFSET),
-		lastLZ: Math.floor(pos.z),
-		lastSampleMs: performance.now(),
-	};
-	entries.push(e);
+	entry.lastLX = lx;
+	entry.lastLY = ly;
+	entry.lastLZ = lz;
+	entry.lastSampleMs = now;
+
+	return true;
 }
 
-export function unregisterMobLight(slot: InstanceSlotHandle): void {
-	for (let i = 0; i < entries.length; i++) {
-		if (entries[i].slot === slot) {
-			entries.splice(i, 1);
-			if (cursor > i) cursor--;
-			if (cursor >= entries.length) cursor = 0;
+function tick(now: number): void {
+	if (entryCount === 0 || cursor === null) {
+		return;
+	}
+
+	const hzSetting = Number(SETTING_PARAMS.MOB_LIGHT_UPDATE_HZ);
+	const hz = Number.isFinite(hzSetting) ? Math.max(0, hzSetting) : 0;
+
+	if (hz > 0) {
+		const intervalMs = 1000 / hz;
+
+		if (now - lastTickMs < intervalMs) {
 			return;
 		}
 	}
-	// Fallback: compare by identity index may have moved after release?
-	// Pool compacts lanes; the holder index is mutated. So search by pool+released index not reliable.
-	// Instead, allow alternative cleanup by pool reference if alias lost.
-}
 
-export function updateMobBaseColor(
-	slot: InstanceSlotHandle,
-	newBase: [number, number, number] | { r: number; g: number; b: number },
-): void {
-	const base: [number, number, number] = Array.isArray(newBase)
-		? [newBase[0], newBase[1], newBase[2]]
-		: [newBase.r, newBase.g, newBase.b];
-	for (const e of entries) {
-		if (e.slot === slot) {
-			e.baseColor = base;
-			// Force resample on next tick
-			e.lastSampleMs = Number.NEGATIVE_INFINITY;
+	lastTickMs = now;
+
+	const budgetSetting = Number(SETTING_PARAMS.MOB_LIGHT_UPDATES_PER_FRAME);
+	const configuredBudget = Number.isFinite(budgetSetting)
+		? Math.floor(budgetSetting)
+		: 0;
+
+	const budget =
+		configuredBudget > 0 ? Math.min(configuredBudget, entryCount) : entryCount;
+
+	for (let processed = 0; processed < budget; processed++) {
+		/*
+		 * Advance before sampling. This keeps the cursor valid even if future
+		 * sampling code indirectly unregisters the current entry.
+		 */
+		const entry: any = cursor;
+		cursor = entry.next;
+
+		refreshEntry(entry, now, false);
+
+		if (entryCount === 0 || cursor === null) {
 			break;
 		}
 	}
 }
 
-/** For testing/debug — force immediate refresh of all entries */
+function appendEntry(entry: Entry): void {
+	if (cursor === null) {
+		entry.next = entry;
+		entry.prev = entry;
+		cursor = entry;
+		entryCount = 1;
+		return;
+	}
+
+	/*
+	 * Append immediately before cursor. This preserves cursor as the next
+	 * entry to process and adds the new entry at the end of the current cycle.
+	 */
+	const tail = cursor.prev;
+
+	entry.prev = tail;
+	entry.next = cursor;
+
+	tail.next = entry;
+	cursor.prev = entry;
+
+	entryCount++;
+}
+
+function removeEntry(entry: Entry): void {
+	if (entryCount === 1) {
+		cursor = null;
+		entryCount = 0;
+	} else {
+		entry.prev.next = entry.next;
+		entry.next.prev = entry.prev;
+
+		if (cursor === entry) {
+			cursor = entry.next;
+		}
+
+		entryCount--;
+	}
+
+	/*
+	 * Break links so accidental reuse is easier to detect in debugging and
+	 * removed entries do not retain the rest of the circular list.
+	 */
+	entry.next = entry;
+	entry.prev = entry;
+}
+
+export function registerMobLight(entry: {
+	pool: MobInstancePool;
+	slot: InstanceSlotHandle;
+	getPos: () => MobPosition;
+	baseColor: BaseColor;
+}): void {
+	ensureObserver();
+
+	/*
+	 * Registering the same handle twice previously created duplicate work and
+	 * made unregistration ambiguous. Update the existing registration instead.
+	 */
+	const existing = entriesBySlot.get(entry.slot);
+	const [baseR, baseG, baseB] = readBaseColor(entry.baseColor);
+
+	if (existing) {
+		existing.pool = entry.pool;
+		existing.getPos = entry.getPos;
+		existing.baseR = baseR;
+		existing.baseG = baseG;
+		existing.baseB = baseB;
+
+		refreshEntry(existing, performance.now(), true);
+		return;
+	}
+
+	const now = performance.now();
+	const pos = entry.getPos();
+
+	const sampleX = pos.x;
+	const sampleY = pos.y + LIGHT_Y_OFFSET;
+	const sampleZ = pos.z;
+
+	const packed = getLightByWorldCoords(sampleX, sampleY, sampleZ);
+	const light = packedLightToLightColor(packed);
+
+	entry.pool.writeLitColor(
+		entry.slot,
+		baseR * light[0],
+		baseG * light[1],
+		baseB * light[2],
+	);
+
+	/*
+	 * next and prev are initialized to the entry itself and then connected by
+	 * appendEntry().
+	 */
+	const lightingEntry = {
+		pool: entry.pool,
+		slot: entry.slot,
+		getPos: entry.getPos,
+
+		baseR,
+		baseG,
+		baseB,
+
+		lastLX: Math.floor(sampleX),
+		lastLY: Math.floor(sampleY),
+		lastLZ: Math.floor(sampleZ),
+		lastSampleMs: now,
+
+		next: null as unknown as Entry,
+		prev: null as unknown as Entry,
+	} satisfies Entry;
+
+	lightingEntry.next = lightingEntry;
+	lightingEntry.prev = lightingEntry;
+
+	entriesBySlot.set(entry.slot, lightingEntry);
+	appendEntry(lightingEntry);
+}
+
+export function unregisterMobLight(slot: InstanceSlotHandle): void {
+	const entry = entriesBySlot.get(slot);
+
+	if (!entry) {
+		return;
+	}
+
+	entriesBySlot.delete(slot);
+	removeEntry(entry);
+}
+
+export function updateMobBaseColor(
+	slot: InstanceSlotHandle,
+	newBase: BaseColor,
+): void {
+	const entry = entriesBySlot.get(slot);
+
+	if (!entry) {
+		return;
+	}
+
+	const [baseR, baseG, baseB] = readBaseColor(newBase);
+
+	if (entry.baseR === baseR && entry.baseG === baseG && entry.baseB === baseB) {
+		return;
+	}
+
+	entry.baseR = baseR;
+	entry.baseG = baseG;
+	entry.baseB = baseB;
+
+	/*
+	 * Update immediately rather than waiting for the configured tick interval.
+	 * This avoids displaying the old tint after a gameplay-driven color
+	 * change, while still performing only one position and light lookup.
+	 */
+	refreshEntry(entry, performance.now(), true);
+}
+
+/** Force an immediate refresh of every registered mob. */
 export function forceRefreshAll(): void {
+	if (entryCount === 0 || cursor === null) {
+		lastTickMs = Number.NEGATIVE_INFINITY;
+		return;
+	}
+
+	const now = performance.now();
+	const start = cursor;
+	let entry = start;
+
+	do {
+		const next = entry.next;
+		refreshEntry(entry, now, true);
+		entry = next;
+	} while (entryCount > 0 && cursor !== null && entry !== start);
+
+	/*
+	 * Preserve the original behavior where the next normal tick is not
+	 * throttled by the forced refresh.
+	 */
 	lastTickMs = Number.NEGATIVE_INFINITY;
-	tick(performance.now());
 }
 
 export function getMobLightingStats(): {
@@ -176,9 +381,12 @@ export function getMobLightingStats(): {
 	budget: number;
 	hz: number;
 } {
+	const budgetSetting = Number(SETTING_PARAMS.MOB_LIGHT_UPDATES_PER_FRAME);
+	const hzSetting = Number(SETTING_PARAMS.MOB_LIGHT_UPDATE_HZ);
+
 	return {
-		total: entries.length,
-		budget: SETTING_PARAMS.MOB_LIGHT_UPDATES_PER_FRAME as number,
-		hz: SETTING_PARAMS.MOB_LIGHT_UPDATE_HZ as number,
+		total: entryCount,
+		budget: Number.isFinite(budgetSetting) ? budgetSetting : 0,
+		hz: Number.isFinite(hzSetting) ? hzSetting : 0,
 	};
 }

@@ -184,7 +184,11 @@ export class ServerMobSimulation {
 	private readonly naturalTypeCounts = new Map<number, number>();
 	private naturalTotal = 0;
 	// Per-mob depth targets for aquatic mobs (mobId -> target depth in blocks)
+	// Deprecated: replaced by random water-block wander targets (5×3×4 box).
 	private readonly depthTargets = new Map<number, number>();
+	// Random water-block wander targets for aquatic mobs (straight-path swimming)
+	private readonly aquaticTargets = new Map<number, { x: number; y: number; z: number }>();
+	private readonly aquaticIdleTime = new Map<number, number>();
 
 	constructor(private readonly storage: ServerWorldStorage) {
 		this.sampler = new TickBlockSampler(storage);
@@ -228,6 +232,9 @@ export class ServerMobSimulation {
 		}
 	}
 	private removeActiveMob(mob: ServerMob): boolean {
+		this.aquaticTargets.delete(mob.id);
+		this.aquaticIdleTime.delete(mob.id);
+		this.depthTargets.delete(mob.id);
 		if (!this.mobs.delete(mob.id)) return false;
 
 		const next = (this.typeCounts.get(mob.typeId) ?? 1) - 1;
@@ -458,6 +465,16 @@ export class ServerMobSimulation {
 			}
 		}
 
+		// Idle hover: aquatics don't wander constantly — can just drift
+		const idleRemain = this.aquaticIdleTime.get(mob.id) ?? 0;
+		if (idleRemain > 0) {
+			this.aquaticIdleTime.set(mob.id, Math.max(0, idleRemain - dt));
+			if ((this.aquaticIdleTime.get(mob.id) ?? 0) <= 0) {
+				mob.headingTimer = 0;
+			}
+			return;
+		}
+
 		// Damage-triggered panic
 		if (mob.fleeTimer > 0) {
 			mob.fleeTimer = Math.max(0, mob.fleeTimer - deltaMs);
@@ -468,6 +485,17 @@ export class ServerMobSimulation {
 		const fleeing = threat !== null || damageFleeing;
 
 		mob.headingTimer -= deltaMs;
+		// If we have a wander target and we're close, force a new pick
+		const existingTarget = this.aquaticTargets.get(mob.id);
+		if (
+			existingTarget &&
+			(existingTarget.x - mob.x) * (existingTarget.x - mob.x) +
+				(existingTarget.z - mob.z) * (existingTarget.z - mob.z) <
+				0.25 &&
+			Math.abs(existingTarget.y - mob.y) < 0.5
+		) {
+			mob.headingTimer = 0;
+		}
 		if (fleeing) {
 			if (!mob.fleeing || mob.headingTimer <= 0) {
 				const target = threat ?? this.findNearestPlayer(mob, players);
@@ -485,10 +513,30 @@ export class ServerMobSimulation {
 			mob.fleeing = true;
 		} else if (mob.headingTimer <= 0) {
 			mob.fleeing = false;
+			// Chance to just idle/drift in place instead of wandering
+			if (Math.random() < this.getAquaticIdleChance(mob.typeId)) {
+				const dur = 1.2 + Math.random() * 1.8;
+				this.aquaticIdleTime.set(mob.id, dur);
+				this.aquaticTargets.delete(mob.id);
+				mob.headingTimer = dur * 1000 + Math.random() * 500;
+				return;
+			}
 			mob.headingTimer =
 				WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS);
-			// Random heading change for wandering
-			mob.yaw = (mob.yaw + Math.floor((Math.random() - 0.5) * 128)) & 255;
+			// Random water-block wander: 5 wide, 3 up, 4 down, biased down per type
+			const waterTarget = this.findRandomAquaticTarget(mob);
+			if (waterTarget) {
+				this.aquaticTargets.set(mob.id, waterTarget);
+				const dx = waterTarget.x - mob.x;
+				const dz = waterTarget.z - mob.z;
+				if (dx * dx + dz * dz > 0.0001) {
+					mob.yaw = this.vectorToYaw(dx, dz);
+				}
+			} else {
+				// Fallback: small random turn if no water found
+				mob.yaw = (mob.yaw + Math.floor((Math.random() - 0.5) * 128)) & 255;
+				this.aquaticTargets.delete(mob.id);
+			}
 		}
 
 		// Calculate movement
@@ -519,34 +567,42 @@ export class ServerMobSimulation {
 			}
 		}
 
-		// Vertical movement — drift within depth range with slow natural movement
+		// Vertical movement — straight path to random water block (5×3×4 box)
 		if (inWater) {
-			const depthRange = stats.depthRange ?? { min: 1, max: 4 };
-			const maxDepth = waterSurfaceY - waterFloorY;
-			const clampedMin = Math.min(depthRange.min, maxDepth - 1);
-			const clampedMax = Math.min(depthRange.max, maxDepth - 1);
-
-			// Pick a random target depth within range (changes slowly over time)
-			if (!this.depthTargets.has(mob.id) || mob.headingTimer <= 0) {
-				const targetDepth =
-					clampedMin + Math.random() * (clampedMax - clampedMin);
-				this.depthTargets.set(mob.id, targetDepth);
+			const wanderTarget = this.aquaticTargets.get(mob.id);
+			let targetY: number;
+			if (wanderTarget) {
+				targetY = wanderTarget.y;
+			} else {
+				// Fallback: legacy depth range if no water target yet
+				const depthRange = stats.depthRange ?? { min: 1, max: 4 };
+				const maxDepth = waterSurfaceY - waterFloorY;
+				const clampedMin = Math.min(depthRange.min, Math.max(0, maxDepth - 1));
+				const clampedMax = Math.min(depthRange.max, Math.max(0, maxDepth - 1));
+				if (!this.depthTargets.has(mob.id) || mob.headingTimer <= 0) {
+					const targetDepth =
+						clampedMin + Math.random() * Math.max(0, clampedMax - clampedMin);
+					this.depthTargets.set(mob.id, targetDepth);
+				}
+				const targetDepth = this.depthTargets.get(mob.id) ?? clampedMin;
+				targetY = waterSurfaceY - targetDepth - stats.halfHeight;
 			}
-			const targetDepth = this.depthTargets.get(mob.id) ?? clampedMin;
-			const targetY = waterSurfaceY - targetDepth - stats.halfHeight;
 
-			// Very slow depth drift (40x slower than before)
+			// Very slow depth drift (real water, not sea level)
 			const depthError = targetY - mob.y;
-			const depthSpeed = fleeing ? 0.075 : 0.0375; // 1.5/40 and 3.0/40
+			const depthSpeed = fleeing ? 0.075 : 0.0375;
 			mob.y += depthError * Math.min(1, dt * depthSpeed);
 
-			// Keep mob within water bounds
+			// Keep mob within water bounds (when known)
 			const minY = waterFloorY + stats.halfHeight;
 			const maxY = waterSurfaceY - stats.halfHeight - 0.1;
-			mob.y = Math.max(minY, Math.min(maxY, mob.y));
+			if (waterFloorY !== centerY || waterSurfaceY !== centerY) {
+				mob.y = Math.max(minY, Math.min(maxY, mob.y));
+			}
 		} else {
 			// Beached — gently sink (will despawn via lifecycle)
 			mob.y = Math.max(mob.y - 2 * dt, 0);
+			this.aquaticTargets.delete(mob.id);
 		}
 	}
 
@@ -788,6 +844,62 @@ export class ServerMobSimulation {
 	private vectorToYaw(x: number, z: number): number {
 		const radians = Math.atan2(x, z);
 		return ((Math.round((radians / (Math.PI * 2)) * 255) % 256) + 256) % 256;
+	}
+
+	private getAquaticBias(typeId: number): number {
+		switch (typeId) {
+			case 4: // Squid
+				return 0.7;
+			case 6: // Kraken
+				return 0.8;
+			case 5: // Fish
+				return 0.3;
+			default:
+				return 0.5;
+		}
+	}
+
+	private getAquaticIdleChance(typeId: number): number {
+		switch (typeId) {
+			case 5: // Fish — more active
+				return 0.20;
+			case 4: // Squid
+				return 0.30;
+			case 6: // Kraken — boss, drifts more
+				return 0.25;
+			default:
+				return 0.30;
+		}
+	}
+
+	private findRandomAquaticTarget(mob: ServerMob): { x: number; y: number; z: number } | null {
+		const bias = this.getAquaticBias(mob.typeId);
+		const baseX = Math.floor(mob.x);
+		const baseY = Math.floor(mob.y);
+		const baseZ = Math.floor(mob.z);
+		for (let i = 0; i < 8; i++) {
+			const dx = (Math.random() * 5) | 0;
+			const dz = (Math.random() * 5) | 0;
+			const rx = baseX + dx - 2;
+			const rz = baseZ + dz - 2;
+			let dy: number;
+			if (Math.random() < bias) {
+				dy = -((Math.random() * 4) | 0) - 1; // -1 .. -4 biased down
+			} else {
+				dy = ((Math.random() * 8) | 0) - 4; // -4 .. 3
+			}
+			const ry = baseY + dy;
+			const b = this.sampler.sample(rx, ry, rz);
+			if (b === null) continue; // uncached
+			if (b !== BlockType.Water) continue;
+			// headroom: allow water or air above
+			const above = this.sampler.sample(rx, ry + 1, rz);
+			if (above !== null && above !== BlockType.Water && above !== BlockType.Air) {
+				if (isCollidableBlock(above)) continue;
+			}
+			return { x: rx + 0.5, y: ry + 0.5, z: rz + 0.5 };
+		}
+		return null;
 	}
 
 	/**
@@ -1249,10 +1361,12 @@ export class ServerMobSimulation {
 		const localZ = wz - cz * CHUNK_SIZE;
 
 		const maxCy = Math.floor(MAX_SPAWN_SCAN_Y / CHUNK_SIZE);
+		const minCy = -4; // down to y=-128, covers deep trenches below y27 and y<0
+		const aquaticCandidates: { x: number; y: number; z: number }[] = [];
 
 		// Scan top-down, but fetch each cached chunk section only once instead of
 		// routing every Y coordinate through TickBlockSampler.sample().
-		for (let cy = maxCy; cy >= 0; cy--) {
+		for (let cy = maxCy; cy >= minCy; cy--) {
 			const blocks = this.storage.getCachedChunkBlocks(cx, cy, cz);
 			if (!blocks) continue;
 
@@ -1261,16 +1375,19 @@ export class ServerMobSimulation {
 				cy === maxCy
 					? Math.min(CHUNK_SIZE - 1, MAX_SPAWN_SCAN_Y - chunkBaseY)
 					: CHUNK_SIZE - 1;
+			const endLocalY = cy === minCy ? 0 : 0;
 
 			const columnBase = localX + (localZ << 10);
 
-			for (let localY = startLocalY; localY >= 0; localY--) {
+			for (let localY = startLocalY; localY >= endLocalY; localY--) {
 				// Entries are packed values — match the set on the raw block id.
 				const blockId = unpackBlockId(blocks[columnBase + (localY << 5)]);
 
 				if (isAquatic) {
 					// Aquatic mobs spawn in water — look for water blocks with
-					// water or air above (so they're not buried).
+					// water or air above (so they're not buried). Use real water,
+					// not SEA_LEVEL constant, and collect candidates for
+					// random-depth pick (5×3×4 wander will then keep them deep).
 					if (blockId !== BlockType.Water) continue;
 
 					const wy = chunkBaseY + localY;
@@ -1280,11 +1397,12 @@ export class ServerMobSimulation {
 
 					if (this.isSpawnTooClose(wx, wz)) continue;
 
-					return {
+					aquaticCandidates.push({
 						x: wx + 0.5,
 						y: wy + 0.5,
 						z: wz + 0.5,
-					};
+					});
+					continue;
 				} else {
 					// Land mobs — look for spawnable ground blocks.
 					if (!SPAWNABLE_BLOCK_ID_SET.has(blockId)) continue;
@@ -1305,6 +1423,23 @@ export class ServerMobSimulation {
 					};
 				}
 			}
+		}
+
+		if (isAquatic && aquaticCandidates.length > 0) {
+			// Random water block, biased deeper for squid/kraken (real water, not SEA_LEVEL)
+			const bias = typeId === 4 ? 0.7 : typeId === 6 ? 0.8 : 0.3;
+			// Candidates collected top-down → shallow first, deep last.
+			// Sort by y ascending to make deep bias deterministic
+			aquaticCandidates.sort((a, b) => a.y - b.y);
+			let idx: number;
+			if (Math.random() < bias) {
+				// Pick from deeper half
+				const half = Math.floor(aquaticCandidates.length / 2);
+				idx = half + ((Math.random() * (aquaticCandidates.length - half)) | 0);
+			} else {
+				idx = (Math.random() * aquaticCandidates.length) | 0;
+			}
+			return aquaticCandidates[idx]!;
 		}
 
 		return null;

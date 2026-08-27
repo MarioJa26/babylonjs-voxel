@@ -195,6 +195,14 @@ export class Fish extends AquaticMob {
 		return FISH_STATS.depthRange ?? { min: 1, max: 16 };
 	}
 
+	protected override getWaterSearchBias(): number {
+		return 0.3; // shallow-mid: uniform with slight down tendency
+	}
+
+	protected override getIdleChance(): number {
+		return 0.2;
+	}
+
 	protected override getExtraPayload(): Record<string, unknown> {
 		return { color: { r: this.#color.r, g: this.#color.g, b: this.#color.b } };
 	}

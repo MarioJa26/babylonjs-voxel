@@ -1,4 +1,9 @@
-import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
+import {
+	onBeforeRender,
+	type SceneContext,
+	type Vec3,
+	vec3,
+} from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
@@ -84,9 +89,14 @@ export abstract class AquaticMob {
 	#waterSurfaceY = 0;
 	#targetDepth: number | null = null;
 
+	// Random water-block wander target (replaces depthRange preference)
+	#wanderTarget: Vec3 | null = null;
+	#wanderTargetScratch = vec3Zero();
+
 	// Wander state
 	#swimTimer = 0;
 	#strandedTimer = 0;
+	#idleTime = 0;
 
 	// Swim phase used for fin/tentacle animation
 	#walkPhase = 0;
@@ -100,10 +110,31 @@ export abstract class AquaticMob {
 
 	/**
 	 * Preferred depth below the detected water surface, in blocks.
-	 * Subclasses can override this to select another swimming band.
+	 * Deprecated: replaced by random water-block search (5×3×4 box).
+	 * Kept for fallback when no water target is found.
 	 */
 	protected getDepthRange(): { min: number; max: number } {
 		return { min: 1, max: 3 };
+	}
+
+	/**
+	 * Bias toward deeper water when picking a random wander target.
+	 * 0 = uniform (-4..+3), 1 = always down. Squid/kraken override higher.
+	 */
+	protected getWaterSearchBias(): number {
+		return 0.5;
+	}
+
+	/**
+	 * Chance that a wander cycle becomes idle (no thrust) instead of
+	 * picking a water-block target. 0 = always wander. Override per type.
+	 */
+	protected getIdleChance(): number {
+		return 0.3;
+	}
+
+	protected getIdleDuration(): { min: number; max: number } {
+		return { min: 1.2, max: 3.0 };
 	}
 
 	protected getPanicRadiusSq(): number {
@@ -499,20 +530,115 @@ export abstract class AquaticMob {
 		return true;
 	}
 
+	#findRandomWaterTarget(pos: Vec3): Vec3 | null {
+		const attempts = 4;
+		const bias = this.getWaterSearchBias();
+		const baseX = Math.floor(pos.x);
+		const baseY = Math.floor(pos.y);
+		const baseZ = Math.floor(pos.z);
+		for (let i = 0; i < attempts; i++) {
+			const dx = (Math.random() * 5) | 0;
+			const dz = (Math.random() * 5) | 0;
+			const rx = baseX + dx - 2;
+			const rz = baseZ + dz - 2;
+			let dy: number;
+			// Biased down for squid/kraken (e.g. 0.7 → 70% picks -4..-1)
+			if (Math.random() < bias) {
+				dy = -((Math.random() * 4) | 0) - 1; // -1 .. -4
+			} else {
+				dy = ((Math.random() * 8) | 0) - 4; // -4 .. 3
+			}
+			const ry = baseY + dy;
+
+			// Skip unloaded / lod>1 targets — use real water, not SEA_LEVEL
+			const cx = rx >> CHUNK_SHIFT;
+			const cy = ry >> CHUNK_SHIFT;
+			const cz = rz >> CHUNK_SHIFT;
+			const chunk = getChunk(cx, cy, cz);
+			if (!chunk || !chunk.isLoaded || chunk.lodLevel > 1) continue;
+
+			const r = resolveBlockAtWorldCoords(rx, ry, rz);
+			if (r.unloaded) continue;
+			if (r.blockId !== BlockType.Water) continue;
+
+			// Headroom: ensure the mob fits at target (center + head)
+			const headY = ry + 1;
+			const rh = resolveBlockAtWorldCoords(rx, headY, rz);
+			if (
+				!rh.unloaded &&
+				rh.blockId !== BlockType.Water &&
+				rh.blockId !== BlockType.Air
+			) {
+				// Allow air at surface, but not solid
+				if (isCollidableBlock(rh.blockId)) continue;
+			}
+
+			return vec3(rx + 0.5, ry + 0.5, rz + 0.5);
+		}
+		return null;
+	}
+
 	#tickSwimming(dt: number, pos: Vec3, velocity: Vec3): void {
 		this.#strandedTimer = 0;
+		// Idle hover — not always wandering, can just drift in place
+		if (this.#idleTime > 0) {
+			this.#idleTime -= dt;
+			const idleKeepH = Math.max(0, 1 - WATER_HORIZONTAL_DAMPING * 0.6 * dt);
+			const idleKeepV = Math.max(0, 1 - WATER_VERTICAL_DAMPING * 0.8 * dt);
+			velocity.x *= idleKeepH;
+			velocity.z *= idleKeepH;
+			velocity.y *= idleKeepV;
+			if (Math.abs(velocity.x) < 0.02) velocity.x = 0;
+			if (Math.abs(velocity.z) < 0.02) velocity.z = 0;
+			if (Math.abs(velocity.y) < 0.02) velocity.y = 0;
+			if (this.#idleTime <= 0) this.#swimTimer = 0;
+			return;
+		}
 		this.#swimTimer -= dt;
 
 		const horizontalSpeedSq = velocity.x * velocity.x + velocity.z * velocity.z;
+		const nearTarget =
+			this.#wanderTarget !== null &&
+			(this.#wanderTarget.x - pos.x) * (this.#wanderTarget.x - pos.x) +
+				(this.#wanderTarget.z - pos.z) * (this.#wanderTarget.z - pos.z) <
+				0.25 &&
+			Math.abs(this.#wanderTarget.y - pos.y) < 0.5;
 
 		const chooseNewDirection =
-			this.#swimTimer <= 0 || horizontalSpeedSq < MIN_HORIZONTAL_SPEED_SQ;
+			this.#swimTimer <= 0 ||
+			horizontalSpeedSq < MIN_HORIZONTAL_SPEED_SQ ||
+			nearTarget ||
+			this.#wanderTarget === null;
 
 		if (chooseNewDirection) {
+			// Chance to just idle instead of wandering
+			if (Math.random() < this.getIdleChance()) {
+				const dur = this.getIdleDuration();
+				this.#idleTime = dur.min + Math.random() * (dur.max - dur.min);
+				this.#swimTimer = this.#idleTime + Math.random() * 0.5;
+				this.#wanderTarget = null;
+				velocity.x *= 0.5;
+				velocity.z *= 0.5;
+				return;
+			}
 			this.#swimTimer = 1.0 + Math.random() * 2.0;
-			this.#facingAngle += Math.random() * 2.4 - 1.2;
-			this.#chooseTargetDepth();
-		} else if (this.#targetDepth === null) {
+			const target = this.#findRandomWaterTarget(pos);
+			if (target) {
+				this.#wanderTarget = target;
+				const dx = target.x - pos.x;
+				const dz = target.z - pos.z;
+				if (dx * dx + dz * dz > 0.0001) {
+					this.#facingAngle = Math.atan2(dx, dz);
+				}
+			} else {
+				// Fallback: small random turn if no water found
+				this.#facingAngle += Math.random() * 2.4 - 1.2;
+				// Keep existing target or clear
+				if (nearTarget) this.#wanderTarget = null;
+			}
+			// Also refresh fallback depth for vertical if no target
+			if (!this.#wanderTarget) this.#chooseTargetDepth();
+		} else if (this.#targetDepth === null && this.#wanderTarget === null) {
 			/*
 			 * Ensures newly spawned mobs have a valid depth target even when
 			 * their initial horizontal velocity is already nonzero.
@@ -531,8 +657,14 @@ export abstract class AquaticMob {
 
 		velocity.z = Math.cos(this.#facingAngle) * swimSpeed * horizontalKeep;
 
-		const targetY =
-			this.#waterSurfaceY - (this.#targetDepth ?? 1) - this.#halfHeight;
+		// Prefer straight-path water block target; fallback to depth range.
+		let targetY: number;
+		if (this.#wanderTarget) {
+			targetY = this.#wanderTarget.y;
+		} else {
+			targetY =
+				this.#waterSurfaceY - (this.#targetDepth ?? 1) - this.#halfHeight;
+		}
 
 		const depthError = targetY - pos.y;
 

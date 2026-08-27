@@ -153,6 +153,14 @@ export class Squid extends AquaticMob {
 		return SQUID_STATS.depthRange ?? { min: 1, max: 24 };
 	}
 
+	protected override getWaterSearchBias(): number {
+		return 0.7; // deeper: 70% picks 4 down over 3 up
+	}
+
+	protected override getIdleChance(): number {
+		return 0.3;
+	}
+
 	onDeath(): void {}
 
 	dispose(): void {

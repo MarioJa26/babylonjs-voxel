@@ -162,6 +162,14 @@ export class Kraken extends AquaticMob {
 		return KRAKEN_STATS.depthRange ?? { min: 6, max: 32 };
 	}
 
+	protected override getWaterSearchBias(): number {
+		return 0.8; // deep dweller, strongly biased down
+	}
+
+	protected override getIdleChance(): number {
+		return 0.25;
+	}
+
 	/** Kraken does not despawn when beached — it's a boss. */
 	protected override shouldStrandedDespawn(): boolean {
 		return false;
