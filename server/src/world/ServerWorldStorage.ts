@@ -426,6 +426,70 @@ export class ServerWorldStorage {
 		return this.getDenseBlocksForNode(node);
 	}
 
+	/**
+	 * Synchronous single-voxel write for the fixed-rate water simulation.
+	 *
+	 * Writes a packed block value into the cached dense blocks of the chunk
+	 * containing (worldX, worldY, worldZ) and marks the chunk dirty so the
+	 * next flush persists it. Returns false when the chunk is not cached
+	 * (the simulation can't flow into an unloaded chunk anyway).
+	 *
+	 * Copy-on-write: the dense buffer may alias the stored `data.blocks`
+	 * (already-dense uncompressed chunks). We detach it before writing so the
+	 * stored blob is never mutated. The dirty-chunk flush re-compresses and
+	 * persists the edited buffer.
+	 */
+	setCachedBlock(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+		blockId: number,
+		blockState: number,
+	): boolean {
+		if (this.disposing || this.disposed) return false;
+
+		const cx = Math.floor(worldX / CHUNK_SIZE);
+		const cy = Math.floor(worldY / CHUNK_SIZE);
+		const cz = Math.floor(worldZ / CHUNK_SIZE);
+		const key = packChunkKeyFast(cx, cy, cz);
+		const node = this.chunkCache.get(key);
+		if (!node) return false;
+
+		this.lruTouch(node);
+
+		let dense = this.getDenseBlocksForNode(node);
+
+		// Copy-on-write: detach a dense buffer that aliases the stored blob.
+		if (dense === node.data.blocks) {
+			dense = dense.slice();
+			node.denseBlocks = dense;
+		}
+
+		const lx = worldX - cx * CHUNK_SIZE;
+		const ly = worldY - cy * CHUNK_SIZE;
+		const lz = worldZ - cz * CHUNK_SIZE;
+		const idx = lx + (ly << CHUNK_SHIFT) + (lz << 10);
+
+		const packed = packBlockValue(blockId, blockState);
+
+		// Widen a u8 buffer to u16 when the new value exceeds 255 (nonzero
+		// shape state or a block id above 255). Water itself never needs this,
+		// but the method is shared and must not corrupt adjacent voxels.
+		if (dense instanceof Uint8Array && packed > 255) {
+			const widened = new Uint16Array(CHUNK_VOLUME);
+			widened.set(dense);
+			widened[idx] = packed;
+			node.denseBlocks = widened;
+		} else {
+			dense[idx] = packed;
+		}
+
+		this.dirtyChunks.add(key);
+		this.scheduleFlush();
+
+		return true;
+	}
+
 	private async readChunkFromStore(
 		key: number,
 		cx: number,

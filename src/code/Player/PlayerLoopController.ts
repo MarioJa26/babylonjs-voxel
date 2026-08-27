@@ -32,7 +32,10 @@ import {
 } from "../World/Chunk/MergedMeshManager";
 import { getPackedMeshMemoryStats } from "../World/Chunk/PackedChunkMesh";
 import { BlockTickScheduler } from "../World/Chunk/Worker/BlockTickScheduler";
-import { processWaterUpdate } from "../World/Chunk/Worker/WaterSimulation";
+import {
+	ensureDefaultInstance,
+	processWaterUpdate,
+} from "../World/Chunk/Worker/WaterSimulation";
 import { FarTileManager } from "../World/FarTiles/FarTileManager";
 import { onGpuWorkDone } from "../World/Light/liteGpuBuffer";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
@@ -127,6 +130,10 @@ export class PlayerLoopController {
 	}
 
 	public bind(): void {
+		// Kick off async init of the shared default instance (dynamic import of
+		// ChunkLoadingSystem). The scheduler callback won't fire until the first
+		// processFrame() on a later frame, by which point init has resolved.
+		void ensureDefaultInstance();
 		this.#blockTickScheduler.setProcessCallback(processWaterUpdate);
 
 		// Install world streaming only once the spawn is prepared — a one-shot

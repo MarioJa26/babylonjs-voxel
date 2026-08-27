@@ -348,7 +348,7 @@ export class ServerMobSimulation {
 			mob.stuckTimer = 0;
 		}
 		if (!fleeing) {
-			this.followWanderPath(mob, stats.halfHeight, deltaMs);
+			this.followWanderPath(mob, stats.feetHeight, deltaMs);
 		}
 
 		const step = (fleeing ? FLEE_SPEED : stats.speed) * (deltaMs / 1000);
@@ -357,7 +357,7 @@ export class ServerMobSimulation {
 			const nx = mob.x + Math.sin(radians) * step;
 			const nz = mob.z + Math.cos(radians) * step;
 
-			if (!this.canMoveTo(mob, nx, nz, stats.halfHeight)) {
+			if (!this.canMoveTo(mob, nx, nz, stats.halfHeight, stats.feetHeight)) {
 				// Turn around, or sidestep while fleeing so a wall does not
 				// pin the mob while the player remains on the other side.
 				mob.yaw = (mob.yaw + (fleeing ? 64 : 128)) & 255;
@@ -376,7 +376,7 @@ export class ServerMobSimulation {
 
 			// Mobs don't swim — turn back before wading in.
 			if (
-				this.sampler.sample(nx, Math.floor(mob.y - stats.halfHeight), nz) ===
+				this.sampler.sample(nx, Math.floor(mob.y - stats.feetHeight), nz) ===
 				BlockType.Water
 			) {
 				mob.yaw = (mob.yaw + 128) & 255;
@@ -384,7 +384,7 @@ export class ServerMobSimulation {
 			}
 		}
 
-		this.settleHeight(mob, stats.halfHeight, deltaMs);
+		this.settleHeight(mob, stats.feetHeight, deltaMs);
 	}
 
 	/**
@@ -526,7 +526,7 @@ export class ServerMobSimulation {
 	/** Follow a short land route using the same surface/headroom rules as NeutralMob. */
 	private followWanderPath(
 		mob: ServerMob,
-		halfHeight: number,
+		feetHeight: number,
 		deltaMs: number,
 	): void {
 		mob.pathTimer -= deltaMs / 1000;
@@ -536,7 +536,7 @@ export class ServerMobSimulation {
 		}
 
 		if (mob.path.length === 0 && mob.pathTimer <= 0) {
-			this.buildWanderPath(mob, halfHeight);
+			this.buildWanderPath(mob, feetHeight);
 		}
 
 		const waypoint = mob.path[mob.pathIndex];
@@ -553,14 +553,15 @@ export class ServerMobSimulation {
 		mob.headingTimer = Math.max(mob.headingTimer, 250);
 	}
 
-	private buildWanderPath(mob: ServerMob, halfHeight: number): void {
+	private buildWanderPath(mob: ServerMob, feetHeight: number): void {
 		mob.path.length = 0;
 		mob.pathIndex = 0;
 		mob.pathTimer = 1.0;
 
+		const halfHeight = MOB_STATS[mob.typeId].halfHeight;
 		const sx = Math.floor(mob.x);
 		const sz = Math.floor(mob.z);
-		const startGround = Math.floor(mob.y - halfHeight - 0.01);
+		const startGround = Math.floor(mob.y - feetHeight - 0.01);
 		const start = this.findLandSurface(sx, sz, startGround, halfHeight);
 		if (!start) return;
 
@@ -771,6 +772,7 @@ export class ServerMobSimulation {
 		nx: number,
 		nz: number,
 		halfHeight: number,
+		feetHeight: number,
 	): boolean {
 		// Never advance into a column with no nearby support. The old check
 		// only tested the body/head voxels, so a mob could walk over a drop or
@@ -778,10 +780,10 @@ export class ServerMobSimulation {
 		const support = this.scanDown(nx, nz, Math.floor(mob.y + 1));
 		if (support.kind !== "ground") return false;
 
-		const targetY = support.y + 1 + halfHeight;
+		const targetY = support.y + 1 + feetHeight;
 		if (targetY > mob.y + 1.01 || targetY < mob.y - 1.01) return false;
 
-		const feetY = Math.floor(mob.y - halfHeight);
+		const feetY = Math.floor(mob.y - feetHeight);
 		const bodyY = Math.floor(mob.y);
 		const headY = Math.floor(mob.y + halfHeight - 0.01);
 
@@ -805,16 +807,16 @@ export class ServerMobSimulation {
 
 	private settleHeight(
 		mob: ServerMob,
-		halfHeight: number,
+		feetHeight: number,
 		deltaMs: number,
 	): void {
-		const scan = this.scanDown(mob.x, mob.z, Math.floor(mob.y - halfHeight));
+		const scan = this.scanDown(mob.x, mob.z, Math.floor(mob.y - feetHeight));
 
 		switch (scan.kind) {
 			case "ground": {
 				// Feet sit on top of the ground voxel; snap downward, and
 				// allow a small upward step (the climb path already moved y).
-				const targetY = scan.y + 1 + halfHeight;
+				const targetY = scan.y + 1 + feetHeight;
 				if (targetY < mob.y || targetY - mob.y <= 1) {
 					mob.y = targetY;
 				}
@@ -1271,7 +1273,7 @@ export class ServerMobSimulation {
 
 					return {
 						x: wx + 0.5,
-						y: wy + 1.02 + stats.halfHeight,
+						y: wy + 1.02 + stats.feetHeight,
 						z: wz + 0.5,
 					};
 				}

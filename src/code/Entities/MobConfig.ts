@@ -25,6 +25,8 @@ export interface MobStats {
 	speed: number;
 	/** Half the mob's body height, used for voxel collision and rendering. */
 	halfHeight: number;
+	/** Distance from center to the bottom of the feet (visual bottom of the model). */
+	feetHeight: number;
 	/** Full hit box half-extents (x, y, z). */
 	halfExtents: { x: number; y: number; z: number };
 	/**
@@ -62,6 +64,7 @@ export const MOB_STATS: Record<number, MobStats> = {
 		hp: 4,
 		speed: 1.8,
 		halfHeight: 0.45,
+		feetHeight: 0.45,
 		halfExtents: { x: 0.31, y: 0.45, z: 0.3 },
 		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
 		aquatic: false,
@@ -70,6 +73,7 @@ export const MOB_STATS: Record<number, MobStats> = {
 		hp: 8,
 		speed: 1.5,
 		halfHeight: 0.325,
+		feetHeight: 0.555,
 		halfExtents: { x: 0.36, y: 0.325, z: 0.52 },
 		fleeRadiusSq: 0,
 		aquatic: false,
@@ -78,6 +82,7 @@ export const MOB_STATS: Record<number, MobStats> = {
 		hp: 10,
 		speed: 1.4,
 		halfHeight: 0.7,
+		feetHeight: 0.6,
 		halfExtents: { x: 0.45, y: 0.7, z: 0.62 },
 		fleeRadiusSq: 0,
 		aquatic: false,
@@ -86,6 +91,7 @@ export const MOB_STATS: Record<number, MobStats> = {
 		hp: 10,
 		speed: 1.6,
 		halfHeight: 0.45,
+		feetHeight: 0.45,
 		halfExtents: { x: 0.35, y: 0.45, z: 0.35 },
 		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
 		aquatic: true,
@@ -95,6 +101,7 @@ export const MOB_STATS: Record<number, MobStats> = {
 		hp: 3,
 		speed: 2.0,
 		halfHeight: 0.15,
+		feetHeight: 0.15,
 		halfExtents: { x: 0.2, y: 0.15, z: 0.32 },
 		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
 		aquatic: true,
@@ -104,6 +111,7 @@ export const MOB_STATS: Record<number, MobStats> = {
 		hp: 80,
 		speed: 1.1,
 		halfHeight: 1.0,
+		feetHeight: 1.0,
 		halfExtents: { x: 0.85, y: 1.0, z: 0.85 },
 		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
 		aquatic: true,
