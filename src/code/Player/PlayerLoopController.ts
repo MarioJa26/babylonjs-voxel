@@ -17,6 +17,7 @@ import {
 	playSprint,
 } from "../Maps/BlockBreakParticles";
 import { Map1 } from "../Maps/Map1";
+import { isEyeUnderwater } from "../Maps/UnderWaterEffect";
 import { MobTypeId } from "../Network/protocol/messages";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
@@ -194,6 +195,18 @@ export class PlayerLoopController {
 			vehicle.isSprinting = false;
 		}
 
+		const camPos = this.playerCamera.position;
+		const isUnderwater = isEyeUnderwater(camPos.x, camPos.y, camPos.z);
+
+		if (isUnderwater) {
+			if (
+				!stats.consumeStamina(8 * dtSec) &&
+				stats.gamemode !== Gamemodes.Creative
+			) {
+				stats.takeDamage(10 * dtSec);
+			}
+		}
+
 		const uiOpen = isUiOpen();
 		const playerPos = this.getPlayerPosition();
 
@@ -215,7 +228,11 @@ export class PlayerLoopController {
 		stats.update(
 			dtSec,
 			vehicle.isSprinting,
-			vehicle.isClimbing ? stats.climbingStaminaRegenMultiplier : 1,
+			isUnderwater
+				? 0
+				: vehicle.isClimbing
+					? stats.climbingStaminaRegenMultiplier
+					: 1,
 		);
 
 		vehicle.updateCameraAndVisuals(deltaMs);

@@ -42,9 +42,9 @@ export const ARROW_TYPES: readonly ArrowTypeDef[] = [
 		color: new Color3(0.45, 0.32, 0.18),
 		icon: "/texture/items/item/arrow/woodarrow.png",
 		texture: "/texture/items/item/arrow/woodarrow.png",
-		damage: 0.4,
-		stickTime: 5,
-		bleedPerSecond: 0.2,
+		damage: 0.15,
+		stickTime: 8,
+		bleedPerSecond: 0.1,
 	},
 	{
 		type: "iron",

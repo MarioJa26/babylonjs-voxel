@@ -180,6 +180,10 @@ export interface ChatMessageData {
 export const MobTypeId = {
 	Chicken: 1,
 	Sheep: 2,
+	Cow: 3,
+	Squid: 4,
+	Fish: 5,
+	Kraken: 6,
 } as const;
 
 export type MobTypeId = (typeof MobTypeId)[keyof typeof MobTypeId];

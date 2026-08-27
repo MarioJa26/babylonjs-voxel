@@ -14,6 +14,16 @@ import {
 	CHICKEN_HIT_HALF,
 	getChickenInstancePool,
 } from "@/code/Entities/Mobs/Chicken";
+import { COW_HIT_HALF, getCowInstancePool } from "@/code/Entities/Mobs/Cow";
+import {
+	FISH_COLORS,
+	FISH_HIT_HALF,
+	getFishInstancePool,
+} from "@/code/Entities/Mobs/Fish";
+import {
+	getKrakenInstancePool,
+	KRAKEN_HIT_HALF,
+} from "@/code/Entities/Mobs/Kraken";
 import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
 import type {
 	InstanceSlotHandle,
@@ -21,9 +31,13 @@ import type {
 } from "@/code/Entities/Mobs/MobInstancePool";
 import {
 	getSheepInstancePool,
+	SHEEP_COLORS,
 	SHEEP_HIT_HALF,
 } from "@/code/Entities/Mobs/Sheep";
-import { Color3 } from "@/code/Lib/Math";
+import {
+	getSquidInstancePool,
+	SQUID_HIT_HALF,
+} from "@/code/Entities/Mobs/Squid";
 import type { NetClient } from "./NetClient";
 import {
 	BinaryDecoder,
@@ -43,9 +57,6 @@ const YAW_BYTE_TO_RAD = (Math.PI * 2) / 255;
 const WALK_STRIDE_FACTOR = 2.0;
 /** Phase decay rate (per second) when idle — legs ease back to rest. */
 const WALK_PHASE_DECAY = 6.0;
-
-/** Default wool tint for remote sheep (server sends no color). */
-const REMOTE_SHEEP_WOOL = new Color3(0.95, 0.95, 0.95);
 
 interface RemoteMobInstance {
 	slot: InstanceSlotHandle;
@@ -227,9 +238,41 @@ export class RemoteMobManager {
 	}
 
 	private poolFor(typeId: number): MobInstancePool {
-		return typeId === MobTypeId.Sheep
-			? getSheepInstancePool()
-			: getChickenInstancePool();
+		switch (typeId) {
+			case MobTypeId.Sheep:
+				return getSheepInstancePool();
+			case MobTypeId.Cow:
+				return getCowInstancePool();
+			case MobTypeId.Squid:
+				return getSquidInstancePool();
+			case MobTypeId.Fish:
+				return getFishInstancePool();
+			case MobTypeId.Kraken:
+				return getKrakenInstancePool();
+			case MobTypeId.Chicken:
+				return getChickenInstancePool();
+			default:
+				return getChickenInstancePool();
+		}
+	}
+
+	private halfFor(typeId: number): { x: number; y: number; z: number } {
+		switch (typeId) {
+			case MobTypeId.Sheep:
+				return SHEEP_HIT_HALF;
+			case MobTypeId.Cow:
+				return COW_HIT_HALF;
+			case MobTypeId.Squid:
+				return SQUID_HIT_HALF;
+			case MobTypeId.Fish:
+				return FISH_HIT_HALF;
+			case MobTypeId.Kraken:
+				return KRAKEN_HIT_HALF;
+			case MobTypeId.Chicken:
+				return CHICKEN_HIT_HALF;
+			default:
+				return CHICKEN_HIT_HALF;
+		}
 	}
 
 	private spawnMob(
@@ -248,23 +291,23 @@ export class RemoteMobManager {
 
 		const pool = this.poolFor(typeId);
 		const slot = pool.acquire(null);
-		// Both pools now use thin-instance colors: walk phase is packed into
-		// the alpha channel, RGB carries the tint (white for chicken, wool for
-		// sheep).
+		// All pools use thin-instance colors: walk phase is packed into
+		// the alpha channel, RGB carries the tint. The server doesn't send
+		// color variations, so remote mobs pick a random color from their
+		// species palette (sheep wool, fish scales) for visual variety.
 		if (typeId === MobTypeId.Sheep) {
-			pool.writeColor(
-				slot,
-				REMOTE_SHEEP_WOOL.r,
-				REMOTE_SHEEP_WOOL.g,
-				REMOTE_SHEEP_WOOL.b,
-				0,
-			);
+			const wool =
+				SHEEP_COLORS[(Math.random() * SHEEP_COLORS.length) | 0]!.color;
+			pool.writeColor(slot, wool.r, wool.g, wool.b, 0);
+		} else if (typeId === MobTypeId.Fish) {
+			const scales = FISH_COLORS[(Math.random() * FISH_COLORS.length) | 0]!;
+			pool.writeColor(slot, scales.r, scales.g, scales.b, 0);
 		} else {
 			pool.writeColor(slot, 1, 1, 1, 0);
 		}
 
-		// Hit box matches the shared species model (see Chicken/Sheep exports).
-		const half = typeId === MobTypeId.Sheep ? SHEEP_HIT_HALF : CHICKEN_HIT_HALF;
+		// Hit box matches the shared species model (see Mob exports).
+		const half = this.halfFor(typeId);
 
 		const yawRad = yaw * YAW_BYTE_TO_RAD;
 		pool.writeMatrix(slot, x, y, z, yawRad);

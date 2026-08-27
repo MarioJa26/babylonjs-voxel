@@ -268,5 +268,41 @@
 		"maxStack": 64,
 		"useAction": "use_spawn_egg",
 		"spawnMobType": "sheep"
+	},
+	{
+		"id": 1100,
+		"name": "Cow Spawn Egg",
+		"description": "Spawns a cow where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/cowspawnegg/cowspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "cow"
+	},
+	{
+		"id": 1101,
+		"name": "Squid Spawn Egg",
+		"description": "Spawns a squid where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/squidspawnegg/squidspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "squid"
+	},
+	{
+		"id": 1102,
+		"name": "Fish Spawn Egg",
+		"description": "Spawns a fish where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/fishspawnegg/fishspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "fish"
+	},
+	{
+		"id": 1103,
+		"name": "Kraken Spawn Egg",
+		"description": "Spawns a kraken where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/krakenspawnegg/krakenspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "kraken"
 	}
 ]

@@ -99,7 +99,7 @@ const SHEEP_BODY_HALF_SIZE = vec3(
 	SHEEP_HIT_HALF.y,
 	SHEEP_HIT_HALF.z,
 );
-const SHEEP_COLORS = [
+export const SHEEP_COLORS = [
 	{ name: "white", color: new Color3(0.95, 0.95, 0.95) },
 	{ name: "black", color: new Color3(0.15, 0.15, 0.15) },
 	{ name: "brown", color: new Color3(0.45, 0.25, 0.1) },

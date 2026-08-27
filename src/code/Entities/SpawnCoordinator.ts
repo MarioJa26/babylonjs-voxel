@@ -4,6 +4,7 @@ import {
 	getBlockByWorldCoords,
 	getLightByWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
+import { BlockType } from "../World/Texture/BlockType";
 import type { Mob, MobRegistry, MobSpawnConfig } from "./Mobs/Mob";
 
 const SPAWN_MIN_RADIUS = 24;
@@ -149,6 +150,12 @@ export class SpawnCoordinator {
 			_mobSnapshot.push(mob);
 		}
 
+		// Water mobs (squid/fish/kraken): spawn inside water column
+		const isWaterSpawn = config.spawnBlockId === BlockType.Water;
+		if (isWaterSpawn) {
+			return this.#findWaterSpawnPosition(wx, wz, config);
+		}
+
 		for (let wy = MAX_SPAWN_HEIGHT; wy >= MIN_SPAWN_HEIGHT; wy--) {
 			const blockBelow = getBlockByWorldCoords(wx, wy, wz);
 			const blockAbove = getBlockByWorldCoords(wx, wy + 1, wz);
@@ -180,6 +187,44 @@ export class SpawnCoordinator {
 			}
 		}
 
+		return null;
+	}
+
+	#findWaterSpawnPosition(
+		wx: number,
+		wz: number,
+		config: MobSpawnConfig,
+	): { x: number; y: number; z: number } | null {
+		// Scan around sea level for a water column; kraken prefers deeper water
+		const SEA_LEVEL = 62;
+		const isKraken = config.mobType === "kraken";
+		const yStart = isKraken ? SEA_LEVEL - 2 : SEA_LEVEL + 2;
+		const yEnd = isKraken ? SEA_LEVEL - 12 : SEA_LEVEL - 4;
+
+		for (let wy = yStart; wy >= yEnd; wy--) {
+			const block = getBlockByWorldCoords(wx, wy, wz);
+			const above = getBlockByWorldCoords(wx, wy + 1, wz);
+			if (block !== BlockType.Water || above !== BlockType.Water) continue; // need water + water above
+
+			let tooClose = false;
+			for (let i = 0; i < _mobSnapshot.length; i++) {
+				const existing = _mobSnapshot[i];
+				if (!existing) continue;
+				const dx = existing.position.x - wx;
+				const dz = existing.position.z - wz;
+				if (dx * dx + dz * dz < 9) {
+					tooClose = true;
+					break;
+				}
+			}
+			if (tooClose) continue;
+
+			return {
+				x: wx + 0.5,
+				y: wy + (config.spawnYOffset ?? 0.5),
+				z: wz + 0.5,
+			};
+		}
 		return null;
 	}
 }

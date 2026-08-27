@@ -12,13 +12,24 @@ import {
 import { MetadataContainer } from "@/code/Entities/MetadataContainer";
 import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
+import type { AquaticMob } from "./AquaticMob";
+import type { Mob } from "./Mob";
 import {
 	buildMobModelGeometry,
 	createInstancedMobAtlasMaterial,
 	type MobPartSpec,
 } from "./MobMesh";
-import { MOB_CHICKEN_SKIN_PATH, MOB_SHEEP_SKIN_PATH } from "./MobSkin";
+import {
+	MOB_CHICKEN_SKIN_PATH,
+	MOB_COW_SKIN_PATH,
+	MOB_FISH_SKIN_PATH,
+	MOB_KRAKEN_SKIN_PATH,
+	MOB_SHEEP_SKIN_PATH,
+	MOB_SQUID_SKIN_PATH,
+} from "./MobSkin";
 import type { NeutralMob } from "./NeutralMob";
+
+type MobOwner = Mob | NeutralMob | AquaticMob;
 
 /**
  * Per-species thin-instance pools for mob rendering.
@@ -99,6 +110,10 @@ export function preloadMobSkins(): Promise<void> {
 	return Promise.all([
 		loadMobSkin(MOB_CHICKEN_SKIN_PATH),
 		loadMobSkin(MOB_SHEEP_SKIN_PATH),
+		loadMobSkin(MOB_COW_SKIN_PATH),
+		loadMobSkin(MOB_SQUID_SKIN_PATH),
+		loadMobSkin(MOB_FISH_SKIN_PATH),
+		loadMobSkin(MOB_KRAKEN_SKIN_PATH),
 	]).then(() => undefined);
 }
 
@@ -146,7 +161,7 @@ export class MobInstancePool {
 	#matrices: Float32Array;
 	#colors: Float32Array | null;
 	#laneHolders: (InstanceSlotHandle | null)[];
-	#laneOwners: (NeutralMob | null)[];
+	#laneOwners: (MobOwner | null)[];
 	#capacity: number;
 	#count = 0;
 	#dirtyMin = Number.POSITIVE_INFINITY;
@@ -249,7 +264,7 @@ export class MobInstancePool {
 
 	/** Claim a lane for `owner` (null for non-interactive remote mobs).
 	 * Call {@link writeMatrix} before first render. */
-	acquire(owner: NeutralMob | null): InstanceSlotHandle {
+	acquire(owner: MobOwner | null): InstanceSlotHandle {
 		if (this.#count === this.#capacity) {
 			this.#grow();
 		}
@@ -366,7 +381,7 @@ export class MobInstancePool {
 		this.#markColorDirty(index);
 	}
 
-	ownerAt(instanceIndex: number): NeutralMob | null {
+	ownerAt(instanceIndex: number): MobOwner | null {
 		if (instanceIndex < 0 || instanceIndex >= this.#count) return null;
 		return this.#laneOwners[instanceIndex] ?? null;
 	}
@@ -460,7 +475,7 @@ export class MobInstancePool {
 		laneHolders.splice(0, this.#laneHolders.length, ...this.#laneHolders);
 		this.#laneHolders = laneHolders;
 
-		const laneOwners: (NeutralMob | null)[] = new Array(newCapacity).fill(null);
+		const laneOwners: (MobOwner | null)[] = new Array(newCapacity).fill(null);
 		laneOwners.splice(0, this.#laneOwners.length, ...this.#laneOwners);
 		this.#laneOwners = laneOwners;
 
@@ -530,7 +545,7 @@ function registerPool(pool: MobInstancePool): void {
 export function resolveMobFromPick(
 	mesh: Mesh,
 	thinInstanceIndex: number,
-): NeutralMob | null {
+): MobOwner | null {
 	const pool = poolByMesh.get(mesh);
 	if (!pool) return null;
 	return pool.ownerAt(thinInstanceIndex);

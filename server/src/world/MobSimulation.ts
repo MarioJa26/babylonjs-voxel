@@ -81,6 +81,8 @@ interface MobTypeConfig {
 	 * Mobs whose proximity panic is disabled only flee when damaged.
 	 */
 	fleeRadiusSq: number;
+	/** True for water-native mobs that swim instead of walking on land. */
+	aquatic?: boolean;
 }
 
 const FLEE_RADIUS = 8;
@@ -106,6 +108,38 @@ const MOB_TYPE_CONFIGS: Record<number, MobTypeConfig> = {
 		hp: 8,
 		// Sheep don't panic from player proximity — only when damaged.
 		fleeRadiusSq: 0,
+	},
+	[MobTypeId.Cow]: {
+		maxCount: 10,
+		speed: 1.4,
+		halfHeight: 0.7,
+		hp: 10,
+		// Cows don't panic from player proximity — only when damaged.
+		fleeRadiusSq: 0,
+	},
+	[MobTypeId.Squid]: {
+		maxCount: 8,
+		speed: 1.6,
+		halfHeight: 0.45,
+		hp: 10,
+		fleeRadiusSq: 25,
+		aquatic: true,
+	},
+	[MobTypeId.Fish]: {
+		maxCount: 15,
+		speed: 2.0,
+		halfHeight: 0.15,
+		hp: 3,
+		fleeRadiusSq: 25,
+		aquatic: true,
+	},
+	[MobTypeId.Kraken]: {
+		maxCount: 2,
+		speed: 1.1,
+		halfHeight: 1.0,
+		hp: 80,
+		fleeRadiusSq: 25,
+		aquatic: true,
 	},
 };
 const MOB_TYPE_IDS = Object.keys(MOB_TYPE_CONFIGS).map(Number);
@@ -333,6 +367,12 @@ export class ServerMobSimulation {
 	): void {
 		const config = MOB_TYPE_CONFIGS[mob.typeId];
 
+		// Aquatic mobs use water swimming AI instead of land pathfinding.
+		if (config.aquatic) {
+			this.updateAquaticMob(mob, deltaMs, players);
+			return;
+		}
+
 		// Damage-triggered panic: flee from the nearest player for fleeTimer ms,
 		// regardless of distance. This lets sheep (which have fleeRadiusSq = 0)
 		// still run away when hit.
@@ -413,6 +453,114 @@ export class ServerMobSimulation {
 		}
 
 		this.settleHeight(mob, config.halfHeight, deltaMs);
+	}
+
+	/**
+	 * Aquatic mob AI — swims in water with buoyancy and damping, wanders
+	 * randomly, and avoids beaching on land.
+	 */
+	private updateAquaticMob(
+		mob: ServerMob,
+		deltaMs: number,
+		players: ReadonlyArray<{ x: number; y: number; z: number }>,
+	): void {
+		const config = MOB_TYPE_CONFIGS[mob.typeId];
+		const dt = deltaMs / 1000;
+
+		// Check if currently in water
+		const feetY = Math.floor(mob.y - config.halfHeight);
+		const centerY = Math.floor(mob.y);
+		const headY = Math.floor(mob.y + config.halfHeight - 0.01);
+		const feetBlock = this.sampler.sample(mob.x, feetY, mob.z);
+		const centerBlock = this.sampler.sample(mob.x, centerY, mob.z);
+		const headBlock = this.sampler.sample(mob.x, headY, mob.z);
+		const inWater =
+			feetBlock === BlockType.Water ||
+			centerBlock === BlockType.Water ||
+			headBlock === BlockType.Water;
+
+		// Find water surface Y (top of water column)
+		let waterSurfaceY = centerY;
+		if (inWater) {
+			// Scan up to find water surface
+			for (let y = centerY; y < centerY + 16; y++) {
+				if (this.sampler.sample(mob.x, y, mob.z) !== BlockType.Water) {
+					waterSurfaceY = y;
+					break;
+				}
+			}
+		}
+
+		// Damage-triggered panic
+		if (mob.fleeTimer > 0) {
+			mob.fleeTimer = Math.max(0, mob.fleeTimer - deltaMs);
+		}
+
+		const threat = this.findNearestThreat(mob, players);
+		const damageFleeing = mob.fleeTimer > 0 && players.length > 0;
+		const fleeing = threat !== null || damageFleeing;
+
+		mob.headingTimer -= deltaMs;
+		if (fleeing) {
+			if (!mob.fleeing || mob.headingTimer <= 0) {
+				const target = threat ?? this.findNearestPlayer(mob, players);
+				if (target) {
+					const awayX = mob.x - target.x;
+					const awayZ = mob.z - target.z;
+					if (awayX * awayX + awayZ * awayZ > 0.0001) {
+						mob.yaw = this.vectorToYaw(awayX, awayZ);
+					} else {
+						mob.yaw = (mob.yaw + 64) & 255;
+					}
+				}
+				mob.headingTimer = 250;
+			}
+			mob.fleeing = true;
+		} else if (mob.headingTimer <= 0) {
+			mob.fleeing = false;
+			mob.headingTimer =
+				WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS);
+			// Random heading change for wandering
+			mob.yaw = (mob.yaw + Math.floor((Math.random() - 0.5) * 128)) & 255;
+		}
+
+		// Calculate movement
+		const speed = fleeing ? FLEE_SPEED : config.speed;
+		const step = speed * dt;
+
+		if (step > 0) {
+			const radians = (mob.yaw / 255) * Math.PI * 2;
+			const nx = mob.x + Math.sin(radians) * step;
+			const nz = mob.z + Math.cos(radians) * step;
+
+			// Check if next position has water
+			const nextCenterBlock = this.sampler.sample(nx, centerY, nz);
+			const nextFeetBlock = this.sampler.sample(nx, feetY, nz);
+
+			if (
+				nextCenterBlock === BlockType.Water ||
+				nextFeetBlock === BlockType.Water
+			) {
+				// Can move into water
+				mob.x = nx;
+				mob.z = nz;
+			} else {
+				// Blocked by land — turn around
+				mob.yaw = (mob.yaw + 128) & 255;
+				mob.headingTimer = Math.min(mob.headingTimer, 800);
+			}
+		}
+
+		// Vertical movement — buoyancy toward surface or sinking if beached
+		if (inWater) {
+			// Float toward water surface
+			const targetY = waterSurfaceY - config.halfHeight + 0.2;
+			const error = targetY - mob.y;
+			mob.y += error * Math.min(1, dt * 3);
+		} else {
+			// Beached — gently sink (will despawn via lifecycle)
+			mob.y = Math.max(mob.y - 2 * dt, 0);
+		}
 	}
 
 	/** Follow a short land route using the same surface/headroom rules as NeutralMob. */
@@ -815,10 +963,22 @@ export class ServerMobSimulation {
 			return null;
 		}
 
-		// Unknown chunk (not cached) or solid body/head cell — reject so the
-		// mob never spawns stuck inside terrain.
+		// Unknown chunk (not cached) — reject.
 		if (this.sampler.sample(x, y, z) === null) return null;
-		if (this.isSolid(x, y, z) || this.isSolid(x, y + 1, z)) return null;
+
+		if (config.aquatic) {
+			// Aquatic mobs spawn in water — require water at body and head.
+			const bodyBlock = this.sampler.sample(x, y, z);
+			const headBlock = this.sampler.sample(x, y + 1, z);
+			if (bodyBlock !== BlockType.Water) return null;
+			// Head can be water or air (surface)
+			if (headBlock !== BlockType.Water && headBlock !== BlockType.Air)
+				return null;
+		} else {
+			// Land mobs — reject solid body/head cell so the mob never spawns
+			// stuck inside terrain.
+			if (this.isSolid(x, y, z) || this.isSolid(x, y + 1, z)) return null;
+		}
 
 		const mob: ServerMob = {
 			id: this.nextId++,
@@ -1115,22 +1275,43 @@ export class ServerMobSimulation {
 			for (let localY = startLocalY; localY >= 0; localY--) {
 				// Entries are packed values — match the set on the raw block id.
 				const blockId = unpackBlockId(blocks[columnBase + (localY << 5)]);
-				if (!SPAWNABLE_BLOCK_ID_SET.has(blockId)) continue;
 
-				const wy = chunkBaseY + localY;
+				if (config.aquatic) {
+					// Aquatic mobs spawn in water — look for water blocks with
+					// water or air above (so they're not buried).
+					if (blockId !== BlockType.Water) continue;
 
-				// Preserve the original air-above rule. This intentionally uses
-				// the sampler because wy + 1 may cross into the next chunk section.
-				// Air is always packed 0, so the raw comparison stays valid.
-				if (this.sampler.sample(wx, wy + 1, wz) !== 0) continue;
+					const wy = chunkBaseY + localY;
+					const above = this.sampler.sample(wx, wy + 1, wz);
+					// Headroom can be water or air
+					if (above !== BlockType.Water && above !== BlockType.Air) continue;
 
-				if (this.isSpawnTooClose(wx, wz)) continue;
+					if (this.isSpawnTooClose(wx, wz)) continue;
 
-				return {
-					x: wx + 0.5,
-					y: wy + 1.02 + config.halfHeight,
-					z: wz + 0.5,
-				};
+					return {
+						x: wx + 0.5,
+						y: wy + 0.5,
+						z: wz + 0.5,
+					};
+				} else {
+					// Land mobs — look for spawnable ground blocks.
+					if (!SPAWNABLE_BLOCK_ID_SET.has(blockId)) continue;
+
+					const wy = chunkBaseY + localY;
+
+					// Preserve the original air-above rule. This intentionally uses
+					// the sampler because wy + 1 may cross into the next chunk section.
+					// Air is always packed 0, so the raw comparison stays valid.
+					if (this.sampler.sample(wx, wy + 1, wz) !== 0) continue;
+
+					if (this.isSpawnTooClose(wx, wz)) continue;
+
+					return {
+						x: wx + 0.5,
+						y: wy + 1.02 + config.halfHeight,
+						z: wz + 0.5,
+					};
+				}
 			}
 		}
 
