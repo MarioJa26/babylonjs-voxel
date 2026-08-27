@@ -30,6 +30,10 @@ import type {
 	MobInstancePool,
 } from "@/code/Entities/Mobs/MobInstancePool";
 import {
+	registerMobLight,
+	unregisterMobLight,
+} from "@/code/Entities/Mobs/MobLighting";
+import {
 	getSheepInstancePool,
 	SHEEP_COLORS,
 	SHEEP_HIT_HALF,
@@ -292,12 +296,15 @@ export class RemoteMobManager {
 		// the alpha channel, RGB carries the tint. The server doesn't send
 		// color variations, so remote mobs pick a random color from their
 		// species palette (sheep wool, fish scales) for visual variety.
+		let baseColor: [number, number, number] = [1, 1, 1];
 		if (typeId === MobTypeId.Sheep) {
 			const wool =
 				SHEEP_COLORS[(Math.random() * SHEEP_COLORS.length) | 0]!.color;
+			baseColor = [wool.r, wool.g, wool.b];
 			pool.writeColor(slot, wool.r, wool.g, wool.b, 0);
 		} else if (typeId === MobTypeId.Fish) {
 			const scales = FISH_COLORS[(Math.random() * FISH_COLORS.length) | 0]!;
+			baseColor = [scales.r, scales.g, scales.b];
 			pool.writeColor(slot, scales.r, scales.g, scales.b, 0);
 		} else {
 			pool.writeColor(slot, 1, 1, 1, 0);
@@ -309,7 +316,7 @@ export class RemoteMobManager {
 		const yawRad = yaw * YAW_BYTE_TO_RAD;
 		pool.writeMatrix(slot, x, y, z, yawRad);
 
-		this.mobs.set(id, {
+		const entry = {
 			slot,
 			pool,
 			typeId,
@@ -333,6 +340,17 @@ export class RemoteMobManager {
 			writtenY: y,
 			writtenZ: z,
 			writtenYawRad: yawRad,
+		};
+		this.mobs.set(id, entry);
+		registerMobLight({
+			pool,
+			slot,
+			getPos: () => ({
+				x: entry.currentX,
+				y: entry.currentY,
+				z: entry.currentZ,
+			}),
+			baseColor,
 		});
 	}
 
@@ -356,6 +374,7 @@ export class RemoteMobManager {
 		if (!mob) return;
 
 		this.mobs.delete(id);
+		unregisterMobLight(mob.slot);
 		mob.pool.release(mob.slot);
 	}
 
@@ -424,6 +443,7 @@ export class RemoteMobManager {
 	/** Release every tracked remote mob's instance lane. */
 	clearAll(): void {
 		for (const mob of this.mobs.values()) {
+			unregisterMobLight(mob.slot);
 			mob.pool.release(mob.slot);
 		}
 		this.mobs.clear();

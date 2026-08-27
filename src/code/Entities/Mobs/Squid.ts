@@ -5,6 +5,7 @@ import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem"
 import { getMobStats, MobTypeId } from "../MobConfig";
 import { AquaticMob } from "./AquaticMob";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
+import { registerMobLight, unregisterMobLight } from "./MobLighting";
 import type { MobPartSpec } from "./MobMesh";
 import {
 	MOB_SQUID_SKIN_PATH,
@@ -113,6 +114,12 @@ export class Squid extends AquaticMob {
 		getBodyPool().writeColor(this.#bodySlot, 1, 1, 1, 0);
 		this.syncToInstances();
 		this.finalizeRegistration();
+		registerMobLight({
+			pool: getBodyPool(),
+			slot: this.#bodySlot,
+			getPos: () => this.position,
+			baseColor: [1, 1, 1],
+		});
 	}
 
 	protected override syncToInstances(): void {
@@ -150,6 +157,7 @@ export class Squid extends AquaticMob {
 
 	dispose(): void {
 		if (this.isDisposed) return;
+		unregisterMobLight(this.#bodySlot);
 		getBodyPool().release(this.#bodySlot);
 		super.dispose();
 	}

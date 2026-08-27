@@ -6,6 +6,7 @@ import { Item } from "../../Player/Inventory/Item";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
 import { getMobStats, MobTypeId } from "../MobConfig";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
+import { registerMobLight, unregisterMobLight } from "./MobLighting";
 import type { MobPartSpec } from "./MobMesh";
 import {
 	MOB_SHEEP_SKIN_PATH,
@@ -188,6 +189,12 @@ export class Sheep extends NeutralMob {
 		);
 		this.syncToInstances();
 		this.finalizeRegistration();
+		registerMobLight({
+			pool: getBodyPool(),
+			slot: this.#bodySlot,
+			getPos: () => this.position,
+			baseColor: [this.#color.r, this.#color.g, this.#color.b],
+		});
 	}
 
 	protected override syncToInstances(): void {
@@ -273,6 +280,7 @@ export class Sheep extends NeutralMob {
 
 	dispose(): void {
 		if (this.isDisposed) return;
+		unregisterMobLight(this.#bodySlot);
 		getBodyPool().release(this.#bodySlot);
 		super.dispose();
 	}

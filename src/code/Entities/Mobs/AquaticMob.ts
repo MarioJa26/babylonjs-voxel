@@ -6,9 +6,9 @@ import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
 import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
 import {
-	getBlockAndStateByWorldCoords,
 	getBlockByWorldCoords,
 	registerChunkBoundEntity,
+	resolveBlockAtWorldCoords,
 	unregisterChunkBoundEntity,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
@@ -179,14 +179,25 @@ export abstract class AquaticMob {
 			halfSize,
 			createVoxelColliderBlockSampler(
 				(wx, wy, wz) => {
-					const result = getBlockAndStateByWorldCoords(wx, wy, wz);
+					// PERF: single chunk resolution per voxel (was two: a loaded
+					// check via getChunk + a block/state read). resolveBlockAtWorldCoords
+					// resolves once and reports unloaded so we can treat it as solid.
+					const r = resolveBlockAtWorldCoords(wx, wy, wz);
+					if (r.unloaded) {
+						// Chunk under this probe is not loaded: treat it as solid
+						// terrain so the mob collides with / rests on it instead
+						// of falling through into the void while chunks stream in.
+						_voxelResolveScratch.blockId = BlockType.Cobble;
+						_voxelResolveScratch.blockState = 0;
+						return _voxelResolveScratch;
+					}
 
-					if (!isCollidableBlock(result.blockId)) {
+					if (!isCollidableBlock(r.blockId)) {
 						return null;
 					}
 
-					_voxelResolveScratch.blockId = result.blockId;
-					_voxelResolveScratch.blockState = result.blockState;
+					_voxelResolveScratch.blockId = r.blockId;
+					_voxelResolveScratch.blockState = r.blockState;
 
 					return _voxelResolveScratch;
 				},
@@ -292,6 +303,29 @@ export abstract class AquaticMob {
 		return this.#isDisposed;
 	}
 
+	#isWaterStateReady(pos: Vec3): boolean {
+		const x = Math.floor(pos.x);
+		const z = Math.floor(pos.z);
+		const feetY = Math.floor(pos.y - this.#halfHeight + 0.05);
+		const centerY = Math.floor(pos.y);
+		const headY = Math.floor(pos.y + this.#halfHeight - 0.05);
+		const chunkX = x >> CHUNK_SHIFT;
+		const chunkZ = z >> CHUNK_SHIFT;
+		const feetChunkY = feetY >> CHUNK_SHIFT;
+		const centerChunkY = centerY >> CHUNK_SHIFT;
+		const headChunkY = headY >> CHUNK_SHIFT;
+		const lodOk = (c: ReturnType<typeof getChunk>) =>
+			c !== undefined && c.isLoaded && c.lodLevel <= 1;
+		if (centerChunkY === feetChunkY && headChunkY === feetChunkY) {
+			return lodOk(getChunk(chunkX, feetChunkY, chunkZ));
+		}
+		return (
+			lodOk(getChunk(chunkX, feetChunkY, chunkZ)) &&
+			lodOk(getChunk(chunkX, centerChunkY, chunkZ)) &&
+			lodOk(getChunk(chunkX, headChunkY, chunkZ))
+		);
+	}
+
 	/**
 	 * Samples feet, center, and head water occupancy.
 	 *
@@ -320,7 +354,7 @@ export abstract class AquaticMob {
 		if (centerChunkY === feetChunkY && headChunkY === feetChunkY) {
 			const chunk = getChunk(chunkX, feetChunkY, chunkZ);
 
-			if (chunk?.isLoaded) {
+			if (chunk?.isLoaded && chunk.lodLevel <= 1) {
 				const localX = x & CHUNK_MASK;
 				const localZ = z & CHUNK_MASK;
 
@@ -336,11 +370,19 @@ export abstract class AquaticMob {
 					chunk.getBlock(localX, headY & CHUNK_MASK, localZ) ===
 					BlockType.Water;
 			} else {
-				feetInWater = false;
-				centerInWater = false;
-				headInWater = false;
+				// Chunk not ready — keep previous water state to avoid
+				// false stranded transition that sinks the mob into terrain
+				// while the chunk streams in (land mobs avoid this via the
+				// collider's fake-Cobble; aquatics must freeze instead).
+				return this.#inWaterCached;
 			}
 		} else {
+			// Cross-chunk sample — any unloaded piece means water state is
+			// unreliable; freeze as water if we were water before, otherwise
+			// treat as not ready.
+			if (!this.#isWaterStateReady(pos)) {
+				return this.#inWaterCached;
+			}
 			feetInWater = getBlockByWorldCoords(x, feetY, z) === BlockType.Water;
 
 			centerInWater = getBlockByWorldCoords(x, centerY, z) === BlockType.Water;
@@ -389,6 +431,20 @@ export abstract class AquaticMob {
 		if (this.#isDisposed) return;
 
 		const pos = this.#position;
+		// While any water-check chunk is not lod0-ready, freeze in place.
+		// This mirrors NeutralMob's lod>1 skip but covers the vertical span
+		// of an aquatic's body; without it a chunk-reloaded squid/fish
+		// samples false for water (0) and enters stranded GRAVITY, sinking
+		// through the water column into the ground before the column loads.
+		// Land sheeps don't hit this because their collider's fake-Cobble
+		// holds them up and they are rarely cross-chunk.
+		if (!this.#isWaterStateReady(pos)) {
+			// Preserve targetDepth/velocity but don't integrate; keep visual
+			// pose alive so light + walk phase stay coherent.
+			this.#updateAnimationPhase(dt, pos);
+			this.syncToInstances();
+			return;
+		}
 		const velocity = this.#velocity;
 		const inWater = this.#updateWaterState(pos);
 

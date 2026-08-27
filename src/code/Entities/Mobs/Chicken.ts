@@ -4,6 +4,7 @@ import { Map1 } from "@/code/Maps/Map1";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
 import { getMobStats, MobTypeId } from "../MobConfig";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
+import { registerMobLight, unregisterMobLight } from "./MobLighting";
 import type { MobPartSpec } from "./MobMesh";
 import {
 	CHICKEN_BEAK_UV,
@@ -155,10 +156,15 @@ export class Chicken extends NeutralMob {
 		this.setPosition(x, y, z);
 
 		this.#bodySlot = getBodyPool().acquire(this);
-		// White tint (texture shows as-is); alpha channel carries walk phase.
 		getBodyPool().writeColor(this.#bodySlot, 1, 1, 1, 0);
 		this.syncToInstances();
 		this.finalizeRegistration();
+		registerMobLight({
+			pool: getBodyPool(),
+			slot: this.#bodySlot,
+			getPos: () => this.position,
+			baseColor: [1, 1, 1],
+		});
 	}
 
 	protected override syncToInstances(): void {
@@ -199,6 +205,7 @@ export class Chicken extends NeutralMob {
 
 	dispose(): void {
 		if (this.isDisposed) return;
+		unregisterMobLight(this.#bodySlot);
 		getBodyPool().release(this.#bodySlot);
 		super.dispose();
 	}

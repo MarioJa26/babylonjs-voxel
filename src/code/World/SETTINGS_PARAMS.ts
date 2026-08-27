@@ -57,6 +57,13 @@ export const SETTING_PARAMS = {
 	// --- Lighting ---
 	HEMISPHERIC_LIGHT_INTENSITY: 1.0,
 
+	// --- Mob lighting (voxel-tinted thin-instance colors) ---
+	// How many mob instances may resample voxel light per frame.
+	// 0 = update every registered mob every tick (tick still gated by HZ).
+	MOB_LIGHT_UPDATES_PER_FRAME: 24,
+	// Frequency cap for the mob-light tick. 0 = run every frame.
+	MOB_LIGHT_UPDATE_HZ: 8,
+
 	// --- Rendering quality / GPU load ---
 	// Multiplier applied to window.devicePixelRatio for the WebGPU canvas.
 	// 1 = native resolution; 0.75/0.5 render fewer pixels (biggest single

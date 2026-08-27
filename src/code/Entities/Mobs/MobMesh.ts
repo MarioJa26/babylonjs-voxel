@@ -129,9 +129,9 @@ fn mainFragment(in : FSIn) -> @location(0) vec4<f32> {
     discard;
   }
 
-  let n = normalize(in.vNormal);
-  let light = clamp(0.45 + 0.55 * n.y, 0.0, 1.0);
-  return vec4<f32>(tex.rgb * in.vTint * light, 1.0);
+  // vTint already encodes base wool/scales color * voxel light (sky+block
+  // + day/night sun factor) via MobLighting. No hemisphere fake light.
+  return vec4<f32>(tex.rgb * in.vTint, 1.0);
 }
 `;
 }

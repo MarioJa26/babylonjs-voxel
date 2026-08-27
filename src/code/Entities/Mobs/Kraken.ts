@@ -5,6 +5,7 @@ import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem"
 import { getMobStats, MobTypeId } from "../MobConfig";
 import { AquaticMob } from "./AquaticMob";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
+import { registerMobLight, unregisterMobLight } from "./MobLighting";
 import type { MobPartSpec } from "./MobMesh";
 import {
 	KRAKEN_BEAK_UV,
@@ -122,6 +123,12 @@ export class Kraken extends AquaticMob {
 		getBodyPool().writeColor(this.#bodySlot, 1, 1, 1, 0);
 		this.syncToInstances();
 		this.finalizeRegistration();
+		registerMobLight({
+			pool: getBodyPool(),
+			slot: this.#bodySlot,
+			getPos: () => this.position,
+			baseColor: [1, 1, 1],
+		});
 	}
 
 	protected override syncToInstances(): void {
@@ -152,7 +159,7 @@ export class Kraken extends AquaticMob {
 	}
 
 	protected override getDepthRange(): { min: number; max: number } {
-		return KRAKEN_STATS.depthRange ?? { min: 5, max: 24 };
+		return KRAKEN_STATS.depthRange ?? { min: 6, max: 32 };
 	}
 
 	/** Kraken does not despawn when beached — it's a boss. */
@@ -164,6 +171,7 @@ export class Kraken extends AquaticMob {
 
 	dispose(): void {
 		if (this.isDisposed) return;
+		unregisterMobLight(this.#bodySlot);
 		getBodyPool().release(this.#bodySlot);
 		super.dispose();
 	}

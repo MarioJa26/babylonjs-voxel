@@ -27,6 +27,7 @@ import type { Player } from "../Player/Player";
 import {
 	getBlockByWorldCoords,
 	getBlockStateByWorldCoords,
+	resolveBlockAtWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
 import {
@@ -126,9 +127,18 @@ export class AdvancedBoat implements IUsable {
 			this.#collisionHalfExtents,
 			createVoxelColliderBlockSampler(
 				(x, y, z) => {
-					const blockId = getBlockByWorldCoords(x, y, z);
-					if (!isCollidableBlock(blockId)) return null;
-					return { blockId, blockState: getBlockStateByWorldCoords(x, y, z) };
+					// resolveBlockAtWorldCoords resolves the chunk once and reports
+					// unloaded so we can treat it as solid terrain — otherwise the
+					// boat falls through the world while chunks stream in.
+					const r = resolveBlockAtWorldCoords(x, y, z);
+					if (r.unloaded) {
+						return { blockId: BlockType.Cobble, blockState: 0 };
+					}
+					if (!isCollidableBlock(r.blockId)) return null;
+					return {
+						blockId: r.blockId,
+						blockState: getBlockStateByWorldCoords(x, y, z),
+					};
 				},
 				{
 					getFenceDynamicShape,

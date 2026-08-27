@@ -381,6 +381,35 @@ export class MobInstancePool {
 		this.#markColorDirty(index);
 	}
 
+	/**
+	 * Write lit RGB while preserving the walk-phase alpha channel.
+	 * `r/g/b` are already base*tint * lightColor (0-1).
+	 */
+	writeLitColor(
+		holder: InstanceSlotHandle,
+		r: number,
+		g: number,
+		b: number,
+	): void {
+		if (!this.#colors) return;
+		const index = holder.index;
+		if (holder.pool !== this || index < 0 || index >= this.#count) return;
+		const o = index * COLOR_FLOATS;
+		this.#colors[o] = r;
+		this.#colors[o + 1] = g;
+		this.#colors[o + 2] = b;
+		// alpha (walk phase) untouched
+		this.#markColorDirty(index);
+	}
+
+	/** Read current alpha (walk phase) for a slot — used by lighting to preserve it. */
+	readAlpha(holder: InstanceSlotHandle): number {
+		if (!this.#colors) return 0;
+		const index = holder.index;
+		if (holder.pool !== this || index < 0 || index >= this.#count) return 0;
+		return this.#colors[index * COLOR_FLOATS + 3];
+	}
+
 	ownerAt(instanceIndex: number): MobOwner | null {
 		if (instanceIndex < 0 || instanceIndex >= this.#count) return null;
 		return this.#laneOwners[instanceIndex] ?? null;

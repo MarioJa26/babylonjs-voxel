@@ -6,9 +6,9 @@ import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
 import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
 import {
-	getBlockAndStateByWorldCoords,
 	getBlockByWorldCoords,
 	registerChunkBoundEntity,
+	resolveBlockAtWorldCoords,
 	unregisterChunkBoundEntity,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
@@ -200,9 +200,18 @@ export abstract class NeutralMob {
 			halfSize,
 			createVoxelColliderBlockSampler(
 				(wx, wy, wz) => {
-					// PERF: single chunk resolution (was two: block id + state),
-					// halving the BigInt packCoords getChunk calls per voxel.
-					const r = getBlockAndStateByWorldCoords(wx, wy, wz);
+					// PERF: single chunk resolution per voxel (was two: a loaded
+					// check via getChunk + a block/state read). resolveBlockAtWorldCoords
+					// resolves once and reports unloaded so we can treat it as solid.
+					const r = resolveBlockAtWorldCoords(wx, wy, wz);
+					if (r.unloaded) {
+						// Chunk under this probe is not loaded: treat it as solid
+						// terrain so the mob collides with / rests on it instead
+						// of falling through into the void while chunks stream in.
+						_voxelResolveScratch.blockId = BlockType.Cobble;
+						_voxelResolveScratch.blockState = 0;
+						return _voxelResolveScratch;
+					}
 					if (!isCollidableBlock(r.blockId)) return null;
 
 					// Shared scratch — consumed immediately by the sampler.

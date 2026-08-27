@@ -406,6 +406,14 @@ export class ServerMobSimulation {
 		const feetBlock = this.sampler.sample(mob.x, feetY, mob.z);
 		const centerBlock = this.sampler.sample(mob.x, centerY, mob.z);
 		const headBlock = this.sampler.sample(mob.x, headY, mob.z);
+		// If any water-check chunk is not yet cached (null), the column is
+		// still streaming in — hold position. Land mobs do this via
+		// scanDown→unknown→hold height; aquatics must do the same or a
+		// false `inWater=false` drops them with `mob.y -= 2*dt` into terrain.
+		// This mirrors the client AquaticMob freeze for chunk-loading.
+		if (feetBlock === null || centerBlock === null || headBlock === null) {
+			return;
+		}
 		const inWater =
 			feetBlock === BlockType.Water ||
 			centerBlock === BlockType.Water ||
@@ -415,20 +423,38 @@ export class ServerMobSimulation {
 		let waterSurfaceY = centerY;
 		let waterFloorY = centerY;
 		if (inWater) {
-			// Scan up to find water surface
+			// Scan up to find water surface — unknown chunks (null) are
+			// treated as water so a partially-streamed column doesn't
+			// prematurely cap the surface at the chunk boundary.
+			let surfaceFound = false;
 			for (let y = centerY; y < centerY + 16; y++) {
-				if (this.sampler.sample(mob.x, y, mob.z) !== BlockType.Water) {
+				const b = this.sampler.sample(mob.x, y, mob.z);
+				if (b === null) continue;
+				if (b !== BlockType.Water) {
 					waterSurfaceY = y;
+					surfaceFound = true;
 					break;
 				}
 			}
-			// Scan down to find water floor
+			if (!surfaceFound && waterSurfaceY === centerY) {
+				// Column top not yet cached — hold vertical drift this tick
+				// instead of clamping to a truncated column.
+				return;
+			}
+			// Scan down to find water floor — null is skipped (unknown).
+			let floorFound = false;
 			for (let y = centerY; y > centerY - 32; y--) {
 				const block = this.sampler.sample(mob.x, y, mob.z);
-				if (block !== BlockType.Water && block !== null) {
+				if (block === null) continue;
+				if (block !== BlockType.Water) {
 					waterFloorY = y + 1; // First water block above floor
+					floorFound = true;
 					break;
 				}
+			}
+			if (!floorFound) {
+				// Floor column not cached yet — hold.
+				return;
 			}
 		}
 
@@ -474,11 +500,12 @@ export class ServerMobSimulation {
 			const nx = mob.x + Math.sin(radians) * step;
 			const nz = mob.z + Math.cos(radians) * step;
 
-			// Check if next position has water
+			// Check if next position has water — unknown (null) holds.
 			const nextCenterBlock = this.sampler.sample(nx, centerY, nz);
 			const nextFeetBlock = this.sampler.sample(nx, feetY, nz);
-
-			if (
+			if (nextCenterBlock === null || nextFeetBlock === null) {
+				// Column not cached — hold position this tick.
+			} else if (
 				nextCenterBlock === BlockType.Water ||
 				nextFeetBlock === BlockType.Water
 			) {
