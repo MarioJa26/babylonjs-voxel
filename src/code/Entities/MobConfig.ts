@@ -34,6 +34,12 @@ export interface MobStats {
 	fleeRadiusSq: number;
 	/** True for water-native mobs that swim instead of walking on land. */
 	aquatic: boolean;
+	/**
+	 * Preferred depth range below water surface (blocks). Mobs will drift
+	 * within this range. Shallow-water mobs stay near the surface,
+	 * deep-water mobs dwell near the bottom. Land mobs ignore this.
+	 */
+	depthRange?: { min: number; max: number };
 }
 
 /** Natural spawn configuration. */
@@ -83,6 +89,7 @@ export const MOB_STATS: Record<number, MobStats> = {
 		halfExtents: { x: 0.35, y: 0.45, z: 0.35 },
 		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
 		aquatic: true,
+		depthRange: { min: 2, max: 6 }, // Medium depth swimmer
 	},
 	[MobTypeId.Fish]: {
 		hp: 3,
@@ -91,6 +98,7 @@ export const MOB_STATS: Record<number, MobStats> = {
 		halfExtents: { x: 0.2, y: 0.15, z: 0.32 },
 		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
 		aquatic: true,
+		depthRange: { min: 1, max: 4 }, // Shallow to mid-depth
 	},
 	[MobTypeId.Kraken]: {
 		hp: 80,
@@ -99,6 +107,7 @@ export const MOB_STATS: Record<number, MobStats> = {
 		halfExtents: { x: 0.85, y: 1.0, z: 0.85 },
 		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
 		aquatic: true,
+		depthRange: { min: 5, max: 12 }, // Deep water dweller
 	},
 };
 

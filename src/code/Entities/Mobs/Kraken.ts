@@ -151,6 +151,10 @@ export class Kraken extends AquaticMob {
 		return KRAKEN_WANDER_SPEED;
 	}
 
+	protected override getDepthRange(): { min: number; max: number } {
+		return KRAKEN_STATS.depthRange ?? { min: 5, max: 24 };
+	}
+
 	/** Kraken does not despawn when beached — it's a boss. */
 	protected override shouldStrandedDespawn(): boolean {
 		return false;

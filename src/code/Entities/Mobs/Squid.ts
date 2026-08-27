@@ -142,6 +142,10 @@ export class Squid extends AquaticMob {
 		return SQUID_WANDER_SPEED;
 	}
 
+	protected override getDepthRange(): { min: number; max: number } {
+		return SQUID_STATS.depthRange ?? { min: 1, max: 24 };
+	}
+
 	onDeath(): void {}
 
 	dispose(): void {

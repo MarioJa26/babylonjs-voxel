@@ -183,6 +183,8 @@ export class ServerMobSimulation {
 	// (egg === true) never occupy cap slots.
 	private readonly naturalTypeCounts = new Map<number, number>();
 	private naturalTotal = 0;
+	// Per-mob depth targets for aquatic mobs (mobId -> target depth in blocks)
+	private readonly depthTargets = new Map<number, number>();
 
 	constructor(private readonly storage: ServerWorldStorage) {
 		this.sampler = new TickBlockSampler(storage);
@@ -409,13 +411,22 @@ export class ServerMobSimulation {
 			centerBlock === BlockType.Water ||
 			headBlock === BlockType.Water;
 
-		// Find water surface Y (top of water column)
+		// Find water surface Y and floor Y (bottom of water column)
 		let waterSurfaceY = centerY;
+		let waterFloorY = centerY;
 		if (inWater) {
 			// Scan up to find water surface
 			for (let y = centerY; y < centerY + 16; y++) {
 				if (this.sampler.sample(mob.x, y, mob.z) !== BlockType.Water) {
 					waterSurfaceY = y;
+					break;
+				}
+			}
+			// Scan down to find water floor
+			for (let y = centerY; y > centerY - 32; y--) {
+				const block = this.sampler.sample(mob.x, y, mob.z);
+				if (block !== BlockType.Water && block !== null) {
+					waterFloorY = y + 1; // First water block above floor
 					break;
 				}
 			}
@@ -481,12 +492,31 @@ export class ServerMobSimulation {
 			}
 		}
 
-		// Vertical movement — buoyancy toward surface or sinking if beached
+		// Vertical movement — drift within depth range with slow natural movement
 		if (inWater) {
-			// Float toward water surface
-			const targetY = waterSurfaceY - stats.halfHeight + 0.2;
-			const error = targetY - mob.y;
-			mob.y += error * Math.min(1, dt * 3);
+			const depthRange = stats.depthRange ?? { min: 1, max: 4 };
+			const maxDepth = waterSurfaceY - waterFloorY;
+			const clampedMin = Math.min(depthRange.min, maxDepth - 1);
+			const clampedMax = Math.min(depthRange.max, maxDepth - 1);
+
+			// Pick a random target depth within range (changes slowly over time)
+			if (!this.depthTargets.has(mob.id) || mob.headingTimer <= 0) {
+				const targetDepth =
+					clampedMin + Math.random() * (clampedMax - clampedMin);
+				this.depthTargets.set(mob.id, targetDepth);
+			}
+			const targetDepth = this.depthTargets.get(mob.id) ?? clampedMin;
+			const targetY = waterSurfaceY - targetDepth - stats.halfHeight;
+
+			// Very slow depth drift (40x slower than before)
+			const depthError = targetY - mob.y;
+			const depthSpeed = fleeing ? 0.075 : 0.0375; // 1.5/40 and 3.0/40
+			mob.y += depthError * Math.min(1, dt * depthSpeed);
+
+			// Keep mob within water bounds
+			const minY = waterFloorY + stats.halfHeight;
+			const maxY = waterSurfaceY - stats.halfHeight - 0.1;
+			mob.y = Math.max(minY, Math.min(maxY, mob.y));
 		} else {
 			// Beached — gently sink (will despawn via lifecycle)
 			mob.y = Math.max(mob.y - 2 * dt, 0);

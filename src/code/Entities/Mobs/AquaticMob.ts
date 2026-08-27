@@ -73,6 +73,7 @@ export abstract class AquaticMob {
 	#inWaterCached = false;
 	#headSubmergedCached = false;
 	#waterSurfaceY = 0;
+	#targetDepth: number | null = null;
 
 	// Wander
 	#swimTimer = 0;
@@ -87,6 +88,14 @@ export abstract class AquaticMob {
 	abstract getWanderSpeed(): number;
 	abstract onDeath(): void;
 	protected abstract syncToInstances(): void;
+
+	/**
+	 * Preferred depth range below water surface (blocks). Override to control
+	 * how deep this mob swims. Default is shallow (1-3 blocks).
+	 */
+	protected getDepthRange(): { min: number; max: number } {
+		return { min: 1, max: 3 };
+	}
 
 	protected getPanicRadiusSq(): number {
 		return 25;
@@ -300,22 +309,32 @@ export abstract class AquaticMob {
 			if (this.#swimTimer <= 0 || hSpeedSq < 0.05) {
 				this.#swimTimer = 1.0 + Math.random() * 2.0;
 				this.#facingAngle += -1.2 + Math.random() * 2.4;
-				// Small vertical bob
-				velocity.y += -0.4 + Math.random() * 0.8;
 			}
 			const swimSpeed = this.#wanderSpeed * SWIM_SPEED_FACTOR;
 			velocity.x = Math.sin(this.#facingAngle) * swimSpeed;
 			velocity.z = Math.cos(this.#facingAngle) * swimSpeed;
 
-			// Buoyancy toward surface + vertical damping
-			velocity.y += WATER_GRAVITY * dt;
+			// Depth control — drift within depth range with slow natural movement
+			const depthRange = this.getDepthRange();
+			const waterFloorY = this.#waterSurfaceY - 24; // Approximate floor
+			const maxDepth = Math.max(1, this.#waterSurfaceY - waterFloorY - 2);
+			const clampedMin = Math.min(depthRange.min, maxDepth);
+			const clampedMax = Math.min(depthRange.max, maxDepth);
+
+			// Pick a random target depth within range (changes slowly)
+			if (this.#swimTimer <= 0) {
+				this.#targetDepth =
+					clampedMin + Math.random() * (clampedMax - clampedMin);
+			}
 			const targetY =
-				this.#waterSurfaceY - this.#halfHeight + WATER_SURFACE_OFFSET;
-			const err = targetY - pos.y;
-			if (this.#headSubmergedCached) velocity.y += WATER_BUOYANCY * dt;
-			else if (err > 0)
-				velocity.y += Math.min(err * WATER_FLOAT_ACCEL, WATER_BUOYANCY) * dt;
-			else velocity.y += Math.max(err * 1.5, -0.8) * dt;
+				this.#waterSurfaceY -
+				(this.#targetDepth ?? clampedMin) -
+				this.#halfHeight;
+
+			const depthError = targetY - pos.y;
+			velocity.y += depthError * 0.1 * dt;
+
+			// Vertical damping and limits
 			velocity.y *= Math.max(0, 1 - WATER_VERTICAL_DAMPING * dt);
 			if (velocity.y > WATER_MAX_UP) velocity.y = WATER_MAX_UP;
 			else if (velocity.y < WATER_MAX_DOWN) velocity.y = WATER_MAX_DOWN;
