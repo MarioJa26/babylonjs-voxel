@@ -30,14 +30,14 @@ import {
 	setShaderTexture,
 	updateDynamicTexture,
 } from "@babylonjs/lite";
-import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	makeSprintEmitterState,
 	playSprint,
-	type SprintEmitterState,
 	SPRINT_FEET_OFFSET,
 	SPRINT_MIN_SPEED_SQ,
+	type SprintEmitterState,
 } from "@/code/Maps/BlockBreakParticles";
+import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
 import {
 	applyRigSkin,
@@ -56,8 +56,8 @@ import type { RemotePlayer } from "./NetClient";
 
 const NAME_TAG_FONT_PX = 30;
 const NAME_TAG_PADDING = 12;
-const NAME_TAG_HEIGHT_WORLD = 0.55;
-const NAME_TAG_Y_OFFSET = 1.5;
+export const NAME_TAG_HEIGHT_WORLD = 0.55;
+export const NAME_TAG_Y_OFFSET = 1.5;
 const NAME_TAG_TEX_HEIGHT = 64;
 const NAME_TAG_MAX_TEX_WIDTH = 384;
 const NAME_TAG_MIN_TEX_WIDTH = 32;
@@ -188,7 +188,10 @@ function fitTextWithEllipsis(
 	return best;
 }
 
-function rasteriseNameTag(name: string): {
+export function rasteriseNameTag(
+	name: string,
+	scale = 1,
+): {
 	canvas: OffscreenCanvas;
 	width: number;
 	height: number;
@@ -196,9 +199,15 @@ function rasteriseNameTag(name: string): {
 	const safeName = name.length > 0 ? name : "Player";
 	const measurementContext = getMeasureCtx();
 
-	measurementContext.font = `bold ${NAME_TAG_FONT_PX}px ${NAME_TAG_FONT}`;
+	const fontPx = NAME_TAG_FONT_PX * scale;
+	const padding = NAME_TAG_PADDING * scale;
+	const texHeight = NAME_TAG_TEX_HEIGHT * scale;
+	const maxTexWidth = NAME_TAG_MAX_TEX_WIDTH * scale;
+	const minTexWidth = Math.max(1, NAME_TAG_MIN_TEX_WIDTH * scale);
 
-	const maxTextWidth = NAME_TAG_MAX_TEX_WIDTH - NAME_TAG_PADDING * 2;
+	measurementContext.font = `bold ${fontPx}px ${NAME_TAG_FONT}`;
+
+	const maxTextWidth = maxTexWidth - padding * 2;
 
 	const displayName = fitTextWithEllipsis(
 		measurementContext,
@@ -209,12 +218,12 @@ function rasteriseNameTag(name: string): {
 	const textWidth = measurementContext.measureText(displayName).width;
 
 	const width = clampInt(
-		Math.ceil(textWidth + NAME_TAG_PADDING * 2),
-		NAME_TAG_MIN_TEX_WIDTH,
-		NAME_TAG_MAX_TEX_WIDTH,
+		Math.ceil(textWidth + padding * 2),
+		minTexWidth,
+		maxTexWidth,
 	);
 
-	const height = NAME_TAG_TEX_HEIGHT;
+	const height = texHeight;
 	const canvas = new OffscreenCanvas(width, height);
 	const ctx = canvas.getContext("2d");
 
@@ -226,7 +235,7 @@ function rasteriseNameTag(name: string): {
 	ctx.textAlign = "center";
 	ctx.textBaseline = "middle";
 
-	const bandHeight = NAME_TAG_FONT_PX + 10;
+	const bandHeight = fontPx + 10 * scale;
 	const bandY = Math.trunc((height - bandHeight) * 0.5);
 
 	ctx.fillStyle = "rgba(0, 0, 0, 0.6)";

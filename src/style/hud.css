@@ -357,20 +357,6 @@
 	pointer-events: none;
 }
 
-/* Player name label above the model (Minecraft-inventory style) */
-.player-preview-name {
-	text-align: center;
-
-	font-family: var(--ui-font-family);
-	font-size: clamp(0.6em, 2vw, 1em);
-	font-weight: 600;
-	color: var(--hud-frame-bright);
-	text-shadow: var(--hud-text-shadow);
-
-	margin-bottom: 0.4em;
-	pointer-events: none;
-}
-
 /* Canvas well — same inset frame as .recipe-search-panel */
 .player-preview-canvas {
 	background-color: var(--hud-bg-inset);
@@ -1194,6 +1180,7 @@
 	top: 50%;
 	left: 50%;
 	transform: translate(-50%, -50%);
+	user-select: none;
 	width: 48px;
 	height: 48px;
 	pointer-events: none;
@@ -1206,6 +1193,7 @@
 	top: 50%;
 	left: 50%;
 	transform: translate(-50%, -50%);
+	user-select: none;
 	width: 28px;
 	height: 28px;
 	pointer-events: none;

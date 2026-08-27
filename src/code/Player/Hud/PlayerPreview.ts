@@ -1,7 +1,13 @@
 import {
+	addBillboardSpriteIndex,
+	addFacingBillboardSystem,
 	addToScene,
+	billboardBlendAlpha,
 	createArcRotateCamera,
+	createDynamicTexture,
 	createEngine,
+	createFacingBillboardSystem,
+	createGridSpriteAtlas,
 	createMeshFromData,
 	createSceneContext,
 	disposeEngine,
@@ -18,8 +24,13 @@ import {
 	setShaderTexture,
 	startEngine,
 	stopEngine,
+	updateDynamicTexture,
 	vec3,
 } from "@babylonjs/lite";
+import {
+	NAME_TAG_HEIGHT_WORLD,
+	rasteriseNameTag,
+} from "@/code/Network/RemotePlayerRenderer";
 import { getPlayerName } from "@/code/Network/serverList";
 import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
 import { BlockType } from "@/code/World/Texture/BlockType";
@@ -33,11 +44,12 @@ import {
 	createPlayerRigMesh,
 	createRigShaderMaterial,
 	getRigFallbackTexture,
+	PLAYER_MODEL_HEIGHT,
 	packedLightToLightColor,
 	setRigLightColor,
 } from "../PlayerModel";
 
-const PREVIEW_SIZE = { width: 220, height: 320 } as const;
+const PREVIEW_SIZE = { width: 220, height: 440 } as const;
 const SPIN_SPEED = Math.PI / 3;
 const ATLAS_TEXTURE_PATH = "/texture/diffuse_atlas.png";
 
@@ -89,10 +101,6 @@ export class PlayerPreview {
 		this.container = document.createElement("div");
 		this.container.className = "player-preview-panel";
 
-		const name = document.createElement("div");
-		name.className = "player-preview-name";
-		name.textContent = getPlayerName().trim() || "Player";
-
 		const body = document.createElement("div");
 		body.className = "preview-body";
 
@@ -111,7 +119,7 @@ export class PlayerPreview {
 		accessories.className = "accessory-slots";
 		PlayerPreview.#appendEquipSlots(accessories, ACCESSORY_SLOT_LABELS);
 
-		this.container.append(name, body, accessories);
+		this.container.append(body, accessories);
 	}
 
 	static #appendEquipSlots(
@@ -183,6 +191,7 @@ export class PlayerPreview {
 		this.#floor = null;
 		this.#rigMat = null;
 		this.#floorMat = null;
+
 		this.#scene = null;
 		this.#engine = null;
 		this.#initPromise = null;
@@ -305,6 +314,42 @@ export class PlayerPreview {
 		this.#floor = floor;
 		this.#floorMat = floorMat;
 
+		// Render the player's name as a camera-facing billboard above the rig
+		// instead of an HTML string, matching the in-world name tag style. The
+		// tag is baked at 3x resolution so it stays crisp on the large preview
+		// panel; the bake is one-time and only one texture is ever uploaded.
+		const nameTag = rasteriseNameTag(getPlayerName(), 0.575);
+		const nameTagWidthWorld =
+			NAME_TAG_HEIGHT_WORLD * (nameTag.width / nameTag.height);
+
+		const nameTex = createDynamicTexture(
+			engine,
+			nameTag.width,
+			nameTag.height,
+			{ magFilter: "nearest", minFilter: "nearest" },
+		);
+
+		updateDynamicTexture(engine, nameTex, nameTag.canvas, {
+			invertY: false,
+		});
+
+		const nameAtlas = createGridSpriteAtlas(nameTex, {
+			cellWidthPx: nameTag.width,
+			cellHeightPx: nameTag.height,
+		});
+
+		const nameBillboard = createFacingBillboardSystem(nameAtlas, {
+			capacity: 1,
+			blendMode: billboardBlendAlpha,
+		});
+
+		addFacingBillboardSystem(scene, nameBillboard);
+		addBillboardSpriteIndex(nameBillboard, {
+			position: [0, PLAYER_MODEL_HEIGHT + 0.2, 0],
+			sizeWorld: [nameTagWidthWorld, NAME_TAG_HEIGHT_WORLD],
+			color: [0.37, 0.37, 0.25, 1],
+		});
+
 		void loadTexture2D(engine, ATLAS_TEXTURE_PATH, {
 			magFilter: "nearest",
 			minFilter: "nearest",
@@ -326,7 +371,7 @@ export class PlayerPreview {
 				 */
 			});
 
-		const camera = createArcRotateCamera(0.85, 1.25, 2.6, vec3(0, 0.8, 0));
+		const camera = createArcRotateCamera(0.85, 1.25, 3.0, vec3(0, 1.0, 0));
 
 		addToScene(scene, camera);
 		scene.camera = camera;
