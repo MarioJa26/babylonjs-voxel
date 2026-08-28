@@ -173,7 +173,7 @@ function ensureCodecWorker(): Worker | null {
 }
 
 function codecWorkerRun(
-	op: "compress" | "decompress",
+	compress: boolean,
 	bytes: Uint8Array,
 ): Promise<Uint8Array> {
 	const worker = ensureCodecWorker();
@@ -184,7 +184,7 @@ function codecWorkerRun(
 	const id = nextCodecRequestId++;
 	return new Promise((resolve, reject) => {
 		pendingCodecRequests.set(id, { resolve, reject });
-		worker.postMessage({ id, op, bytes });
+		worker.postMessage({ id, compress, bytes });
 	});
 }
 
@@ -250,7 +250,7 @@ export async function compressBlob(bytes: Uint8Array): Promise<Uint8Array> {
 
 	let compressed: Uint8Array;
 	try {
-		compressed = await codecWorkerRun("compress", bytes);
+		compressed = await codecWorkerRun(true, bytes);
 	} catch (error) {
 		if (!(error instanceof CodecWorkerUnavailable)) throw error;
 		compressed = await deflate(bytes);
@@ -291,7 +291,7 @@ export async function decompressBlob(bytes: Uint8Array): Promise<Uint8Array> {
 		const payload = bytes.subarray(5);
 
 		try {
-			const out = await codecWorkerRun("decompress", payload);
+			const out = await codecWorkerRun(false, payload);
 			// Same validation inflateInto applies — corrupt payloads must
 			// still surface as errors, not silently wrong data.
 			if (out.byteLength !== origLen) {

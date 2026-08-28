@@ -36,16 +36,16 @@ async function runCodec(
 self.onmessage = async (
 	event: MessageEvent<{
 		id: number;
-		op: "compress" | "decompress";
+		compress: boolean;
 		bytes: Uint8Array<ArrayBuffer>;
 	}>,
 ) => {
-	const { id, op, bytes } = event.data;
+	const { id, compress, bytes } = event.data;
 
 	try {
 		let result: Uint8Array;
 
-		if (op === "compress") {
+		if (compress) {
 			if (typeof CompressionStream === "undefined") {
 				throw new Error("CompressionStream unavailable");
 			}

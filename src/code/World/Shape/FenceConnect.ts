@@ -5,16 +5,13 @@ import {
 	FACE_NZ,
 	FACE_PX,
 	FACE_PZ,
+	getShapeForBlockId,
 	type ShapeBox,
 	type ShapeDefinition,
 } from "./BlockShapes";
 
 export function isFenceBlockId(blockId: number): boolean {
-	return blockId === 50 || blockId === 56;
-}
-
-export function isFencePackedBlock(packed: number): boolean {
-	return isFenceBlockId(unpackBlockId(packed));
+	return getShapeForBlockId(blockId).name === "fence";
 }
 
 // Neighbor mask bits (world directions)
