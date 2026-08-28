@@ -3,10 +3,6 @@
 	height: 100%;
 	position: relative;
 
-	/* Hover zoom animates this transform (see .inventory-slot:hover); scoped
-	   to transform only — never layout */
-	transition: transform 150ms;
-
 	display: flex;
 	align-items: center;
 	justify-content: center;

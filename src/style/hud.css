@@ -257,15 +257,23 @@
 }
 
 .inventory-container.is-scrolling .inventory-item {
-	transition: none;
 	transform: none;
 }
 
 /* Zoom the item, not the slot: the border frame stays anchored (no moving
    layout box over neighbours), and the animated surface is just the icon.
-   Deliberately not clipped — the zoomed icon may overflow the slot. */
+   Deliberately not clipped — the zoomed icon may overflow the slot.
+   will-change:transform promotes the hovered item to its own compositor
+   layer for the duration of the hover, avoiding relayering of siblings. */
 .inventory-slot:hover .inventory-item {
+	will-change: transform;
 	transform: scale(1.15);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.inventory-slot:hover .inventory-item {
+		transform: none;
+	}
 }
 
 /* ─── Hotbar ──────────────────────────────────────────────────────────────── */

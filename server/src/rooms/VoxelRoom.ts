@@ -232,8 +232,6 @@ export class VoxelRoom extends Room {
 	private waterSim!: WaterSimulation;
 	private waterScheduler!: BlockTickScheduler;
 	private waterBlockAccess!: ServerWaterBlockAccess;
-	// Accumulates water-induced block edits this tick for broadcast + history.
-	private waterEditsScratch: BlockEditData[] = [];
 	private playerPosPool: Array<{ x: number; y: number; z: number }> = [];
 	private playerPosScratch: Array<{ x: number; y: number; z: number }> = [];
 	private readonly blockEdits: Array<BlockEditData | undefined> = new Array(
@@ -362,31 +360,6 @@ export class VoxelRoom extends Room {
 	private freedIndices: number[] = [];
 	private freedIndexSet = new Set<number>();
 	private lastFullSnapshot = 0;
-
-	private readonly chunkRequestBatchScratch: Array<{
-		cx: number;
-		cy: number;
-		cz: number;
-		lod: number;
-		cachedVersion: number;
-	}> = [];
-	private readonly chunkRequestBatchPool: Array<{
-		cx: number;
-		cy: number;
-		cz: number;
-		lod: number;
-		cachedVersion: number;
-	}> = [];
-
-	// Engine optimization: Pre-allocated scratch arrays to avoid GC pressure in hot paths
-	private readonly batchUniqueScratch: any[] = [];
-	private readonly batchCoordsScratch: any[] = [];
-	private readonly batchKeysScratch: number[] = [];
-	private readonly appliedEditsScratch: Array<{
-		key: number;
-		editMap: Map<number, PendingBlockEdit>;
-	}> = [];
-	private readonly deflatePromises: Promise<void>[] = [];
 
 	constructor() {
 		super();
@@ -551,6 +524,7 @@ export class VoxelRoom extends Room {
 				);
 			}
 
+			/*
 			if (this.mobSim.size > 0) {
 				const mobs = this.mobSim.snapshotInto(this.mobSnapshotScratch);
 				const parts: Uint8Array[] = [];
@@ -577,7 +551,7 @@ export class VoxelRoom extends Room {
 					client.sendBytes("binary", merged);
 				}
 			}
-
+*/
 			if (this.itemSim.size > 0) {
 				const items = this.itemSim.snapshotInto(this.itemSnapshotScratch);
 				const parts: Uint8Array[] = [];
@@ -1506,31 +1480,58 @@ export class VoxelRoom extends Room {
 		);
 	}
 
-	private sendChunkDataBatch(client: Client, chunks: StoredChunkData[]): void {
-		if (chunks.length === 0) return;
+	private async sendChunkDataBatch(
+		client: Client,
+		chunks: StoredChunkData[],
+	): Promise<void> {
+		const count = chunks.length;
+		if (count === 0) return;
+
 		if (!deflateSupported()) {
 			let groupStart = 0;
 			let size = 0;
-			for (let i = 0; i < chunks.length; i++) {
-				const cSize = this.estimateChunkBytes(chunks[i]);
-				if (groupStart < i && size + cSize > CHUNK_BATCH_BYTE_LIMIT) {
+
+			for (let i = 0; i < count; i++) {
+				const chunk = chunks[i];
+
+				// Defensive check. This should never trigger after fixing ownership.
+				if (chunk === undefined) {
+					console.error(
+						`[VoxelRoom] Undefined chunk in uncompressed batch at index ${i}/${count}`,
+					);
+					continue;
+				}
+
+				const chunkSize = this.estimateChunkBytes(chunk);
+
+				if (groupStart < i && size + chunkSize > CHUNK_BATCH_BYTE_LIMIT) {
 					client.sendBytes(
 						"binary",
 						this.encodeChunkBatch(chunks, groupStart, i),
 					);
+
 					groupStart = i;
 					size = 0;
 				}
-				size += cSize;
+
+				size += chunkSize;
 			}
-			if (groupStart < chunks.length)
+
+			if (groupStart < count) {
 				client.sendBytes(
 					"binary",
-					this.encodeChunkBatch(chunks, groupStart, chunks.length),
+					this.encodeChunkBatch(chunks, groupStart, count),
 				);
+			}
+
 			return;
 		}
-		void this.sendChunkDataBatchDeflated(client, chunks);
+
+		/*
+		 * Critical: await compression and sending before the caller is allowed to
+		 * clear or recycle the chunks array.
+		 */
+		await this.sendChunkDataBatchDeflated(client, chunks);
 	}
 
 	private async sendChunkDataBatchDeflated(
@@ -1544,7 +1545,17 @@ export class VoxelRoom extends Room {
 		const origLens = new Array<number>(count);
 		const sizes = new Array<number>(count);
 
-		await runWithConcurrency(chunks, 4, async (chunk, index) => {
+		await runWithConcurrency(chunks, 4, async (chunk, index): Promise<void> => {
+			/*
+			 * This guard produces a useful error if another caller passes a
+			 * sparse or prematurely-cleared array.
+			 */
+			if (chunk === undefined) {
+				throw new Error(
+					`Undefined chunk at index ${index}/${count} during deflate`,
+				);
+			}
+
 			await this.deflateSingleChunk(chunk, payloads, origLens, sizes, index);
 		});
 
@@ -2274,12 +2285,74 @@ export class VoxelRoom extends Room {
 		const requestCount = requests.length;
 		if (requestCount === 0) return;
 
-		try {
-			const uniqueRequests: typeof requests = [];
-			const coords: Array<{ cx: number; cy: number; cz: number }> = [];
-			const keys: number[] = [];
-			const seen = new Set<number>();
+		/*
+		 * Batch handlers may overlap because callers intentionally do not await them.
+		 * Therefore, class-level scratch arrays cannot safely remain checked out
+		 * across awaits. Claim a reusable workspace for this invocation and return
+		 * it in finally.
+		 */
+		type Request = (typeof requests)[number];
+		type Coord = { cx: number; cy: number; cz: number };
+		type MissingCoord = {
+			chunkX: number;
+			chunkY: number;
+			chunkZ: number;
+		};
+		type UnchangedChunk = {
+			cx: number;
+			cy: number;
+			cz: number;
+			version: number;
+		};
 
+		type BatchWorkspace = {
+			uniqueRequests: Request[];
+			coords: Coord[];
+			keys: number[];
+			missingCoords: MissingCoord[];
+			fullChunks: StoredChunkData[];
+			unchangedChunks: UnchangedChunk[];
+			seen: Set<number>;
+		};
+
+		/*
+		 * Put this field on VoxelRoom to reuse workspaces safely:
+		 *
+		 * private readonly chunkBatchWorkspacePool: BatchWorkspace[] = [];
+		 *
+		 * If keeping helper types outside the method is preferred, move Request and
+		 * BatchWorkspace to module scope.
+		 */
+		const workspacePool = this.chunkBatchWorkspacePool as BatchWorkspace[];
+		const workspace =
+			workspacePool.pop() ??
+			({
+				uniqueRequests: [],
+				coords: [],
+				keys: [],
+				missingCoords: [],
+				fullChunks: [],
+				unchangedChunks: [],
+				seen: new Set<number>(),
+			} satisfies BatchWorkspace);
+
+		const uniqueRequests = workspace.uniqueRequests;
+		const coords = workspace.coords;
+		const keys = workspace.keys;
+		const missingCoords = workspace.missingCoords;
+		const fullChunks = workspace.fullChunks;
+		const unchangedChunks = workspace.unchangedChunks;
+		const seen = workspace.seen;
+
+		uniqueRequests.length = 0;
+		coords.length = 0;
+		keys.length = 0;
+		missingCoords.length = 0;
+		fullChunks.length = 0;
+		unchangedChunks.length = 0;
+		seen.clear();
+
+		try {
 			let uniqueCount = 0;
 
 			for (let i = 0; i < requestCount; i++) {
@@ -2290,33 +2363,29 @@ export class VoxelRoom extends Room {
 				seen.add(key);
 
 				uniqueRequests[uniqueCount] = request;
-				coords[uniqueCount] = {
-					cx: request.cx,
-					cy: request.cy,
-					cz: request.cz,
-				};
+
+				let coord = coords[uniqueCount];
+				if (coord === undefined) {
+					coord = { cx: 0, cy: 0, cz: 0 };
+					coords[uniqueCount] = coord;
+				}
+
+				coord.cx = request.cx;
+				coord.cy = request.cy;
+				coord.cz = request.cz;
 				keys[uniqueCount] = key;
 				uniqueCount++;
 			}
 
 			if (uniqueCount === 0) return;
 
+			uniqueRequests.length = uniqueCount;
+			coords.length = uniqueCount;
+			keys.length = uniqueCount;
+
 			await this.ensureEditsApplied(keys);
 
 			const storedMap = await this.worldStorage.readChunks(coords);
-
-			const missingCoords: Array<{
-				chunkX: number;
-				chunkY: number;
-				chunkZ: number;
-			}> = [];
-			const fullChunks: StoredChunkData[] = [];
-			const unchangedChunks: Array<{
-				cx: number;
-				cy: number;
-				cz: number;
-				version: number;
-			}> = [];
 
 			let missingCount = 0;
 			let fullCount = 0;
@@ -2326,29 +2395,52 @@ export class VoxelRoom extends Room {
 				const request = uniqueRequests[i];
 				const stored = storedMap.get(keys[i]);
 
-				if (!stored) {
-					missingCoords[missingCount++] = {
-						chunkX: request.cx,
-						chunkY: request.cy,
-						chunkZ: request.cz,
-					};
+				if (stored === undefined) {
+					let missing = missingCoords[missingCount];
+					if (missing === undefined) {
+						missing = {
+							chunkX: 0,
+							chunkY: 0,
+							chunkZ: 0,
+						};
+						missingCoords[missingCount] = missing;
+					}
+
+					missing.chunkX = request.cx;
+					missing.chunkY = request.cy;
+					missing.chunkZ = request.cz;
+					missingCount++;
 					continue;
 				}
 
 				if (stored.version === request.cachedVersion) {
-					unchangedChunks[unchangedCount++] = {
-						cx: request.cx,
-						cy: request.cy,
-						cz: request.cz,
-						version: stored.version,
-					};
+					let unchanged = unchangedChunks[unchangedCount];
+					if (unchanged === undefined) {
+						unchanged = {
+							cx: 0,
+							cy: 0,
+							cz: 0,
+							version: 0,
+						};
+						unchangedChunks[unchangedCount] = unchanged;
+					}
+
+					unchanged.cx = request.cx;
+					unchanged.cy = request.cy;
+					unchanged.cz = request.cz;
+					unchanged.version = stored.version;
+					unchangedCount++;
 				} else {
 					fullChunks[fullCount++] = stored;
 				}
 			}
 
+			missingCoords.length = missingCount;
+			fullChunks.length = fullCount;
+			unchangedChunks.length = unchangedCount;
+
 			if (fullCount !== 0) {
-				this.sendChunkDataBatch(client, fullChunks);
+				await this.sendChunkDataBatch(client, fullChunks);
 			}
 
 			if (unchangedCount !== 0) {
@@ -2361,42 +2453,82 @@ export class VoxelRoom extends Room {
 				const generated =
 					await this.chunkGen.generateChunksBatch(missingCoords);
 
-				this.sendChunkDataBatch(client, generated);
+				await this.sendChunkDataBatch(client, generated);
 			} catch (batchError) {
 				console.warn(
 					`[VoxelRoom] Batch generation failed; retrying ${missingCount} chunks individually`,
 					batchError,
 				);
 
-				/*
-				 * Preserve the original fallback behavior, but cap concurrent
-				 * generation rather than processing every missing chunk serially.
-				 */
-				await runWithConcurrency(missingCoords, 4, async (coord) => {
-					try {
-						const data = await this.chunkGen.generateChunk(
-							coord.chunkX,
-							coord.chunkY,
-							coord.chunkZ,
-						);
+				await runWithConcurrency(
+					missingCoords,
+					4,
+					async (coord): Promise<void> => {
+						try {
+							const data = await this.chunkGen.generateChunk(
+								coord.chunkX,
+								coord.chunkY,
+								coord.chunkZ,
+							);
 
-						this.sendChunkDataBatch(client, [data]);
-					} catch (singleError) {
-						console.error(
-							`[VoxelRoom] Single chunk gen failed: ${coord.chunkX},${coord.chunkY},${coord.chunkZ}`,
-							singleError,
-						);
-					}
-				});
+							await this.sendChunkDataBatch(client, [data]);
+						} catch (singleError) {
+							console.error(
+								`[VoxelRoom] Single chunk gen failed: ${coord.chunkX},${coord.chunkY},${coord.chunkZ}`,
+								singleError,
+							);
+						}
+					},
+				);
 			}
 		} catch (error) {
 			console.error(
 				`[VoxelRoom] Batch chunk request FAILED (${requestCount} chunks):`,
 				error,
 			);
+		} finally {
+			uniqueRequests.length = 0;
+			coords.length = 0;
+			keys.length = 0;
+			missingCoords.length = 0;
+			fullChunks.length = 0;
+			unchangedChunks.length = 0;
+			seen.clear();
+
+			/*
+			 * Bound retained memory. A small pool is sufficient because normal
+			 * concurrency should remain low, while preventing a traffic spike from
+			 * permanently retaining many large workspaces.
+			 */
+			if (workspacePool.length < 8) {
+				workspacePool[workspacePool.length] = workspace;
+			}
 		}
 	}
-
+	private readonly chunkBatchWorkspacePool: Array<{
+		uniqueRequests: Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+			lod: number;
+			cachedVersion: number;
+		}>;
+		coords: Array<{ cx: number; cy: number; cz: number }>;
+		keys: number[];
+		missingCoords: Array<{
+			chunkX: number;
+			chunkY: number;
+			chunkZ: number;
+		}>;
+		fullChunks: StoredChunkData[];
+		unchangedChunks: Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+			version: number;
+		}>;
+		seen: Set<number>;
+	}> = [];
 	private sendUnchangedBatch(
 		client: Client,
 		unchangedChunks: Array<{
