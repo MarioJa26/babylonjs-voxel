@@ -18,6 +18,7 @@ import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
 import { NetworkManager } from "./Network/NetworkManager";
 import { RemoteItemManager } from "./Network/RemoteItemManager";
 import { RemoteMobManager } from "./Network/RemoteMobManager";
+import { Arrow } from "./Entities/Arrow/Arrow";
 import { findSavedServerByName, getPlayerName } from "./Network/serverList";
 import { initializeBlockBreakingVisuals } from "./Player/Hud/BlockHighlight/BlockBreakingVisuals";
 import { DroppedItem } from "./Player/Inventory/DroppedItem";
@@ -193,6 +194,11 @@ export class TestScene {
 		this.#remoteItemManager = new RemoteItemManager(
 			this.#networkManager.netClient,
 		);
+
+		// Arrows are relayed server→clients as ArrowSpawn; register the receiver
+		// at connect time (not lazily on first shot) so every client sees every
+		// other player's arrows regardless of whether it has fired yet.
+		Arrow.ensureNetworkHandler(this.#networkManager.netClient);
 
 		await map.initPromise;
 

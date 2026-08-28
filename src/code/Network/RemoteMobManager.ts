@@ -293,17 +293,20 @@ export class RemoteMobManager {
 		const pool = this.poolFor(typeId);
 		const slot = pool.acquire(null);
 		// All pools use thin-instance colors: walk phase is packed into
-		// the alpha channel, RGB carries the tint. The server doesn't send
-		// color variations, so remote mobs pick a random color from their
-		// species palette (sheep wool, fish scales) for visual variety.
+		// the alpha channel, RGB carries the tint. The spawn message carries no
+		// color, so derive the variant deterministically from the synced mob id
+		// (which every client receives identically) instead of Math.random — that
+		// keeps each mob's wool/scale color consistent across all clients.
 		let baseColor: [number, number, number] = [1, 1, 1];
 		if (typeId === MobTypeId.Sheep) {
 			const wool =
-				SHEEP_COLORS[(Math.random() * SHEEP_COLORS.length) | 0]!.color;
+				SHEEP_COLORS[((id % SHEEP_COLORS.length) + SHEEP_COLORS.length) % SHEEP_COLORS.length]!
+					.color;
 			baseColor = [wool.r, wool.g, wool.b];
 			pool.writeColor(slot, wool.r, wool.g, wool.b, 0);
 		} else if (typeId === MobTypeId.Fish) {
-			const scales = FISH_COLORS[(Math.random() * FISH_COLORS.length) | 0]!;
+			const scales =
+				FISH_COLORS[((id % FISH_COLORS.length) + FISH_COLORS.length) % FISH_COLORS.length]!;
 			baseColor = [scales.r, scales.g, scales.b];
 			pool.writeColor(slot, scales.r, scales.g, scales.b, 0);
 		} else {
