@@ -193,9 +193,13 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 
 		if (this.#isDrawing) {
 			const elapsed = (performance.now() - this.#drawStartTime) / 1000;
-			this.#drawProgress = Math.min(1, elapsed / BOW_DRAW_TIME);
-			this.#player.playerHud.updateDrawProgress(this.#drawProgress);
-			this.#player.playerCamera.setBowZoom(this.#drawProgress);
+			const progress = Math.min(1, elapsed / BOW_DRAW_TIME);
+
+			if (progress === this.#drawProgress) return;
+
+			this.#drawProgress = progress;
+			this.#player.playerHud.updateDrawProgress(progress);
+			this.#player.playerCamera.setBowZoom(progress);
 		}
 	}
 

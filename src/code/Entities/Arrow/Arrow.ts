@@ -229,8 +229,9 @@ export class Arrow {
 		this.#quat.y = q.y;
 		this.#quat.z = q.z;
 		this.#quat.w = q.w;
-
-		this.#writeTransform();
+		// No this.#writeTransform(); here: callers (#orient in tick, #tickStuck) each
+		// issue exactly one write after position/orientation are final, so a
+		// write now would be an immediate dead overwrite before sync().
 	}
 
 	/** Push the current `#pos` + `#quat` into the shared instance buffer. */

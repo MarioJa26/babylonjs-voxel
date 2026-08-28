@@ -50,11 +50,14 @@
 .inventory-slot,
 .crafting-slot,
 .crafting-container,
+.preview-column,
 .player-preview-panel,
 .player-preview-canvas,
-.preview-body,
-.equipment-slots,
-.accessory-slots,
+.armor-panel,
+.armor-grid,
+.armor-column,
+.necklace-slots,
+.ring-slots,
 .equip-slot,
 .recipe-search-slot,
 .recipe-picker,
@@ -352,10 +355,22 @@
 
 /* ─── Player preview (left of the inventory) ──────────────────────────────── */
 
-.player-preview-panel {
+.preview-column {
 	grid-column: 1;
 	justify-self: end;
-	align-self: start;
+	align-self: end;
+
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+	height: var(--inventory-panel-h);
+}
+
+.player-preview-panel {
+	flex: 0 0 auto;
+
+	display: flex;
+	justify-content: center;
 
 	background-color: var(--hud-bg-panel);
 	border: var(--panel-frame-w) solid var(--hud-frame);
@@ -372,26 +387,51 @@
 	border-radius: var(--hud-radius-sm);
 }
 
-.preview-body {
-	display: flex;
-	gap: 0.5em;
-	align-items: stretch;
-}
+/* Armor + accessory panel under the preview, stretches to match inventory height */
+.armor-panel {
+	flex: 1 1 auto;
+	min-height: 0;
 
-/* Armor column — sits on the right side of the player mesh */
-.equipment-slots {
 	display: flex;
 	flex-direction: column;
-	justify-content: space-between;
+	gap: var(--slot-gap);
+	padding: 6px;
+
+	overflow-y: auto;
+
+	background-color: var(--hud-bg-panel);
+	border: var(--panel-frame-w) solid var(--hud-frame);
+	border-radius: var(--hud-radius-md);
+	box-shadow: var(--hud-shadow-panel);
+}
+
+/* Armor grid — 4 columns, each with main armor + under-armor stacked */
+.armor-grid {
+	display: flex;
+	flex-direction: row;
+	justify-content: center;
 	gap: var(--slot-gap);
 }
 
-/* Necklace + rings row under the character */
-.accessory-slots {
+.armor-column {
+	display: flex;
+	flex-direction: column;
+	gap: calc(var(--slot-gap) * 0.5);
+}
+
+/* Necklace row — 3 slots centered */
+.necklace-slots {
 	display: flex;
 	justify-content: center;
 	gap: var(--slot-gap);
-	margin-top: 0.6em;
+}
+
+/* Ring row — wraps so many rings stay on-screen */
+.ring-slots {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: var(--slot-gap);
 }
 
 .equip-slot {

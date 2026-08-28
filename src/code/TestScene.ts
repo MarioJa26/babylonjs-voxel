@@ -171,7 +171,6 @@ export class TestScene {
 			getPlayerName() || `Player${Math.floor(Math.random() * 1000)}`;
 
 		const map = new Map1(engine, scene, player);
-		const mpT0 = performance.now();
 
 		this.#networkManager = new NetworkManager(player, serverUrl);
 		player.networkManager = this.#networkManager;

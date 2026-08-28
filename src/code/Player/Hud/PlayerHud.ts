@@ -29,6 +29,7 @@ import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
 import { PLAYER_LIGHT_SAMPLE_Y_OFFSET } from "../PlayerModel";
 import { Gamemodes } from "../PlayerStats";
+import { ArmorPanel } from "./ArmorPanel";
 import { Chat } from "./Chat";
 import { Crosshair } from "./Crosshair/Crosshair";
 import { PlayerPreview } from "./PlayerPreview";
@@ -87,6 +88,7 @@ export class PlayerHud {
 		const p = this.#player.position;
 		return getLightByWorldCoords(p.x, p.y + PLAYER_LIGHT_SAMPLE_Y_OFFSET, p.z);
 	});
+	#armorPanel = new ArmorPanel();
 
 	static debugPanelDiv: HTMLDivElement;
 	static debugPanelVisible = true;
@@ -172,7 +174,11 @@ export class PlayerHud {
 		this.#craftingContainer = document.createElement("div");
 		this.#craftingContainer.classList.add("crafting-container");
 
-		contentWrapper.appendChild(this.#playerPreview.container);
+		const previewColumn = document.createElement("div");
+		previewColumn.classList.add("preview-column");
+		previewColumn.appendChild(this.#playerPreview.container);
+		previewColumn.appendChild(this.#armorPanel.container);
+		contentWrapper.appendChild(previewColumn);
 		contentWrapper.appendChild(inventoryUI);
 		contentWrapper.appendChild(this.#craftingContainer);
 
@@ -182,6 +188,7 @@ export class PlayerHud {
 
 		onSceneDispose(this.#scene, () => {
 			this.#playerPreview.dispose();
+			this.#armorPanel.dispose();
 			this.#creativePalette?.dispose();
 			this.#creativePalette = null;
 			overlayDiv.remove();

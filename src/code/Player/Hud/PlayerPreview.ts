@@ -53,20 +53,6 @@ const PREVIEW_SIZE = { width: 220, height: 440 } as const;
 const SPIN_SPEED = Math.PI / 3;
 const ATLAS_TEXTURE_PATH = "/texture/diffuse_atlas.png";
 
-const ARMOR_SLOT_LABELS: readonly (readonly [id: string, label: string])[] = [
-	["head", "Helmet"],
-	["chest", "Chestplate"],
-	["legs", "Leggings"],
-	["feet", "Boots"],
-];
-
-const ACCESSORY_SLOT_LABELS: readonly (readonly [id: string, label: string])[] =
-	[
-		["necklace", "Necklace"],
-		["ring1", "Ring"],
-		["ring2", "Ring"],
-	];
-
 /**
  * Small standalone render surface showing a Minecraft-style player model
  * inside the inventory screen. Uses its own engine on a dedicated canvas.
@@ -101,48 +87,11 @@ export class PlayerPreview {
 		this.container = document.createElement("div");
 		this.container.className = "player-preview-panel";
 
-		const body = document.createElement("div");
-		body.className = "preview-body";
-
 		this.canvas = document.createElement("canvas");
 		this.canvas.className = "player-preview-canvas";
 		this.canvas.width = PREVIEW_SIZE.width;
 		this.canvas.height = PREVIEW_SIZE.height;
-		body.appendChild(this.canvas);
-
-		const armorStrip = document.createElement("div");
-		armorStrip.className = "equipment-slots";
-		PlayerPreview.#appendEquipSlots(armorStrip, ARMOR_SLOT_LABELS);
-		body.appendChild(armorStrip);
-
-		const accessories = document.createElement("div");
-		accessories.className = "accessory-slots";
-		PlayerPreview.#appendEquipSlots(accessories, ACCESSORY_SLOT_LABELS);
-
-		this.container.append(body, accessories);
-	}
-
-	static #appendEquipSlots(
-		parent: HTMLElement,
-		slots: readonly (readonly [id: string, label: string])[],
-	): void {
-		const fragment = document.createDocumentFragment();
-
-		for (let i = 0; i < slots.length; i++) {
-			const [id, label] = slots[i];
-			fragment.appendChild(PlayerPreview.#createEquipSlot(id, label));
-		}
-
-		parent.appendChild(fragment);
-	}
-
-	static #createEquipSlot(id: string, label: string): HTMLDivElement {
-		const slot = document.createElement("div");
-		slot.className = "equip-slot";
-		slot.dataset.slot = id;
-		slot.dataset.label = label[0] ?? "";
-		slot.title = label;
-		return slot;
+		this.container.appendChild(this.canvas);
 	}
 
 	/** Show and lazily initialize the preview. Safe to call repeatedly. */
