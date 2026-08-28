@@ -49,6 +49,7 @@ export class MultiplayerHUD {
 		// Chat input (hidden until T is pressed)
 		this.chatInput = document.createElement("input");
 		this.chatInput.type = "text";
+		this.chatInput.id = "chat";
 		this.chatInput.className = "mp-chat-input hidden";
 		this.chatInput.placeholder = "Type a message...";
 		this.chatInput.maxLength = 256;

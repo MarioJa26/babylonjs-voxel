@@ -34,6 +34,40 @@ const FLAG_IS_UNIFORM = 1 << 2;
 const FLAG_HAS_LIGHT = 1 << 3;
 const FLAG_COMPRESSED = 1 << 4;
 
+const HEADER_SIZE = 6;
+const UINT16_BLOCK_BYTE_LENGTH = 65_536;
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+/**
+ * Creates a byte-level view without copying the underlying typed-array data.
+ * The returned object is only a lightweight view.
+ */
+function asBytes(value: Uint8Array | Uint16Array): Uint8Array {
+	return value instanceof Uint8Array
+		? value
+		: new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+}
+
+/**
+ * Copies a byte range from the serialized input directly into a destination.
+ * This avoids creating alignment-fixing intermediate arrays.
+ */
+function copyBytes(
+	source: Uint8Array,
+	sourceOffset: number,
+	destination: Uint8Array,
+): void {
+	destination.set(
+		new Uint8Array(
+			source.buffer,
+			source.byteOffset + sourceOffset,
+			destination.byteLength,
+		),
+	);
+}
+
 /** Serialize voxel data to a compact binary blob for OPFS storage. */
 export function serializeVoxelData(
 	blocks: Uint8Array | Uint16Array | null,
@@ -44,65 +78,82 @@ export function serializeVoxelData(
 	compressed: boolean | undefined,
 	version?: number,
 ): Uint8Array {
-	// byte 0 = feature flags, byte 1 = format version, bytes 2-5 = chunk version
-	let totalLen = version != null ? 6 : 2;
+	const hasBlocks = blocks != null;
+	const hasPalette = palette != null;
+	const hasLight = lightArray != null;
 
-	let flags1 = 0;
-	if (blocks) flags1 |= FLAG_HAS_BLOCKS;
-	if (palette) flags1 |= FLAG_HAS_PALETTE;
-	if (isUniform) flags1 |= FLAG_IS_UNIFORM;
-	if (lightArray) flags1 |= FLAG_HAS_LIGHT;
-	if (compressed) flags1 |= FLAG_COMPRESSED;
+	let flags = 0;
 
-	if (isUniform) totalLen += 2;
-	if (blocks) totalLen += 4 + blocks.byteLength;
-	if (palette) totalLen += 4 + palette.byteLength;
-	if (lightArray) totalLen += 4 + lightArray.byteLength;
+	if (hasBlocks) flags |= FLAG_HAS_BLOCKS;
+	if (hasPalette) flags |= FLAG_HAS_PALETTE;
+	if (isUniform) flags |= FLAG_IS_UNIFORM;
+	if (hasLight) flags |= FLAG_HAS_LIGHT;
+	if (compressed) flags |= FLAG_COMPRESSED;
 
-	const result = new Uint8Array(totalLen);
-	const dv = new DataView(result.buffer);
-	result[0] = flags1;
-	if (version != null) {
-		result[1] = 1; // format v1: includes chunk version
-		dv.setUint32(2, version, true);
-	} else {
-		result[1] = 0; // legacy format
-	}
-	let offset = version != null ? 6 : 2;
+	let totalLength = HEADER_SIZE;
 
 	if (isUniform) {
-		dv.setUint16(offset, uniformBlockId ?? 0, true);
+		totalLength += 2;
+	}
+
+	if (blocks) {
+		totalLength += 4 + blocks.byteLength;
+	}
+
+	if (palette) {
+		totalLength += 4 + palette.byteLength;
+	}
+
+	if (lightArray) {
+		totalLength += 4 + lightArray.byteLength;
+	}
+
+	const result = new Uint8Array(totalLength);
+	const view = new DataView(
+		result.buffer,
+		result.byteOffset,
+		result.byteLength,
+	);
+
+	result[0] = flags;
+	result[1] = 1;
+	view.setUint32(2, version ?? 0, true);
+
+	let offset = HEADER_SIZE;
+
+	if (isUniform) {
+		view.setUint16(offset, uniformBlockId ?? 0, true);
 		offset += 2;
 	}
 
 	if (blocks) {
-		dv.setUint32(offset, blocks.byteLength, true);
+		const byteLength = blocks.byteLength;
+
+		view.setUint32(offset, byteLength, true);
 		offset += 4;
-		const bytes =
-			blocks instanceof Uint16Array
-				? new Uint8Array(blocks.buffer, blocks.byteOffset, blocks.byteLength)
-				: blocks;
-		result.set(bytes, offset);
-		offset += bytes.byteLength;
+
+		result.set(asBytes(blocks), offset);
+		offset += byteLength;
 	}
 
 	if (palette) {
-		dv.setUint32(offset, palette.length, true);
+		const byteLength = palette.byteLength;
+
+		// Palette stores its element count, not its byte length.
+		view.setUint32(offset, palette.length, true);
 		offset += 4;
-		const bytes = new Uint8Array(
-			palette.buffer,
-			palette.byteOffset,
-			palette.byteLength,
-		);
-		result.set(bytes, offset);
-		offset += bytes.byteLength;
+
+		result.set(asBytes(palette), offset);
+		offset += byteLength;
 	}
 
 	if (lightArray) {
-		dv.setUint32(offset, lightArray.byteLength, true);
+		const byteLength = lightArray.byteLength;
+
+		view.setUint32(offset, byteLength, true);
 		offset += 4;
+
 		result.set(lightArray, offset);
-		offset += lightArray.byteLength;
 	}
 
 	return result;
@@ -110,65 +161,117 @@ export function serializeVoxelData(
 
 /** Deserialize voxel data from an OPFS binary blob. */
 export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
-	if (data.byteLength < 2) {
-		return { blocks: null, compressed: false };
+	if (data.byteLength < HEADER_SIZE) {
+		return {
+			blocks: null,
+			compressed: false,
+		};
 	}
-	const flags = data[0];
-	const isUniform = !!(flags & FLAG_IS_UNIFORM);
-	const compressed = !!(flags & FLAG_COMPRESSED);
 
-	const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-	let offset = 2;
-	let version: number | undefined;
-	if (data[1] >= 1 && data.byteLength >= 6) {
-		version = dv.getUint32(2, true);
-		offset = 6;
-	}
+	const flags = data[0];
+	const isUniform = (flags & FLAG_IS_UNIFORM) !== 0;
+	const compressed = (flags & FLAG_COMPRESSED) !== 0;
+
+	const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+	const version = view.getUint32(2, true);
+
+	let offset = HEADER_SIZE;
 
 	let uniformBlockId: number | undefined;
+
 	if (isUniform) {
-		uniformBlockId = dv.getUint16(offset, true);
+		uniformBlockId = view.getUint16(offset, true);
 		offset += 2;
 	}
 
 	let blocks: Uint8Array | Uint16Array | null = null;
-	if (flags & FLAG_HAS_BLOCKS) {
-		const len = dv.getUint32(offset, true);
+
+	if ((flags & FLAG_HAS_BLOCKS) !== 0) {
+		const byteLength = view.getUint32(offset, true);
 		offset += 4;
-		const raw = new Uint8Array(data.buffer, data.byteOffset + offset, len);
-		if (!compressed && len === 65536) {
-			const aligned = raw.byteOffset % 2 === 0 ? raw : new Uint8Array(raw);
-			blocks = new Uint16Array(aligned.buffer, aligned.byteOffset, len >>> 1);
+
+		const absoluteOffset = data.byteOffset + offset;
+
+		if (!compressed && byteLength === UINT16_BLOCK_BYTE_LENGTH) {
+			if ((absoluteOffset & 1) === 0) {
+				// Preserve the original zero-copy behavior when aligned.
+				blocks = new Uint16Array(data.buffer, absoluteOffset, byteLength >>> 1);
+			} else {
+				// Allocate only the final backing store instead of first
+				// allocating an alignment-fixing Uint8Array.
+				const copiedBlocks = new Uint16Array(byteLength >>> 1);
+
+				copyBytes(
+					data,
+					offset,
+					new Uint8Array(
+						copiedBlocks.buffer,
+						copiedBlocks.byteOffset,
+						copiedBlocks.byteLength,
+					),
+				);
+
+				blocks = copiedBlocks;
+			}
 		} else {
-			blocks = new Uint8Array(raw);
+			// Hot-path win (#1): byte-blocks are allocation-free views into the
+			// blob, matching lightArray's existing zero-copy behavior.
+			// Caller must not retain view beyond blob lifetime; if pinning is a
+			// concern the SAB path (deserializeVoxelDataShared) copies instead.
+			blocks = new Uint8Array(
+				data.buffer,
+				data.byteOffset + offset,
+				byteLength,
+			);
 		}
-		offset += len;
+
+		offset += byteLength;
 	}
 
 	let palette: Uint16Array | null = null;
-	if (flags & FLAG_HAS_PALETTE) {
-		const count = dv.getUint32(offset, true);
+
+	if ((flags & FLAG_HAS_PALETTE) !== 0) {
+		const count = view.getUint32(offset, true);
 		offset += 4;
-		const raw = new Uint8Array(
-			data.buffer,
-			data.byteOffset + offset,
-			count * 2,
-		);
-		const alignedPalette = raw.byteOffset % 2 === 0 ? raw : new Uint8Array(raw);
-		palette = new Uint16Array(
-			alignedPalette.buffer,
-			alignedPalette.byteOffset,
-			count,
-		);
-		offset += count * 2;
+
+		const byteLength = count * Uint16Array.BYTES_PER_ELEMENT;
+		const absoluteOffset = data.byteOffset + offset;
+
+		if ((absoluteOffset & 1) === 0) {
+			// Preserve the original zero-copy behavior when aligned.
+			palette = new Uint16Array(data.buffer, absoluteOffset, count);
+		} else {
+			// Allocate only the final aligned palette backing store.
+			const copiedPalette = new Uint16Array(count);
+
+			copyBytes(
+				data,
+				offset,
+				new Uint8Array(
+					copiedPalette.buffer,
+					copiedPalette.byteOffset,
+					copiedPalette.byteLength,
+				),
+			);
+
+			palette = copiedPalette;
+		}
+
+		offset += byteLength;
 	}
 
 	let lightArray: Uint8Array | null = null;
-	if (flags & FLAG_HAS_LIGHT) {
-		const len = dv.getUint32(offset, true);
+
+	if ((flags & FLAG_HAS_LIGHT) !== 0) {
+		const byteLength = view.getUint32(offset, true);
 		offset += 4;
-		lightArray = new Uint8Array(data.buffer, data.byteOffset + offset, len);
-		offset += len;
+
+		// Preserve the original zero-copy view into the serialized blob.
+		lightArray = new Uint8Array(
+			data.buffer,
+			data.byteOffset + offset,
+			byteLength,
+		);
 	}
 
 	return {
@@ -183,82 +286,79 @@ export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
 }
 
 /**
- * Like deserializeVoxelData, but allocates block/palette/light directly as
- * SharedArrayBuffers. The terrain worker can only observe live mutations
- * through a SharedArrayBuffer, so Chunk.loadFromStorage's ensureSharedBacking
- * would otherwise copy every deserialized buffer into a fresh SAB. Routing the
- * storage load path through this variant makes that copy a no-op (the buffers
- * are already SAB-backed on arrival), removing one full copy of every loaded
- * chunk's voxel + light data and the associated transient allocation churn.
- *
- * The original blob (an ArrayBuffer, still held by the store's read cache)
- * is left untouched — this only changes what the live Chunk receives.
+ * Deserialize voxel data while allocating block, palette, and light storage
+ * directly in SharedArrayBuffers.
  */
 export function deserializeVoxelDataShared(data: Uint8Array): SavedChunkData {
-	if (data.byteLength < 2) {
-		return { blocks: null, compressed: false };
+	if (data.byteLength < HEADER_SIZE) {
+		return {
+			blocks: null,
+			compressed: false,
+		};
 	}
-	const flags = data[0];
-	const isUniform = !!(flags & FLAG_IS_UNIFORM);
-	const compressed = !!(flags & FLAG_COMPRESSED);
 
-	const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-	let offset = 2;
-	let version: number | undefined;
-	if (data[1] >= 1 && data.byteLength >= 6) {
-		version = dv.getUint32(2, true);
-		offset = 6;
-	}
+	const flags = data[0];
+	const isUniform = (flags & FLAG_IS_UNIFORM) !== 0;
+	const compressed = (flags & FLAG_COMPRESSED) !== 0;
+
+	const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+	const version = view.getUint32(2, true);
+
+	let offset = HEADER_SIZE;
 
 	let uniformBlockId: number | undefined;
+
 	if (isUniform) {
-		uniformBlockId = dv.getUint16(offset, true);
+		uniformBlockId = view.getUint16(offset, true);
 		offset += 2;
 	}
 
 	let blocks: Uint8Array | Uint16Array | null = null;
-	if (flags & FLAG_HAS_BLOCKS) {
-		const len = dv.getUint32(offset, true);
+
+	if ((flags & FLAG_HAS_BLOCKS) !== 0) {
+		const byteLength = view.getUint32(offset, true);
 		offset += 4;
-		const raw = new Uint8Array(data.buffer, data.byteOffset + offset, len);
-		if (!compressed && len === 65536) {
-			const aligned = raw.byteOffset % 2 === 0 ? raw : new Uint8Array(raw);
-			const sab = new SharedArrayBuffer(aligned.byteLength);
-			new Uint8Array(sab).set(aligned);
-			blocks = new Uint16Array(sab);
-		} else {
-			const sab = new SharedArrayBuffer(raw.byteLength);
-			new Uint8Array(sab).set(raw);
-			blocks = new Uint8Array(sab);
-		}
-		offset += len;
+
+		const sharedBuffer = new SharedArrayBuffer(byteLength);
+		const sharedBytes = new Uint8Array(sharedBuffer);
+
+		// Copy directly from the blob to the final SAB. Misalignment no longer
+		// requires an intermediate alignment-fixing Uint8Array allocation.
+		copyBytes(data, offset, sharedBytes);
+
+		blocks =
+			!compressed && byteLength === UINT16_BLOCK_BYTE_LENGTH
+				? new Uint16Array(sharedBuffer)
+				: sharedBytes;
+
+		offset += byteLength;
 	}
 
 	let palette: Uint16Array | null = null;
-	if (flags & FLAG_HAS_PALETTE) {
-		const count = dv.getUint32(offset, true);
+
+	if ((flags & FLAG_HAS_PALETTE) !== 0) {
+		const count = view.getUint32(offset, true);
 		offset += 4;
-		const raw = new Uint8Array(
-			data.buffer,
-			data.byteOffset + offset,
-			count * 2,
-		);
-		const alignedPalette = raw.byteOffset % 2 === 0 ? raw : new Uint8Array(raw);
-		const sab = new SharedArrayBuffer(alignedPalette.byteLength);
-		new Uint8Array(sab).set(alignedPalette);
-		palette = new Uint16Array(sab, 0, count);
-		offset += count * 2;
+
+		const byteLength = count * Uint16Array.BYTES_PER_ELEMENT;
+		const sharedBuffer = new SharedArrayBuffer(byteLength);
+
+		copyBytes(data, offset, new Uint8Array(sharedBuffer));
+
+		palette = new Uint16Array(sharedBuffer, 0, count);
+		offset += byteLength;
 	}
 
 	let lightArray: Uint8Array | null = null;
-	if (flags & FLAG_HAS_LIGHT) {
-		const len = dv.getUint32(offset, true);
+
+	if ((flags & FLAG_HAS_LIGHT) !== 0) {
+		const byteLength = view.getUint32(offset, true);
 		offset += 4;
-		const raw = new Uint8Array(data.buffer, data.byteOffset + offset, len);
-		const sab = new SharedArrayBuffer(raw.byteLength);
-		new Uint8Array(sab).set(raw);
-		lightArray = new Uint8Array(sab);
-		offset += len;
+
+		const sharedBuffer = new SharedArrayBuffer(byteLength);
+		lightArray = new Uint8Array(sharedBuffer);
+
+		copyBytes(data, offset, lightArray);
 	}
 
 	return {
@@ -276,18 +376,14 @@ export function deserializeVoxelDataShared(data: Uint8Array): SavedChunkData {
 export function serializeEntities(
 	entities: SavedChunkEntityData[],
 ): Uint8Array {
-	const json = JSON.stringify(entities);
-	const encoder = new TextEncoder();
-	return encoder.encode(json);
+	return textEncoder.encode(JSON.stringify(entities));
 }
 
 /** Deserialize chunk entities from a JSON Uint8Array. */
 export function deserializeEntities(data: Uint8Array): SavedChunkEntityData[] {
-	const decoder = new TextDecoder();
-	const json = decoder.decode(data);
 	try {
-		const parsed = JSON.parse(json);
-		return Array.isArray(parsed) ? parsed : [];
+		const parsed: unknown = JSON.parse(textDecoder.decode(data));
+		return Array.isArray(parsed) ? (parsed as SavedChunkEntityData[]) : [];
 	} catch {
 		return [];
 	}
