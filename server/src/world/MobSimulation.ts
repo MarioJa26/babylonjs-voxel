@@ -79,6 +79,16 @@ const TOTAL_MOB_CAP = MOB_TYPE_IDS.reduce(
 );
 
 /**
+ * Spawn cap enforced per player's spawn region (not globally). A single shared
+ * cap is saturated by the combined active mobs of every player, which halted
+ * all spawning once a second player joined — mobs spawned fine with one player
+ * but never with two. Each player's region may hold up to this many mobs.
+ */
+const PER_PLAYER_MOB_CAP = TOTAL_MOB_CAP;
+/** Global safety ceiling (players × per-player cap) to bound total mob count. */
+const HARD_MOB_CAP = TOTAL_MOB_CAP * 4;
+
+/**
  * Block ids a mob may spawn on top of (the surface voxel directly below the
  * mob's feet). Add or remove entries freely to control where mobs appear.
  */
@@ -187,8 +197,17 @@ export class ServerMobSimulation {
 	// Deprecated: replaced by random water-block wander targets (5×3×4 box).
 	private readonly depthTargets = new Map<number, number>();
 	// Random water-block wander targets for aquatic mobs (straight-path swimming)
-	private readonly aquaticTargets = new Map<number, { x: number; y: number; z: number }>();
+	private readonly aquaticTargets = new Map<
+		number,
+		{ x: number; y: number; z: number }
+	>();
 	private readonly aquaticIdleTime = new Map<number, number>();
+
+	// Crash resilience: a single bad mob must not abort the whole tick (which
+	// would silently stop ALL mob spawning in multiplayer — the only place this
+	// server sim runs). Errors are surfaced once per 5s for diagnosis.
+	private lastTickErrorLog = 0;
+	private lastSpawnCount = 0;
 
 	constructor(private readonly storage: ServerWorldStorage) {
 		this.sampler = new TickBlockSampler(storage);
@@ -280,23 +299,76 @@ export class ServerMobSimulation {
 		this.sampler.begin();
 
 		for (const mob of this.mobs.values()) {
-			this.updateMob(mob, deltaMs, players);
+			try {
+				this.updateMob(mob, deltaMs, players);
+			} catch (err) {
+				this.logTickError("updateMob", mob, err);
+			}
 		}
 
 		if (players.length > 0) {
 			// Persist mobs whose column left the loaded radius and load back
 			// the mobs of columns that entered it, so far mobs free their cap
 			// slots but are never lost.
-			this.updateChunkMobLifecycle(players, events);
+			try {
+				this.updateChunkMobLifecycle(players, events);
+			} catch (err) {
+				this.logTickError("updateChunkMobLifecycle", null, err);
+			}
 
 			this.spawnAccum += deltaMs;
 			if (this.spawnAccum >= SPAWN_INTERVAL_MS) {
 				this.spawnAccum = 0;
-				this.trySpawn(players, events);
+				const before = events.length;
+				try {
+					this.trySpawn(players, events);
+				} catch (err) {
+					this.logTickError("trySpawn", null, err);
+				}
+				this.lastSpawnCount = events.length - before;
 			}
 		}
 
 		return events;
+	}
+
+	/** Diagnostics: counts of live mobs per type plus the last tick's spawn count. */
+	getDebugStats(): {
+		total: number;
+		byType: Record<number, number>;
+		lastSpawnCount: number;
+	} {
+		const byType: Record<number, number> = {};
+		for (const m of this.mobs.values()) {
+			byType[m.typeId] = (byType[m.typeId] ?? 0) + 1;
+		}
+		return {
+			total: this.mobs.size,
+			byType,
+			lastSpawnCount: this.lastSpawnCount,
+		};
+	}
+
+	/**
+	 * Snapshot of every active server mob. Used to bring a newly-joined client
+	 * up to date — mob spawn/despawn events are only broadcast for changes that
+	 * happen after a client connects, so without this a late joiner sees none
+	 * of the mobs that already exist in the world.
+	 */
+	getActiveMobs(): ReadonlyArray<ServerMob> {
+		return Array.from(this.mobs.values());
+	}
+
+	private logTickError(
+		phase: string,
+		mob: ServerMob | null,
+		err: unknown,
+	): void {
+		const now = Date.now();
+		if (now - this.lastTickErrorLog < 5000) return;
+		this.lastTickErrorLog = now;
+		const tag = mob ? ` (id=${mob.id}, type=${mob.typeId})` : "";
+		console.error(`[MobSim] ${phase} failed${tag}:`, err);
 	}
 
 	private updateMob(
@@ -465,6 +537,19 @@ export class ServerMobSimulation {
 			}
 		}
 
+		// Damage-triggered panic
+		if (mob.fleeTimer > 0) {
+			mob.fleeTimer = Math.max(0, mob.fleeTimer - deltaMs);
+		}
+
+		// Evaluate threat BEFORE idling so a nearby player always triggers a
+		// flee, even while the mob is in its idle hover window (previously the
+		// idle early-return meant aquatics ignored players ~20-30% of the time
+		// and appeared "stuck / not fleeing").
+		const threat = this.findNearestThreat(mob, players);
+		const damageFleeing = mob.fleeTimer > 0 && players.length > 0;
+		const fleeing = threat !== null || damageFleeing;
+
 		// Idle hover: aquatics don't wander constantly — can just drift
 		const idleRemain = this.aquaticIdleTime.get(mob.id) ?? 0;
 		if (idleRemain > 0) {
@@ -472,17 +557,8 @@ export class ServerMobSimulation {
 			if ((this.aquaticIdleTime.get(mob.id) ?? 0) <= 0) {
 				mob.headingTimer = 0;
 			}
-			return;
+			if (!fleeing) return;
 		}
-
-		// Damage-triggered panic
-		if (mob.fleeTimer > 0) {
-			mob.fleeTimer = Math.max(0, mob.fleeTimer - deltaMs);
-		}
-
-		const threat = this.findNearestThreat(mob, players);
-		const damageFleeing = mob.fleeTimer > 0 && players.length > 0;
-		const fleeing = threat !== null || damageFleeing;
 
 		mob.headingTimer -= deltaMs;
 		// If we have a wander target and we're close, force a new pick
@@ -862,17 +938,19 @@ export class ServerMobSimulation {
 	private getAquaticIdleChance(typeId: number): number {
 		switch (typeId) {
 			case 5: // Fish — more active
-				return 0.20;
+				return 0.2;
 			case 4: // Squid
-				return 0.30;
+				return 0.3;
 			case 6: // Kraken — boss, drifts more
 				return 0.25;
 			default:
-				return 0.30;
+				return 0.3;
 		}
 	}
 
-	private findRandomAquaticTarget(mob: ServerMob): { x: number; y: number; z: number } | null {
+	private findRandomAquaticTarget(
+		mob: ServerMob,
+	): { x: number; y: number; z: number } | null {
 		const bias = this.getAquaticBias(mob.typeId);
 		const baseX = Math.floor(mob.x);
 		const baseY = Math.floor(mob.y);
@@ -894,7 +972,11 @@ export class ServerMobSimulation {
 			if (b !== BlockType.Water) continue;
 			// headroom: allow water or air above
 			const above = this.sampler.sample(rx, ry + 1, rz);
-			if (above !== null && above !== BlockType.Water && above !== BlockType.Air) {
+			if (
+				above !== null &&
+				above !== BlockType.Water &&
+				above !== BlockType.Air
+			) {
 				if (isCollidableBlock(above)) continue;
 			}
 			return { x: rx + 0.5, y: ry + 0.5, z: rz + 0.5 };
@@ -1005,15 +1087,18 @@ export class ServerMobSimulation {
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
 		events: ServerMobEvent[],
 	): void {
-		// Only naturally spawned mobs occupy cap slots; spawn-egg mobs never
-		// block natural spawning.
-		if (this.naturalTotal >= TOTAL_MOB_CAP) return;
-
 		const player = players[Math.floor(Math.random() * players.length)];
 		if (!player) return;
 
+		// Cap is per player's spawn region, not global. A shared cap is
+		// saturated by the combined active mobs of all players, which halted
+		// all spawning once a second player joined.
+		if (this.countMobsNear(player, SPAWN_RING_MAX) >= PER_PLAYER_MOB_CAP) {
+			return;
+		}
+
 		for (let i = 0; i < SPAWN_ATTEMPTS; i++) {
-			if (this.naturalTotal >= TOTAL_MOB_CAP) return;
+			if (this.naturalTotal >= HARD_MOB_CAP) return;
 
 			const typeId = this.pickSpawnType();
 			if (typeId === null) return;
@@ -1402,7 +1487,6 @@ export class ServerMobSimulation {
 						y: wy + 0.5,
 						z: wz + 0.5,
 					});
-					continue;
 				} else {
 					// Land mobs — look for spawnable ground blocks.
 					if (!SPAWNABLE_BLOCK_ID_SET.has(blockId)) continue;
@@ -1451,5 +1535,23 @@ export class ServerMobSimulation {
 			if (dx * dx + dz * dz < 4) return true;
 		}
 		return false;
+	}
+
+	/**
+	 * Counts active mobs within `radius` of a player's x/z. Used to enforce the
+	 * per-player spawn cap instead of a single shared global cap.
+	 */
+	private countMobsNear(
+		player: { x: number; z: number },
+		radius: number,
+	): number {
+		const r2 = radius * radius;
+		let count = 0;
+		for (const mob of this.mobs.values()) {
+			const dx = mob.x - player.x;
+			const dz = mob.z - player.z;
+			if (dx * dx + dz * dz <= r2) count++;
+		}
+		return count;
 	}
 }

@@ -215,6 +215,7 @@ export class VoxelRoom extends Room {
 	private players = new Map<string, ServerPlayerState>();
 	private tickInterval: ReturnType<typeof setInterval> | null = null;
 	private mobSim!: ServerMobSimulation;
+	private mobDebugAccum = 0;
 	private mobTickAccum = 0;
 	private mobStatePool: MobUpdateBatchEntry[] = [];
 	private mobStateScratch: MobUpdateBatchEntry[] = [];
@@ -526,6 +527,12 @@ export class VoxelRoom extends Room {
 			}
 
 			this.sendFullPlayerSnapshot(client);
+
+			// Bring the newcomer up to date with every mob already in the
+			// world — spawn/despawn events are only broadcast for mobs that
+			// change after they connect, so a late joiner would otherwise see
+			// none of the existing mobs until they happened to respawn.
+			this.sendFullMobSnapshot(client);
 
 			// Deliver existing players' skins to the newcomer. One frame per
 			// skin — clients parse a single message per binary frame.
@@ -1061,6 +1068,16 @@ export class VoxelRoom extends Room {
 		this.worldStorage.setPlayerPositions(posScratch);
 
 		const mobEvents = this.mobSim.tick(deltaMs, posScratch);
+
+		this.mobDebugAccum += deltaMs;
+		if (this.mobDebugAccum >= 5000) {
+			this.mobDebugAccum = 0;
+			const stats = this.mobSim.getDebugStats();
+			console.log(
+				`[VoxelRoom] mobs=${stats.total} byType=${JSON.stringify(stats.byType)} lastSpawn=${stats.lastSpawnCount} players=${this.players.size}`,
+			);
+		}
+
 		for (let i = 0; i < mobEvents.length; i++) {
 			const event = mobEvents[i];
 			if (event.kind === "spawn") {
@@ -1183,6 +1200,16 @@ export class VoxelRoom extends Room {
 		this.tickEncoder.reset();
 		writePlayerStateBatch(this.tickEncoder, scratch);
 		client.sendBytes("binary", this.tickEncoder.getBytes());
+	}
+
+	/** Send every active server mob to a single (newly-joined) client. */
+	private sendFullMobSnapshot(client: Client): void {
+		for (const mob of this.mobSim.getActiveMobs()) {
+			client.sendBytes(
+				"binary",
+				encodeMobSpawn(mob.id, mob.typeId, mob.x, mob.y, mob.z, mob.yaw),
+			);
+		}
 	}
 
 	private writeMobUpdateBatch(): void {
