@@ -12,11 +12,11 @@ import {
 } from "@babylonjs/lite";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 
-// Rig metrics (must precede the WGSL template, which bakes them in).
+// Rig metrics (must precede any constants derived from them).
 export const PLAYER_MODEL_HEIGHT = 1.8;
 const PX = PLAYER_MODEL_HEIGHT / 32; // meters per skin pixel (rig is 32px tall)
 
-/** Limb ids baked into normal.x for the animation shader. */
+/** Part ids stored in normal.x for the animation shader. */
 const PART_STATIC = 0;
 const PART_ARM_L = 1;
 const PART_ARM_R = 2;
@@ -24,68 +24,70 @@ const PART_LEG_L = 3;
 const PART_LEG_R = 4;
 const PART_HEAD = 5;
 
+// Model-space pivot lines (feet-origin convention; the origin offset is added
+// at build time, so baked pivots are correct for BOTH "feet" and "center").
+const SHOULDER_PIVOT_Y = 24 * PX; // arm tops / neck line
+const HIP_PIVOT_Y = 12 * PX; // leg tops
+
+/** Max limb swing angle (radians) at amp 1. Applied CPU-side. */
+const SWING_MAX = 0.75;
+
 // ─── Rig shader sources (unlit textured, brightness uniform) ────────────────
 // Mirrors the proven DroppedItem shader so no scene lights or
 // StandardMaterial state can interfere with how the model looks.
-
-// Limb animation is driven by a PART ID stored in the normal attribute
-// (normal.x = id, see appendBox). The unlit fragment shader never reads
-// normals, so the slot is free — tagging at build time gives exact limb
-// membership with none of the coplanar-boundary ambiguity of classifying by
-// position (arm bottoms / leg tops / torso underside all share y-planes).
-// IDs: 0 static · 1 arm-left · 2 arm-right · 3 leg-left · 4 leg-right ·
-// 5 head (pitches with the camera around the neck line).
+//
+// All per-frame animation math runs on the CPU: every player-material writes
+// ONE vec4 uniform (uAnim) holding precomputed sin/cos pairs — no trig and no
+// per-part select chains in the vertex shader, and idle players write nothing
+// at all (callers can hammer setRigWalk/setRigHeadPitch; unchanged values are
+// dropped before they reach the material).
+//
+// uAnim layout: [sin(swing), sin(headPitch), cos(headPitch), cos(swing)].
+// The cos slots are only read when their sin sibling is non-zero, so an
+// all-zero (never-written) uniform buffer still renders the rest pose
+// correctly through the early-outs below.
+//
+// Per-vertex limb metadata rides in the normal attribute (the unlit fragment
+// shader never reads normals): x = part id, y = pivot Y (model space,
+// origin-aware), z = swing sign (+1 arm-L/leg-R, -1 arm-R/leg-L). IDs:
+// 0 static · 1 arm-left · 2 arm-right · 3 leg-left · 4 leg-right · 5 head.
 const RIG_VERTEX_WGSL = /* wgsl */ `
 struct VSOut {
 	@builtin(position) pos : vec4<f32>,
 	@location(0) vUV : vec2<f32>,
-	@location(1) vNormal : vec3<f32>,
-	@location(2) vWorldPos : vec3<f32>,
 };
 
-const ARM_PIVOT_Y : f32 = ${(8 * PX).toFixed(6)};
-const HIP_PIVOT_Y : f32 = ${(-(4 * PX)).toFixed(6)};
-const SWING_MAX : f32 = 0.75;
-
-fn animateRig(p : vec3<f32>, part : f32) -> vec3<f32> {
-	if (shaderUniforms.uWalkAmp <= 0.0 && shaderUniforms.uHeadPitch == 0.0) {
-		return p;
+fn animateRig(p : vec3<f32>, tag : vec3<f32>) -> vec3<f32> {
+	if (tag.x < 0.5) {
+		return p; // static (torso)
 	}
-	let osc = sin(shaderUniforms.uWalkPhase)
-		* SWING_MAX
-		* shaderUniforms.uWalkAmp;
-	var pivotY : f32;
-	var ang : f32;
-	if (part < 0.5) {
-		return p;
-	} else if (part < 2.5) {
-		// arms: right swings opposite to left
-		pivotY = ARM_PIVOT_Y;
-		ang = osc * select(-1.0, 1.0, part > 1.5) * -1.0;
-	} else if (part < 4.5) {
-		// legs: right in phase with left arm
-		pivotY = HIP_PIVOT_Y;
-		ang = osc * select(-1.0, 1.0, part > 3.5);
-	} else {
+	var s : f32;
+	var c : f32;
+	if (tag.x > 4.5) {
 		// head pitches with the camera about the neck line
-		pivotY = ARM_PIVOT_Y;
-		ang = shaderUniforms.uHeadPitch;
+		if (shaderUniforms.uAnim.y == 0.0) {
+			return p;
+		}
+		s = shaderUniforms.uAnim.y;
+		c = shaderUniforms.uAnim.z;
+	} else {
+		// arms and legs swing about their pivot, mirrored by sign
+		if (shaderUniforms.uAnim.x == 0.0) {
+			return p;
+		}
+		s = shaderUniforms.uAnim.x * tag.z;
+		c = shaderUniforms.uAnim.w;
 	}
-	let s = sin(ang);
-	let c = cos(ang);
-	let cy = p.y - pivotY;
-	return vec3<f32>(p.x, pivotY + cy * c - p.z * s, cy * s + p.z * c);
+	let cy = p.y - tag.y;
+	return vec3<f32>(p.x, tag.y + cy * c - p.z * s, cy * s + p.z * c);
 }
 
 @vertex
 fn mainVertex(input : VertexInput) -> VSOut {
 	var out : VSOut;
-	let animated = animateRig(input.position, input.normal.x);
-	let worldPos = shaderSystem.world * vec4<f32>(animated, 1.0);
+	let animated = animateRig(input.position, input.normal);
 	out.pos = shaderSystem.worldViewProjection * vec4<f32>(animated, 1.0);
 	out.vUV = input.uv;
-	out.vNormal = input.normal;
-	out.vWorldPos = worldPos.xyz;
 	return out;
 }
 `;
@@ -94,8 +96,6 @@ const RIG_FRAGMENT_WGSL = /* wgsl */ `
 struct VSOut {
 	@builtin(position) pos : vec4<f32>,
 	@location(0) vUV : vec2<f32>,
-	@location(1) vNormal : vec3<f32>,
-	@location(2) vWorldPos : vec3<f32>,
 };
 
 @fragment
@@ -169,6 +169,11 @@ const LEG_R_UV = limbUv(0, 16);
 
 // ─── Box builder (winding matches DroppedItem.getUnitCubeGeometry) ──────────
 
+/** [partId, pivotY, swingSign] baked into every vertex normal of the box. */
+type PartMeta = readonly [number, number, number];
+
+const STATIC_META: PartMeta = [PART_STATIC, 0, 0];
+
 interface BoxPart {
 	x: number;
 	y: number;
@@ -177,8 +182,8 @@ interface BoxPart {
 	h: number;
 	d: number;
 	uv?: UvSet;
-	/** Limb tag baked into normal.x (see the WGSL header comment). */
-	partId?: number;
+	/** Animation metadata baked into normals (see the WGSL header comment). */
+	meta?: PartMeta;
 }
 
 interface MeshData {
@@ -200,7 +205,7 @@ function appendBox(
 	const z0 = p.z - p.d * 0.5;
 	const z1 = p.z + p.d * 0.5;
 
-	const partId = p.partId ?? PART_STATIC;
+	const meta = p.meta ?? STATIC_META;
 	const positions = out.positions;
 	const normals = out.normals;
 	const indices = out.indices;
@@ -226,7 +231,20 @@ function appendBox(
 	): void => {
 		positions.push(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz);
 
-		normals.push(partId, 0, 0, partId, 0, 0, partId, 0, 0, partId, 0, 0);
+		normals.push(
+			meta[0],
+			meta[1],
+			meta[2],
+			meta[0],
+			meta[1],
+			meta[2],
+			meta[0],
+			meta[1],
+			meta[2],
+			meta[0],
+			meta[1],
+			meta[2],
+		);
 
 		if (rect) {
 			const u0 = uvMode === "atlas" ? rect[0] : rect[0] * (1 / 64);
@@ -286,13 +304,20 @@ function toData(out: MeshBuffers): MeshData {
 	};
 }
 
-/** Merged rig mesh data — origin at the feet, +Z is the facing direction. */
-export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
+export type RigOrigin = "feet" | "center";
+
+function computePlayerRigData(origin: RigOrigin): MeshData {
 	const out: MeshBuffers = { positions: [], normals: [], indices: [], uvs: [] };
 
 	// World bodies anchor at the character controller's position, which sits
 	// mid-body (the old capsule was center-origin); shift accordingly.
 	const yOffset = origin === "center" ? -PLAYER_MODEL_HEIGHT / 2 : -0.1;
+
+	// Pivots are baked origin-aware, so feet- and center-origin rigs animate
+	// around the same anatomical lines (previously the WGSL constants only
+	// matched center-origin geometry).
+	const shoulderY = SHOULDER_PIVOT_Y + yOffset;
+	const hipY = HIP_PIVOT_Y + yOffset;
 
 	const parts: BoxPart[] = [
 		{
@@ -303,7 +328,7 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 			h: 8 * PX,
 			d: 8 * PX,
 			uv: HEAD_UV,
-			partId: PART_HEAD,
+			meta: [PART_HEAD, shoulderY, 0],
 		},
 		{
 			x: 0,
@@ -322,7 +347,7 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 			h: 12 * PX,
 			d: 4 * PX,
 			uv: ARM_L_UV,
-			partId: PART_ARM_L,
+			meta: [PART_ARM_L, shoulderY, 1],
 		},
 		{
 			x: 6 * PX,
@@ -332,7 +357,7 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 			h: 12 * PX,
 			d: 4 * PX,
 			uv: ARM_R_UV,
-			partId: PART_ARM_R,
+			meta: [PART_ARM_R, shoulderY, -1],
 		},
 		{
 			x: -2 * PX,
@@ -342,7 +367,7 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 			h: 12 * PX,
 			d: 4 * PX,
 			uv: LEG_L_UV,
-			partId: PART_LEG_L,
+			meta: [PART_LEG_L, hipY, -1],
 		},
 		{
 			x: 2 * PX,
@@ -352,12 +377,27 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 			h: 12 * PX,
 			d: 4 * PX,
 			uv: LEG_R_UV,
-			partId: PART_LEG_R,
+			meta: [PART_LEG_R, hipY, 1],
 		},
 	];
 	for (const part of parts) appendBox(out, { ...part, y: part.y + yOffset });
 
 	return toData(out);
+}
+
+// Geometry is identical for every rig of a given origin — build once, share.
+// Callers MUST NOT mutate the returned arrays; pass them straight to
+// createMeshFromData (which uploads its own GPU copy).
+const rigDataCache = new Map<RigOrigin, MeshData>();
+
+/** Merged rig mesh data — origin at the feet, +Z is the facing direction. */
+export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
+	let data = rigDataCache.get(origin);
+	if (!data) {
+		data = computePlayerRigData(origin);
+		rigDataCache.set(origin, data);
+	}
+	return data;
 }
 
 /**
@@ -391,8 +431,6 @@ export function buildFloorSlabData(
 }
 
 // ─── Factories ──────────────────────────────────────────────────────────────
-
-export type RigOrigin = "feet" | "center";
 
 export function createPlayerRigMesh(
 	engine: EngineContext,
@@ -463,9 +501,8 @@ export function applyRigSkin(
 	loadSkin: (engine: EngineContext) => Promise<Texture2D> = loadPlayerSkin,
 ): void {
 	setShaderUniform(mat, "uLightColor", [1, 1, 1]);
-	setShaderUniform(mat, "uWalkPhase", 0);
-	setShaderUniform(mat, "uWalkAmp", 0);
-	setShaderUniform(mat, "uHeadPitch", 0);
+	setShaderUniform(mat, "uAnim", REST_ANIM);
+	rigAnimStates.set(mat, { phase: 0, amp: 0, pitch: 0 });
 	setShaderTexture(mat, "diffuseTexture", getFallbackTexture(engine));
 	loadSkin(engine)
 		.then((tex) => {
@@ -509,7 +546,8 @@ export function packedLightToLightColor(
 /**
  * Unlit textured ShaderMaterial for rigs: samples the skin texture and
  * multiplies by a uLightColor RGB uniform — fully bypassing scene lights and
- * StandardMaterial state.
+ * StandardMaterial state. Backface culling is on (winding matches DroppedItem)
+ * and the pipeline is fully opaque.
  */
 export function createRigShaderMaterial(name: string): ShaderMaterial {
 	return createShaderMaterial({
@@ -518,15 +556,12 @@ export function createRigShaderMaterial(name: string): ShaderMaterial {
 		fragmentSource: RIG_FRAGMENT_WGSL,
 		attributes: ["position", "normal", "uv"],
 		uniforms: [
-			"world",
 			"worldViewProjection",
 			{ name: "uLightColor", type: "vec3<f32>" },
-			{ name: "uWalkPhase", type: "f32" },
-			{ name: "uWalkAmp", type: "f32" },
-			{ name: "uHeadPitch", type: "f32" },
+			{ name: "uAnim", type: "vec4<f32>" },
 		],
 		samplers: ["diffuseTexture"],
-		backFaceCulling: false,
+		backFaceCulling: true,
 	});
 }
 
@@ -551,18 +586,55 @@ export const WALK_STRIDE_FACTOR = 1.8;
 /** Horizontal speed (m/s) at which the swing reaches full amplitude. */
 export const WALK_REF_SPEED = 3;
 
+/** Head pitch clamp (±~69°) so extreme look angles stay readable. */
+export const HEAD_PITCH_LIMIT = 1.2;
+
+// ─── Animation state (CPU-side trig, single packed uniform per material) ────
+
+interface RigAnimState {
+	phase: number;
+	amp: number;
+	pitch: number;
+}
+
+// Last-written animation state per material. Powers the skip-unchanged fast
+// path: idle players re-issuing the same (phase, amp, pitch) every frame cost
+// zero uniform writes. WeakMap so disposed materials don't leak.
+const rigAnimStates = new WeakMap<ShaderMaterial, RigAnimState>();
+
+/** uAnim = [sin(swing), sin(pitch), cos(pitch), cos(swing)] rest value. */
+const REST_ANIM: readonly number[] = [0, 0, 1, 1];
+
+// PERF: scratch buffer for the per-frame write (setShaderUniform copies).
+const _animUniform = [0, 0, 1, 1];
+
+function writeRigAnim(mat: ShaderMaterial, st: RigAnimState): void {
+	const swing = Math.sin(st.phase) * SWING_MAX * st.amp;
+	_animUniform[0] = Math.sin(swing);
+	_animUniform[1] = Math.sin(st.pitch);
+	_animUniform[2] = Math.cos(st.pitch);
+	_animUniform[3] = Math.cos(swing);
+	setShaderUniform(mat, "uAnim", _animUniform);
+}
+
 /** Drive the rig's walk-swing (amp 0 = rest pose, 1 = full stride). */
 export function setRigWalk(
 	mat: ShaderMaterial,
 	phase: number,
 	amp: number,
 ): void {
-	setShaderUniform(mat, "uWalkPhase", phase);
-	setShaderUniform(mat, "uWalkAmp", Math.max(0, Math.min(1, amp)));
+	const clampedAmp = Math.max(0, Math.min(1, amp));
+	let st = rigAnimStates.get(mat);
+	if (st) {
+		if (st.phase === phase && st.amp === clampedAmp) return; // no-op frame
+		st.phase = phase;
+		st.amp = clampedAmp;
+	} else {
+		st = { phase, amp: clampedAmp, pitch: 0 };
+		rigAnimStates.set(mat, st);
+	}
+	writeRigAnim(mat, st);
 }
-
-/** Head pitch clamp (±~69°) so extreme look angles stay readable. */
-export const HEAD_PITCH_LIMIT = 1.2;
 
 /**
  * Tilt the head part with the camera. Positive = looking down (the camera
@@ -570,9 +642,17 @@ export const HEAD_PITCH_LIMIT = 1.2;
  * face's +Z front downward).
  */
 export function setRigHeadPitch(mat: ShaderMaterial, pitch: number): void {
-	setShaderUniform(
-		mat,
-		"uHeadPitch",
-		Math.max(-HEAD_PITCH_LIMIT, Math.min(HEAD_PITCH_LIMIT, pitch)),
+	const clamped = Math.max(
+		-HEAD_PITCH_LIMIT,
+		Math.min(HEAD_PITCH_LIMIT, pitch),
 	);
+	let st = rigAnimStates.get(mat);
+	if (st) {
+		if (st.pitch === clamped) return; // no-op frame
+		st.pitch = clamped;
+	} else {
+		st = { phase: 0, amp: 0, pitch: clamped };
+		rigAnimStates.set(mat, st);
+	}
+	writeRigAnim(mat, st);
 }

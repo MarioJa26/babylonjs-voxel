@@ -106,15 +106,15 @@ function loadMobSkin(path: string): Promise<void> {
 
 /** Preload every mob skin. Called from Map1.asyncInit() before any mob can
  * exist; later calls resolve instantly. */
-export function preloadMobSkins(): Promise<void> {
-	return Promise.all([
+export async function preloadMobSkins(): Promise<void> {
+	await Promise.all([
 		loadMobSkin(MOB_CHICKEN_SKIN_PATH),
 		loadMobSkin(MOB_SHEEP_SKIN_PATH),
 		loadMobSkin(MOB_COW_SKIN_PATH),
 		loadMobSkin(MOB_SQUID_SKIN_PATH),
 		loadMobSkin(MOB_FISH_SKIN_PATH),
 		loadMobSkin(MOB_KRAKEN_SKIN_PATH),
-	]).then(() => undefined);
+	]);
 }
 
 function getMobSkin(path: string): Texture2D {

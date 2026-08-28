@@ -9,6 +9,13 @@ import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
 import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakingBlockHandler";
 import { Crosshair } from "../Hud/Crosshair/Crosshair";
 import type { Item } from "../Inventory/Item";
+import { getRegisteredItemById } from "../Inventory/ItemRegistry";
+import {
+	BOW_DRAW_TIME,
+	BOW_MIN_DRAW_TIME,
+	playerHasArrows,
+	useBow,
+} from "../Inventory/ItemUseActions";
 import type { Player } from "../Player";
 import { Gamemodes } from "../PlayerStats";
 import type { PlayerVehicleMotor } from "../PlayerVehicleMotor";
@@ -24,6 +31,11 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 
 	#lastJumpTapMs = 0;
 	static readonly DOUBLE_TAP_MS = 260;
+
+	// Bow draw state
+	#isDrawing = false;
+	#drawStartTime = 0;
+	#drawProgress = 0;
 
 	static readonly #HOTBAR_KEY_MAP = new Map<string, number>([
 		["1", 0],
@@ -109,20 +121,94 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 			return;
 		}
 
-		if (WalkingControls.MOUSE2.includes(mouseEvent.button) && isKeyDown) {
-			const item =
-				this.#player.playerInventory.inventory[0][
-					this.#player.playerHud.selectedHotbarSlot
-				]?.item;
-
-			if (item) {
-				item.use(this.#player);
+		if (WalkingControls.MOUSE2.includes(mouseEvent.button)) {
+			if (isKeyDown) {
+				this.#onRightClickDown();
+			} else {
+				this.#onRightClickUp();
 			}
 		}
 	}
 
+	/**
+	 * Handle right-click press. If the selected item is a bow with arrows
+	 * available, start drawing. Otherwise, use the item immediately.
+	 */
+	#onRightClickDown(): void {
+		if (this.#isDrawing) return;
+
+		const item = this.selectedItem;
+		if (!item) return;
+
+		if (this.#isBowItem(item)) {
+			// Start drawing the bow — only if the player has ammunition
+			if (playerHasArrows(this.#player)) {
+				this.#isDrawing = true;
+				this.#drawStartTime = performance.now();
+				this.#drawProgress = 0;
+			}
+		} else {
+			// Non-bow item: use immediately (previous behavior)
+			item.use(this.#player);
+		}
+	}
+
+	/**
+	 * Handle right-click release. If drawing a bow, fire the arrow if the
+	 * draw time exceeded the minimum threshold; otherwise cancel the shot.
+	 */
+	#onRightClickUp(): void {
+		if (!this.#isDrawing) return;
+
+		this.#isDrawing = false;
+		const drawTime = (performance.now() - this.#drawStartTime) / 1000;
+
+		if (drawTime >= BOW_MIN_DRAW_TIME) {
+			// Fire the arrow with speed based on draw progress
+			useBow(this.#player, this.#drawProgress);
+		}
+
+		this.#drawProgress = 0;
+		this.#player.playerHud.updateDrawProgress(0);
+		this.#player.playerCamera.clearBowZoom();
+	}
+
+	/** Check whether the given item is a bow (has the use_bow action). */
+	#isBowItem(item: Item): boolean {
+		const def = getRegisteredItemById(item.itemId);
+		return def?.useAction === "use_bow";
+	}
+
+	/** The currently selected hotbar item (or null). */
+	get selectedItem(): Item | null {
+		return (
+			this.#player.playerInventory.inventory[0][
+				this.#player.playerHud.selectedHotbarSlot
+			]?.item ?? null
+		);
+	}
+
 	public update(hit?: BlockRaycastHit | null): void {
 		this.#blockBreaking.update(hit);
+
+		if (this.#isDrawing) {
+			const elapsed = (performance.now() - this.#drawStartTime) / 1000;
+			this.#drawProgress = Math.min(1, elapsed / BOW_DRAW_TIME);
+			this.#player.playerHud.updateDrawProgress(this.#drawProgress);
+			this.#player.playerCamera.setBowZoom(this.#drawProgress);
+		}
+	}
+
+	/**
+	 * Cancel any in-progress bow draw. Called when the player switches items,
+	 * opens a UI, or otherwise interrupts the draw.
+	 */
+	public cancelDraw(): void {
+		if (!this.#isDrawing) return;
+		this.#isDrawing = false;
+		this.#drawProgress = 0;
+		this.#player.playerHud.updateDrawProgress(0);
+		this.#player.playerCamera.clearBowZoom();
 	}
 
 	/**
@@ -195,6 +281,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		}
 
 		if (WalkingControls.KEY_DROP.includes(key)) {
+			this.cancelDraw();
 			const item =
 				this.#player.playerInventory.inventory[0][
 					this.#player.playerHud.selectedHotbarSlot
@@ -237,9 +324,11 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 			if (this.#player.playerHud.selectedHotbarSlot < 0) {
 				this.#player.playerHud.selectedHotbarSlot = 9;
 			}
+			this.cancelDraw();
 		} else if (WalkingControls.MOUSE_WHEEL_DOWN.includes(key)) {
 			this.#player.playerHud.selectedHotbarSlot =
 				(this.#player.playerHud.selectedHotbarSlot + 1) % 10;
+			this.cancelDraw();
 		}
 
 		if (
@@ -264,6 +353,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 			// toggleInventory() is now the single source of truth for switching the
 			// active control scheme (see PlayerHud.#activateInventoryControls /
 			// #activateWalkingControls), so we no longer swap keyboardControls here.
+			this.cancelDraw();
 			this.#player.playerHud.toggleInventory();
 		}
 
@@ -279,6 +369,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		const hotbarSlot = WalkingControls.#HOTBAR_KEY_MAP.get(key);
 		if (hotbarSlot !== undefined) {
 			this.#player.playerHud.selectedHotbarSlot = hotbarSlot;
+			this.cancelDraw();
 		}
 
 		this.pressedKeys.delete(key);
@@ -304,6 +395,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 			const hotbarItem = inventory.inventory[0][i].item;
 			if (matchesPickedBlock(hotbarItem)) {
 				this.#player.playerHud.selectedHotbarSlot = i;
+				this.cancelDraw();
 				return;
 			}
 		}

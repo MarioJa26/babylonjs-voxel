@@ -350,9 +350,12 @@ export class PlayerLoopController {
 		}
 
 		if (uiOpen) {
-			(
-				controls as unknown as { stopBlockBreaking?: () => void }
-			).stopBlockBreaking?.();
+			const c = controls as unknown as {
+				stopBlockBreaking?: () => void;
+				cancelDraw?: () => void;
+			};
+			c.stopBlockBreaking?.();
+			c.cancelDraw?.();
 			return;
 		}
 

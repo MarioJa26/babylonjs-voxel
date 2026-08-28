@@ -26,11 +26,39 @@ const ARROW_ITEM_IDS: readonly number[] = ARROW_TYPES.map((t) => t.itemId);
 /** Item ID of the default (wooden) arrow used in creative mode. */
 const DEFAULT_ARROW_ITEM_ID = ARROW_TYPES[0]!.itemId;
 
-/** Arrow muzzle speed in blocks per second. */
-const ARROW_SPEED = 30;
-
 /** Distance between the camera and the arrow's initial position. */
 const ARROW_SPAWN_OFFSET = 0.3;
+
+// ---------------------------------------------------------------------------
+// Bow draw mechanic
+// ---------------------------------------------------------------------------
+
+/** Seconds of holding right-click to reach a full draw (progress = 1.0). */
+export const BOW_DRAW_TIME = 0.8;
+
+/** Minimum draw time before a shot is allowed; releasing earlier cancels it. */
+export const BOW_MIN_DRAW_TIME = 0.2;
+
+/** Arrow speed (blocks/sec) at the minimum valid draw. */
+export const ARROW_SPEED_MIN = 8;
+
+/** Arrow speed (blocks/sec) at a full draw. */
+export const ARROW_SPEED_MAX = 40;
+
+/**
+ * Linearly interpolate arrow speed from draw progress (0-1).
+ * Exported so the HUD / tests can reuse the same curve.
+ */
+export function arrowSpeedForDrawProgress(drawProgress: number): number {
+	const t = drawProgress < 0 ? 0 : drawProgress > 1 ? 1 : drawProgress;
+	return ARROW_SPEED_MIN + (ARROW_SPEED_MAX - ARROW_SPEED_MIN) * t;
+}
+
+/** True if the player has at least one arrow (or is in creative mode). */
+export function playerHasArrows(player: Player): boolean {
+	if (player.stats.gamemode === Gamemodes.Creative) return true;
+	return ARROW_ITEM_IDS.some((id) => player.playerInventory.hasItem(id, 1));
+}
 
 /** Horizontal center offset when spawning entities inside a block. */
 const BLOCK_CENTER_OFFSET = 0.5;
@@ -69,7 +97,7 @@ function openCrafting(player: Player): void {
 	console.debug("open_crafting invoked by", player);
 }
 
-function useBow(player: Player): void {
+export function useBow(player: Player, drawProgress: number = 1.0): void {
 	const inventory = player.playerInventory;
 	const isCreative = player.stats.gamemode === Gamemodes.Creative;
 
@@ -132,9 +160,11 @@ function useBow(player: Player): void {
 	const spawnY = cameraPosition.y + forwardY * ARROW_SPAWN_OFFSET;
 	const spawnZ = cameraPosition.z + forwardZ * ARROW_SPAWN_OFFSET;
 
-	const velocityX = forwardX * ARROW_SPEED;
-	const velocityY = forwardY * ARROW_SPEED;
-	const velocityZ = forwardZ * ARROW_SPEED;
+	const speed = arrowSpeedForDrawProgress(drawProgress);
+
+	const velocityX = forwardX * speed;
+	const velocityY = forwardY * speed;
+	const velocityZ = forwardZ * speed;
 
 	const arrowTypeIndex = getArrowTypeIndexByItemId(arrowItemId);
 

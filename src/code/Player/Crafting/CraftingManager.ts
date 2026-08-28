@@ -97,6 +97,52 @@ export const Recipes: Recipe[] = [
 		ingredients: [{ itemId: 35, count: 10 }],
 	},
 	// Add more recipes here
+	// Arrow ammunition: 1 material + 1 stick → 4 arrows
+	{
+		resultId: 1023,
+		resultCount: 4,
+		ingredients: [{ itemId: 35, count: 1 }],
+	}, // Wooden Arrow
+	{
+		resultId: 1040,
+		resultCount: 4,
+		ingredients: [
+			{ itemId: 1021, count: 1 },
+			{ itemId: 1023, count: 4 },
+		],
+	}, // Iron Arrow
+	{
+		resultId: 1041,
+		resultCount: 4,
+		ingredients: [
+			{ itemId: 1025, count: 1 },
+			{ itemId: 1023, count: 4 },
+		],
+	}, // Gold Arrow
+	{
+		resultId: 1042,
+		resultCount: 4,
+		ingredients: [
+			{ itemId: 1019, count: 1 },
+			{ itemId: 1023, count: 4 },
+		],
+	}, // Coal Arrow
+	{
+		resultId: 1043,
+		resultCount: 4,
+		ingredients: [
+			{ itemId: 1026, count: 1 },
+			{ itemId: 1023, count: 4 },
+		],
+	}, // Copper Arrow
+	{
+		resultId: 1044,
+		resultCount: 4,
+		ingredients: [
+			{ itemId: 60, count: 1 },
+			{ itemId: 1023, count: 4 },
+		],
+	}, // Glass Arrow
 ];
 
 export interface MasonRecipe {

@@ -10,6 +10,7 @@ import {
 	stopEngine,
 	vec3,
 } from "@babylonjs/lite";
+import { Arrow } from "./Entities/Arrow/Arrow";
 import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
 import { setTerrainSeed } from "./Generation/TerrainHeightMap";
 import { initBlockBreakParticles } from "./Maps/BlockBreakParticles";
@@ -18,7 +19,6 @@ import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
 import { NetworkManager } from "./Network/NetworkManager";
 import { RemoteItemManager } from "./Network/RemoteItemManager";
 import { RemoteMobManager } from "./Network/RemoteMobManager";
-import { Arrow } from "./Entities/Arrow/Arrow";
 import { findSavedServerByName, getPlayerName } from "./Network/serverList";
 import { initializeBlockBreakingVisuals } from "./Player/Hud/BlockHighlight/BlockBreakingVisuals";
 import { DroppedItem } from "./Player/Inventory/DroppedItem";
@@ -201,10 +201,6 @@ export class TestScene {
 		Arrow.ensureNetworkHandler(this.#networkManager.netClient);
 
 		await map.initPromise;
-
-		console.log(
-			`[MP-init] map.initPromise resolved ${(performance.now() - mpT0).toFixed(0)}ms after MP start (WorldStorage + PlayerLoadingGate)`,
-		);
 
 		this.initSharedPlayerSystems(scene, player);
 		player.respawn();

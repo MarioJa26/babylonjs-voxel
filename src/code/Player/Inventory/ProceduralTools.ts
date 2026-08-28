@@ -109,27 +109,6 @@ export function registerProceduralTools(
 			});
 		}
 	}
-
-	// Arrow ammunition recipes: one material + a stick yields a stack.
-	const arrowRecipes: ReadonlyArray<{ resultId: number; material: number }> = [
-		{ resultId: 1023, material: 35 }, // Wooden Arrow: plank + stick
-		{ resultId: 1040, material: 1021 }, // Iron Arrow: iron ingot
-		{ resultId: 1041, material: 1025 }, // Gold Arrow: gold ingot
-		{ resultId: 1042, material: 1019 }, // Coal Arrow: coal
-		{ resultId: 1043, material: 1026 }, // Copper Arrow: copper ingot
-		{ resultId: 1044, material: 60 }, // Glass Arrow: glass block
-	];
-
-	for (const recipe of arrowRecipes) {
-		Recipes.push({
-			resultId: recipe.resultId,
-			resultCount: 4,
-			ingredients: [
-				{ itemId: recipe.material, count: 1 },
-				{ itemId: 1016, count: 1 }, // stick
-			],
-		});
-	}
 }
 
 /** Mining-speed multiplier for a tool item id, or undefined for non-tools. */

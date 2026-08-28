@@ -300,13 +300,17 @@ export class RemoteMobManager {
 		let baseColor: [number, number, number] = [1, 1, 1];
 		if (typeId === MobTypeId.Sheep) {
 			const wool =
-				SHEEP_COLORS[((id % SHEEP_COLORS.length) + SHEEP_COLORS.length) % SHEEP_COLORS.length]!
-					.color;
+				SHEEP_COLORS[
+					((id % SHEEP_COLORS.length) + SHEEP_COLORS.length) %
+						SHEEP_COLORS.length
+				]!.color;
 			baseColor = [wool.r, wool.g, wool.b];
 			pool.writeColor(slot, wool.r, wool.g, wool.b, 0);
 		} else if (typeId === MobTypeId.Fish) {
 			const scales =
-				FISH_COLORS[((id % FISH_COLORS.length) + FISH_COLORS.length) % FISH_COLORS.length]!;
+				FISH_COLORS[
+					((id % FISH_COLORS.length) + FISH_COLORS.length) % FISH_COLORS.length
+				]!;
 			baseColor = [scales.r, scales.g, scales.b];
 			pool.writeColor(slot, scales.r, scales.g, scales.b, 0);
 		} else {

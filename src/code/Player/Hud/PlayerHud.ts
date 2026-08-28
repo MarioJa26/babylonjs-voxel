@@ -117,6 +117,10 @@ export class PlayerHud {
 	#staminaBarFill!: HTMLDivElement;
 	#manaBarFill!: HTMLDivElement;
 
+	// Bow draw progress indicator
+	#drawIndicator: HTMLDivElement | null = null;
+	#drawFill: HTMLDivElement | null = null;
+
 	readonly #chat: Chat;
 
 	constructor(scene: SceneContext, player: Player) {
@@ -130,6 +134,7 @@ export class PlayerHud {
 		this.createStatsUI();
 		this.initializeDebugPanel();
 		this.initializeTooltip();
+		this.initializeDrawIndicator();
 
 		PlayerHud.#inventory.onInventoryChangedObservable.add(() => {
 			if (this.#inventoryOpen) {
@@ -302,6 +307,79 @@ export class PlayerHud {
 		});
 	}
 
+	/**
+	 * Create the bow draw progress indicator — a small bar centered just below
+	 * the crosshair. Hidden by default; shown while drawing.
+	 */
+	private initializeDrawIndicator(): void {
+		const indicator = document.createElement("div");
+		indicator.classList.add("bow-draw-indicator");
+		indicator.id = "bow-draw-indicator";
+
+		const fill = document.createElement("div");
+		fill.classList.add("bow-draw-fill");
+
+		indicator.appendChild(fill);
+		document.body.appendChild(indicator);
+
+		this.#drawIndicator = indicator;
+		this.#drawFill = fill;
+
+		onSceneDispose(this.#scene, () => {
+			indicator.remove();
+		});
+	}
+
+	readonly #drawStartColor = { r: 244, g: 67, b: 54 }; // #4caf50
+	readonly #drawEndColor = { r: 76, g: 175, b: 80 }; // #f44336
+
+	#lastDrawProgress = -1;
+	#drawIndicatorVisible = false;
+	/**
+	 * Update the bow draw progress indicator.
+	 * @param progress 0 = hidden, 0-1 = fill percentage.
+	 */
+	public updateDrawProgress(progress: number): void {
+		if (!this.#drawIndicator || !this.#drawFill) return;
+
+		if (progress <= 0) {
+			if (this.#drawIndicatorVisible) {
+				this.#drawIndicator.classList.remove("visible");
+				this.#drawIndicatorVisible = false;
+			}
+
+			if (this.#lastDrawProgress !== 0) {
+				this.#drawFill.style.width = "0%";
+				this.#lastDrawProgress = 0;
+			}
+
+			return;
+		}
+
+		const pct = Math.min(1, progress);
+
+		// Avoid redundant DOM/style updates.
+		if (pct === this.#lastDrawProgress) return;
+
+		if (!this.#drawIndicatorVisible) {
+			this.#drawIndicator.classList.add("visible");
+			this.#drawIndicatorVisible = true;
+		}
+
+		this.#lastDrawProgress = pct;
+
+		this.#drawFill.style.width = `${pct * 100}%`;
+
+		const { r: r1, g: g1, b: b1 } = this.#drawStartColor;
+		const { r: r2, g: g2, b: b2 } = this.#drawEndColor;
+
+		const r = Math.round(r1 + (r2 - r1) * pct);
+		const g = Math.round(g1 + (g2 - g1) * pct);
+		const b = Math.round(b1 + (b2 - b1) * pct);
+
+		this.#drawFill.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+	}
+
 	private getSlot(column: number, row: number): HTMLDivElement | null {
 		return PlayerHud.#inventory.inventory[row][column].divItemSlot;
 	}
@@ -333,6 +411,8 @@ export class PlayerHud {
 			this.#overlayDiv.style.display = "flex";
 			this.#playerPreview.show();
 			this.updateCreativePaletteVisibility();
+			this.updateDrawProgress(0);
+			this.#player.playerCamera.clearBowZoom();
 			this.#exitPointerLock();
 		} else {
 			closeUi(UiFocus.inventory);

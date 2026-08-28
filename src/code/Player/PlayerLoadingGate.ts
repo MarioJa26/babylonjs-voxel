@@ -64,7 +64,7 @@ export class PlayerLoadingGate {
 		if (this.player.playerVehicle.isMovementLocked) {
 			this.player.playerVehicle.unlockMovement();
 		}
-		console.log(PREFIX, "disposed (player unlocked)");
+		//console.log(PREFIX, "disposed (player unlocked)");
 	}
 
 	private update(): void {

@@ -10,22 +10,20 @@
  *   applies HP and broadcasts the despawn on death.
  * - Singleplayer: hits call takeDamage() on local MobRegistry mobs directly.
  */
+import { onBeforeRender, quatFromLookDirectionRH } from "@babylonjs/lite";
 import {
-	addToScene,
-	type Mesh,
-	onBeforeRender,
-	quatFromLookDirectionRH,
-	removeFromScene,
-} from "@babylonjs/lite";
+	getArrowInstancePool,
+	type InstanceSlotHandle,
+} from "@/code/Entities/Arrow/ArrowInstancePool";
 import {
 	type ArrowTypeDef,
 	getArrowTypeDef,
 } from "@/code/Entities/Arrow/ArrowTypes";
 import type { Mob } from "@/code/Entities/Mobs/Mob";
 import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
-import { createBoxMobMesh } from "@/code/Entities/Mobs/MobMesh";
 import { getPRNGUnit2 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
+import type { Color3 } from "@/code/Lib/Math";
 import {
 	MOB_DRIP_INTERVAL_MS,
 	playArrowHit,
@@ -40,9 +38,6 @@ import { Item } from "@/code/Player/Inventory/Item";
 import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import type { Player } from "../../Player/Player";
-
-const ARROW_MESH_NAME = "arrow";
-const ARROW_MATERIAL_NAME = "arrowMat";
 
 const ARROW_LENGTH = 0.55;
 const ARROW_HALF_LENGTH = ARROW_LENGTH * 0.5;
@@ -74,7 +69,12 @@ interface ArrowMobTransform {
 type ArrowMobFollow = () => ArrowMobTransform | null;
 
 export class Arrow {
-	readonly #mesh: Mesh;
+	readonly #pool: ReturnType<typeof getArrowInstancePool>;
+	readonly #slot: InstanceSlotHandle;
+	/** World-space center of the arrow (was `#mesh.position`). */
+	readonly #pos = { x: 0, y: 0, z: 0 };
+	/** Orientation quaternion (was `#mesh.rotationQuaternion`). */
+	readonly #quat = { x: 0, y: 0, z: 0, w: 1 };
 	readonly #shooter: Player | null;
 
 	#vx: number;
@@ -181,22 +181,15 @@ export class Arrow {
 		this.#vz = vz;
 		this.#arrowDef = getArrowTypeDef(arrowTypeIndex);
 
-		const mesh = createBoxMobMesh(
-			ARROW_MESH_NAME,
-			0.06,
-			0.06,
-			ARROW_LENGTH,
-			this.#arrowDef.color,
-			ARROW_MATERIAL_NAME,
-		);
+		const pool = getArrowInstancePool();
+		this.#pool = pool;
+		this.#slot = pool.acquire(this.#arrowDef.color);
 
-		this.#mesh = mesh;
-
-		mesh.pickable = false;
-		mesh.position.set(x, y, z);
+		this.#pos.x = x;
+		this.#pos.y = y;
+		this.#pos.z = z;
 
 		this.#orient();
-		addToScene(Map1.mainScene, mesh);
 
 		const arrows = Arrow.#allArrows;
 		this.#arrayIndex = arrows.length;
@@ -230,13 +223,37 @@ export class Arrow {
 		const up =
 			Math.abs(dy) > VERTICAL_DIRECTION_THRESHOLD ? VERTICAL_UP : WORLD_UP;
 
-		this.#mesh.rotationQuaternion.copyFrom(
-			quatFromLookDirectionRH(direction, up),
+		const q = quatFromLookDirectionRH(direction, up);
+
+		this.#quat.x = q.x;
+		this.#quat.y = q.y;
+		this.#quat.z = q.z;
+		this.#quat.w = q.w;
+
+		this.#writeTransform();
+	}
+
+	/** Push the current `#pos` + `#quat` into the shared instance buffer. */
+	#writeTransform(): void {
+		this.#pool.writeMatrix(
+			this.#slot,
+			this.#pos.x,
+			this.#pos.y,
+			this.#pos.z,
+			this.#quat.x,
+			this.#quat.y,
+			this.#quat.z,
+			this.#quat.w,
 		);
 	}
 
+	/** Recolor this arrow's instance (per-instance color buffer). */
+	recolor(color: Color3): void {
+		this.#pool.writeColor(this.#slot, color.r, color.g, color.b, 1);
+	}
+
 	#updateTip(): void {
-		const position = this.#mesh.position;
+		const position = this.#pos;
 		const direction = this.#lookDirection;
 
 		this.#tip.x = position.x + direction.x * ARROW_TIP_OFFSET;
@@ -285,7 +302,7 @@ export class Arrow {
 		const stepY = vy * stepDt;
 		const stepZ = vz * stepDt;
 
-		const position = this.#mesh.position;
+		const position = this.#pos;
 		const tip = this.#tip;
 
 		for (let i = 0; i < steps; i++) {
@@ -305,6 +322,8 @@ export class Arrow {
 				return;
 			}
 		}
+
+		this.#writeTransform();
 	}
 
 	#tickStuck(dt: number): void {
@@ -337,11 +356,13 @@ export class Arrow {
 			);
 
 			const direction = this.#lookDirection;
-			const position = this.#mesh.position;
+			const position = this.#pos;
 
 			position.x = tipX - direction.x * ARROW_TIP_OFFSET;
 			position.y = tipY - direction.y * ARROW_TIP_OFFSET;
 			position.z = tipZ - direction.z * ARROW_TIP_OFFSET;
+
+			this.#writeTransform();
 
 			const now = performance.now();
 
@@ -416,7 +437,7 @@ export class Arrow {
 		}
 
 		const direction = this.#lookDirection;
-		const position = this.#mesh.position;
+		const position = this.#pos;
 
 		position.x -= direction.x * ARROW_TIP_OFFSET;
 		position.y -= direction.y * ARROW_TIP_OFFSET;
@@ -427,6 +448,8 @@ export class Arrow {
 		this.#vz = 0;
 		this.#stuck = true;
 		this.#stuckTimer = this.#arrowDef.stickTime;
+
+		this.#writeTransform();
 
 		return true;
 	}
@@ -583,11 +606,13 @@ export class Arrow {
 		tip.z = z;
 
 		const direction = this.#lookDirection;
-		const position = this.#mesh.position;
+		const position = this.#pos;
 
 		position.x = x - direction.x * ARROW_TIP_OFFSET;
 		position.y = y - direction.y * ARROW_TIP_OFFSET;
 		position.z = z - direction.z * ARROW_TIP_OFFSET;
+
+		this.#writeTransform();
 
 		this.#beginStickInMob(follow);
 	}
@@ -661,7 +686,7 @@ export class Arrow {
 			return;
 		}
 
-		const position = this.#mesh.position;
+		const position = this.#pos;
 		const item = Item.createById(this.#arrowDef.itemId);
 
 		item.stackSize = 1;
@@ -724,6 +749,6 @@ export class Arrow {
 
 		this.#arrayIndex = -1;
 
-		removeFromScene(Map1.mainScene, this.#mesh);
+		this.#pool.release(this.#slot);
 	}
 }

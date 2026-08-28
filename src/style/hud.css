@@ -1196,6 +1196,34 @@
 	image-rendering: auto;
 }
 
+/* ─── Bow draw progress indicator ────────────────────────────────────────── */
+
+.bow-draw-indicator {
+	position: fixed;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, 32px);
+	width: 60px;
+	height: 6px;
+	background: rgba(0, 0, 0, 0.5);
+	border: 1px solid rgba(255, 255, 255, 0.3);
+	border-radius: 3px;
+	overflow: hidden;
+	pointer-events: none;
+	z-index: 10;
+	display: none;
+}
+
+.bow-draw-indicator.visible {
+	display: block;
+}
+
+.bow-draw-fill {
+	height: 100%;
+	width: 0%;
+	transition: width 0.05s linear;
+}
+
 .hit-marker {
 	position: fixed;
 	top: 50%;

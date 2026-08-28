@@ -160,7 +160,28 @@ export class PlayerCamera {
 	}
 
 	public set fov(value: number) {
+		this.#baseFov = value;
 		this.#playerCamera.fov = value * (Math.PI / 180);
+	}
+
+	/** Base (unzoomed) FOV in degrees. Updated by the fov setter. */
+	#baseFov = SETTING_PARAMS.CAMERA_FOV;
+
+	/**
+	 * Apply a bow-draw zoom effect. At full draw (progress = 1) the FOV narrows
+	 * to ~87% of the base FOV, mimicking Minecraft's bow-aim zoom.
+	 * @param drawProgress 0 = no zoom, 1 = full draw zoom.
+	 */
+	public setBowZoom(drawProgress: number): void {
+		const t = drawProgress < 0 ? 0 : drawProgress > 1 ? 1 : drawProgress;
+		// Ease-out curve so most of the zoom happens in the first half of the draw
+		const zoomFactor = 1 - 0.22 * (t * t);
+		this.#playerCamera.fov = this.#baseFov * zoomFactor * (Math.PI / 180);
+	}
+
+	/** Restore the camera to the base FOV (no zoom). */
+	public clearBowZoom(): void {
+		this.#playerCamera.fov = this.#baseFov * (Math.PI / 180);
 	}
 
 	#positionScratch: Vec3 = { x: 0, y: 0, z: 0 };
