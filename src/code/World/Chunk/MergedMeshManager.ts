@@ -4,7 +4,7 @@ import type { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";
 import { disposePackedMesh, maxFacesPerArena } from "./PackedChunkMesh.js";
 
-// Lite `Mesh` has no `.dispose()` â€” free its packed-arena slices, unregister
+// Lite `Mesh` has no `.dispose()` — free its packed-arena slices, unregister
 // from the scene, then free GPU resources.
 function disposeGroupMesh(mesh: Mesh): void {
 	if (!mesh) return;
@@ -29,8 +29,8 @@ export interface ChunkMemberData {
 	lastBuiltWaterOffset: number;
 	lastBuiltCutoutOffset: number;
 	// Stable per-layer slot regions (in merged-FACE units). Offsets only move
-	// when the member's own slot class changes â€” never because a NEIGHBOR
-	// resized â€” so content-only rebuilds skip the copy entirely.
+	// when the member's own slot class changes — never because a NEIGHBOR
+	// resized — so content-only rebuilds skip the copy entirely.
 	slotOpaqueOffset: number;
 	slotOpaqueFaces: number;
 	slotWaterOffset: number;
@@ -132,7 +132,7 @@ const dirtyGroups = new Set<MergedMeshGroup>();
 
 // Set whenever group membership or mesh refs change (new/removed members,
 // rebuilt meshes). The occlusion culler consumes it once per frame to force a
-// visibility sweep even when the camera is standing still â€” otherwise rebuilt
+// visibility sweep even when the camera is standing still — otherwise rebuilt
 // meshes come back forced-visible and stay unculled until the camera moves.
 let _groupsMutatedSinceSweep = false;
 
@@ -156,28 +156,293 @@ function invalidateGroupBuildCache(group: MergedMeshGroup): void {
 	}
 }
 
-const _rangePool: MergedFaceRange[] = [];
+// ---------------------------------------------------------------------------
+// Allocation-light constants and scratch state
+// ---------------------------------------------------------------------------
 
-// Pooled Uint8Array per byteLength to avoid per-growth GC (profile: 1.1 MB Uint8Array per flush).
+const FACE_BYTES = 12;
+const FACE_WORDS = 3;
+const MIN_SLOT_FACES = 32;
+const COMPACT_MIN_WASTE_FACES = 1024;
+const LAYER_SHRINK_MIN_CAPACITY_FACES = 2048;
+
+// rebuildGroupData is synchronous, so one module-level result is sufficient.
+const _slotResult: SlotResult = { offset: 0, faces: 0 };
+
+interface SlotResult {
+	offset: number;
+	faces: number;
+}
+
+// ---------------------------------------------------------------------------
+// SlotHole pool
+// ---------------------------------------------------------------------------
+
+const _slotHolePool: SlotHole[] = [];
+const MAX_POOLED_SLOT_HOLES = 1024;
+
+function allocSlotHole(offset: number, faces: number): SlotHole {
+	const hole = _slotHolePool.pop();
+
+	if (hole) {
+		hole.offset = offset;
+		hole.faces = faces;
+		return hole;
+	}
+
+	return { offset, faces };
+}
+
+function releaseSlotHole(hole: SlotHole): void {
+	if (_slotHolePool.length >= MAX_POOLED_SLOT_HOLES) return;
+
+	hole.offset = 0;
+	hole.faces = 0;
+	_slotHolePool.push(hole);
+}
+
+function clearSlotHoleArray(array: SlotHole[]): void {
+	for (let i = 0; i < array.length; i++) {
+		releaseSlotHole(array[i]);
+	}
+
+	array.length = 0;
+}
+
+function pushReleasedSlot(
+	state: SlotLayerState,
+	offset: number,
+	faces: number,
+): void {
+	if (faces > 0) {
+		state.released.push(allocSlotHole(offset, faces));
+	}
+}
+
+function releaseSlotLayerState(state: SlotLayerState): void {
+	clearSlotHoleArray(state.holes);
+	clearSlotHoleArray(state.released);
+	state.appendedFaces = 0;
+}
+
+/**
+ * Inserts an already-owned SlotHole into the sorted hole list.
+ *
+ * Ownership is transferred to this function. It either stores the record in
+ * state.holes or returns it to the pool after merging it into another record.
+ */
+function insertOwnedSlotHole(state: SlotLayerState, hole: SlotHole): void {
+	const holes = state.holes;
+
+	let lo = 0;
+	let hi = holes.length;
+
+	while (lo < hi) {
+		const mid = (lo + hi) >>> 1;
+
+		if (holes[mid].offset < hole.offset) {
+			lo = mid + 1;
+		} else {
+			hi = mid;
+		}
+	}
+
+	// Prefer merging into the left record. If that merge bridges to the
+	// right record, merge all three regions without losing the right size.
+	if (lo > 0) {
+		const left = holes[lo - 1];
+
+		if (left.offset + left.faces === hole.offset) {
+			left.faces += hole.faces;
+			releaseSlotHole(hole);
+
+			if (lo < holes.length) {
+				const right = holes[lo];
+
+				if (left.offset + left.faces === right.offset) {
+					left.faces += right.faces;
+					holes.splice(lo, 1);
+					releaseSlotHole(right);
+				}
+			}
+
+			return;
+		}
+	}
+
+	// If only the right region is adjacent, extend it to the left.
+	if (lo < holes.length) {
+		const right = holes[lo];
+
+		if (hole.offset + hole.faces === right.offset) {
+			right.offset = hole.offset;
+			right.faces += hole.faces;
+			releaseSlotHole(hole);
+			return;
+		}
+	}
+
+	holes.splice(lo, 0, hole);
+}
+
+/**
+ * Writes the acquired slot into a caller-owned result.
+ *
+ * This avoids allocating `{ offset, faces }` for every slot acquisition.
+ */
+function acquireSlotInto(
+	state: SlotLayerState,
+	wantedFaces: number,
+	result: SlotResult,
+): void {
+	const holes = state.holes;
+
+	for (let i = 0; i < holes.length; i++) {
+		const hole = holes[i];
+
+		if (hole.faces < wantedFaces) continue;
+
+		result.offset = hole.offset;
+		result.faces = wantedFaces;
+
+		if (hole.faces === wantedFaces) {
+			holes.splice(i, 1);
+			releaseSlotHole(hole);
+		} else {
+			hole.offset += wantedFaces;
+			hole.faces -= wantedFaces;
+		}
+
+		return;
+	}
+
+	result.offset = state.appendedFaces;
+	result.faces = wantedFaces;
+	state.appendedFaces += wantedFaces;
+}
+
+/** Sum of free (hole) faces — the fragmentation metric for compaction. */
+function slotWasteFaces(st: SlotLayerState): number {
+	let sum = 0;
+	for (let i = 0; i < st.holes.length; i++) sum += st.holes[i].faces;
+	return sum;
+}
+
+// ---------------------------------------------------------------------------
+// Bounded Uint8Array pool
+// ---------------------------------------------------------------------------
+
+const MAX_POOLED_ARRAYS_PER_SIZE = 4;
+const MAX_POOLED_U8_BYTES = 32 * 1024 * 1024;
+
 const _uint8Pool = new Map<number, Uint8Array[]>();
+let _uint8PoolBytes = 0;
+
 function allocPooledU8(bytes: number): Uint8Array {
 	const list = _uint8Pool.get(bytes);
-	if (list && list.length > 0) return list.pop()!;
+
+	if (list && list.length > 0) {
+		const array = list.pop()!;
+		_uint8PoolBytes -= bytes;
+
+		if (list.length === 0) {
+			_uint8Pool.delete(bytes);
+		}
+
+		return array;
+	}
+
 	return new Uint8Array(bytes);
 }
-function releasePooledU8(arr: Uint8Array | null): void {
-	if (!arr || arr.byteLength === 0) return;
-	let list = _uint8Pool.get(arr.byteLength);
+
+function releasePooledU8(array: Uint8Array | null): void {
+	if (!array || array.byteLength === 0) return;
+
+	const bytes = array.byteLength;
+
+	// Do not let one large allocation consume most of the retained pool.
+	if (
+		bytes > MAX_POOLED_U8_BYTES >>> 1 ||
+		_uint8PoolBytes + bytes > MAX_POOLED_U8_BYTES
+	) {
+		return;
+	}
+
+	let list = _uint8Pool.get(bytes);
+
 	if (!list) {
 		list = [];
-		_uint8Pool.set(arr.byteLength, list);
+		_uint8Pool.set(bytes, list);
+	} else if (list.length >= MAX_POOLED_ARRAYS_PER_SIZE) {
+		return;
 	}
-	if (list.length < 32) {
-		// Keep zeroed for slot reuse correctness (stale quads would render)
-		arr.fill(0);
-		list.push(arr);
+
+	array.fill(0);
+	list.push(array);
+	_uint8PoolBytes += bytes;
+}
+
+// ---------------------------------------------------------------------------
+// Allocation-light copies
+// ---------------------------------------------------------------------------
+
+function copyFaceBytes(
+	destination: Uint8Array,
+	source: Uint8Array,
+	byteCount: number,
+	destinationByteOffset: number,
+): void {
+	if (source.byteLength === byteCount) {
+		destination.set(source, destinationByteOffset);
+		return;
+	}
+
+	// This malformed-data fallback avoids allocating source.subarray().
+	for (let i = 0; i < byteCount; i++) {
+		destination[destinationByteOffset + i] = source[i];
 	}
 }
+
+function copyPrefix(
+	destination: Uint8Array,
+	source: Uint8Array,
+	byteCount: number,
+): void {
+	if (source.byteLength === byteCount) {
+		destination.set(source);
+		return;
+	}
+
+	for (let i = 0; i < byteCount; i++) {
+		destination[i] = source[i];
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Slot sizing
+// ---------------------------------------------------------------------------
+
+function slotClassFor(count: number, maximumFaces: number): number {
+	let size = MIN_SLOT_FACES;
+
+	while (size < count) {
+		const next = size * 2;
+
+		if (next > maximumFaces) {
+			return maximumFaces;
+		}
+
+		size = next;
+	}
+
+	return size;
+}
+
+// ---------------------------------------------------------------------------
+// Range pool & dirty-range helpers
+// ---------------------------------------------------------------------------
+
+const _rangePool: MergedFaceRange[] = [];
 
 function acquireRange(start: number, count: number): MergedFaceRange {
 	const r = _rangePool.pop();
@@ -212,115 +477,8 @@ function markGroupDirty(group: MergedMeshGroup): void {
 }
 
 // ---------------------------------------------------------------------------
-// Stable-slot allocator
-//
-// PERF: rebuildGroupData used to pack members sequentially, so any member
-// whose face count changed shifted every LATER member's byte offset and broke
-// the copy-skip check â€” under streaming churn that recopied essentially the
-// whole group (3 layers Ã— all members) on every flush (~11% of a main-thread
-// profile during multiplayer chunk streaming). Slots pin each member to its
-// own power-of-two region: neighbor resizes never move it, so only genuinely
-// rewritten members are copied and uploaded via the dirty-range path.
+// Module-level state continued
 // ---------------------------------------------------------------------------
-
-const MIN_SLOT_FACES = 32;
-const COMPACT_MIN_WASTE_FACES = 1024;
-
-function slotClassFor(count: number): number {
-	let c = MIN_SLOT_FACES;
-	const cap = maxFacesPerArena();
-	while (c < count && c < cap) c <<= 1;
-	return c;
-}
-
-function newSlotLayerState(): SlotLayerState {
-	return { holes: [], released: [], appendedFaces: 0 };
-}
-
-/** Insert a hole keeping the list sorted by offset; merges adjacent regions. */
-function insertSlotHole(
-	st: SlotLayerState,
-	offset: number,
-	faces: number,
-): void {
-	const holes = st.holes;
-
-	let lo = 0;
-	let hi = holes.length;
-	while (lo < hi) {
-		const mid = (lo + hi) >>> 1;
-		if (holes[mid].offset < offset) lo = mid + 1;
-		else hi = mid;
-	}
-
-	holes.length += 1;
-	for (let j = holes.length - 1; j > lo; j--) holes[j] = holes[j - 1];
-	holes[lo] = { offset, faces };
-
-	// Merge right.
-	if (lo + 1 < holes.length && offset + faces === holes[lo + 1].offset) {
-		holes[lo].faces += holes[lo + 1].faces;
-		holes.splice(lo + 1, 1);
-	}
-	// Merge left.
-	if (lo > 0) {
-		const prev = holes[lo - 1];
-		if (prev.offset + prev.faces === offset) {
-			prev.faces += faces;
-			holes.splice(lo, 1);
-		}
-	}
-}
-
-/** First-fit hole reuse, else append at the layer's high-water mark. */
-function acquireSlot(
-	st: SlotLayerState,
-	wantFaces: number,
-): { offset: number; faces: number } {
-	const holes = st.holes;
-	for (let i = 0; i < holes.length; i++) {
-		if (holes[i].faces >= wantFaces) {
-			const offset = holes[i].offset;
-			const leftover = holes[i].faces - wantFaces;
-			if (leftover > 0) {
-				holes[i] = { offset: offset + wantFaces, faces: leftover };
-			} else {
-				holes.splice(i, 1);
-			}
-			return { offset, faces: wantFaces };
-		}
-	}
-
-	const offset = st.appendedFaces;
-	st.appendedFaces += wantFaces;
-	return { offset, faces: wantFaces };
-}
-
-/** Sum of free (hole) faces â€” the fragmentation metric for compaction. */
-function slotWasteFaces(st: SlotLayerState): number {
-	let sum = 0;
-	for (let i = 0; i < st.holes.length; i++) sum += st.holes[i].faces;
-	return sum;
-}
-
-let _requestFlush: (() => void) | null = null;
-
-export function setRequestFlush(cb: () => void): void {
-	_requestFlush = cb;
-}
-
-function copyFaceBytes(
-	dst: Uint8Array,
-	src: Uint8Array,
-	byteCount: number,
-	writeByte: number,
-): void {
-	if (src.length === byteCount) {
-		dst.set(src, writeByte);
-	} else {
-		dst.set(src.subarray(0, byteCount), writeByte);
-	}
-}
 
 const EMPTY_U12 = new Uint8Array(0);
 
@@ -379,6 +537,12 @@ function getLocalIndex(chunkX: number, chunkY: number, chunkZ: number): number {
 
 // Platform endianness check for SIMD bit-packing
 const IS_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+
+let _requestFlush: (() => void) | null = null;
+
+export function setRequestFlush(cb: () => void): void {
+	_requestFlush = cb;
+}
 
 // ---------------------------------------------------------------------------
 // Public: group lookup
@@ -523,30 +687,27 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 
 	const group = groups.get(groupKey);
 	chunk.mergedGroupKey = null;
+
 	if (!group) return;
 
-	// Release the departing member's slots: they move to the layer's
-	// `released` list so the next rebuild zero-fills + uploads those regions
-	// (stale quads must stop rendering) before the holes become reusable.
-	// Bookkeeping happens at rebuild time â€” this path runs on the hot
-	// unload/edit path and must stay allocation-light.
 	const member = group.members.get(chunk.numericId);
+
 	if (member) {
-		if (member.slotOpaqueFaces > 0)
-			group.opaqueSlots.released.push({
-				offset: member.slotOpaqueOffset,
-				faces: member.slotOpaqueFaces,
-			});
-		if (member.slotWaterFaces > 0)
-			group.waterSlots.released.push({
-				offset: member.slotWaterOffset,
-				faces: member.slotWaterFaces,
-			});
-		if (member.slotCutoutFaces > 0)
-			group.cutoutSlots.released.push({
-				offset: member.slotCutoutOffset,
-				faces: member.slotCutoutFaces,
-			});
+		pushReleasedSlot(
+			group.opaqueSlots,
+			member.slotOpaqueOffset,
+			member.slotOpaqueFaces,
+		);
+		pushReleasedSlot(
+			group.waterSlots,
+			member.slotWaterOffset,
+			member.slotWaterFaces,
+		);
+		pushReleasedSlot(
+			group.cutoutSlots,
+			member.slotCutoutOffset,
+			member.slotCutoutFaces,
+		);
 	}
 
 	group.members.delete(chunk.numericId);
@@ -554,45 +715,84 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 	if (group.members.size === 0) {
 		if (group.opaqueMeshRef) {
 			disposeGroupMesh(group.opaqueMeshRef);
-			group.opaqueMeshRef = null;
 		}
+
 		if (group.waterMeshRef) {
 			disposeGroupMesh(group.waterMeshRef);
-			group.waterMeshRef = null;
 		}
+
 		if (group.cutoutMeshRef) {
 			disposeGroupMesh(group.cutoutMeshRef);
-			group.cutoutMeshRef = null;
 		}
+
 		releasePooledU8(group.opaqueData);
 		releasePooledU8(group.waterData);
 		releasePooledU8(group.cutoutData);
-		group.opaqueData = null;
-		group.waterData = null;
-		group.cutoutData = null;
+
+		releaseSlotLayerState(group.opaqueSlots);
+		releaseSlotLayerState(group.waterSlots);
+		releaseSlotLayerState(group.cutoutSlots);
+
 		groups.delete(groupKey);
 		dirtyGroups.delete(group);
+
+		clearDiscardedGroup(group);
+
 		_groupsMutatedSinceSweep = true;
 		return;
 	}
 
-	const arr = group.membersArray;
-	let write = 0;
-	let minLod = Infinity;
+	const members = group.membersArray;
 	const removedId = chunk.numericId;
 
-	for (let i = 0, len = arr.length; i < len; i++) {
-		const m = arr[i];
-		if (m.chunkId === removedId) continue;
-		arr[write++] = m;
-		const lod = m.chunk.lodLevel ?? 0;
-		if (lod < minLod) minLod = lod;
+	let writeIndex = 0;
+	let minimumLod = Infinity;
+
+	for (let i = 0; i < members.length; i++) {
+		const current = members[i];
+
+		if (current.chunkId === removedId) continue;
+
+		members[writeIndex++] = current;
+
+		const lod = current.chunk.lodLevel ?? 0;
+
+		if (lod < minimumLod) {
+			minimumLod = lod;
+		}
 	}
 
-	arr.length = write;
-	group.minLodLevel = minLod;
+	members.length = writeIndex;
+	group.minLodLevel = minimumLod;
+
 	invalidateGroupBuildCache(group);
 	markGroupDirty(group);
+}
+function validateSettledSlotExtents(
+	group: MergedMeshGroup,
+	maximumFaces: number,
+): boolean {
+	const opaqueExtent = group.opaqueSlots.appendedFaces;
+	const waterExtent = group.waterSlots.appendedFaces;
+	const cutoutExtent = group.cutoutSlots.appendedFaces;
+
+	if (
+		opaqueExtent <= maximumFaces &&
+		waterExtent <= maximumFaces &&
+		cutoutExtent <= maximumFaces
+	) {
+		return true;
+	}
+
+	console.warn(
+		`[MergedMeshManager] group (${group.gridX}, ${group.gridY}, ` +
+			`${group.gridZ}) lod bucket ${group.lodBucket} exceeds the ` +
+			`per-mesh arena limit after slot padding ` +
+			`(opaque ${opaqueExtent}, water ${waterExtent}, ` +
+			`cutout ${cutoutExtent}, max ${maximumFaces} faces).`,
+	);
+
+	return false;
 }
 
 let _lastMergedFlushMs = 0;
@@ -601,8 +801,8 @@ let _mergedFlushCount = 0;
 
 // PERF instrumentation for the stable-slot layout: how many member copies the
 // skip-check avoided vs performed, and how many face bytes were marked dirty
-// for GPU upload. Healthy numbers: copies â‰ª membersÃ—layers during bursts,
-// dirtyBytes â‰ˆ actually-changed content (not whole-group rewrites).
+// for GPU upload. Healthy numbers: copies ≪ members×layers during bursts,
+// dirtyBytes ≈ actually-changed content (not whole-group rewrites).
 let _statMembersSeen = 0;
 let _statCopiesPerformed = 0;
 let _statDirtyFacesFlush = 0;
@@ -652,49 +852,83 @@ const _flushSnapshot: MergedMeshGroup[] = [];
 
 export function flushDirtyMergedGroups(maxBudgetMs = 5): void {
 	if (dirtyGroups.size === 0) return;
-	const start = performance.now();
-	const snapshot = _flushSnapshot;
-	snapshot.length = 0;
 
-	for (const group of dirtyGroups) snapshot.push(group);
-	dirtyGroups.clear();
+	const startedAt = performance.now();
+	const deadline =
+		maxBudgetMs > 0 ? startedAt + maxBudgetMs : Number.POSITIVE_INFINITY;
 
 	_statMembersSeen = 0;
 	_statCopiesPerformed = 0;
 	_statDirtyFacesFlush = 0;
 	_statWasteFacesMax = 0;
 
-	let i = 0;
+	let processedCount = 0;
 	let budgetExhausted = false;
 
-	for (; i < snapshot.length; i++) {
-		if (i !== 0 && performance.now() - start > maxBudgetMs) {
+	/*
+	 * Delete each group immediately before processing it rather than copying
+	 * the entire Set into _flushSnapshot and clearing it.
+	 *
+	 * This has two useful properties:
+	 * 1. No O(n) snapshot copy is required.
+	 * 2. If rebuildGroupData() or the callback dirties the group again,
+	 *    markGroupDirty() can safely add it back to dirtyGroups.
+	 */
+	for (const group of dirtyGroups) {
+		if (processedCount !== 0 && performance.now() >= deadline) {
 			budgetExhausted = true;
 			break;
 		}
-		const group = snapshot[i];
-		if (!group.dirty || groups.get(group.groupKey) !== group) continue;
+
+		dirtyGroups.delete(group);
+
+		/*
+		 * Ignore groups that were removed or superseded after being queued.
+		 * Checking Map identity also handles a newly created group that happens
+		 * to reuse the same numeric key.
+		 */
+		if (!group.dirty || groups.get(group.groupKey) !== group) {
+			continue;
+		}
+
 		rebuildGroupData(group);
-		_onGroupMeshNeedsRebuild?.(group);
+
+		/*
+		 * rebuildGroupData() can deliberately leave a group dirty when its
+		 * settled slot extent exceeds the arena limit. Requeue it only when a
+		 * custom scheduler exists, otherwise the zero-delay fallback would
+		 * create an unbounded retry loop with no state change.
+		 */
+		if (group.dirty) {
+			if (_requestFlush) {
+				dirtyGroups.add(group);
+			}
+		} else {
+			_onGroupMeshNeedsRebuild?.(group);
+		}
+
+		processedCount++;
 	}
 
-	if (budgetExhausted) {
-		for (; i < snapshot.length; i++) {
-			const group = snapshot[i];
-			if (group.dirty && groups.get(group.groupKey) === group)
-				dirtyGroups.add(group);
-		}
-		if (_requestFlush) _requestFlush();
-		else if (!_mergedFlushRafScheduled) {
+	/*
+	 * The Set already contains all unprocessed groups because entries are
+	 * removed only immediately before they are processed. It may additionally
+	 * contain groups dirtied during rebuild callbacks.
+	 */
+	if (dirtyGroups.size > 0) {
+		if (_requestFlush) {
+			_requestFlush();
+		} else if (budgetExhausted && !_mergedFlushRafScheduled) {
 			_mergedFlushRafScheduled = true;
+
 			setTimeout(() => {
 				_mergedFlushRafScheduled = false;
-				flushDirtyMergedGroups();
+				flushDirtyMergedGroups(maxBudgetMs);
 			}, 0);
 		}
 	}
 
-	const elapsed = performance.now() - start;
+	const elapsed = performance.now() - startedAt;
 	_lastMergedFlushMs = elapsed;
 	_mergedFlushTotalMs += elapsed;
 	_mergedFlushCount++;
@@ -706,32 +940,49 @@ export function disposeAll(): void {
 			disposeGroupMesh(group.opaqueMeshRef);
 			group.opaqueMeshRef = null;
 		}
+
 		if (group.waterMeshRef) {
 			disposeGroupMesh(group.waterMeshRef);
 			group.waterMeshRef = null;
 		}
+
 		if (group.cutoutMeshRef) {
 			disposeGroupMesh(group.cutoutMeshRef);
 			group.cutoutMeshRef = null;
 		}
+
 		releasePooledU8(group.opaqueData);
 		releasePooledU8(group.waterData);
 		releasePooledU8(group.cutoutData);
-		group.cachedOpaque = group.cachedWater = group.cachedCutout = null;
+
+		releaseSlotLayerState(group.opaqueSlots);
+		releaseSlotLayerState(group.waterSlots);
+		releaseSlotLayerState(group.cutoutSlots);
+
+		group.cachedOpaque = null;
+		group.cachedWater = null;
+		group.cachedCutout = null;
+
+		group.opaqueVertexData = null;
+		group.waterVertexData = null;
+		group.cutoutVertexData = null;
+
 		group.opaqueData = null;
-		group.opaqueCapacityFaces = 0;
 		group.waterData = null;
-		group.waterCapacityFaces = 0;
 		group.cutoutData = null;
+
+		group.opaqueCapacityFaces = 0;
+		group.waterCapacityFaces = 0;
 		group.cutoutCapacityFaces = 0;
-		group.opaqueSlots = newSlotLayerState();
-		group.waterSlots = newSlotLayerState();
-		group.cutoutSlots = newSlotLayerState();
+
 		group.members.clear();
 		group.membersArray.length = 0;
 	}
+
 	groups.clear();
 	dirtyGroups.clear();
+	_flushSnapshot.length = 0;
+	_allGroupsReuse.length = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -741,67 +992,82 @@ export function disposeAll(): void {
 // Growth now WHOLESALE-COPIES the old buffers (`.set`) instead of handing back
 // fresh zeroed arrays: slot contents stay valid, so no member invalidation and
 // no mass recopy on the next pass. The geometric slack above the slot extent
-// is harmless â€” vertex data is exposed as a subarray limited to the slot
+// is harmless — vertex data is exposed as a subarray limited to the slot
 // extent, so the mesh's face count only changes when slots are acquired.
 
 function ensureOpaqueMergedCapacity(
 	group: MergedMeshGroup,
 	faceCount: number,
+	maximumFaces: number,
 ): void {
 	let capacity = group.opaqueCapacityFaces;
-	if (capacity < faceCount) {
-		const maxFaces = maxFacesPerArena();
-		capacity = Math.min(Math.max(faceCount, capacity << 1, 256), maxFaces);
-		group.opaqueCapacityFaces = capacity;
-		const bytes = capacity * 12;
-		const data = allocPooledU8(bytes);
-		const old = group.opaqueData;
-		if (old) {
-			data.set(old.subarray(0, Math.min(old.length, bytes)));
-			releasePooledU8(old);
-		}
-		group.opaqueData = data;
+	if (capacity >= faceCount) return;
+
+	capacity = Math.min(
+		Math.max(faceCount, capacity > 0 ? capacity * 2 : 0, 256),
+		maximumFaces,
+	);
+
+	const next = allocPooledU8(capacity * FACE_BYTES);
+	const previous = group.opaqueData;
+
+	if (previous) {
+		next.set(previous);
+		releasePooledU8(previous);
 	}
+
+	group.opaqueData = next;
+	group.opaqueCapacityFaces = capacity;
 }
 
 function ensureWaterMergedCapacity(
 	group: MergedMeshGroup,
 	faceCount: number,
+	maximumFaces: number,
 ): void {
 	let capacity = group.waterCapacityFaces;
-	if (capacity < faceCount) {
-		const maxFaces = maxFacesPerArena();
-		capacity = Math.min(Math.max(faceCount, capacity << 1, 256), maxFaces);
-		group.waterCapacityFaces = capacity;
-		const bytes = capacity * 12;
-		const data = allocPooledU8(bytes);
-		const old = group.waterData;
-		if (old) {
-			data.set(old.subarray(0, Math.min(old.length, bytes)));
-			releasePooledU8(old);
-		}
-		group.waterData = data;
+	if (capacity >= faceCount) return;
+
+	capacity = Math.min(
+		Math.max(faceCount, capacity > 0 ? capacity * 2 : 0, 256),
+		maximumFaces,
+	);
+
+	const next = allocPooledU8(capacity * FACE_BYTES);
+	const previous = group.waterData;
+
+	if (previous) {
+		next.set(previous);
+		releasePooledU8(previous);
 	}
+
+	group.waterData = next;
+	group.waterCapacityFaces = capacity;
 }
 
 function ensureCutoutMergedCapacity(
 	group: MergedMeshGroup,
 	faceCount: number,
+	maximumFaces: number,
 ): void {
 	let capacity = group.cutoutCapacityFaces;
-	if (capacity < faceCount) {
-		const maxFaces = maxFacesPerArena();
-		capacity = Math.min(Math.max(faceCount, capacity << 1, 256), maxFaces);
-		group.cutoutCapacityFaces = capacity;
-		const bytes = capacity * 12;
-		const data = allocPooledU8(bytes);
-		const old = group.cutoutData;
-		if (old) {
-			data.set(old.subarray(0, Math.min(old.length, bytes)));
-			releasePooledU8(old);
-		}
-		group.cutoutData = data;
+	if (capacity >= faceCount) return;
+
+	capacity = Math.min(
+		Math.max(faceCount, capacity > 0 ? capacity * 2 : 0, 256),
+		maximumFaces,
+	);
+
+	const next = allocPooledU8(capacity * FACE_BYTES);
+	const previous = group.cutoutData;
+
+	if (previous) {
+		next.set(previous);
+		releasePooledU8(previous);
 	}
+
+	group.cutoutData = next;
+	group.cutoutCapacityFaces = capacity;
 }
 
 // Engine optimization: Inlined Meshkind enum switch to reduce branching in the hot path
@@ -825,130 +1091,174 @@ function getValidatedFaceCount(
 }
 
 // ---------------------------------------------------------------------------
-// Hysteresis shrink for a merged layer's backing arrays.
-//
-// Layer arrays grow by doubling (ensure*MergedCapacity) and used to never
-// release: after a streaming spike or LOD swap every group kept its peak
-// allocation forever — 3 arrays × capacity×4 B per layer, ×3 layers. When the
-// settled slot extent falls to a quarter of capacity, reallocate at
-// max(256, extent*2) faces and wholesale-copy the live prefix [0, extent).
-// Slot offsets are stable and fully contained in the prefix, so member
-// lastBuilt* bookkeeping stays valid without invalidation; only the group's
-// own array identity changes, and the vertex-data views are re-sliced right
-// after this runs in rebuildGroupData.
-//
-// Thresholds: never touch groups below 2048-face capacity (8 KiB/array — the
-// copy churn isn't worth it), and the *4 hysteresis vs *2 regrowth slack
-// prevents grow/shrink oscillation.
+// Allocation-light shrinking
 // ---------------------------------------------------------------------------
 
-const LAYER_SHRINK_MIN_CAPACITY_FACES = 2048;
-
-function shrinkLayer(
-	data: Uint8Array | null,
-	capacityFaces: number,
+function shrinkGroupLayer(
+	group: MergedMeshGroup,
+	kind: 0 | 1 | 2,
 	extentFaces: number,
-): { data: Uint8Array; cap: number } | null {
+): void {
+	let data: Uint8Array | null;
+	let capacityFaces: number;
+
+	if (kind === 0) {
+		data = group.opaqueData;
+		capacityFaces = group.opaqueCapacityFaces;
+	} else if (kind === 1) {
+		data = group.waterData;
+		capacityFaces = group.waterCapacityFaces;
+	} else {
+		data = group.cutoutData;
+		capacityFaces = group.cutoutCapacityFaces;
+	}
+
 	if (
 		!data ||
 		capacityFaces < LAYER_SHRINK_MIN_CAPACITY_FACES ||
 		extentFaces > capacityFaces ||
 		extentFaces * 4 > capacityFaces
 	) {
-		return null;
+		return;
 	}
-	const newCap = Math.max(256, Math.min(extentFaces << 1, capacityFaces));
-	if (newCap >= capacityFaces) return null;
-	const bytes = newCap * 12;
-	// data.length == oldCapacity*12 >= bytes: the live prefix always fits.
-	const n = allocPooledU8(bytes);
-	n.set(data.subarray(0, bytes));
+
+	const newCapacity = Math.max(256, Math.min(extentFaces * 2, capacityFaces));
+
+	if (newCapacity >= capacityFaces) return;
+
+	const byteLength = newCapacity * FACE_BYTES;
+	const next = allocPooledU8(byteLength);
+
+	copyPrefix(next, data, byteLength);
 	releasePooledU8(data);
-	return { data: n, cap: newCap };
+
+	if (kind === 0) {
+		group.opaqueData = next;
+		group.opaqueCapacityFaces = newCapacity;
+	} else if (kind === 1) {
+		group.waterData = next;
+		group.waterCapacityFaces = newCapacity;
+	} else {
+		group.cutoutData = next;
+		group.cutoutCapacityFaces = newCapacity;
+	}
 }
 
 function maybeShrinkGroupLayers(group: MergedMeshGroup): void {
-	const op = shrinkLayer(
-		group.opaqueData,
-		group.opaqueCapacityFaces,
-		group.opaqueSlots.appendedFaces,
-	);
-	if (op) {
-		group.opaqueData = op.data;
-		group.opaqueCapacityFaces = op.cap;
+	shrinkGroupLayer(group, 0, group.opaqueSlots.appendedFaces);
+	shrinkGroupLayer(group, 1, group.waterSlots.appendedFaces);
+	shrinkGroupLayer(group, 2, group.cutoutSlots.appendedFaces);
+}
+
+// ---------------------------------------------------------------------------
+// Vertex-data view reuse
+// ---------------------------------------------------------------------------
+
+function exposeLayerData(
+	vertexData: MergedVertexData | null,
+	backing: Uint8Array,
+	faceCount: number,
+): MergedVertexData {
+	const byteLength = faceCount * FACE_BYTES;
+
+	if (!vertexData) {
+		return {
+			faceData: backing.subarray(0, byteLength),
+			faceCount,
+		};
 	}
 
-	const wa = shrinkLayer(
-		group.waterData,
-		group.waterCapacityFaces,
-		group.waterSlots.appendedFaces,
-	);
-	if (wa) {
-		group.waterData = wa.data;
-		group.waterCapacityFaces = wa.cap;
+	const current = vertexData.faceData;
+
+	if (
+		current.buffer !== backing.buffer ||
+		current.byteOffset !== backing.byteOffset ||
+		current.byteLength !== byteLength
+	) {
+		vertexData.faceData = backing.subarray(0, byteLength);
 	}
 
-	const cu = shrinkLayer(
-		group.cutoutData,
-		group.cutoutCapacityFaces,
-		group.cutoutSlots.appendedFaces,
-	);
-	if (cu) {
-		group.cutoutData = cu.data;
-		group.cutoutCapacityFaces = cu.cap;
-	}
+	vertexData.faceCount = faceCount;
+	return vertexData;
+}
+
+// ---------------------------------------------------------------------------
+// Rebuild
+// ---------------------------------------------------------------------------
+
+function newSlotLayerState(): SlotLayerState {
+	return { holes: [], released: [], appendedFaces: 0 };
 }
 
 function rebuildGroupData(group: MergedMeshGroup): void {
 	const members = group.membersArray;
 	const memberCount = members.length;
+
 	_statMembersSeen += memberCount;
 
-	const prevOpaqueRanges = group.dirtyOpaqueRanges;
-	if (prevOpaqueRanges)
-		for (let i = 0, len = prevOpaqueRanges.length; i < len; i++)
-			_rangePool.push(prevOpaqueRanges[i]);
-	const prevWaterRanges = group.dirtyWaterRanges;
-	if (prevWaterRanges)
-		for (let i = 0, len = prevWaterRanges.length; i < len; i++)
-			_rangePool.push(prevWaterRanges[i]);
-	const prevCutoutRanges = group.dirtyCutoutRanges;
-	if (prevCutoutRanges)
-		for (let i = 0, len = prevCutoutRanges.length; i < len; i++)
-			_rangePool.push(prevCutoutRanges[i]);
+	let opaqueRanges = group.dirtyOpaqueRanges;
 
-	group.dirtyOpaqueRanges ??= [];
-	const opaqueRanges = group.dirtyOpaqueRanges;
-	opaqueRanges.length = 0;
-	group.dirtyWaterRanges ??= [];
-	const waterRanges = group.dirtyWaterRanges;
-	waterRanges.length = 0;
-	group.dirtyCutoutRanges ??= [];
-	const cutoutRanges = group.dirtyCutoutRanges;
-	cutoutRanges.length = 0;
+	if (opaqueRanges) {
+		for (let i = 0; i < opaqueRanges.length; i++) {
+			_rangePool.push(opaqueRanges[i]);
+		}
 
-	let totalOpaque = 0,
-		totalWater = 0,
-		totalCutout = 0;
+		opaqueRanges.length = 0;
+	} else {
+		opaqueRanges = [];
+		group.dirtyOpaqueRanges = opaqueRanges;
+	}
+
+	let waterRanges = group.dirtyWaterRanges;
+
+	if (waterRanges) {
+		for (let i = 0; i < waterRanges.length; i++) {
+			_rangePool.push(waterRanges[i]);
+		}
+
+		waterRanges.length = 0;
+	} else {
+		waterRanges = [];
+		group.dirtyWaterRanges = waterRanges;
+	}
+
+	let cutoutRanges = group.dirtyCutoutRanges;
+
+	if (cutoutRanges) {
+		for (let i = 0; i < cutoutRanges.length; i++) {
+			_rangePool.push(cutoutRanges[i]);
+		}
+
+		cutoutRanges.length = 0;
+	} else {
+		cutoutRanges = [];
+		group.dirtyCutoutRanges = cutoutRanges;
+	}
+
+	let totalOpaque = 0;
+	let totalWater = 0;
+	let totalCutout = 0;
 
 	for (let i = 0; i < memberCount; i++) {
-		const m = members[i];
+		const member = members[i];
+		const lod = member.chunk.lodLevel ?? 0;
+
 		const opaqueCount = getValidatedFaceCount(
-			m.opaqueData,
-			m.chunkId,
-			m.chunk.lodLevel ?? 0,
+			member.opaqueData,
+			member.chunkId,
+			lod,
 			"opaque",
 		);
 		const waterCount = getValidatedFaceCount(
-			m.waterData,
-			m.chunkId,
-			m.chunk.lodLevel ?? 0,
+			member.waterData,
+			member.chunkId,
+			lod,
 			"water",
 		);
 		const cutoutCount = getValidatedFaceCount(
-			m.cutoutData,
-			m.chunkId,
-			m.chunk.lodLevel ?? 0,
+			member.cutoutData,
+			member.chunkId,
+			lod,
 			"cutout",
 		);
 
@@ -965,395 +1275,531 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	group.totalWaterFaces = totalWater;
 	group.totalCutoutFaces = totalCutout;
 
-	const opSt = group.opaqueSlots;
-	const waSt = group.waterSlots;
-	const cuSt = group.cutoutSlots;
+	const opaqueState = group.opaqueSlots;
+	const waterState = group.waterSlots;
+	const cutoutState = group.cutoutSlots;
+	const maximumFaces = maxFacesPerArena();
 
-	const maxGroupFaces = maxFacesPerArena();
 	if (
-		totalOpaque > maxGroupFaces ||
-		totalWater > maxGroupFaces ||
-		totalCutout > maxGroupFaces ||
-		opSt.appendedFaces > maxGroupFaces ||
-		waSt.appendedFaces > maxGroupFaces ||
-		cuSt.appendedFaces > maxGroupFaces
+		totalOpaque > maximumFaces ||
+		totalWater > maximumFaces ||
+		totalCutout > maximumFaces ||
+		opaqueState.appendedFaces > maximumFaces ||
+		waterState.appendedFaces > maximumFaces ||
+		cutoutState.appendedFaces > maximumFaces
 	) {
 		console.warn(
-			`[MergedMeshManager] group (${group.gridX}, ${group.gridY}, ${group.gridZ}) lod bucket ${group.lodBucket} exceeds the per-mesh arena limit (opaque ${totalOpaque}/${opSt.appendedFaces}, water ${totalWater}/${waSt.appendedFaces}, cutout ${totalCutout}/${cuSt.appendedFaces}, max ${maxGroupFaces} faces) â€” mesh rebuild skipped.`,
+			`[MergedMeshManager] group (${group.gridX}, ${group.gridY}, ` +
+				`${group.gridZ}) lod bucket ${group.lodBucket} exceeds the ` +
+				`per-mesh arena limit (opaque ${totalOpaque}/` +
+				`${opaqueState.appendedFaces}, water ${totalWater}/` +
+				`${waterState.appendedFaces}, cutout ${totalCutout}/` +
+				`${cutoutState.appendedFaces}, max ${maximumFaces} faces).`,
 		);
+
 		group.dirty = false;
 		return;
 	}
 
-	// -----------------------------------------------------------------------
-	// SLOT LAYOUT PASS (per layer): settle each member's stable slot before
-	// any copying. Neighbor resizes can no longer shift a member's offset,
-	// which is what makes the copy-skip checks below effective.
-	// -----------------------------------------------------------------------
+	const opaqueWaste = slotWasteFaces(opaqueState);
+	const waterWaste = slotWasteFaces(waterState);
+	const cutoutWaste = slotWasteFaces(cutoutState);
+	const totalWaste = opaqueWaste + waterWaste + cutoutWaste;
 
-	{
-		const w =
-			slotWasteFaces(opSt) + slotWasteFaces(waSt) + slotWasteFaces(cuSt);
-		if (w > _statWasteFacesMax) _statWasteFacesMax = w;
+	if (totalWaste > _statWasteFacesMax) {
+		_statWasteFacesMax = totalWaste;
 	}
 
-	// CORRECTNESS: structural slot events (extent growth into fresh arena
-	// tail, hole recycling, compaction) invalidate GPU bytes that dirty-range
-	// uploads from member copies alone do NOT cover — the arena block beyond
-	// a mesh's previous face count holds whatever the previous occupant left
-	// there. When any layer is structurally touched this flush, its ENTIRE
-	// extent is re-uploaded once instead of relying on per-copy ranges.
-	const prevOpAppended = opSt.appendedFaces;
-	const prevWaAppended = waSt.appendedFaces;
-	const prevCuAppended = cuSt.appendedFaces;
-	let opStructChanged = false;
-	let waStructChanged = false;
-	let cuStructChanged = false;
+	const previousOpaqueExtent = opaqueState.appendedFaces;
+	const previousWaterExtent = waterState.appendedFaces;
+	const previousCutoutExtent = cutoutState.appendedFaces;
 
-	// Compaction: when holes dominate a layer's extent, relayout it
-	// contiguously once instead of carrying dead regions indefinitely.
+	let opaqueStructuralChange = false;
+	let waterStructuralChange = false;
+	let cutoutStructuralChange = false;
+
 	if (
-		opSt.appendedFaces > 0 &&
-		slotWasteFaces(opSt) > COMPACT_MIN_WASTE_FACES &&
-		slotWasteFaces(opSt) * 2 > opSt.appendedFaces
+		opaqueState.appendedFaces > 0 &&
+		opaqueWaste > COMPACT_MIN_WASTE_FACES &&
+		opaqueWaste * 2 > opaqueState.appendedFaces
 	) {
-		opSt.holes.length = 0;
-		opSt.released.length = 0;
-		opSt.appendedFaces = 0;
-		opStructChanged = true;
-		// Re-acquired slot padding must be guaranteed-zero: wipe the layer so
-		// stale bytes from the discarded layout can't resurface as quads.
+		clearSlotHoleArray(opaqueState.holes);
+		clearSlotHoleArray(opaqueState.released);
+		opaqueState.appendedFaces = 0;
+		opaqueStructuralChange = true;
+
 		group.opaqueData?.fill(0);
+
 		for (let i = 0; i < memberCount; i++) {
-			members[i].slotOpaqueOffset = 0;
-			members[i].slotOpaqueFaces = 0;
-			members[i].lastBuiltOpaque = null;
-			members[i].lastBuiltOpaqueOffset = -1;
+			const member = members[i];
+
+			member.slotOpaqueOffset = 0;
+			member.slotOpaqueFaces = 0;
+			member.lastBuiltOpaque = null;
+			member.lastBuiltOpaqueOffset = -1;
 		}
 	}
+
 	if (
-		waSt.appendedFaces > 0 &&
-		slotWasteFaces(waSt) > COMPACT_MIN_WASTE_FACES &&
-		slotWasteFaces(waSt) * 2 > waSt.appendedFaces
+		waterState.appendedFaces > 0 &&
+		waterWaste > COMPACT_MIN_WASTE_FACES &&
+		waterWaste * 2 > waterState.appendedFaces
 	) {
-		waSt.holes.length = 0;
-		waSt.released.length = 0;
-		waSt.appendedFaces = 0;
-		waStructChanged = true;
+		clearSlotHoleArray(waterState.holes);
+		clearSlotHoleArray(waterState.released);
+		waterState.appendedFaces = 0;
+		waterStructuralChange = true;
+
 		group.waterData?.fill(0);
+
 		for (let i = 0; i < memberCount; i++) {
-			members[i].slotWaterOffset = 0;
-			members[i].slotWaterFaces = 0;
-			members[i].lastBuiltWater = null;
-			members[i].lastBuiltWaterOffset = -1;
+			const member = members[i];
+
+			member.slotWaterOffset = 0;
+			member.slotWaterFaces = 0;
+			member.lastBuiltWater = null;
+			member.lastBuiltWaterOffset = -1;
 		}
 	}
+
 	if (
-		cuSt.appendedFaces > 0 &&
-		slotWasteFaces(cuSt) > COMPACT_MIN_WASTE_FACES &&
-		slotWasteFaces(cuSt) * 2 > cuSt.appendedFaces
+		cutoutState.appendedFaces > 0 &&
+		cutoutWaste > COMPACT_MIN_WASTE_FACES &&
+		cutoutWaste * 2 > cutoutState.appendedFaces
 	) {
-		cuSt.holes.length = 0;
-		cuSt.released.length = 0;
-		cuSt.appendedFaces = 0;
-		cuStructChanged = true;
+		clearSlotHoleArray(cutoutState.holes);
+		clearSlotHoleArray(cutoutState.released);
+		cutoutState.appendedFaces = 0;
+		cutoutStructuralChange = true;
+
 		group.cutoutData?.fill(0);
+
 		for (let i = 0; i < memberCount; i++) {
-			members[i].slotCutoutOffset = 0;
-			members[i].slotCutoutFaces = 0;
-			members[i].lastBuiltCutout = null;
-			members[i].lastBuiltCutoutOffset = -1;
+			const member = members[i];
+
+			member.slotCutoutOffset = 0;
+			member.slotCutoutFaces = 0;
+			member.lastBuiltCutout = null;
+			member.lastBuiltCutoutOffset = -1;
 		}
 	}
 
 	for (let i = 0; i < memberCount; i++) {
-		const m = members[i];
+		const member = members[i];
 
-		const oc = _opaqueFaceCounts[i];
-		let osOff = m.slotOpaqueOffset;
-		let osFaces = m.slotOpaqueFaces;
-		if (oc === 0) {
-			if (osFaces > 0) {
-				opSt.released.push({ offset: osOff, faces: osFaces });
-				osOff = 0;
-				osFaces = 0;
-				m.lastBuiltOpaque = null;
-				m.lastBuiltOpaqueOffset = -1;
+		const opaqueCount = _opaqueFaceCounts[i];
+
+		if (opaqueCount === 0) {
+			if (member.slotOpaqueFaces > 0) {
+				pushReleasedSlot(
+					opaqueState,
+					member.slotOpaqueOffset,
+					member.slotOpaqueFaces,
+				);
+
+				member.slotOpaqueOffset = 0;
+				member.slotOpaqueFaces = 0;
+				member.lastBuiltOpaque = null;
+				member.lastBuiltOpaqueOffset = -1;
 			}
 		} else {
-			const want = slotClassFor(oc);
-			if (osFaces !== want) {
-				if (osFaces > 0) opSt.released.push({ offset: osOff, faces: osFaces });
-				const s = acquireSlot(opSt, want);
-				osOff = s.offset;
-				osFaces = s.faces;
-				m.lastBuiltOpaque = null;
-				m.lastBuiltOpaqueOffset = -1;
+			const wantedFaces = slotClassFor(opaqueCount, maximumFaces);
+
+			if (member.slotOpaqueFaces !== wantedFaces) {
+				pushReleasedSlot(
+					opaqueState,
+					member.slotOpaqueOffset,
+					member.slotOpaqueFaces,
+				);
+
+				acquireSlotInto(opaqueState, wantedFaces, _slotResult);
+
+				member.slotOpaqueOffset = _slotResult.offset;
+				member.slotOpaqueFaces = _slotResult.faces;
+				member.lastBuiltOpaque = null;
+				member.lastBuiltOpaqueOffset = -1;
 			}
 		}
-		m.slotOpaqueOffset = osOff;
-		m.slotOpaqueFaces = osFaces;
 
-		const wc = _waterFaceCounts[i];
-		let wsOff = m.slotWaterOffset;
-		let wsFaces = m.slotWaterFaces;
-		if (wc === 0) {
-			if (wsFaces > 0) {
-				waSt.released.push({ offset: wsOff, faces: wsFaces });
-				wsOff = 0;
-				wsFaces = 0;
-				m.lastBuiltWater = null;
-				m.lastBuiltWaterOffset = -1;
+		const waterCount = _waterFaceCounts[i];
+
+		if (waterCount === 0) {
+			if (member.slotWaterFaces > 0) {
+				pushReleasedSlot(
+					waterState,
+					member.slotWaterOffset,
+					member.slotWaterFaces,
+				);
+
+				member.slotWaterOffset = 0;
+				member.slotWaterFaces = 0;
+				member.lastBuiltWater = null;
+				member.lastBuiltWaterOffset = -1;
 			}
 		} else {
-			const want = slotClassFor(wc);
-			if (wsFaces !== want) {
-				if (wsFaces > 0) waSt.released.push({ offset: wsOff, faces: wsFaces });
-				const s = acquireSlot(waSt, want);
-				wsOff = s.offset;
-				wsFaces = s.faces;
-				m.lastBuiltWater = null;
-				m.lastBuiltWaterOffset = -1;
+			const wantedFaces = slotClassFor(waterCount, maximumFaces);
+
+			if (member.slotWaterFaces !== wantedFaces) {
+				pushReleasedSlot(
+					waterState,
+					member.slotWaterOffset,
+					member.slotWaterFaces,
+				);
+
+				acquireSlotInto(waterState, wantedFaces, _slotResult);
+
+				member.slotWaterOffset = _slotResult.offset;
+				member.slotWaterFaces = _slotResult.faces;
+				member.lastBuiltWater = null;
+				member.lastBuiltWaterOffset = -1;
 			}
 		}
-		m.slotWaterOffset = wsOff;
-		m.slotWaterFaces = wsFaces;
 
-		const cc = _cutoutFaceCounts[i];
-		let csOff = m.slotCutoutOffset;
-		let csFaces = m.slotCutoutFaces;
-		if (cc === 0) {
-			if (csFaces > 0) {
-				cuSt.released.push({ offset: csOff, faces: csFaces });
-				csOff = 0;
-				csFaces = 0;
-				m.lastBuiltCutout = null;
-				m.lastBuiltCutoutOffset = -1;
+		const cutoutCount = _cutoutFaceCounts[i];
+
+		if (cutoutCount === 0) {
+			if (member.slotCutoutFaces > 0) {
+				pushReleasedSlot(
+					cutoutState,
+					member.slotCutoutOffset,
+					member.slotCutoutFaces,
+				);
+
+				member.slotCutoutOffset = 0;
+				member.slotCutoutFaces = 0;
+				member.lastBuiltCutout = null;
+				member.lastBuiltCutoutOffset = -1;
 			}
 		} else {
-			const want = slotClassFor(cc);
-			if (csFaces !== want) {
-				if (csFaces > 0) cuSt.released.push({ offset: csOff, faces: csFaces });
-				const s = acquireSlot(cuSt, want);
-				csOff = s.offset;
-				csFaces = s.faces;
-				m.lastBuiltCutout = null;
-				m.lastBuiltCutoutOffset = -1;
+			const wantedFaces = slotClassFor(cutoutCount, maximumFaces);
+
+			if (member.slotCutoutFaces !== wantedFaces) {
+				pushReleasedSlot(
+					cutoutState,
+					member.slotCutoutOffset,
+					member.slotCutoutFaces,
+				);
+
+				acquireSlotInto(cutoutState, wantedFaces, _slotResult);
+
+				member.slotCutoutOffset = _slotResult.offset;
+				member.slotCutoutFaces = _slotResult.faces;
+				member.lastBuiltCutout = null;
+				member.lastBuiltCutoutOffset = -1;
 			}
 		}
-		m.slotCutoutOffset = csOff;
-		m.slotCutoutFaces = csFaces;
 	}
 
-	// Grow backing buffers to cover each layer's new slot extent (wholesale
-	// copy — contents stay valid), then drain pending releases: zero-fill the
-	// region so its stale quads stop rendering, and recycle it into the hole
-	// list. Any release or extent change marks the layer structural → one
-	// full-extent upload below covers every gap member ranges would miss.
-	if (opSt.appendedFaces > 0)
-		ensureOpaqueMergedCapacity(group, opSt.appendedFaces);
-	else group.cachedOpaque = null;
-	if (opSt.released.length > 0 || opSt.appendedFaces !== prevOpAppended)
-		opStructChanged = true;
-	while (opSt.released.length > 0 && group.opaqueData) {
-		const r = opSt.released.pop()!;
-		const b12 = r.offset * 12;
-		const n12 = r.faces * 12;
-		group.opaqueData.fill(0, b12, b12 + n12);
-		insertSlotHole(opSt, r.offset, r.faces);
+	/*
+	 * This check must happen after slot acquisition because padding, not just
+	 * actual face totals, determines backing-array size.
+	 */
+	if (!validateSettledSlotExtents(group, maximumFaces)) {
+		/*
+		 * Keep the group dirty so a higher-level fallback or arena resizing
+		 * policy can retry it. Marking it clean here would silently freeze the
+		 * previous mesh contents.
+		 */
+		group.dirty = true;
+		return;
 	}
 
-	if (waSt.appendedFaces > 0)
-		ensureWaterMergedCapacity(group, waSt.appendedFaces);
-	else group.cachedWater = null;
-	if (waSt.released.length > 0 || waSt.appendedFaces !== prevWaAppended)
-		waStructChanged = true;
-	while (waSt.released.length > 0 && group.waterData) {
-		const r = waSt.released.pop()!;
-		const b12 = r.offset * 12;
-		const n12 = r.faces * 12;
-		group.waterData.fill(0, b12, b12 + n12);
-		insertSlotHole(waSt, r.offset, r.faces);
+	if (opaqueState.appendedFaces > 0) {
+		ensureOpaqueMergedCapacity(group, opaqueState.appendedFaces, maximumFaces);
+	} else {
+		group.cachedOpaque = null;
 	}
 
-	if (cuSt.appendedFaces > 0)
-		ensureCutoutMergedCapacity(group, cuSt.appendedFaces);
-	else group.cachedCutout = null;
-	if (cuSt.released.length > 0 || cuSt.appendedFaces !== prevCuAppended)
-		cuStructChanged = true;
-	while (cuSt.released.length > 0 && group.cutoutData) {
-		const r = cuSt.released.pop()!;
-		const b12 = r.offset * 12;
-		const n12 = r.faces * 12;
-		group.cutoutData.fill(0, b12, b12 + n12);
-		insertSlotHole(cuSt, r.offset, r.faces);
+	if (
+		opaqueState.released.length > 0 ||
+		opaqueState.appendedFaces !== previousOpaqueExtent
+	) {
+		opaqueStructuralChange = true;
+	}
+
+	while (opaqueState.released.length > 0 && group.opaqueData) {
+		const released = opaqueState.released.pop()!;
+		const begin = released.offset * FACE_BYTES;
+		const end = begin + released.faces * FACE_BYTES;
+
+		group.opaqueData.fill(0, begin, end);
+		insertOwnedSlotHole(opaqueState, released);
+	}
+
+	if (waterState.appendedFaces > 0) {
+		ensureWaterMergedCapacity(group, waterState.appendedFaces, maximumFaces);
+	} else {
+		group.cachedWater = null;
+	}
+
+	if (
+		waterState.released.length > 0 ||
+		waterState.appendedFaces !== previousWaterExtent
+	) {
+		waterStructuralChange = true;
+	}
+
+	while (waterState.released.length > 0 && group.waterData) {
+		const released = waterState.released.pop()!;
+		const begin = released.offset * FACE_BYTES;
+		const end = begin + released.faces * FACE_BYTES;
+
+		group.waterData.fill(0, begin, end);
+		insertOwnedSlotHole(waterState, released);
+	}
+
+	if (cutoutState.appendedFaces > 0) {
+		ensureCutoutMergedCapacity(group, cutoutState.appendedFaces, maximumFaces);
+	} else {
+		group.cachedCutout = null;
+	}
+
+	if (
+		cutoutState.released.length > 0 ||
+		cutoutState.appendedFaces !== previousCutoutExtent
+	) {
+		cutoutStructuralChange = true;
+	}
+
+	while (cutoutState.released.length > 0 && group.cutoutData) {
+		const released = cutoutState.released.pop()!;
+		const begin = released.offset * FACE_BYTES;
+		const end = begin + released.faces * FACE_BYTES;
+
+		group.cutoutData.fill(0, begin, end);
+		insertOwnedSlotHole(cutoutState, released);
 	}
 
 	const opaqueData = group.opaqueData;
 	const waterData = group.waterData;
 	const cutoutData = group.cutoutData;
 
-	// PERF: one u32 view per layer, created lazily on the first member whose
-	// chunk index needs stamping and reused for every subsequent member. The
-	// old code allocated a fresh Uint32Array view per member per layer.
 	let opaqueWords: Uint32Array | null = null;
 	let waterWords: Uint32Array | null = null;
 	let cutoutWords: Uint32Array | null = null;
 
 	for (let i = 0; i < memberCount; i++) {
-		const m = members[i];
+		const member = members[i];
+		const chunkIndex = member.localIndex;
+		const chunkMask = IS_LITTLE_ENDIAN ? chunkIndex * 0x1000000 : chunkIndex;
 
-		// --- OPAQUE ---
-		const opaque = m.opaqueData;
+		const opaque = member.opaqueData;
 		const opaqueFaceCount = _opaqueFaceCounts[i];
-		if (opaque && opaqueFaceCount > 0 && m.slotOpaqueFaces > 0) {
-			const byteCount = opaqueFaceCount * 12;
-			// Slot offsets are stable, so identity alone decides the skip.
-			if (m.lastBuiltOpaque !== opaque) {
-				const byteOff = m.slotOpaqueOffset * 12;
-				copyFaceBytes(opaqueData!, opaque.faceData, byteCount, byteOff);
 
-				const ci = m.localIndex;
-				if (ci !== 0) {
-					// Engine optimization: 32-bit SIMD vectorization instead of byte-stride loop
-					const mask = IS_LITTLE_ENDIAN ? ci << 24 : ci;
-					if (!opaqueWords) {
-						opaqueWords = new Uint32Array(
-							opaqueData!.buffer,
-							opaqueData!.byteOffset,
-							opaqueData!.length >>> 2,
-						);
-					}
-					let w = (byteOff >> 2) + 2; // word2 = chunk-index lane
-					for (let j = 0; j < opaqueFaceCount; j++) {
-						opaqueWords[w] |= mask;
-						w += 3;
-					}
+		if (
+			opaqueData &&
+			opaque &&
+			opaqueFaceCount > 0 &&
+			member.slotOpaqueFaces > 0 &&
+			member.lastBuiltOpaque !== opaque
+		) {
+			const byteOffset = member.slotOpaqueOffset * FACE_BYTES;
+
+			copyFaceBytes(
+				opaqueData,
+				opaque.faceData,
+				opaqueFaceCount * FACE_BYTES,
+				byteOffset,
+			);
+
+			if (chunkIndex !== 0) {
+				opaqueWords ??= new Uint32Array(
+					opaqueData.buffer,
+					opaqueData.byteOffset,
+					opaqueData.byteLength >>> 2,
+				);
+
+				let wordIndex = (byteOffset >>> 2) + 2;
+				const wordEnd = wordIndex + opaqueFaceCount * FACE_WORDS;
+
+				for (; wordIndex < wordEnd; wordIndex += FACE_WORDS) {
+					opaqueWords[wordIndex] |= chunkMask;
 				}
-				m.lastBuiltOpaque = opaque;
-				m.lastBuiltOpaqueOffset = byteOff;
-				_statCopiesPerformed++;
-				if (!opStructChanged)
-					pushDirtyRange(opaqueRanges, m.slotOpaqueOffset, opaqueFaceCount);
+			}
+
+			member.lastBuiltOpaque = opaque;
+			member.lastBuiltOpaqueOffset = byteOffset;
+			_statCopiesPerformed++;
+
+			if (!opaqueStructuralChange) {
+				pushDirtyRange(opaqueRanges, member.slotOpaqueOffset, opaqueFaceCount);
 			}
 		}
 
-		// --- WATER ---
-		const water = m.waterData;
+		const water = member.waterData;
 		const waterFaceCount = _waterFaceCounts[i];
-		if (water && waterFaceCount > 0 && m.slotWaterFaces > 0) {
-			const byteCount = waterFaceCount * 12;
-			if (m.lastBuiltWater !== water) {
-				const byteOff = m.slotWaterOffset * 12;
-				copyFaceBytes(waterData!, water.faceData, byteCount, byteOff);
 
-				const ci = m.localIndex;
-				if (ci !== 0) {
-					const mask = IS_LITTLE_ENDIAN ? ci << 24 : ci;
-					if (!waterWords) {
-						waterWords = new Uint32Array(
-							waterData!.buffer,
-							waterData!.byteOffset,
-							waterData!.length >>> 2,
-						);
-					}
-					let w = (byteOff >> 2) + 2;
-					for (let j = 0; j < waterFaceCount; j++) {
-						waterWords[w] |= mask;
-						w += 3;
-					}
+		if (
+			waterData &&
+			water &&
+			waterFaceCount > 0 &&
+			member.slotWaterFaces > 0 &&
+			member.lastBuiltWater !== water
+		) {
+			const byteOffset = member.slotWaterOffset * FACE_BYTES;
+
+			copyFaceBytes(
+				waterData,
+				water.faceData,
+				waterFaceCount * FACE_BYTES,
+				byteOffset,
+			);
+
+			if (chunkIndex !== 0) {
+				waterWords ??= new Uint32Array(
+					waterData.buffer,
+					waterData.byteOffset,
+					waterData.byteLength >>> 2,
+				);
+
+				let wordIndex = (byteOffset >>> 2) + 2;
+				const wordEnd = wordIndex + waterFaceCount * FACE_WORDS;
+
+				for (; wordIndex < wordEnd; wordIndex += FACE_WORDS) {
+					waterWords[wordIndex] |= chunkMask;
 				}
-				m.lastBuiltWater = water;
-				m.lastBuiltWaterOffset = byteOff;
-				_statCopiesPerformed++;
-				if (!waStructChanged)
-					pushDirtyRange(waterRanges, m.slotWaterOffset, waterFaceCount);
+			}
+
+			member.lastBuiltWater = water;
+			member.lastBuiltWaterOffset = byteOffset;
+			_statCopiesPerformed++;
+
+			if (!waterStructuralChange) {
+				pushDirtyRange(waterRanges, member.slotWaterOffset, waterFaceCount);
 			}
 		}
 
-		// --- CUTOUT ---
-		const cutout = m.cutoutData;
+		const cutout = member.cutoutData;
 		const cutoutFaceCount = _cutoutFaceCounts[i];
-		if (cutout && cutoutFaceCount > 0 && m.slotCutoutFaces > 0) {
-			const byteCount = cutoutFaceCount * 12;
-			if (m.lastBuiltCutout !== cutout) {
-				const byteOff = m.slotCutoutOffset * 12;
-				copyFaceBytes(cutoutData!, cutout.faceData, byteCount, byteOff);
 
-				const ci = m.localIndex;
-				if (ci !== 0) {
-					const mask = IS_LITTLE_ENDIAN ? ci << 24 : ci;
-					if (!cutoutWords) {
-						cutoutWords = new Uint32Array(
-							cutoutData!.buffer,
-							cutoutData!.byteOffset,
-							cutoutData!.length >>> 2,
-						);
-					}
-					let w = (byteOff >> 2) + 2;
-					for (let j = 0; j < cutoutFaceCount; j++) {
-						cutoutWords[w] |= mask;
-						w += 3;
-					}
+		if (
+			cutoutData &&
+			cutout &&
+			cutoutFaceCount > 0 &&
+			member.slotCutoutFaces > 0 &&
+			member.lastBuiltCutout !== cutout
+		) {
+			const byteOffset = member.slotCutoutOffset * FACE_BYTES;
+
+			copyFaceBytes(
+				cutoutData,
+				cutout.faceData,
+				cutoutFaceCount * FACE_BYTES,
+				byteOffset,
+			);
+
+			if (chunkIndex !== 0) {
+				cutoutWords ??= new Uint32Array(
+					cutoutData.buffer,
+					cutoutData.byteOffset,
+					cutoutData.byteLength >>> 2,
+				);
+
+				let wordIndex = (byteOffset >>> 2) + 2;
+				const wordEnd = wordIndex + cutoutFaceCount * FACE_WORDS;
+
+				for (; wordIndex < wordEnd; wordIndex += FACE_WORDS) {
+					cutoutWords[wordIndex] |= chunkMask;
 				}
-				m.lastBuiltCutout = cutout;
-				m.lastBuiltCutoutOffset = byteOff;
-				_statCopiesPerformed++;
-				if (!cuStructChanged)
-					pushDirtyRange(cutoutRanges, m.slotCutoutOffset, cutoutFaceCount);
+			}
+
+			member.lastBuiltCutout = cutout;
+			member.lastBuiltCutoutOffset = byteOffset;
+			_statCopiesPerformed++;
+
+			if (!cutoutStructuralChange) {
+				pushDirtyRange(cutoutRanges, member.slotCutoutOffset, cutoutFaceCount);
 			}
 		}
 	}
 
-	// Structural layers: one full-extent range covers every gap the skipped
-	// per-member ranges would have missed (fresh arena tail, recycled holes,
-	// post-compaction relayout). Content-only flushes keep tiny ranges.
-	if (opStructChanged && opSt.appendedFaces > 0)
-		pushDirtyRange(opaqueRanges, 0, opSt.appendedFaces);
-	if (waStructChanged && waSt.appendedFaces > 0)
-		pushDirtyRange(waterRanges, 0, waSt.appendedFaces);
-	if (cuStructChanged && cuSt.appendedFaces > 0)
-		pushDirtyRange(cutoutRanges, 0, cuSt.appendedFaces);
+	if (opaqueStructuralChange && opaqueState.appendedFaces > 0) {
+		pushDirtyRange(opaqueRanges, 0, opaqueState.appendedFaces);
+	}
 
-	// Release layer-array slack after spikes (see shrinkLayer) BEFORE
-	// re-slicing the vertex-data views, so they wrap the shrunken arrays.
+	if (waterStructuralChange && waterState.appendedFaces > 0) {
+		pushDirtyRange(waterRanges, 0, waterState.appendedFaces);
+	}
+
+	if (cutoutStructuralChange && cutoutState.appendedFaces > 0) {
+		pushDirtyRange(cutoutRanges, 0, cutoutState.appendedFaces);
+	}
+
 	maybeShrinkGroupLayers(group);
 
-	// Wrap up vertex data buffers.
-	//
-	// The exposed extent is the SLOT EXTENT (appendedFaces), not the used-face
-	// sum: padding faces are zero-filled so they render nothing, and keeping
-	// the extent stable across content-only rebuilds is what lets
-	// updatePackedChunkMesh take its dirty-range fast path instead of
-	// reallocating the GPU arena block on every flush.
-	if (opSt.appendedFaces > 0) {
-		const totalBytes = opSt.appendedFaces * 12;
-		if (!group.opaqueVertexData)
-			group.opaqueVertexData = { faceData: EMPTY_U12, faceCount: 0 };
-		const vd = group.opaqueVertexData;
-		vd.faceData = opaqueData!.subarray(0, totalBytes);
-		vd.faceCount = opSt.appendedFaces;
-		group.cachedOpaque = vd;
-	}
-	if (waSt.appendedFaces > 0) {
-		const totalBytes = waSt.appendedFaces * 12;
-		if (!group.waterVertexData)
-			group.waterVertexData = { faceData: EMPTY_U12, faceCount: 0 };
-		const vd = group.waterVertexData;
-		vd.faceData = waterData!.subarray(0, totalBytes);
-		vd.faceCount = waSt.appendedFaces;
-		group.cachedWater = vd;
+	const finalOpaqueData = group.opaqueData;
+	const finalWaterData = group.waterData;
+	const finalCutoutData = group.cutoutData;
+
+	if (opaqueState.appendedFaces > 0 && finalOpaqueData) {
+		const vertexData = exposeLayerData(
+			group.opaqueVertexData,
+			finalOpaqueData,
+			opaqueState.appendedFaces,
+		);
+
+		group.opaqueVertexData = vertexData;
+		group.cachedOpaque = vertexData;
+	} else {
+		group.cachedOpaque = null;
 	}
 
-	if (cuSt.appendedFaces > 0) {
-		const totalBytes = cuSt.appendedFaces * 12;
-		if (!group.cutoutVertexData)
-			group.cutoutVertexData = { faceData: EMPTY_U12, faceCount: 0 };
-		const vd = group.cutoutVertexData;
-		vd.faceData = cutoutData!.subarray(0, totalBytes);
-		vd.faceCount = cuSt.appendedFaces;
-		group.cachedCutout = vd;
+	if (waterState.appendedFaces > 0 && finalWaterData) {
+		const vertexData = exposeLayerData(
+			group.waterVertexData,
+			finalWaterData,
+			waterState.appendedFaces,
+		);
+
+		group.waterVertexData = vertexData;
+		group.cachedWater = vertexData;
+	} else {
+		group.cachedWater = null;
 	}
+
+	if (cutoutState.appendedFaces > 0 && finalCutoutData) {
+		const vertexData = exposeLayerData(
+			group.cutoutVertexData,
+			finalCutoutData,
+			cutoutState.appendedFaces,
+		);
+
+		group.cutoutVertexData = vertexData;
+		group.cachedCutout = vertexData;
+	} else {
+		group.cachedCutout = null;
+	}
+
+	group.dirty = false;
+}
+
+function clearDiscardedGroup(group: MergedMeshGroup): void {
+	group.members.clear();
+	group.membersArray.length = 0;
+
+	group.cachedOpaque = null;
+	group.cachedWater = null;
+	group.cachedCutout = null;
+
+	group.opaqueVertexData = null;
+	group.waterVertexData = null;
+	group.cutoutVertexData = null;
+
+	group.opaqueData = null;
+	group.waterData = null;
+	group.cutoutData = null;
+
+	group.opaqueCapacityFaces = 0;
+	group.waterCapacityFaces = 0;
+	group.cutoutCapacityFaces = 0;
+
+	group.dirtyOpaqueRanges = null;
+	group.dirtyWaterRanges = null;
+	group.dirtyCutoutRanges = null;
+
+	group.opaqueMeshRef = null;
+	group.waterMeshRef = null;
+	group.cutoutMeshRef = null;
 
 	group.dirty = false;
 }
