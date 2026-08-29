@@ -48,12 +48,7 @@ function tintLutWgsl(lut: Float32Array): string {
 
 // The two fragment variants differ only in alpha handling; generate both
 // from one template to keep them in lockstep.
-function makeFragmentSource(lut: Float32Array, transparent: boolean): string {
-	const alphaLine = transparent
-		? `  if (diffuseColor.a < 0.02) { discard; }`
-		: `  if (diffuseColor.a < 0.01) { discard; }`;
-	const outAlpha = transparent ? `diffuseColor.a` : `1.0`;
-
+function makeFragmentSource(lut: Float32Array): string {
 	return /* wgsl */ `${tintLutWgsl(lut)}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
@@ -82,8 +77,7 @@ fn applyDitherFade(coord : vec2<f32>) {
 
 fn applyTintBucket(color : vec3<f32>, bucket : u32) -> vec3<f32> {
   let idx = min(bucket, 5u);
-  let lum = dot(color, vec3<f32>(0.299, 0.587, 0.114));
-  return mix(vec3<f32>(lum), color, tintLUT[idx].a) * tintLUT[idx].rgb;
+  return color * tintLUT[idx].rgb;
 }
 
 @fragment
@@ -91,16 +85,28 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   applyDitherFade(in.pos.xy);
 
   let singleTileUV = fract(in.vUV);
-  let layer = in.vTileLayer;
-  var diffuseColor = textureSampleLevel(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, 3.0);
-${alphaLine}
 
-  // All per-quad lighting (wetness darkening, N·L diffuse, sky/block light
-  // mix, face shade) was baked into vShade by the vertex stage.
-  var color = diffuseColor.rgb * in.vShade;
-  color = applyTintBucket(color, in.vTint);
-  color = mix(color, in.vFogColor, in.vFogFactor);
-  return vec4<f32>(color, ${outAlpha});
+  var diffuseColor = textureSampleLevel(
+    diffuseTexture,
+    diffuseTextureSampler,
+    singleTileUV,
+    in.vTileLayer,
+    3.0
+  );
+
+  if (diffuseColor.a < 0.01) {
+    discard;
+  }
+
+  let litColor = applyTintBucket(
+    diffuseColor.rgb * in.vShade,
+    in.vTint
+  );
+
+  return vec4<f32>(
+    mix(litColor, in.vFogColor, in.vFogFactor),
+    1.0
+  );
 }
 `;
 }
@@ -204,7 +210,7 @@ export function createLod4OpaqueMaterial(
 	return buildCommonMaterial(
 		"lod4OpaqueLite",
 		opts,
-		makeFragmentSource(opts.tintLUT, false),
+		makeFragmentSource(opts.tintLUT),
 		{ backFaceCulling: true },
 	);
 }
@@ -215,7 +221,7 @@ export function createLod4TransparentMaterial(
 	return buildCommonMaterial(
 		"lod4TransparentLite",
 		opts,
-		makeFragmentSource(opts.tintLUT, true),
+		makeFragmentSource(opts.tintLUT),
 		{
 			backFaceCulling: false,
 			needAlphaBlending: true,

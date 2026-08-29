@@ -108,11 +108,6 @@ const MIN_INSTANCE_DATA_ELEMENTS = INSTANCE_FLOATS;
 // Retain the existing safety limit.
 const MAX_INSTANCE_DATA_ELEMENTS = 1 << 23;
 
-// Buffers at or below this size (16 KiB) are never shrunk — the churn isn't
-// worth it. Shrink hysteresis only applies to buffers that actually cost
-// memory (see buildInstanceData).
-const MIN_MATRIX_SHRINK_ELEMENTS = 4096;
-
 interface PackedMeshState {
 	faceArena: number;
 	faceBase: number;
@@ -794,10 +789,6 @@ function compactArena(index: number): boolean {
 		arena.free.length = 0;
 		arena.freeCount = 0;
 		const tail = arena.capacity - write;
-		if (tail > 0) {
-			arena.free.push(acquireInterval(write, tail));
-			arena.freeCount = tail;
-		}
 
 		for (let i = 0; i < entries.length; i++) {
 			const { mesh, s } = entries[i];
@@ -819,7 +810,7 @@ function compactArena(index: number): boolean {
 
 		console.warn(
 			`[PackedChunkMesh] defragmented face arena #${index}: relocated ` +
-				`${moved} mesh(es), recovered ${arena.freeCount}-face contiguous tail.`,
+				`${moved} mesh(es), recovered ${tail}-face contiguous tail.`,
 		);
 		return true;
 	} finally {
@@ -833,16 +824,21 @@ function compactArena(index: number): boolean {
 function tryCompactFor(count: number): boolean {
 	if (_compacting) return false;
 	let totalFree = 0;
-	for (let i = 0; i < faceArenas.length; i++)
-		totalFree += faceArenas[i].freeCount;
+	for (let i = 0; i < faceArenas.length; i++) {
+		const a = faceArenas[i];
+		totalFree += a.freeCount + (a.capacity - a.used);
+	}
 	if (totalFree < count) return false;
 
 	let best = -1;
 	let bestFragmented = 0;
 	for (let ai = 0; ai < faceArenas.length; ai++) {
 		const a = faceArenas[ai];
-		if (a.freeCount < count) continue;
-		const fragmented = a.freeCount - largestHoleFaces(a);
+		const tail = a.capacity - a.used;
+		const total = a.freeCount + tail;
+		if (total < count) continue;
+		const largest = Math.max(largestHoleFaces(a), tail);
+		const fragmented = total - largest;
 		if (fragmented > bestFragmented) {
 			bestFragmented = fragmented;
 			best = ai;
@@ -862,12 +858,14 @@ function reportArenaExhaustion(count: number): void {
 	const parts: string[] = [];
 	for (let ai = 0; ai < faceArenas.length; ai++) {
 		const a = faceArenas[ai];
-		const live = a.capacity - a.used - a.freeCount;
+		const live = a.used - a.freeCount;
+		const tail = a.capacity - a.used;
 		liveTotal += live;
-		freeTotal += a.freeCount;
+		freeTotal += a.freeCount + tail;
+		const largest = Math.max(largestHoleFaces(a), tail);
 		parts.push(
 			`  #${ai}: cap ${a.capacity}, live ${live}, highWater ${a.used}, ` +
-				`free ${a.freeCount} (largest hole ${largestHoleFaces(a)})`,
+				`free ${a.freeCount} + tail ${tail} (largest hole ${largest})`,
 		);
 	}
 	console.error(

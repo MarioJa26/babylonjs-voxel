@@ -22,13 +22,10 @@ struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
   @location(1) @interpolate(flat) vTileLayer : u32,
-  @location(5) @interpolate(flat) vNormal : vec3<f32>,
-  @location(6) vAO : f32,
-  @location(7) @interpolate(flat) vLight : vec2<f32>,
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
   @location(12) @interpolate(flat) vTint : u32,
-  @location(15) @interpolate(flat) vDiffuse : f32,
+  @location(15) @interpolate(flat) vShade : vec3<f32>,
 };
 fn hash12(p : vec2<f32>) -> f32 {
   var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
@@ -57,29 +54,24 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   applyDitherFade(in.pos.xy);
 
   let singleTileUV = fract(in.vUV);
-  let layer = in.vTileLayer;
-  var diffuseColor = textureSampleLevel(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, 3.0);
-  if (diffuseColor.a < 0.01) { discard; }
 
-  let skyLight = in.vLight.x;
-  let blockLight = in.vLight.y;
-  let sunIntensity = shaderUniforms.sunLightIntensity;
+  var diffuseColor = textureSampleLevel(
+    diffuseTexture,
+    diffuseTextureSampler,
+    singleTileUV,
+    in.vTileLayer,
+    3.0
+  );
 
-  // LOD wetness should not create shine. It only darkens/richens distance terrain.
-  let wetDiffuseMul = mix(1.0, 0.65, shaderUniforms.wetness);
-  diffuseColor = vec4<f32>(diffuseColor.rgb * wetDiffuseMul, diffuseColor.a);
+  if (diffuseColor.a < 0.01) {
+    discard;
+  }
 
-  let diffuseIntensity = in.vDiffuse;
+  var color = diffuseColor.rgb * in.vShade;
 
-  let skyScale = skyLight * 0.8 * (sunIntensity + 0.2);
-  let lightMix = clamp(vec3<f32>(skyScale) + blockLight * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.18), vec3<f32>(1.0));
-
-  let topBottom = select(0.58, 1.0, in.vNormal.y > 0.0);
-  let faceShade = select(0.78, topBottom, abs(in.vNormal.y) > 0.5);
-
-  var color = diffuseColor.rgb * (1.0 + diffuseIntensity * sunIntensity * skyLight) * lightMix * faceShade;
   color = applyTintBucket(color, in.vTint);
   color = mix(color, in.vFogColor, in.vFogFactor);
+
   return vec4<f32>(color, 1.0);
 }
 `;
@@ -89,14 +81,13 @@ struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
   @location(1) @interpolate(flat) vTileLayer : u32,
-  @location(5) @interpolate(flat) vNormal : vec3<f32>,
-  @location(6) vAO : f32,
-  @location(7) @interpolate(flat) vLight : vec2<f32>,
+  @location(9) @interpolate(flat) vMeta : u32,
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
   @location(12) @interpolate(flat) vTint : u32,
-  @location(15) @interpolate(flat) vDiffuse : f32,
+  @location(15) @interpolate(flat) vShade : vec3<f32>,
 };
+
 fn hash12(p : vec2<f32>) -> f32 {
   var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
   p3 = p3 + dot(p3, p3.yzx + 33.33);
@@ -105,7 +96,15 @@ fn hash12(p : vec2<f32>) -> f32 {
 
 fn applyDitherFade(coord : vec2<f32>) {
   if (abs(shaderUniforms.lodFadeDirection) < 0.5) { return; }
-  let n = hash12(floor(coord) + vec2<f32>(shaderUniforms.lodFadeSeed, shaderUniforms.lodFadeSeed * 1.37));
+
+  let n = hash12(
+    floor(coord) +
+    vec2<f32>(
+      shaderUniforms.lodFadeSeed,
+      shaderUniforms.lodFadeSeed * 1.37
+    )
+  );
+
   if (shaderUniforms.lodFadeDirection > 0.0) {
     if (n > shaderUniforms.lodFadeProgress) { discard; }
   } else {
@@ -124,29 +123,36 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   applyDitherFade(in.pos.xy);
 
   let singleTileUV = fract(in.vUV);
-  let layer = in.vTileLayer;
-  var diffuseColor = textureSampleLevel(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, 3.0);
-  if (diffuseColor.a < 0.02) { discard; }
 
-  let skyLight = in.vLight.x;
-  let blockLight = in.vLight.y;
-  let sunIntensity = shaderUniforms.sunLightIntensity;
+  var diffuseColor = textureSampleLevel(
+    diffuseTexture,
+    diffuseTextureSampler,
+    singleTileUV,
+    in.vTileLayer,
+    3.0
+  );
 
-  // Far transparent also should not become shiny/bright when wet.
-  let wetDiffuseMul = mix(1.0, 0.65, shaderUniforms.wetness);
-  diffuseColor = vec4<f32>(diffuseColor.rgb * wetDiffuseMul, diffuseColor.a);
+  if (diffuseColor.a < 0.02) {
+    discard;
+  }
 
-  let diffuseIntensity = in.vDiffuse;
-
-  let skyScale = skyLight * 0.8 * (sunIntensity + 0.2);
-  let lightMix = clamp(vec3<f32>(skyScale) + blockLight * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.18), vec3<f32>(1.0));
-
-  let topBottom = select(0.58, 1.0, in.vNormal.y > 0.0);
-  let faceShade = select(0.78, topBottom, abs(in.vNormal.y) > 0.5);
-
-  var color = diffuseColor.rgb * (1.0 + diffuseIntensity * sunIntensity * skyLight) * lightMix * faceShade;
+  var color = diffuseColor.rgb * in.vShade;
   color = applyTintBucket(color, in.vTint);
+
+  let isWater = f32((in.vMeta >> 2u) & 1u);
+
+  let waterColor =
+    vec3<f32>(0.1, 0.4, 0.7) *
+    min(in.vShade, vec3<f32>(0.6));
+
+  color = mix(
+    color,
+    waterColor,
+    isWater
+  );
+
   color = mix(color, in.vFogColor, in.vFogFactor);
+
   return vec4<f32>(color, diffuseColor.a);
 }
 `;
@@ -178,10 +184,10 @@ export function createLod3OpaqueMaterial(
 			tint: true,
 			fog: true,
 
-			// Free win: no view-dependent LOD lighting now.
 			viewDir: false,
-			// Flat faces: N·L hoisted to vertex (exact, removes per-pixel dot).
-			vertexDiffuse: true,
+
+			ao: false,
+			bakeShade: true,
 		}),
 		fragmentSource: lod3OpaqueFragmentWGSL,
 		attributes: ["position"],
@@ -244,16 +250,18 @@ export function createLod3TransparentMaterial(
 		vertexSource: buildPackedVertexWGSL(arenaCount, {
 			tangent: false,
 			worldPosition: false,
-			meta: false,
+
+			// if this bucket is truly water-only:
+			meta: true,
+
 			tint: true,
 			fog: true,
 
-			// Free win: no view-dependent LOD lighting now.
 			viewDir: false,
-			vertexDiffuse: true,
 
-			// Water-only bucket: META_WATER collides with the materialType
-			// field, so the ==3 boundary restore would fire on every face.
+			ao: false,
+			bakeShade: true,
+
 			boundarySentinel: false,
 		}),
 		fragmentSource: lod3TransparentFragmentWGSL,

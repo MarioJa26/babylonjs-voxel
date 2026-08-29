@@ -109,18 +109,24 @@ fn readTopTileFromLookup(vPositionW : vec3<f32>) -> vec2<f32> {
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-  let useTex = shaderUniforms.useTexture;
-  var texColor = vec3<f32>(0.5);
-  if (useTex > 0.5) {
+  var albedo = vec3<f32>(0.5);
+
+  if (shaderUniforms.useTexture > 0.5) {
     let tile = readTopTileFromLookup(in.vPositionW);
-    let worldUV = in.vPositionW.xz / shaderUniforms.textureScale;
-    texColor = sampleAtlasTile(tile, worldUV);
+
+    let worldUV =
+      in.vPositionW.xz /
+      shaderUniforms.textureScale;
+
+    albedo = sampleAtlasTile(tile, worldUV);
   }
 
-  let albedo = mix(vec3<f32>(0.5), texColor, useTex);
   let finalColor = albedo * in.vShade;
 
-  return vec4<f32>(mix(in.vFogColor, finalColor, in.vFogFactor), 1.0);
+  return vec4<f32>(
+    mix(in.vFogColor, finalColor, in.vFogFactor),
+    1.0
+  );
 }
 `;
 

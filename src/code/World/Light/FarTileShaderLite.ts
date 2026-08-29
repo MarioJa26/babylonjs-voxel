@@ -236,69 +236,158 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 
 const waterVertexWGSL = /* wgsl */ `
 ${FACE_EXPAND_WGSL}
+${FOG_HELPER_WGSL}
+
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vPositionW : vec3<f32>,
+  @location(1) vFogColor : vec3<f32>,
+  @location(2) vFogFactor : f32,
 };
 
 @vertex
-fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32, @builtin(vertex_index) vertexIndex : u32) -> VSOut {
+fn mainVertex(
+  input : VertexInput,
+  @builtin(instance_index) instanceIndex : u32,
+  @builtin(vertex_index) vertexIndex : u32
+) -> VSOut {
   var out : VSOut;
+
   let f = expandFace(u32(input.instData.x), vertexIndex);
 
-  // Water faces are always Y planes. The old CPU ORDER-A walk was
-  // [P00,(z+h),(x+w,z+h),(x+w)] with indices (0,2,1)(0,3,2); with the fixed
-  // pattern that maps to au driving +Z by h and av driving +X by w.
-  let worldPos = vec3<f32>(f.x, f.y, f.z)
-    + vec3<f32>(0.0, 0.0, 1.0) * (f.au * f.h)
-    + vec3<f32>(1.0, 0.0, 0.0) * (f.av * f.w);
+  let worldPos =
+    vec3<f32>(f.x, f.y, f.z) +
+    vec3<f32>(0.0, 0.0, 1.0) * (f.au * f.h) +
+    vec3<f32>(1.0, 0.0, 0.0) * (f.av * f.w);
 
-  out.pos = shaderSystem.worldViewProjection * vec4<f32>(worldPos, 1.0);
+  out.pos =
+    shaderSystem.worldViewProjection *
+    vec4<f32>(worldPos, 1.0);
+
   out.vPositionW = worldPos;
+
+  let toCamera = shaderSystem.cameraPosition - worldPos;
+  let dist = length(toCamera);
+
+  let infos = shaderUniforms.fogInfos;
+
+  out.vFogFactor =
+    clamp(
+      (infos.z - dist) * shaderUniforms.fogInvRange,
+      0.0,
+      1.0
+    );
+
+  let heightFactor =
+    clamp(worldPos.y * 0.003, 0.0, 1.0);
+
+  let atmosphereColor =
+    ftAtmosphereColor(heightFactor);
+
+  var baseFogColor =
+    mix(
+      shaderUniforms.fogColor,
+      atmosphereColor,
+      0.8
+    );
+
+  let nightAmount =
+    clamp(
+      1.0 - shaderUniforms.sunLightIntensity,
+      0.0,
+      1.0
+    );
+
+  baseFogColor =
+    mix(
+      baseFogColor,
+      vec3<f32>(0.0),
+      nightAmount
+    );
+
+  let viewDirY =
+    toCamera.y / max(dist, 1e-4);
+
+  let skyboxColor =
+    ftSkyboxColor(viewDirY, nightAmount);
+
+  let skyBlend =
+    clamp(
+      (dist - 7000.0) * 0.0003333,
+      0.0,
+      1.0
+    );
+
+  out.vFogColor =
+    mix(
+      baseFogColor,
+      skyboxColor,
+      skyBlend
+    );
+
   return out;
 }
 `;
 
 const waterFragmentWGSL = /* wgsl */ `
-${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vPositionW : vec3<f32>,
+  @location(1) vFogColor : vec3<f32>,
+  @location(2) vFogFactor : f32,
 };
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let normal = vec3<f32>(0.0, 1.0, 0.0);
 
-  let viewVec = in.vPositionW - shaderSystem.cameraPosition;
-  let dist = length(viewVec);
-  let viewDir = -viewVec / max(dist, 1e-4);
+  let viewDir = normalize(
+    shaderSystem.cameraPosition - in.vPositionW
+  );
 
-  let reflectDir = reflect(shaderUniforms.lightDirection, normal);
-  let RV = max(dot(viewDir, reflectDir), 0.0);
-  let spec = exp2(clamp(64.0 * 1.4427 * (RV - 1.0), -126.0, 0.0));
-  let specular = vec3<f32>(spec * shaderUniforms.sunLightIntensity);
+  let reflectDir =
+    reflect(shaderUniforms.lightDirection, normal);
 
-  let litWater = vec3<f32>(0.0, 0.25, 0.55) * (shaderUniforms.sunLightIntensity * 0.8 + 0.2);
-  let nightWater = vec3<f32>(0.0, 0.06, 0.18);
-  let finalColor = mix(nightWater, litWater, shaderUniforms.sunLightIntensity) + specular;
+  let RV =
+    max(dot(viewDir, reflectDir), 0.0);
 
-  let infos = shaderUniforms.fogInfos;
-  let fogFactor = clamp((infos.z - dist) * shaderUniforms.fogInvRange, 0.0, 1.0);
+  let spec =
+    exp2(
+      clamp(
+        64.0 * 1.4427 * (RV - 1.0),
+        -126.0,
+        0.0
+      )
+    );
 
-  let heightFactor = clamp(in.vPositionW.y * 0.003, 0.0, 1.0);
-  let atmosphereColor = ftAtmosphereColor(heightFactor);
-  var baseFogColor = mix(shaderUniforms.fogColor, atmosphereColor, 0.8);
-  let nightAmount = clamp(1.0 - shaderUniforms.sunLightIntensity, 0.0, 1.0);
-  baseFogColor = mix(baseFogColor, vec3<f32>(0.0, 0.0, 0.0), nightAmount);
+  let specular =
+    vec3<f32>(
+      spec * shaderUniforms.sunLightIntensity
+    );
 
-  let viewDirY = viewVec.y / max(dist, 1e-4);
-  let skyboxColor = ftSkyboxColor(viewDirY, nightAmount);
-  let skyBlend = clamp((dist - 7000.0) * 0.0003333, 0.0, 1.0);
-  let fogColor = mix(baseFogColor, skyboxColor, skyBlend);
+  let litWater =
+    vec3<f32>(0.0, 0.25, 0.55) *
+    (shaderUniforms.sunLightIntensity * 0.8 + 0.2);
 
-  let colorWithFog = mix(fogColor, finalColor, fogFactor);
-  return vec4<f32>(colorWithFog, 1.0);
+  let nightWater =
+    vec3<f32>(0.0, 0.06, 0.18);
+
+  let finalColor =
+    mix(
+      nightWater,
+      litWater,
+      shaderUniforms.sunLightIntensity
+    ) +
+    specular;
+
+  return vec4<f32>(
+    mix(
+      in.vFogColor,
+      finalColor,
+      in.vFogFactor
+    ),
+    1.0
+  );
 }
 `;
 

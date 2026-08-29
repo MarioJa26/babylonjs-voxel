@@ -205,58 +205,73 @@ export function buildPackedVertexWGSL(
 	opts: VertexShaderOptions = {},
 ): string {
 	const arenas = Math.max(1, arenaCount | 0);
+	const rawUnits = opts.rawUnits ?? false;
+	const bakeShade = opts.bakeShade ?? false;
+	const tangentSpaceLighting = opts.tangentSpaceLighting ?? false;
+
+	/*
+	 * Normalize option dependencies once in TypeScript rather than generating
+	 * dead or contradictory WGSL paths.
+	 *
+	 * rawUnits guarantees:
+	 *   - metaByte == 0
+	 *   - no boundary sentinel
+	 *   - no diagonal faces
+	 *   - no packed position corrections
+	 *
+	 * bakeShade supersedes vertexDiffuse because both occupy location 15.
+	 * Tangent-space lighting supplies the view direction at location 13.
+	 */
 	const o: ResolvedVertexShaderOptions = {
 		fog: opts.fog ?? true,
 		tint: opts.tint ?? true,
 		meta: opts.meta ?? true,
 		tangent: opts.tangent ?? true,
 		worldPosition: opts.worldPosition ?? true,
-		viewDir: opts.viewDir ?? true,
-		tangentSpaceLighting: opts.tangentSpaceLighting ?? false,
-		vertexDiffuse: opts.vertexDiffuse ?? false,
-		rawUnits: opts.rawUnits ?? false,
-		boundarySentinel: opts.boundarySentinel ?? true,
+		viewDir: !tangentSpaceLighting && (opts.viewDir ?? true),
+		tangentSpaceLighting,
+		vertexDiffuse: !bakeShade && (opts.vertexDiffuse ?? false),
+		rawUnits,
+		boundarySentinel: !rawUnits && (opts.boundarySentinel ?? true),
 		ao: opts.ao ?? true,
-		bakeShade: opts.bakeShade ?? false,
+		bakeShade,
 	};
 
-	let loadFaceBody = "";
+	const loadFaceBranches = new Array<string>(arenas);
 	for (let i = 0; i < arenas; i++) {
-		loadFaceBody += `  if (arena == ${i}u) { return vec3<u32>(faceData${i}[i3], faceData${i}[i3 + 1u], faceData${i}[i3 + 2u]); }\n`;
+		loadFaceBranches[i] =
+			`  if (arena == ${i}u) { return vec3<u32>(faceData${i}[i3], faceData${i}[i3 + 1u], faceData${i}[i3 + 2u]); }`;
 	}
-	loadFaceBody +=
-		"  return vec3<u32>(faceData0[i3], faceData0[i3 + 1u], faceData0[i3 + 2u]);\n";
 
-	// ── Segment 1: meta decode → face dims → base position (+ boundary fix) ──
-	// materialType==3 marks chunk-boundary faces: their true plane (coord =
-	// CHUNK_SIZE) exceeds the u8 position encoding, which clamped them 1/8
-	// block inward. Restore the exact plane along the face axis (+1 position
-	// unit = INV_POS, NOT one block).
-	//
-	// Water-only materials MUST opt out (boundarySentinel=false): META_WATER
-	// occupies meta bit 2, the high bit of the materialType field, so
-	// ((metaByte >> 1) & 3) reads as 3 on EVERY water face and this restore
-	// would push each one out by a full position unit.
+	const loadFaceBody =
+		`${loadFaceBranches.join("\n")}\n` +
+		"  return vec3<u32>(faceData0[i3], faceData0[i3 + 1u], faceData0[i3 + 2u]);";
+
 	const boundaryRestoreBlock = o.boundarySentinel
 		? `
   if (((metaByte >> 1u) & 3u) == 3u) {
-    if (axis == 0u) { baseX = baseX + INV_POS; }
-    else if (axis == 1u) { baseY = baseY + INV_POS; }
-    else { baseZ = baseZ + INV_POS; }
+    if (axis == 0u) {
+      baseX += INV_POS;
+    } else if (axis == 1u) {
+      baseY += INV_POS;
+    } else {
+      baseZ += INV_POS;
+    }
   }
 `
 		: "";
 
+	const tintDecode = o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : "";
+
 	const decodeBlock = o.rawUnits
-		? `  // Raw-units variant: the meta byte is guaranteed zero on every face
-  // emitted by emitQuadRawUnits — no flip/diag/posOff/sentinel/rawDim.
+		? `  // Raw-units faces guarantee a zero meta byte.
+  let metaByte = 0u;
   let localChunk = (face.z >> 24u) & 0x3fu;
-${o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : ""}
+${tintDecode}
 
   let axis = axisFace >> 1u;
   let isBackFace = axisFace & 1u;
 
-  // Whole-block units read straight out of the bytes (no INV_POS scaling).
   let faceWidth = f32(widthByte);
   let faceHeight = f32(heightByte);
 
@@ -268,7 +283,7 @@ ${o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : ""}
 `
 		: `  let metaByte = (face.z >> 16u) & 0xffu;
   let localChunk = (face.z >> 24u) & 0x3fu;
-${o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : ""}
+${tintDecode}
 
   let axis = axisFace >> 1u;
   let isBackFace = axisFace & 1u;
@@ -277,19 +292,29 @@ ${o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : ""}
   let diagonalVariant = (metaByte >> 5u) & 1u;
   let rawDimensions = (metaByte >> 6u) & 1u;
 
-  let faceWidth = select(f32(widthByte) * INV_POS, f32(widthByte), rawDimensions != 0u);
-  let faceHeight = select(f32(heightByte) * INV_POS, f32(heightByte), rawDimensions != 0u);
+  let faceWidth = select(
+    f32(widthByte) * INV_POS,
+    f32(widthByte),
+    rawDimensions != 0u
+  );
+  let faceHeight = select(
+    f32(heightByte) * INV_POS,
+    f32(heightByte),
+    rawDimensions != 0u
+  );
 
   let co = chunkOffsets[offsetBase + localChunk];
 
-  let posX = aByte * INV_POS - f32((metaByte >> 3u) & 1u) * 0.5 * INV_POS;
-  let posZ = cByte * INV_POS - f32((metaByte >> 7u) & 1u) * 0.5 * INV_POS;
+  let posX = aByte * INV_POS -
+    f32((metaByte >> 3u) & 1u) * HALF_INV_POS;
+  let posZ = cByte * INV_POS -
+    f32((metaByte >> 7u) & 1u) * HALF_INV_POS;
+
   var baseX = posX + co.x;
   var baseY = bByte * INV_POS + co.y;
   var baseZ = posZ + co.z;
 ${boundaryRestoreBlock}`;
 
-	// ── Segment 2: corner state + normal/tangent basis ───────────────────────
 	const normalBlock = o.rawUnits
 		? `  let cornerState = isBackFace << 1u;
   let uAxis = U_AXIS[axis];
@@ -306,37 +331,52 @@ ${boundaryRestoreBlock}`;
 
   let isDiag = diagonalEnabled != 0u;
 
-  let aNormal = AXIS_BASIS[axis] * faceSign;
-  let aTangent = AXIS_BASIS[uAxis] * faceSign;
+  let axisNormal = AXIS_BASIS[axis] * faceSign;
+  let axisTangent = AXIS_BASIS[uAxis] * faceSign;
 
-  let dZ = select(-DIAGONAL, DIAGONAL, diagonalVariant == 0u);
-  let dTangent = vec3<f32>(DIAGONAL, 0.0, dZ);
-  let dNormal = vec3<f32>(dZ * faceSign, 0.0, -DIAGONAL * faceSign);
+  let diagonalZ = select(-DIAGONAL, DIAGONAL, diagonalVariant == 0u);
+  let diagonalTangent = vec3<f32>(DIAGONAL, 0.0, diagonalZ);
+  let diagonalNormal =
+    vec3<f32>(diagonalZ * faceSign, 0.0, -DIAGONAL * faceSign);
 
-  let sharedNormal = select(aNormal, dNormal, isDiag);
-  let sharedTangent = select(aTangent, dTangent, isDiag);
+  let sharedNormal = select(axisNormal, diagonalNormal, isDiag);
+  let sharedTangent = select(axisTangent, diagonalTangent, isDiag);
 `;
 
-	// ── Segment 3: vertex position + atlas UVs ───────────────────────────────
 	const positionBlock = o.rawUnits
 		? `  let pu = cuF * faceWidth;
   let pv = cvF * faceHeight;
-  position = vec3<f32>(baseX, baseY, baseZ) + AXIS_BASIS[uAxis] * pu + AXIS_BASIS[vAxis] * pv;
 
-  let ac = ATLAS_CORNER_LUT[axisFace * 4u + corner];
-  let atlasU = (ac ^ (ac >> 1u)) & 1u;
-  let atlasV = ac >> 1u;
+  position =
+    vec3<f32>(baseX, baseY, baseZ) +
+    AXIS_BASIS[uAxis] * pu +
+    AXIS_BASIS[vAxis] * pv;
+
+  let atlasCorner = ATLAS_CORNER_LUT[axisFace * 4u + corner];
+  let atlasU = (atlasCorner ^ (atlasCorner >> 1u)) & 1u;
+  let atlasV = atlasCorner >> 1u;
   let swapUV = axisFace < 4u;
-  faceU = select(f32(atlasU) * faceWidth, f32(atlasU) * faceHeight, swapUV);
-  faceV = select(f32(atlasV) * faceHeight, f32(atlasV) * faceWidth, swapUV);
+
+  faceU = select(
+    f32(atlasU) * faceWidth,
+    f32(atlasU) * faceHeight,
+    swapUV
+  );
+  faceV = select(
+    f32(atlasV) * faceHeight,
+    f32(atlasV) * faceWidth,
+    swapUV
+  );
 `
 		: `  if (isDiag) {
-    let diagH = (cuF - 0.5) * faceWidth;
+    let diagonalOffset = (cuF - 0.5) * faceWidth;
+
     position = vec3<f32>(
-      baseX + sharedTangent.x * diagH,
+      baseX + sharedTangent.x * diagonalOffset,
       baseY + cvF * faceHeight,
-      baseZ + sharedTangent.z * diagH
+      baseZ + sharedTangent.z * diagonalOffset
     );
+
     faceU = cuF;
     faceV = cvF;
   } else {
@@ -347,86 +387,77 @@ ${boundaryRestoreBlock}`;
 
     let pu = cuF * faceWidth;
     let pv = cvF * faceHeight;
-    position = vec3<f32>(baseX, baseY, baseZ) + AXIS_BASIS[uAxis] * pu + AXIS_BASIS[vAxis] * pv;
 
-    let ac = ATLAS_CORNER_LUT[axisFace * 4u + corner];
-    let atlasU = (ac ^ (ac >> 1u)) & 1u;
-    let atlasV = ac >> 1u;
+    position =
+      vec3<f32>(baseX, baseY, baseZ) +
+      AXIS_BASIS[uAxis] * pu +
+      AXIS_BASIS[vAxis] * pv;
+
+    let atlasCorner = ATLAS_CORNER_LUT[axisFace * 4u + corner];
+    let atlasU = (atlasCorner ^ (atlasCorner >> 1u)) & 1u;
+    let atlasV = atlasCorner >> 1u;
     let swapUV = axisFace < 4u;
-    faceU = select(f32(atlasU) * faceWidth + uvOffsetU, f32(atlasU) * faceHeight + uvOffsetV, swapUV);
-    faceV = select(f32(atlasV) * faceHeight + uvOffsetV, f32(atlasV) * faceWidth + uvOffsetU, swapUV);
+
+    faceU = select(
+      f32(atlasU) * faceWidth + uvOffsetU,
+      f32(atlasU) * faceHeight + uvOffsetV,
+      swapUV
+    );
+    faceV = select(
+      f32(atlasV) * faceHeight + uvOffsetV,
+      f32(atlasV) * faceWidth + uvOffsetU,
+      swapUV
+    );
   }
 `;
+
+	const aoDecode = o.ao ? "  let packedAO = face.z & 0xffu;" : "";
+
+	const bitangentDeclaration = o.tangentSpaceLighting
+		? "  let sharedBitangent = cross(sharedNormal, sharedTangent);"
+		: "";
+
+	const ambientOcclusionDecode = o.ao
+		? `  let ambientOcclusion =
+    (packedAO >> (corner << 1u)) & 3u;`
+		: "";
+
+	const distanceDeclaration = o.fog ? "  let dist = distSq * invDist;" : "";
 
 	return /* wgsl */ `
 struct VSOut {
 ${vsOutFields(o)}
 };
 
-// Compact per-instance record (location injected by Lite's instancing path,
-// patched via patch-package to a single vec4<f32> per instance instead of a
-// full 4x4 matrix):
-//   instData.x carries this mesh's faceBase offset into its face arena.
-//   instData.y carries the arena index (which faceDataN buffer to read).
-//   instData.z carries the group's chunkOffsets base (the 64-offset block).
-// The rest of the matrix is unused (the vertex position is derived from
-// faceData, not the matrix).
-//
-// Face layout — 3 u32 words per face (12 bytes, little-endian):
-//   word0: sx | sy<<8 | sz<<16 | axisFace(3)<<24 | tint(3)<<27
-//   word1: sw | sh<<8 | tileX<<16 | tileY<<24
-//   word2: ao | light<<8 | meta<<16 | chunkIndex(6)<<24
-// sx/sy/sz are chunk-local positions scaled by 8 (1 block = 8 units);
-// sw/sh are face dimensions in the same scaled units (rawDimensions flag
-// switches them to unscaled block units for oversized faces); chunkIndex is
-// the per-face local chunk 0..63 selecting one of the 64 chunkOffsets entries
-// of this group.
-//
-// meta byte (word2 byte 2) bit usage:
-//   bit0 flip · bit1-2 materialType(2) · bit3 posOffX · bit4 diag ·
-//   bit5 diagVariant · bit6 rawDim · bit7 posOffZ
-//   materialType=3 is a vertex-stage sentinel: chunk-boundary faces clamp to
-//   the u8 position grid and the shader restores the exact plane (+1 unit).
-// Water faces carry isWater in bit 2 — which OVERLAPS the materialType field:
-// META_WATER makes ((metaByte >> 1) & 3) read as 3 on every water face even
-// though their stored materialType is 1. Materials whose buckets contain only
-// water (chunkTransparentLite, lod2/lod3 transparent) must therefore be built
-// with boundarySentinel=false so the ==3 restore never fires for them; opaque
-// and cutout buckets never receive water faces and keep it enabled. Bit 3
-// stays a clean posOffX correction for every face — water never sets
-// posOffX/posOffZ.
-//
-// The face arenas are declared as flat array<u32> (NOT array<vec3<u32>>:
-// WGSL storage-buffer layout pads vec3 elements to a 16-byte stride, which
-// would misalign every face after the first), so loadFace reads 3 consecutive
-// u32s per face.
-
 fn loadFace(arena : u32, idx : u32) -> vec3<u32> {
   let i3 = idx * 3u;
-${loadFaceBody}}
+${loadFaceBody}
+}
 
 ${fogWGSL(o.fog)}
+
 const DIAGONAL : f32 = 0.70710678;
 const INV_POS : f32 = 0.125;
-const INV_LIGHT : f32 = 1.0 / 15.0;
+const HALF_INV_POS : f32 = 0.0625;
+const INV_LIGHT : f32 = 0.0666666667;
 
-const CORNER_LUT = array<u32,16>(
-  0u,1u,2u,3u,   // state 0  (was packed byte 228)
-  3u,0u,1u,2u,   // state 1  (was packed byte 147)
-  2u,1u,0u,3u,   // state 2  (was packed byte 198)
-  1u,0u,3u,2u    // state 3  (was packed byte 177)
+const CORNER_LUT = array<u32, 16>(
+  0u, 1u, 2u, 3u,
+  3u, 0u, 1u, 2u,
+  2u, 1u, 0u, 3u,
+  1u, 0u, 3u, 2u
 );
 
-const ATLAS_CORNER_LUT = array<u32,24>(
-  0u,3u,2u,1u,   // axisFace 0
-  1u,2u,3u,0u,   // axisFace 1
-  0u,3u,2u,1u,   // axisFace 2
-  3u,0u,1u,2u,   // axisFace 3
-  1u,0u,3u,2u,   // axisFace 4
-  0u,1u,2u,3u    // axisFace 5 (default/else case)
+const ATLAS_CORNER_LUT = array<u32, 24>(
+  0u, 3u, 2u, 1u,
+  1u, 2u, 3u, 0u,
+  0u, 3u, 2u, 1u,
+  3u, 0u, 1u, 2u,
+  1u, 0u, 3u, 2u,
+  0u, 1u, 2u, 3u
 );
 
-const AXIS_BASIS = array<vec3<f32>,3>(
+const AXIS_BASIS = array<vec3<f32>, 3>(
   vec3<f32>(1.0, 0.0, 0.0),
   vec3<f32>(0.0, 1.0, 0.0),
   vec3<f32>(0.0, 0.0, 1.0)
@@ -438,7 +469,11 @@ const U_AXIS = array<u32, 3>(1u, 2u, 0u);
 const V_AXIS = array<u32, 3>(2u, 0u, 1u);
 
 @vertex
-fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32, @builtin(vertex_index) vertexIndex : u32) -> VSOut {
+fn mainVertex(
+  input : VertexInput,
+  @builtin(instance_index) instanceIndex : u32,
+  @builtin(vertex_index) vertexIndex : u32
+) -> VSOut {
   var out : VSOut;
 
   let faceBase = u32(input.instData.x);
@@ -456,7 +491,7 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
   let tileX = (face.y >> 16u) & 0xffu;
   let tileY = (face.y >> 24u) & 0xffu;
 
-${o.ao ? "  let packedAO = face.z & 0xffu;" : ""}
+${aoDecode}
   let lightByte = (face.z >> 8u) & 0xffu;
 ${decodeBlock}
 
@@ -464,26 +499,29 @@ ${decodeBlock}
   let blockLight = f32(lightByte & 0x0fu) * INV_LIGHT;
 
 ${normalBlock}
-${o.tangentSpaceLighting ? "  let sharedBitangent = cross(sharedNormal, sharedTangent);" : ""}
+${bitangentDeclaration}
 
-  let vid = vertexIndex;
-  let corner = CORNER_LUT[cornerState * 4u + vid];
+  let corner = CORNER_LUT[cornerState * 4u + vertexIndex];
   let cuF = CORNER_U[corner];
   let cvF = CORNER_V[corner];
 
   var position : vec3<f32>;
   var faceU : f32;
   var faceV : f32;
+
 ${positionBlock}
 
   let localPosition = vec4<f32>(position, 1.0);
   let worldPos = shaderSystem.world * localPosition;
+
   out.pos = shaderSystem.worldViewProjection * localPosition;
-${o.ao ? "  let ambientOcclusion = (packedAO >> (corner << 1u)) & 3u;" : ""}
+
+${ambientOcclusionDecode}
   let toCamera = shaderSystem.cameraPosition - worldPos.xyz;
   let distSq = dot(toCamera, toCamera);
   let invDist = inverseSqrt(max(distSq, 1e-8));
-${o.fog ? "  let dist = distSq * invDist;" : ""}
+${distanceDeclaration}
+
 ${vsOutAssignments(o)}
   return out;
 }
