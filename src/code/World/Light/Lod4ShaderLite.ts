@@ -46,9 +46,8 @@ function tintLutWgsl(lut: Float32Array): string {
 	);
 }
 
-// The two fragment variants differ only in alpha handling; generate both
-// from one template to keep them in lockstep.
-function makeFragmentSource(lut: Float32Array): string {
+// Opaque / cutout fragment — tinted diffuse, no water logic.
+function makeOpaqueFragmentSource(lut: Float32Array): string {
 	return /* wgsl */ `${tintLutWgsl(lut)}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
@@ -59,54 +58,69 @@ struct VSOut {
   @location(12) @interpolate(flat) vTint : u32,
   @location(15) @interpolate(flat) vShade : vec3<f32>,
 };
-fn hash12(p : vec2<f32>) -> f32 {
-  var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
-  p3 = p3 + dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
-}
-
-fn applyDitherFade(coord : vec2<f32>) {
-  if (abs(shaderUniforms.lodFadeDirection) < 0.5) { return; }
-  let n = hash12(floor(coord) + vec2<f32>(shaderUniforms.lodFadeSeed, shaderUniforms.lodFadeSeed * 1.37));
-  if (shaderUniforms.lodFadeDirection > 0.0) {
-    if (n > shaderUniforms.lodFadeProgress) { discard; }
-  } else {
-    if (n < shaderUniforms.lodFadeProgress) { discard; }
-  }
-}
-
-fn applyTintBucket(color : vec3<f32>, bucket : u32) -> vec3<f32> {
-  let idx = min(bucket, 5u);
-  return color * tintLUT[idx].rgb;
-}
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-  applyDitherFade(in.pos.xy);
+let diffuseColor = textureSampleLevel(
+diffuseTexture,
+diffuseTextureSampler,
+fract(in.vUV),
+in.vTileLayer,
+3.0
+);
+if (diffuseColor.a < 0.01) {
+discard;
+}
+let litColor =
+diffuseColor.rgb *
+in.vShade *
+tintLUT[in.vTint].rgb;
+return vec4<f32>(
+mix(litColor, in.vFogColor, in.vFogFactor),
+1.0
+);
+}
+`;
+}
 
-  let singleTileUV = fract(in.vUV);
+// Water-only fragment — same VSOut/vertex pipeline as opaque but
+// replaces the tinted diffuse with the LOD3 water color so every
+// distant water mesh matches lod3Transparent `waterColor`.
+// lod3: vec3(0.1,0.4,0.7) * min(vShade, vec3(0.6)) -> fog -> alpha
+function makeWaterFragmentSource(lut: Float32Array): string {
+	return /* wgsl */ `${tintLutWgsl(lut)}
+struct VSOut {
+@builtin(position) pos : vec4<f32>,
+@location(0) vUV : vec2<f32>,
+@location(1) @interpolate(flat) vTileLayer : u32,
+@location(10) vFogFactor : f32,
+@location(11) vFogColor : vec3<f32>,
+@location(12) @interpolate(flat) vTint : u32,
+@location(15) @interpolate(flat) vShade : vec3<f32>,
+};
 
-  var diffuseColor = textureSampleLevel(
-    diffuseTexture,
-    diffuseTextureSampler,
-    singleTileUV,
-    in.vTileLayer,
-    3.0
-  );
+@fragment
+fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
+let diffuseColor = textureSampleLevel(
+diffuseTexture,
+diffuseTextureSampler,
+fract(in.vUV),
+in.vTileLayer,
+3.0
+);
 
-  if (diffuseColor.a < 0.01) {
-    discard;
-  }
+if (diffuseColor.a < 0.01) {
+discard;
+}
 
-  let litColor = applyTintBucket(
-    diffuseColor.rgb * in.vShade,
-    in.vTint
-  );
+let waterColor =
+vec3<f32>(0.1, 0.4, 0.7) *
+min(in.vShade, vec3<f32>(0.6));
 
-  return vec4<f32>(
-    mix(litColor, in.vFogColor, in.vFogFactor),
-    1.0
-  );
+return vec4<f32>(
+mix(waterColor, in.vFogColor, in.vFogFactor),
+diffuseColor.a
+);
 }
 `;
 }
@@ -210,7 +224,7 @@ export function createLod4OpaqueMaterial(
 	return buildCommonMaterial(
 		"lod4OpaqueLite",
 		opts,
-		makeFragmentSource(opts.tintLUT),
+		makeOpaqueFragmentSource(opts.tintLUT),
 		{ backFaceCulling: true },
 	);
 }
@@ -221,10 +235,10 @@ export function createLod4TransparentMaterial(
 	return buildCommonMaterial(
 		"lod4TransparentLite",
 		opts,
-		makeFragmentSource(opts.tintLUT),
+		makeWaterFragmentSource(opts.tintLUT),
 		{
-			backFaceCulling: false,
-			needAlphaBlending: true,
+			backFaceCulling: true,
+			needAlphaBlending: false,
 			blendMode: "alpha",
 		},
 	);

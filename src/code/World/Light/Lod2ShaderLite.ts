@@ -149,10 +149,16 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   color = applyTintBucket(color, in.vTint);
 
   let isWater = f32((in.vMeta >> 2u) & 1u);
-let waterColor =
-vec3<f32>(0.1, 0.4, 0.7) *
-in.vShade *
-0.55;
+
+  let waterColor =
+    vec3<f32>(0.1, 0.4, 0.7) *
+    min(in.vShade, vec3<f32>(0.6));
+
+  color = mix(
+    color,
+    waterColor,
+    isWater
+  );
 
   color = mix(color, in.vFogColor, in.vFogFactor);
 
