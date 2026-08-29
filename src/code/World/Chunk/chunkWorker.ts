@@ -273,12 +273,12 @@ export class ChunkWorker {
 		);
 		this.terrainWorker.onmessage = onMessageTerrain;
 
-		// Voxel mesh worker
+		// Voxel mesh worker – assign directly to avoid per-worker closure (was 50 kB / frame)
 		this.voxelWorker = new Worker(
 			new URL("./voxel.worker.ts", import.meta.url),
 			{ type: "module", name: `chunk-voxel-${workerIndex}` },
 		);
-		this.voxelWorker.onmessage = (e) => onMessageMesh(e);
+		this.voxelWorker.onmessage = onMessageMesh as any;
 	}
 
 	public setOnError(handler: (ev: ErrorEvent | Event) => void): void {

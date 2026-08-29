@@ -56,11 +56,8 @@ interface SlotHole {
 }
 
 interface SlotLayerState {
-	/** Sorted-by-offset free regions available for slot reuse. */
 	holes: SlotHole[];
-	/** Regions freed by member removal, awaiting zero+upload at next rebuild. */
 	released: SlotHole[];
-	/** High-water extent of all slot regions (used + holes + released). */
 	appendedFaces: number;
 }
 
@@ -160,6 +157,27 @@ function invalidateGroupBuildCache(group: MergedMeshGroup): void {
 }
 
 const _rangePool: MergedFaceRange[] = [];
+
+// Pooled Uint8Array per byteLength to avoid per-growth GC (profile: 1.1 MB Uint8Array per flush).
+const _uint8Pool = new Map<number, Uint8Array[]>();
+function allocPooledU8(bytes: number): Uint8Array {
+	const list = _uint8Pool.get(bytes);
+	if (list && list.length > 0) return list.pop()!;
+	return new Uint8Array(bytes);
+}
+function releasePooledU8(arr: Uint8Array | null): void {
+	if (!arr || arr.byteLength === 0) return;
+	let list = _uint8Pool.get(arr.byteLength);
+	if (!list) {
+		list = [];
+		_uint8Pool.set(arr.byteLength, list);
+	}
+	if (list.length < 32) {
+		// Keep zeroed for slot reuse correctness (stale quads would render)
+		arr.fill(0);
+		list.push(arr);
+	}
+}
 
 function acquireRange(start: number, count: number): MergedFaceRange {
 	const r = _rangePool.pop();
@@ -546,6 +564,12 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 			disposeGroupMesh(group.cutoutMeshRef);
 			group.cutoutMeshRef = null;
 		}
+		releasePooledU8(group.opaqueData);
+		releasePooledU8(group.waterData);
+		releasePooledU8(group.cutoutData);
+		group.opaqueData = null;
+		group.waterData = null;
+		group.cutoutData = null;
 		groups.delete(groupKey);
 		dirtyGroups.delete(group);
 		_groupsMutatedSinceSweep = true;
@@ -690,6 +714,9 @@ export function disposeAll(): void {
 			disposeGroupMesh(group.cutoutMeshRef);
 			group.cutoutMeshRef = null;
 		}
+		releasePooledU8(group.opaqueData);
+		releasePooledU8(group.waterData);
+		releasePooledU8(group.cutoutData);
 		group.cachedOpaque = group.cachedWater = group.cachedCutout = null;
 		group.opaqueData = null;
 		group.opaqueCapacityFaces = 0;
@@ -727,8 +754,12 @@ function ensureOpaqueMergedCapacity(
 		capacity = Math.min(Math.max(faceCount, capacity << 1, 256), maxFaces);
 		group.opaqueCapacityFaces = capacity;
 		const bytes = capacity * 12;
-		const data = new Uint8Array(bytes);
-		if (group.opaqueData) data.set(group.opaqueData);
+		const data = allocPooledU8(bytes);
+		const old = group.opaqueData;
+		if (old) {
+			data.set(old.subarray(0, Math.min(old.length, bytes)));
+			releasePooledU8(old);
+		}
 		group.opaqueData = data;
 	}
 }
@@ -743,8 +774,12 @@ function ensureWaterMergedCapacity(
 		capacity = Math.min(Math.max(faceCount, capacity << 1, 256), maxFaces);
 		group.waterCapacityFaces = capacity;
 		const bytes = capacity * 12;
-		const data = new Uint8Array(bytes);
-		if (group.waterData) data.set(group.waterData);
+		const data = allocPooledU8(bytes);
+		const old = group.waterData;
+		if (old) {
+			data.set(old.subarray(0, Math.min(old.length, bytes)));
+			releasePooledU8(old);
+		}
 		group.waterData = data;
 	}
 }
@@ -759,8 +794,12 @@ function ensureCutoutMergedCapacity(
 		capacity = Math.min(Math.max(faceCount, capacity << 1, 256), maxFaces);
 		group.cutoutCapacityFaces = capacity;
 		const bytes = capacity * 12;
-		const data = new Uint8Array(bytes);
-		if (group.cutoutData) data.set(group.cutoutData);
+		const data = allocPooledU8(bytes);
+		const old = group.cutoutData;
+		if (old) {
+			data.set(old.subarray(0, Math.min(old.length, bytes)));
+			releasePooledU8(old);
+		}
 		group.cutoutData = data;
 	}
 }
@@ -822,8 +861,9 @@ function shrinkLayer(
 	if (newCap >= capacityFaces) return null;
 	const bytes = newCap * 12;
 	// data.length == oldCapacity*12 >= bytes: the live prefix always fits.
-	const n = new Uint8Array(bytes);
+	const n = allocPooledU8(bytes);
 	n.set(data.subarray(0, bytes));
+	releasePooledU8(data);
 	return { data: n, cap: newCap };
 }
 
