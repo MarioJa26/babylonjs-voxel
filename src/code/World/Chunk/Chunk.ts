@@ -56,16 +56,11 @@ function drainPendingMeshDisposal(): void {
 		if (mesh) disposeMeshGpu(mesh);
 	}
 }
-function makeSharedUint16(
-	valuesOrLength: number | ArrayLike<number>,
-): Uint16Array {
-	if (typeof valuesOrLength === "number") {
-		return new Uint16Array(new SharedArrayBuffer(valuesOrLength * 2));
-	}
 
-	const out = new Uint16Array(new SharedArrayBuffer(valuesOrLength.length * 2));
-	out.set(valuesOrLength);
-	return out;
+function makeSharedUint16(length: number): Uint16Array {
+	return new Uint16Array(
+		new SharedArrayBuffer(length * Uint16Array.BYTES_PER_ELEMENT),
+	);
 }
 
 function makeSharedUint8(length: number): Uint8Array {
@@ -431,35 +426,39 @@ export class Chunk {
 	private _storageSnapshot: LightStorageSnapshot | null = null;
 
 	public getLightStorageSnapshot(): LightStorageSnapshot {
-		let s = this._storageSnapshot;
-		if (s === null) {
-			s = {
+		let snapshot = this._storageSnapshot;
+
+		if (snapshot === null) {
+			snapshot = {
 				lightSAB: null,
 				blockSAB: null,
 				paletteSAB: null,
 				blockStorageBytesPerElement: 1,
 			};
-			this._storageSnapshot = s;
+			this._storageSnapshot = snapshot;
 		}
-		const lightBuffer = this.light_array?.buffer as
-			| SharedArrayBuffer
-			| ArrayBuffer
-			| undefined;
-		const blockBuffer = this._block_array?.buffer as
-			| SharedArrayBuffer
-			| ArrayBuffer
-			| undefined;
-		const paletteBuffer = this._palette?.buffer as
-			| SharedArrayBuffer
-			| ArrayBuffer
-			| undefined;
-		s.lightSAB = lightBuffer instanceof SharedArrayBuffer ? lightBuffer : null;
-		s.blockSAB = blockBuffer instanceof SharedArrayBuffer ? blockBuffer : null;
-		s.paletteSAB =
-			paletteBuffer instanceof SharedArrayBuffer ? paletteBuffer : null;
-		s.blockStorageBytesPerElement =
-			this._block_array instanceof Uint16Array ? 2 : 1;
-		return s;
+
+		const lightBuffer = this.light_array.buffer;
+		const blockArray = this._block_array;
+		const palette = this._palette;
+
+		snapshot.lightSAB =
+			lightBuffer instanceof SharedArrayBuffer ? lightBuffer : null;
+
+		snapshot.blockSAB =
+			blockArray !== null && blockArray.buffer instanceof SharedArrayBuffer
+				? blockArray.buffer
+				: null;
+
+		snapshot.paletteSAB =
+			palette !== null && palette.buffer instanceof SharedArrayBuffer
+				? palette.buffer
+				: null;
+
+		snapshot.blockStorageBytesPerElement =
+			blockArray instanceof Uint16Array ? 2 : 1;
+
+		return snapshot;
 	}
 
 	/** Dense integer ID for this chunk, assigned from a static counter.
@@ -694,39 +693,33 @@ export class Chunk {
 	 */
 	private ensureSharedBacking(): void {
 		const light = this.light_array;
-		if (light && !(light.buffer instanceof SharedArrayBuffer)) {
-			const sab = new SharedArrayBuffer(Chunk.SIZE3);
-			new Uint8Array(sab).set(light);
-			this.light_array = new Uint8Array(sab);
+
+		if (!(light.buffer instanceof SharedArrayBuffer)) {
+			const sharedLight = makeSharedUint8(light.length);
+			sharedLight.set(light);
+			this.light_array = sharedLight;
 		}
 
 		const block = this._block_array;
-		if (block && !(block.buffer instanceof SharedArrayBuffer)) {
-			const len = block.byteLength;
-			const sab = new SharedArrayBuffer(len);
-			const dst = new Uint8Array(sab);
-			if (block.byteOffset === 0 && block.BYTES_PER_ELEMENT === 1) {
-				dst.set(block as Uint8Array);
+
+		if (block !== null && !(block.buffer instanceof SharedArrayBuffer)) {
+			if (block instanceof Uint16Array) {
+				const sharedBlock = makeSharedUint16(block.length);
+				sharedBlock.set(block);
+				this._block_array = sharedBlock;
 			} else {
-				dst.set(new Uint8Array(block.buffer, block.byteOffset, len));
+				const sharedBlock = makeSharedUint8(block.length);
+				sharedBlock.set(block);
+				this._block_array = sharedBlock;
 			}
-			this._block_array =
-				block instanceof Uint16Array
-					? new Uint16Array(sab)
-					: new Uint8Array(sab);
 		}
 
 		const palette = this._palette;
-		if (palette && !(palette.buffer instanceof SharedArrayBuffer)) {
-			const byteLen = palette.byteLength;
-			const sab = new SharedArrayBuffer(byteLen);
-			const dst = new Uint8Array(sab);
-			if (palette.byteOffset === 0) {
-				dst.set(new Uint8Array(palette.buffer, 0, byteLen));
-			} else {
-				dst.set(new Uint8Array(palette.buffer, palette.byteOffset, byteLen));
-			}
-			this._palette = new Uint16Array(sab, 0, palette.length);
+
+		if (palette !== null && !(palette.buffer instanceof SharedArrayBuffer)) {
+			const sharedPalette = makeSharedUint16(palette.length);
+			sharedPalette.set(palette);
+			this._palette = sharedPalette;
 		}
 
 		this.updateLightView();
@@ -818,31 +811,59 @@ export class Chunk {
 		cachedMeshEntries: number;
 		cachedMeshBytes: number;
 	} {
-		let total = 0,
-			withVoxels = 0,
-			lodLow = 0,
-			lodMid = 0,
-			lodHigh = 0,
-			cachedMeshEntries = 0,
-			cachedMeshBytes = 0;
-		for (const c of Chunk.loadedChunks) {
+		let total = 0;
+		let withVoxels = 0;
+		let lodLow = 0;
+		let lodMid = 0;
+		let lodHigh = 0;
+		let cachedMeshEntries = 0;
+		let cachedMeshBytes = 0;
+
+		for (const chunk of Chunk.loadedChunks) {
 			total++;
-			if (c.hasVoxelData) withVoxels++;
-			const lod = c.lodLevel ?? 0;
-			if (lod <= 1) lodLow++;
-			else if (lod <= 3) lodMid++;
-			else lodHigh++;
-			const cache = c.getCensusCacheView();
-			if (cache) {
-				cachedMeshEntries += cache.size;
-				for (const entry of cache.values()) {
-					for (const md of [entry.opaque, entry.water, entry.cutout]) {
-						if (!md) continue;
-						cachedMeshBytes += md.faceData.byteLength;
-					}
+
+			if (chunk._hasVoxelData) {
+				withVoxels++;
+			}
+
+			const lod = chunk.lodLevel;
+
+			if (lod <= 1) {
+				lodLow++;
+			} else if (lod <= 3) {
+				lodMid++;
+			} else {
+				lodHigh++;
+			}
+
+			const cache = chunk._cachedLODMeshes;
+
+			if (cache === null) {
+				continue;
+			}
+
+			cachedMeshEntries += cache.size;
+
+			for (const entry of cache.values()) {
+				// The previous [opaque, water, cutout] expression allocated
+				// one temporary JavaScript array for every cached LOD entry.
+				const opaque = entry.opaque;
+				if (opaque !== null) {
+					cachedMeshBytes += opaque.faceData.byteLength;
+				}
+
+				const water = entry.water;
+				if (water !== null) {
+					cachedMeshBytes += water.faceData.byteLength;
+				}
+
+				const cutout = entry.cutout;
+				if (cutout !== null) {
+					cachedMeshBytes += cutout.faceData.byteLength;
 				}
 			}
 		}
+
 		return {
 			total,
 			withVoxels,
@@ -858,31 +879,64 @@ export class Chunk {
 	private getCensusCacheView(): Map<number, CachedLODMesh> | null {
 		return this._cachedLODMeshes;
 	}
+
 	public getSerializableLODMeshCache(): SerializedLODMeshCache | undefined {
-		if (this._cachedLODMeshes === null || this._cachedLODMeshes.size === 0) {
+		const cache = this._cachedLODMeshes;
+
+		if (cache === null || cache.size === 0) {
 			return undefined;
 		}
-		const out: SerializedLODMeshCache = {};
-		let count = 0;
-		for (const [lod, mesh] of this._cachedLODMeshes.entries()) {
-			if (!mesh.opaque && !mesh.water && !mesh.cutout) continue;
-			out[lod] = {
-				opaque: mesh.opaque ?? null,
-				water: mesh.water ?? null,
-				cutout: mesh.cutout ?? null,
+
+		const output: SerializedLODMeshCache = {};
+		let hasEntries = false;
+
+		for (const [lod, mesh] of cache) {
+			if (mesh.opaque === null && mesh.water === null && mesh.cutout === null) {
+				continue;
+			}
+
+			output[lod] = {
+				opaque: mesh.opaque,
+				water: mesh.water,
+				cutout: mesh.cutout,
 			};
-			count++;
+
+			hasEntries = true;
 		}
-		return count === 0 ? undefined : out;
+
+		return hasEntries ? output : undefined;
 	}
+
 	public restoreLODMeshCache(cache?: SerializedLODMeshCache): void {
-		this._cachedLODMeshes?.clear();
-		if (!cache) return;
-		for (const key of Object.keys(cache)) {
+		// Drop the old Map rather than clearing it. This releases its internal
+		// bucket storage, which can be significant after a large cache.
+		this._cachedLODMeshes = null;
+
+		if (cache === undefined) {
+			return;
+		}
+
+		// for...in avoids allocating an Object.keys() array.
+		for (const key in cache) {
+			if (!Object.hasOwn(cache, key)) {
+				continue;
+			}
+
 			const lod = Number(key);
-			if (!Number.isFinite(lod)) continue;
+
+			if (!Number.isFinite(lod)) {
+				continue;
+			}
+
 			const entry = cache[lod];
-			if (!entry?.opaque && !entry?.water && !entry?.cutout) continue;
+
+			if (
+				entry === undefined ||
+				(!entry.opaque && !entry.water && !entry.cutout)
+			) {
+				continue;
+			}
+
 			this.setCachedLODMesh(lod, {
 				opaque: entry.opaque ?? null,
 				water: entry.water ?? null,
@@ -1283,81 +1337,112 @@ export class Chunk {
 		}
 
 		const index = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
+
 		const packedBlock = packBlockValue(blockId, state);
-		let oldPacked = 0;
+
+		let oldPacked: number;
 		let storageLayoutChanged = false;
 		let paletteChanged = false;
 
 		if (this._isUniform) {
 			oldPacked = this._uniformBlockId;
-			if (oldPacked === packedBlock) return;
+
+			if (oldPacked === packedBlock) {
+				return;
+			}
 
 			this._isUniform = false;
 			this._hasVoxelData = true;
-			this._palette = makeSharedUint16([oldPacked, packedBlock]);
-			this._block_array = makeSharedUint8(Chunk.SIZE3 / 2);
+
+			// Avoid makeSharedUint16([oldPacked, packedBlock]), which creates
+			// a temporary JavaScript array on every uniform-to-palette change.
+			const palette = makeSharedUint16(2);
+			palette[0] = oldPacked;
+			palette[1] = packedBlock;
+
+			this._palette = palette;
+			this._block_array = makeSharedUint8(Chunk.SIZE3 >>> 1);
 			this.setNibble(index, 1);
 
 			storageLayoutChanged = true;
 			paletteChanged = true;
-		} else if (this._palette) {
-			const paletteIndex = this.getNibble(index);
-			oldPacked = this._palette[paletteIndex];
+		} else {
+			const palette = this._palette;
 
-			if (oldPacked === packedBlock) return;
+			if (palette !== null) {
+				const paletteIndex = this.getNibble(index);
+				oldPacked = palette[paletteIndex];
 
-			const pal = this._palette;
-			let npi = -1;
-
-			for (let i = 0; i < pal.length; i++) {
-				if (pal[i] === packedBlock) {
-					npi = i;
-					break;
+				if (oldPacked === packedBlock) {
+					return;
 				}
-			}
 
-			if (npi < 0) {
-				if (pal.length < 16) {
-					npi = pal.length;
-					const ep = makeSharedUint16(npi + 1);
-					ep.set(pal);
-					ep[npi] = packedBlock;
-					this._palette = ep;
-					this.setNibble(index, npi);
+				let newPaletteIndex = -1;
+
+				for (let i = 0; i < palette.length; i++) {
+					if (palette[i] === packedBlock) {
+						newPaletteIndex = i;
+						break;
+					}
+				}
+
+				if (newPaletteIndex >= 0) {
+					this.setNibble(index, newPaletteIndex);
+				} else if (palette.length < 16) {
+					newPaletteIndex = palette.length;
+
+					const expandedPalette = makeSharedUint16(newPaletteIndex + 1);
+
+					expandedPalette.set(palette);
+					expandedPalette[newPaletteIndex] = packedBlock;
+
+					this._palette = expandedPalette;
+					this.setNibble(index, newPaletteIndex);
 					paletteChanged = true;
 				} else {
-					const na = makeSharedUint16(Chunk.SIZE3);
+					// Palette is full. Expand directly to dense packed values.
+					const dense = makeSharedUint16(Chunk.SIZE3);
+					const nibbleStorage = this._block_array as Uint8Array;
+
 					for (let i = 0; i < Chunk.SIZE3; i++) {
-						na[i] = pal[this.getNibble(i)];
+						const byte = nibbleStorage[i >>> 1];
+						const nibble = (i & 1) === 0 ? byte & 0x0f : byte >>> 4;
+
+						dense[i] = palette[nibble];
 					}
-					na[index] = packedBlock;
-					this._block_array = na;
+
+					dense[index] = packedBlock;
+					this._block_array = dense;
 					this._palette = null;
 					storageLayoutChanged = true;
 				}
 			} else {
-				this.setNibble(index, npi);
-			}
-		} else {
-			const blockArray = this._block_array!;
+				let blockArray = this._block_array!;
 
-			if (packedBlock > 255 && blockArray instanceof Uint8Array) {
-				const na = makeSharedUint16(Chunk.SIZE3);
-				na.set(blockArray);
-				this._block_array = na;
-				storageLayoutChanged = true;
-			}
+				if (packedBlock > 0xff && blockArray instanceof Uint8Array) {
+					const dense = makeSharedUint16(Chunk.SIZE3);
+					dense.set(blockArray);
 
-			oldPacked = this._block_array![index];
-			if (oldPacked === packedBlock) return;
+					blockArray = dense;
+					this._block_array = dense;
+					storageLayoutChanged = true;
+				}
 
-			this._block_array![index] = packedBlock;
+				oldPacked = blockArray[index];
 
-			if (this._denseOpacity) {
-				this._denseOpacity[index] =
-					packedBlock !== 0 && BLOCK_TYPE[unpackBlockId(packedBlock)] === 0
-						? 1
-						: 0;
+				if (oldPacked === packedBlock) {
+					return;
+				}
+
+				blockArray[index] = packedBlock;
+
+				const denseOpacity = this._denseOpacity;
+				if (denseOpacity !== null) {
+					denseOpacity[index] =
+						packedBlock !== 0 && BLOCK_TYPE[unpackBlockId(packedBlock)] === 0
+							? 1
+							: 0;
+				}
 			}
 		}
 
@@ -1386,19 +1471,29 @@ export class Chunk {
 		this.persistenceRevision++;
 		this.connectivityDirty = true;
 		this.blockRevision++;
+
 		this.markDirtyForRemesh();
 		Chunk.onBlockModified?.(this);
 
-		const S = Chunk.SIZE;
+		const last = Chunk.SM1;
 
-		if (localX === 0) this.getNeighbor(-1, 0, 0)?.markDirtyForRemesh();
-		else if (localX === S - 1) this.getNeighbor(1, 0, 0)?.markDirtyForRemesh();
+		if (localX === 0) {
+			this.neighborRefs[1]?.markDirtyForRemesh();
+		} else if (localX === last) {
+			this.neighborRefs[0]?.markDirtyForRemesh();
+		}
 
-		if (localY === 0) this.getNeighbor(0, -1, 0)?.markDirtyForRemesh();
-		else if (localY === S - 1) this.getNeighbor(0, 1, 0)?.markDirtyForRemesh();
+		if (localY === 0) {
+			this.neighborRefs[3]?.markDirtyForRemesh();
+		} else if (localY === last) {
+			this.neighborRefs[2]?.markDirtyForRemesh();
+		}
 
-		if (localZ === 0) this.getNeighbor(0, 0, -1)?.markDirtyForRemesh();
-		else if (localZ === S - 1) this.getNeighbor(0, 0, 1)?.markDirtyForRemesh();
+		if (localZ === 0) {
+			this.neighborRefs[5]?.markDirtyForRemesh();
+		} else if (localZ === last) {
+			this.neighborRefs[4]?.markDirtyForRemesh();
+		}
 	}
 
 	/**
@@ -1453,28 +1548,26 @@ export class Chunk {
 	// =========================================================================
 
 	public scheduleRemesh(priority = false, includeNeighbors = false): void {
-		if (!this.isLoaded) return;
+		if (!this.isLoaded) {
+			return;
+		}
 
 		this.isDirty = true;
 
 		if (includeNeighbors) {
-			this.getNeighbor(-1, 0, 0)?.scheduleRemesh(priority);
-			this.getNeighbor(1, 0, 0)?.scheduleRemesh(priority);
-			this.getNeighbor(0, -1, 0)?.scheduleRemesh(priority);
-			this.getNeighbor(0, 1, 0)?.scheduleRemesh(priority);
-			this.getNeighbor(0, 0, -1)?.scheduleRemesh(priority);
-			this.getNeighbor(0, 0, 1)?.scheduleRemesh(priority);
+			const refs = this.neighborRefs;
+
+			refs[0]?.scheduleRemesh(priority);
+			refs[1]?.scheduleRemesh(priority);
+			refs[2]?.scheduleRemesh(priority);
+			refs[3]?.scheduleRemesh(priority);
+			refs[4]?.scheduleRemesh(priority);
+			refs[5]?.scheduleRemesh(priority);
 		}
 
-		// Coalescing: when a rebuild is already queued or in flight, a repeat
-		// request must NOT advance meshRevision. The worker stamps the revision
-		// at dispatch time and reads live voxel state from the shared buffers,
-		// so the pending build already covers these requests; if a build is
-		// mid-flight the pool's rerunRemeshAfterInflight path re-queues a fresh
-		// build after it lands. Bumping here would mark that in-flight result
-		// stale on arrival (drain drops it) and force a duplicate full rebuild —
-		// the remesh storm during load waves.
-		if (this.remeshQueued) return;
+		if (this.remeshQueued) {
+			return;
+		}
 
 		this.meshRevision++;
 		this.remeshQueued = true;
@@ -1757,79 +1850,94 @@ export class Chunk {
 	// =========================================================================
 
 	public dispose(): void {
-		// Null our slot in each live neighbour's neighborRefs before removing
-		// ourselves from chunkInstances, so no chunk holds a dangling ref to us.
-		// PERF: read our own eagerly-maintained refs directly — no Map lookups.
-		// d ^ 1 gives the opposite direction (the face pointing back toward us).
 		const refs = this.neighborRefs;
-		for (let d = 0; d < 6; d++) {
-			const nbr = refs[d];
-			if (nbr) nbr.neighborRefs[d ^ 1] = null;
-			refs[d] = null;
+
+		for (let direction = 0; direction < 6; direction++) {
+			const neighbor = refs[direction];
+
+			if (neighbor !== null) {
+				neighbor.neighborRefs[direction ^ 1] = null;
+				refs[direction] = null;
+			}
 		}
 
-		// Remove from merged mesh group — the group manager handles mesh disposal.
-		if (this.mergedGroupKey) {
+		const wasMerged = this.mergedGroupKey !== null;
+
+		if (wasMerged) {
 			removeChunkFromGroup(this);
+		} else {
+			const mesh = this.mesh;
+			if (mesh !== null) {
+				removeFromScene(Map1.mainScene, mesh);
+				deferMeshDisposal(mesh);
+			}
+
+			const waterMesh = this.waterMesh;
+			if (waterMesh !== null) {
+				removeFromScene(Map1.mainScene, waterMesh);
+				deferMeshDisposal(waterMesh);
+			}
+
+			const cutoutMesh = this.cutoutMesh;
+			if (cutoutMesh !== null) {
+				removeFromScene(Map1.mainScene, cutoutMesh);
+				deferMeshDisposal(cutoutMesh);
+			}
 		}
 
-		if (!this.mergedGroupKey) {
-			if (this.mesh) {
-				removeFromScene(Map1.mainScene, this.mesh);
-				deferMeshDisposal(this.mesh);
-			}
-			if (this.waterMesh) {
-				removeFromScene(Map1.mainScene, this.waterMesh);
-				deferMeshDisposal(this.waterMesh);
-			}
-			if (this.cutoutMesh) {
-				removeFromScene(Map1.mainScene, this.cutoutMesh);
-				deferMeshDisposal(this.cutoutMesh);
-			}
-		}
-		this.clearCachedLODMeshes();
 		this.mesh = null;
 		this.waterMesh = null;
 		this.cutoutMesh = null;
+
 		this.opaqueMeshData = null;
 		this.waterMeshData = null;
 		this.cutoutMeshData = null;
+
 		this._block_array = null;
-		this._isUniform = true;
-		this._uniformBlockId = 0;
 		this._palette = null;
 		this._paletteOpacity = null;
 		this._denseOpacity = null;
-		this._la32 = null;
+
+		this._isUniform = true;
+		this._uniformBlockId = 0;
 		this._hasVoxelData = false;
+
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
+		this._la32 = null;
 		this._isDarkCached = false;
+
+		this._cachedLODMeshes = null;
+
+		this._storageSnapshot = null;
+
 		this.isLoaded = false;
 
 		const view = Chunk.lightHeaderView;
-		if (view && this.lightHeaderSlot !== 0xffff_ffff) {
-			clearHeaderRow(view, this.lightHeaderSlot);
-			Chunk._lightHeaderFreeSlots.push(this.lightHeaderSlot);
+		const slot = this.lightHeaderSlot;
+
+		if (view !== null && slot !== 0xffff_ffff) {
+			clearHeaderRow(view, slot);
+			Chunk._lightHeaderFreeSlots.push(slot);
 			this.lightHeaderSlot = 0xffff_ffff;
 		}
+
 		Chunk.onLightChunkDisposed?.(this);
 
 		Chunk.loadedChunks.delete(this);
 		Chunk.loadedChunkIndex.unregister(this);
+		Chunk.chunkInstances.delete(this.id);
+
 		this.isTerrainScheduled = false;
 		this.remeshQueued = false;
 		this.rerunRemeshAfterInflight = false;
-		Chunk.chunkInstances.delete(this.id);
+
 		this.bfsQueryId = 0;
 		this.bfsVisitedFaces = 0;
 		this.bfsQueuedForConnectivity = false;
 
 		runChunkDisposeHooks(this);
 
-		// Pool the empty shell for reuse – avoids `new Chunk` churn (≈344 kB / frame).
-		// Cap to avoid unbounded retention if world is explored extensively.
 		if (Chunk._pool.length < 2048) {
-			// Keep neighborRefs array for reuse (already nulled above)
 			Chunk._pool.push(this);
 		}
 	}

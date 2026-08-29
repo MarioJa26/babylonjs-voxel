@@ -93,11 +93,6 @@ interface FarSlot {
 	count: number; // face count
 }
 
-interface DirtyRange {
-	start: number; // face units
-	count: number;
-}
-
 interface FarMeshLike extends Mesh {
 	isVisible?: boolean;
 	thinInstances?: {
@@ -1035,22 +1030,6 @@ class FarTileManagerImpl {
 			originSlot,
 		};
 		this.tiles.set(key, entry);
-	}
-
-	private releaseEntry(entry: TileEntry): void {
-		const arena = this.terrainArenas[entry.levelIndex];
-		if (arena && entry.opaque) {
-			arena.free(entry.opaque);
-			this.terrainStraight[entry.levelIndex]?.removeSlot(entry.opaque);
-			this.terrainReversed[entry.levelIndex]?.removeSlot(entry.opaque);
-		}
-		if (entry.water) {
-			this.waterArena.free(entry.water);
-			this.waterReversed.removeSlot(entry.water);
-		}
-		// Recycle the origin slot so the 16-bit face-word index can never
-		// wrap (see the originFreeSlots note above).
-		this.releaseOrigin(entry.originSlot);
 	}
 
 	/** Debug/profiling snapshot (HUD "Far" lines). */

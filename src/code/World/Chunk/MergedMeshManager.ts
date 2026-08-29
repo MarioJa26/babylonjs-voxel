@@ -480,8 +480,6 @@ function markGroupDirty(group: MergedMeshGroup): void {
 // Module-level state continued
 // ---------------------------------------------------------------------------
 
-const EMPTY_U12 = new Uint8Array(0);
-
 const _precomputedOffsets = (() => {
 	const offsets = new Float32Array(MAX_GROUP_MEMBERS * 3);
 	for (let i = 0; i < MAX_GROUP_MEMBERS; i++) {

@@ -34,17 +34,22 @@ import { getServerNameFromUrl, worldSeedFor } from "./World/WorldContext";
 import { WorldStorage } from "./World/WorldStorage";
 
 const ENABLE_LITE_EXPLORER = false;
+const MULTIPLAYER_ROOM_NAME = "__mp__";
+const MAX_FPS_CAP = 240;
+const MSAA_SAMPLE_COUNT = 4;
+const MIN_DEVICE_PIXEL_RATIO = 0.5;
 
 /**
  * Lite native port of the engine/bootstrap entry point.
- * Creates the WebGPU engine + scene + follow camera, registers the
- * scene, and runs the render loop through startEngine's internal rAF.
+ * Creates the WebGPU engine, scene, and follow camera, registers the scene,
+ * and runs the render loop through startEngine's internal rAF.
  */
 export class TestScene {
-	document: Document;
-	scene?: SceneContext;
-	engine?: EngineContext;
+	public readonly document: Document;
 	public readonly initPromise: Promise<void>;
+
+	public scene?: SceneContext;
+	public engine?: EngineContext;
 
 	#frameCounter = 0;
 	#player?: Player;
@@ -54,33 +59,40 @@ export class TestScene {
 	#remoteMobManager?: RemoteMobManager;
 	#remoteItemManager?: RemoteItemManager;
 
-	constructor(
+	public constructor(
 		document: Document,
-		private canvas: HTMLCanvasElement,
+		private readonly canvas: HTMLCanvasElement,
 		private readonly worldName: string,
 	) {
 		this.document = document;
 		this.initPromise = this.init();
 	}
 
-	async init(): Promise<void> {
-		// Load persisted settings BEFORE the engine exists: render scale and
-		// MSAA are surface-creation options (canvas size + pipeline sample
-		// counts) and cannot be changed afterwards without a full rebuild.
+	public async init(): Promise<void> {
+		/*
+		 * Load persisted settings before creating the engine. Render scale and
+		 * MSAA affect surface creation and cannot be changed without rebuilding
+		 * the surface and pipelines.
+		 */
 		const savedSettings = loadGameSettings();
-		const dpr =
-			typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+
+		const devicePixelRatio =
+			typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
+
 		const engine = await createEngine(this.canvas, {
-			msaaSamples: savedSettings.msaaEnabled ? 4 : 1,
-			maxDevicePixelRatio: Math.max(0.5, dpr * savedSettings.renderScale),
+			msaaSamples: savedSettings.msaaEnabled ? MSAA_SAMPLE_COUNT : 1,
+			maxDevicePixelRatio: Math.max(
+				MIN_DEVICE_PIXEL_RATIO,
+				devicePixelRatio * savedSettings.renderScale,
+			),
 		});
-		// The engine's rAF loop polls resizeSurface() every frame; without this
-		// it reads canvas.clientWidth/clientHeight each time, so any HUD style
-		// write that dirtied layout earlier in the frame (tooltip position,
-		// stat bars) forces a synchronous layout flush on the main thread. With
-		// a ResizeObserver feeding surface._w/_h the per-frame check compares
-		// cached numbers instead and never touches layout.
+
+		/*
+		 * Keep surface dimensions cached through ResizeObserver so the render
+		 * loop does not need to read canvas layout dimensions each frame.
+		 */
 		enableSurfaceResizeObserver(engine);
+
 		const scene = createSceneContext(engine, {
 			defaultRenderTask: true,
 		});
@@ -88,23 +100,25 @@ export class TestScene {
 		this.engine = engine;
 		this.scene = scene;
 
-		// Apply locally persisted options before anything reads the params.
 		applyGameSettingsToEngine(savedSettings);
 
 		const playerCamera = new PlayerCamera();
 		playerCamera.mouseSensitivity = savedSettings.mouseSensitivity;
+
 		const player = new Player(engine, scene, playerCamera, this.canvas);
 
 		this.#player = player;
 		this.#disposeLightDebugTool = installLightDebugTool(
-			() => this.#player?.position,
+			this.#getPlayerPosition,
 		);
 
 		scene.camera = playerCamera.playerCamera;
 
 		const serverNick = getServerNameFromUrl();
 
-		if (serverNick !== null) {
+		if (serverNick === null) {
+			await this.initSingleplayer(engine, scene, player, playerCamera);
+		} else {
 			await this.initMultiplayer(
 				engine,
 				scene,
@@ -112,13 +126,12 @@ export class TestScene {
 				playerCamera,
 				serverNick,
 			);
-		} else {
-			await this.initSingleplayer(engine, scene, player, playerCamera);
 		}
 
 		await registerScene(scene);
 		await startEngine(engine);
 		await initBlockBreakParticles(scene);
+
 		this.#installFpsCap(engine, savedSettings.fpsCap);
 
 		if (ENABLE_LITE_EXPLORER) {
@@ -127,36 +140,52 @@ export class TestScene {
 	}
 
 	/**
+	 * Stable callback stored once instead of creating an inline callback when
+	 * installing the light debug tool.
+	 */
+	readonly #getPlayerPosition = () => this.#player?.position;
+
+	/**
 	 * Cap the engine's rAF loop without patching lite.
 	 *
-	 * startEngine() schedules an uncapped requestAnimationFrame chain, so on
-	 * 120Hz+ monitors the GPU renders flat-out. We wrap `engine._renderFn`:
-	 * when a frame is due we call the original (which re-schedules our
-	 * wrapper — exactly one chain), and when skipped WE re-schedule instead.
+	 * startEngine() schedules an uncapped requestAnimationFrame chain. The
+	 * wrapper calls the original render function when a frame is due and
+	 * schedules itself directly when a frame is skipped.
 	 */
 	#installFpsCap(engine: EngineContext, fpsCap: number = 0): void {
-		if (fpsCap <= 0) return; // 0 = uncapped
-		const anyEngine = engine as unknown as {
+		if (fpsCap <= 0) {
+			return;
+		}
+
+		const internalEngine = engine as unknown as {
 			_renderFn: ((now: number) => void) | null;
 			_animFrameId: number;
 		};
-		const original = anyEngine._renderFn;
-		if (!original) return;
-		const minInterval = fpsCap > 0 ? 1000 / Math.min(fpsCap, 240) - 1 : 0;
-		let lastRender = -Infinity;
-		const wrapped = (now: number): void => {
-			if (anyEngine._renderFn !== wrapped) return; // engine stopped
 
+		const originalRender = internalEngine._renderFn;
+
+		if (originalRender === null) {
+			return;
+		}
+
+		const minInterval = 1000 / Math.min(fpsCap, MAX_FPS_CAP) - 1;
+
+		let lastRender = -Infinity;
+
+		const wrappedRender = (now: number): void => {
 			if (now - lastRender >= minInterval || now < lastRender) {
 				lastRender = now;
-				original(now); // re-schedules `wrapped`
-			} else {
-				anyEngine._animFrameId = requestAnimationFrame(wrapped);
+				originalRender(now);
+				return;
 			}
+
+			internalEngine._animFrameId = requestAnimationFrame(wrappedRender);
 		};
-		cancelAnimationFrame(anyEngine._animFrameId);
-		anyEngine._renderFn = wrapped;
-		anyEngine._animFrameId = requestAnimationFrame(wrapped);
+
+		cancelAnimationFrame(internalEngine._animFrameId);
+
+		internalEngine._renderFn = wrappedRender;
+		internalEngine._animFrameId = requestAnimationFrame(wrappedRender);
 	}
 
 	private async initMultiplayer(
@@ -166,62 +195,60 @@ export class TestScene {
 		playerCamera: PlayerCamera,
 		serverNick: string,
 	): Promise<void> {
-		const saved = findSavedServerByName(serverNick);
-		const serverUrl = saved?.url ?? reconstructWsUrl(serverNick);
+		const savedServer = findSavedServerByName(serverNick);
+		const serverUrl = savedServer?.url ?? reconstructWsUrl(serverNick);
+
+		const savedPlayerName = getPlayerName();
 		const playerName =
-			getPlayerName() || `Player${Math.floor(Math.random() * 1000)}`;
+			savedPlayerName || `Player${Math.floor(Math.random() * 1000)}`;
 
 		const map = new Map1(engine, scene, player);
 
 		await preloadMobSkins();
 
-		this.#networkManager = new NetworkManager(player, serverUrl);
-		player.networkManager = this.#networkManager;
-		player.setDefaultBlockEditCallbacks(this.#networkManager);
+		const networkManager = new NetworkManager(player, serverUrl);
 
-		// Stable server-side room name so all players on the same server share a world.
-		void this.#networkManager.connect(playerName, "__mp__");
+		this.#networkManager = networkManager;
+		player.networkManager = networkManager;
+		player.setDefaultBlockEditCallbacks(networkManager);
 
-		// Server-authoritative mobs: render remote mobs driven by MobSpawn /
-		// MobUpdateBatch / MobDespawn. Created after connect so its binary
-		// handler is registered for the lifetime of the connection.
-		this.#remoteMobManager = new RemoteMobManager(
-			this.#networkManager.netClient,
-		);
-		Map1.remoteMobManager = this.#remoteMobManager;
+		void networkManager.connect(playerName, MULTIPLAYER_ROOM_NAME);
 
-		// Server-authoritative items: render remote dropped items driven by
-		// ItemSpawn / ItemUpdateBatch / ItemDespawn. Created after connect so
-		// its binary handler is registered for the lifetime of the connection.
-		this.#remoteItemManager = new RemoteItemManager(
-			this.#networkManager.netClient,
-		);
+		const netClient = networkManager.netClient;
 
-		// Arrows are relayed server→clients as ArrowSpawn; register the receiver
-		// at connect time (not lazily on first shot) so every client sees every
-		// other player's arrows regardless of whether it has fired yet.
-		Arrow.ensureNetworkHandler(this.#networkManager.netClient);
+		const remoteMobManager = new RemoteMobManager(netClient);
+		this.#remoteMobManager = remoteMobManager;
+		Map1.remoteMobManager = remoteMobManager;
+
+		const remoteItemManager = new RemoteItemManager(netClient);
+		this.#remoteItemManager = remoteItemManager;
+
+		Arrow.ensureNetworkHandler(netClient);
 
 		await map.initPromise;
 
 		this.initSharedPlayerSystems(scene, player);
 		player.respawn();
 
-		// Inventory persistence for multiplayer (client-localStorage, keyed
-		// per server). Position stays server-authoritative, so only the
-		// inventory is restored — items obtained in creative survive rejoin.
-		this.#playerStatePersistence = new PlayerStatePersistence(
+		const persistence = new PlayerStatePersistence(
 			scene,
 			player,
 			this.worldName,
 			{ persistPosition: false },
 		);
 
-		this.registerFrameUpdate(scene, playerCamera, (deltaMs) => {
-			this.#playerStatePersistence?.update();
-			this.#networkManager?.tick(deltaMs);
-			this.#remoteMobManager?.update(deltaMs);
-			this.#remoteItemManager?.update(deltaMs);
+		this.#playerStatePersistence = persistence;
+
+		/*
+		 * Capture initialized instances directly. This avoids repeated private
+		 * field lookups and optional-chain checks in the per-frame hot path.
+		 * These objects already remain alive for the registered scene callback.
+		 */
+		this.registerFrameUpdate(scene, playerCamera, (deltaMs: number): void => {
+			persistence.update();
+			networkManager.tick(deltaMs);
+			remoteMobManager.update(deltaMs);
+			remoteItemManager.update(deltaMs);
 		});
 	}
 
@@ -236,26 +263,40 @@ export class TestScene {
 		const map = new Map1(engine, scene, player);
 		await map.initPromise;
 
-		// Build the local spawn immediately so the loading gate can proceed
-		// without waiting for server-provided spawn data.
 		createFallbackSpawn(0, 0);
 
 		this.initSharedPlayerSystems(scene, player);
 		player.respawn();
 
-		this.#playerStatePersistence = new PlayerStatePersistence(
+		const persistence = new PlayerStatePersistence(
 			scene,
 			player,
 			this.worldName,
 		);
 
+		this.#playerStatePersistence = persistence;
+
+		/*
+		 * The coordinator may request the player position frequently. Reusing
+		 * this vector removes one object allocation per query.
+		 *
+		 * The returned value is borrowed and must not be retained or mutated by
+		 * the coordinator.
+		 */
+		const coordinatorPosition = vec3(0, 0, 0);
+
 		createMobCoordinator(scene, () => {
-			const p = this.#player!.position;
-			return vec3(p.x, p.y, p.z);
+			const position = player.position;
+
+			coordinatorPosition.x = position.x;
+			coordinatorPosition.y = position.y;
+			coordinatorPosition.z = position.z;
+
+			return coordinatorPosition;
 		});
 
-		this.registerFrameUpdate(scene, playerCamera, () => {
-			this.#playerStatePersistence?.update();
+		this.registerFrameUpdate(scene, playerCamera, (): void => {
+			persistence.update();
 		});
 	}
 
@@ -276,13 +317,19 @@ export class TestScene {
 			null,
 		);
 
-		onBeforeRender(scene, (deltaMs) => {
-			this.#frameCounter++;
+		onBeforeRender(scene, (deltaMs: number): void => {
+			const frameCounter = ++this.#frameCounter;
+			const player = this.#player;
+
 			Map1.update(deltaMs);
-			this.#player?.tick(deltaMs);
+
+			if (player !== undefined) {
+				player.tick(deltaMs);
+			}
+
 			perModeUpdate(deltaMs);
 			underWaterEffect.updateFromCamera();
-			updateGlobalUniforms(this.#frameCounter);
+			updateGlobalUniforms(frameCounter);
 		});
 	}
 
@@ -290,14 +337,24 @@ export class TestScene {
 		engine: EngineContext,
 		scene: SceneContext,
 	): Promise<void> {
-		const [{ showLiteExplorer }, lite] = await Promise.all([
-			import("babylon-lite-explorer"),
-			import("@babylonjs/lite"),
-		]);
+		const explorerModulePromise = import("babylon-lite-explorer");
+		const liteModulePromise = import("@babylonjs/lite");
 
-		showLiteExplorer(
-			{ engine, scene, canvas: this.canvas, lite },
-			{ mode: "overlay", layout: "single", theme: "dark" },
+		const explorerModule = await explorerModulePromise;
+		const lite = await liteModulePromise;
+
+		explorerModule.showLiteExplorer(
+			{
+				engine,
+				scene,
+				canvas: this.canvas,
+				lite,
+			},
+			{
+				mode: "overlay",
+				layout: "single",
+				theme: "dark",
+			},
 		);
 	}
 
@@ -310,11 +367,14 @@ export class TestScene {
 
 		void WorldStorage.flush();
 
-		if (this.engine) {
-			stopEngine(this.engine);
+		const engine = this.engine;
+
+		if (engine !== undefined) {
+			stopEngine(engine);
 		}
 
 		Map1.disposeAll();
+		Map1.remoteMobManager = null;
 
 		this.engine = undefined;
 		this.scene = undefined;
@@ -323,20 +383,24 @@ export class TestScene {
 		this.#networkManager = undefined;
 		this.#remoteMobManager = undefined;
 		this.#remoteItemManager = undefined;
-		Map1.remoteMobManager = null;
 		this.#disposeLightDebugTool = undefined;
 	}
 }
 
 /**
  * Rebuild a ws:// or wss:// URL from a saved-server nickname.
- * Used as a fallback when the nickname in the URL is not in the saved-servers
- * list, for example a shared host:port link.
+ * Used when the nickname in the URL is not in the saved-server list.
  */
 function reconstructWsUrl(nick: string | null): string | undefined {
-	if (!nick) return undefined;
-	if (nick.includes("://")) return nick;
+	if (!nick) {
+		return undefined;
+	}
+
+	if (nick.includes("://")) {
+		return nick;
+	}
 
 	const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+
 	return `${scheme}//${nick}`;
 }
