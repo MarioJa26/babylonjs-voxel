@@ -17,52 +17,27 @@ import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams
 const PACKED_ID_MASK = 0x3ff;
 
 /**
- * Face of OUR border cell that touches the neighbor, per face index
- * [+X, -X, +Y, -Y, +Z, -Z]. Light crossing the boundary enters through it.
+ * Face of our border cell that touches the neighbor, per face index:
+ * [+X, -X, +Y, -Y, +Z, -Z].
  */
-const BORDER_ENTER_BITS = [
+const BORDER_ENTER_BITS = new Uint8Array([
 	FACE_PX,
 	FACE_NX,
 	FACE_PY,
 	FACE_NY,
 	FACE_PZ,
 	FACE_NZ,
-];
+]);
 
 export type LightSeedState = {
 	/**
-	 * Compact snapshot of the initially seeded light queue.
-	 * This is safe to store and propagate later even if the generator instance
-	 * is reused for other chunks in the meantime.
+	 * Compact, independently owned snapshot of the initially seeded queue.
 	 */
 	queue: Uint16Array;
 	length: number;
 };
 
 export class LightGenerator {
-	private readonly chunkSize: number;
-	private readonly chunkSizeSq: number;
-	private readonly csShift: number;
-	private readonly csShift2: number;
-	private readonly queueMask: number;
-
-	/**
-	 * Reusable queue buffer for the immediate path.
-	 *
-	 * Capacity is intentionally larger than chunk volume because seeding can add:
-	 * - skylight entries
-	 * - block emission entries
-	 *
-	 * In the densest case those can both approach chunk volume.
-	 */
-	private readonly lightQueue: Uint16Array;
-
-	/**
-	 * Instance-local scratch buffer for deferred propagation.
-	 * Avoids cross-instance/static state corruption when different chunk sizes exist.
-	 */
-	private readonly scratchQueue: Uint16Array;
-
 	private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y = 32;
 
 	private static readonly _transparentLUT: Uint8Array = (() => {
@@ -96,15 +71,27 @@ export class LightGenerator {
 		return lut;
 	})();
 
-	/**
-	 * Optional per-face closed-mask LUT indexed by packed block value
-	 * (id | state << 10, exactly the layout of ChunkFaceMasks.
-	 * precomputeClosedFaceMasks). When set, BFS light enters/exits cells
-	 * through their OPEN faces only — multi-box shapes (slabs, stairs, ...)
-	 * light up through their open halves exactly like the client's
-	 * incremental engine. When null, legacy whole-block transparency applies.
-	 */
 	private static closedFaceMaskLUT: Uint8Array | null = null;
+
+	private readonly chunkSize: number;
+	private readonly chunkSizeSq: number;
+	private readonly chunkVolume: number;
+	private readonly csShift: number;
+	private readonly csShift2: number;
+	private readonly queueCapacity: number;
+	private readonly queueMask: number;
+
+	/**
+	 * Reused by initial seeding and the immediate propagation path.
+	 */
+	private readonly lightQueue: Uint16Array;
+
+	/**
+	 * Allocated only if deferred propagation is actually used.
+	 *
+	 * Immediate-only generators therefore retain one queue rather than two.
+	 */
+	private scratchQueue: Uint16Array | null = null;
 
 	public static setClosedFaceMaskLUT(lut: Uint8Array | null): void {
 		LightGenerator.closedFaceMaskLUT = lut;
@@ -117,39 +104,29 @@ export class LightGenerator {
 	constructor(params: GenerationParamsType) {
 		const chunkSize = params.CHUNK_SIZE;
 		const chunkSizeSq = chunkSize * chunkSize;
-		const rawCap = chunkSize * chunkSizeSq;
-
-		/*
-		 * Seeding can enqueue up to roughly:
-		 * - every cell due to skylight
-		 * - every cell due to block emission
-		 *
-		 * The old queue size of rawCap could silently overwrite entries before
-		 * seedInitialLight() sliced the compact snapshot.
-		 */
-		const queueCapacity = nextPowerOfTwo(rawCap * 2);
+		const chunkVolume = chunkSizeSq * chunkSize;
+		const queueCapacity = nextPowerOfTwo(chunkVolume * 2);
 
 		this.chunkSize = chunkSize;
 		this.chunkSizeSq = chunkSizeSq;
+		this.chunkVolume = chunkVolume;
+		this.queueCapacity = queueCapacity;
 		this.queueMask = queueCapacity - 1;
 
-		// CHUNK_SIZE is expected to be a power of two.
 		let csShift = 0;
-		for (let m = chunkSize; m > 1; m >>= 1) {
+
+		for (let value = chunkSize; value > 1; value >>= 1) {
 			csShift++;
 		}
 
 		this.csShift = csShift;
 		this.csShift2 = csShift * 2;
-
 		this.lightQueue = new Uint16Array(queueCapacity);
-		this.scratchQueue = new Uint16Array(queueCapacity);
 	}
 
 	/**
-	 * First-paint lighting path:
-	 * Performs only the initial top-down light seeding and returns a compact
-	 * queue snapshot that can be propagated later.
+	 * Performs initial top-down seeding and returns an independently owned
+	 * compact queue snapshot for deferred propagation.
 	 */
 	public seedInitialLight(
 		chunkX: number,
@@ -160,7 +137,7 @@ export class LightGenerator {
 		light: Uint8Array,
 		topSunlightMask?: Uint8Array,
 	): LightSeedState {
-		const initialTail = this.seedInitialLightIntoSharedQueue(
+		const length = this.seedInitialLightIntoSharedQueue(
 			chunkX,
 			chunkY,
 			chunkZ,
@@ -169,15 +146,16 @@ export class LightGenerator {
 			topSunlightMask,
 		);
 
-		return {
-			queue: this.lightQueue.slice(0, initialTail),
-			length: initialTail,
-		};
+		// This allocation is required because lightQueue is reused by later
+		// generation calls. Returning a view would corrupt deferred seeds.
+		const queue = new Uint16Array(length);
+		queue.set(this.lightQueue.subarray(0, length));
+
+		return { queue, length };
 	}
 
 	/**
-	 * Deferred refinement path:
-	 * Takes a previously returned seed snapshot and performs the BFS propagation.
+	 * Performs deferred BFS propagation from a stored seed snapshot.
 	 */
 	public propagateLight(
 		blocks: Uint8Array | Uint16Array,
@@ -190,15 +168,20 @@ export class LightGenerator {
 			return;
 		}
 
-		const queue = this.scratchQueue;
+		let queue = this.scratchQueue;
+
+		if (queue === null) {
+			queue = new Uint16Array(this.queueCapacity);
+			this.scratchQueue = queue;
+		}
+
+		// LightSeedState.queue is produced at exactly `length`, so no temporary
+		// subarray view is required here.
 		queue.set(seedState.queue, 0);
 
 		this.propagateLightFromQueue(blocks, light, queue, initialTail);
 	}
 
-	/**
-	 * Immediate full-light path.
-	 */
 	public seedAndPropagateLightImmediate(
 		chunkX: number,
 		chunkY: number,
@@ -221,18 +204,6 @@ export class LightGenerator {
 		}
 	}
 
-	/**
-	 * Immediate full-light path with cross-chunk border seeding.
-	 *
-	 * Identical to seedAndPropagateLightImmediate, except light values from
-	 * the six face-adjacent chunks are ingested before BFS propagation so
-	 * light flows across chunk borders (torch glow reaching into this chunk,
-	 * lateral skylight under overhangs, etc.).
-	 *
-	 * `neighborLight` is indexed [0:+X, 1:-X, 2:+Y, 3:-Y, 4:+Z, 5:-Z]; each
-	 * entry is the neighbor's full 32³ light array (same voxel layout), or
-	 * null when the neighbor has no stored light (treated as dark).
-	 */
 	public seedAndPropagateLightWithNeighbors(
 		chunkX: number,
 		chunkY: number,
@@ -258,14 +229,6 @@ export class LightGenerator {
 		}
 	}
 
-	/**
-	 * Ingest the six neighbors' border light values into the seed queue.
-	 *
-	 * Crossing a chunk boundary costs one attenuation step, so a border cell
-	 * receives max(current, neighborValue - 1) per nibble — matching how
-	 * propagateLightFromQueue spreads between cells. Only transparent target
-	 * cells accept seeds; opaque cells stay dark.
-	 */
 	private seedFromNeighborBorders(
 		blocks: Uint8Array | Uint16Array,
 		light: Uint8Array,
@@ -273,87 +236,113 @@ export class LightGenerator {
 		tail: number,
 	): number {
 		const queue = this.lightQueue;
-		const CS = this.chunkSize;
-		const CSSQ = this.chunkSizeSq;
-		const csMask = CS - 1;
+		const queueMask = this.queueMask;
+		const chunkSize = this.chunkSize;
+		const chunkSizeSq = this.chunkSizeSq;
+		const chunkVolume = this.chunkVolume;
+		const csShift = this.csShift;
+		const csShift2 = this.csShift2;
+		const csMask = chunkSize - 1;
 		const transparentLUT = LightGenerator._transparentLUT;
-		const lut = LightGenerator.closedFaceMaskLUT;
+		const closedFaceMaskLUT = LightGenerator.closedFaceMaskLUT;
 
-		let t = tail;
+		let writeTail = tail;
 
 		for (let face = 0; face < 6; face++) {
-			const nl = neighborLight[face];
-			if (!nl || nl.length < CSSQ * CS) continue;
+			const neighbor = neighborLight[face];
 
-			// Light enters the border cell through the face that touches the
-			// neighbor: +X neighbor -> our FACE_PX, etc.
+			if (!neighbor || neighbor.length < chunkVolume) {
+				continue;
+			}
+
 			const enterBit = BORDER_ENTER_BITS[face];
 
-			for (let a = 0; a < CS; a++) {
-				for (let b = 0; b < CS; b++) {
-					let targetIdx: number;
-					let srcIdx: number;
+			for (let a = 0; a < chunkSize; a++) {
+				const aY = a << csShift;
+				const aZ = a << csShift2;
+
+				for (let b = 0; b < chunkSize; b++) {
+					const bY = b << csShift;
+					const bZ = b << csShift2;
+
+					let targetIndex: number;
+					let sourceIndex: number;
 
 					switch (face) {
-						case 0: // +X: our x=31 plane ↔ neighbor x=0 plane
-							targetIdx = csMask | (a << this.csShift) | (b << this.csShift2);
-							srcIdx = (a << this.csShift) | (b << this.csShift2);
+						case 0:
+							targetIndex = csMask | aY | bZ;
+							sourceIndex = aY | bZ;
 							break;
-						case 1: // -X
-							targetIdx = (a << this.csShift) | (b << this.csShift2);
-							srcIdx = csMask | (a << this.csShift) | (b << this.csShift2);
+
+						case 1:
+							targetIndex = aY | bZ;
+							sourceIndex = csMask | aY | bZ;
 							break;
-						case 2: // +Y: our y=31 ↔ neighbor y=0
-							targetIdx = a | (csMask << this.csShift) | (b << this.csShift2);
-							srcIdx = a | (b << this.csShift2);
+
+						case 2:
+							targetIndex = a | (csMask << csShift) | bZ;
+							sourceIndex = a | bZ;
 							break;
-						case 3: // -Y
-							targetIdx = a | (b << this.csShift2);
-							srcIdx = a | (csMask << this.csShift) | (b << this.csShift2);
+
+						case 3:
+							targetIndex = a | bZ;
+							sourceIndex = a | (csMask << csShift) | bZ;
 							break;
-						case 4: // +Z: our z=31 ↔ neighbor z=0
-							targetIdx = a | (b << this.csShift) | (csMask << this.csShift2);
-							srcIdx = a | (b << this.csShift);
+
+						case 4:
+							targetIndex = a | bY | (csMask << csShift2);
+							sourceIndex = a | bY;
 							break;
-						default: // -Z
-							targetIdx = a | (b << this.csShift);
-							srcIdx = a | (b << this.csShift) | (csMask << this.csShift2);
+
+						default:
+							targetIndex = a | bY;
+							sourceIndex = a | bY | (csMask << csShift2);
 							break;
 					}
 
-					const packed = blocks[targetIdx];
+					const packed = blocks[targetIndex];
 					const blockId = packed & PACKED_ID_MASK;
-					const open = lut
-						? (lut[packed & 0xffff] & enterBit) === 0
-						: blockId < 1024 && transparentLUT[blockId] !== 0;
-					if (!open) continue;
 
-					const srcVal = nl[srcIdx];
-					const srcSky = (srcVal >> 4) - 1;
-					const srcBlock = (srcVal & 0x0f) - 1;
-					if (srcSky <= 0 && srcBlock <= 0) continue;
+					const open = closedFaceMaskLUT
+						? (closedFaceMaskLUT[packed & 0xffff] & enterBit) === 0
+						: transparentLUT[blockId] !== 0;
 
-					const cur = light[targetIdx];
-					const curSky = cur >> 4;
-					const curBlock = cur & 0x0f;
-					const newSky = srcSky > curSky ? srcSky : curSky;
-					const newBlock = srcBlock > curBlock ? srcBlock : curBlock;
-
-					if (newSky !== curSky || newBlock !== curBlock) {
-						light[targetIdx] = (newSky << 4) | newBlock;
-						queue[t & this.queueMask] = targetIdx;
-						t++;
+					if (!open) {
+						continue;
 					}
+
+					const sourceLight = neighbor[sourceIndex];
+					const sourceSky = (sourceLight >> 4) - 1;
+					const sourceBlock = (sourceLight & 0x0f) - 1;
+
+					if (sourceSky <= 0 && sourceBlock <= 0) {
+						continue;
+					}
+
+					const current = light[targetIndex];
+					const currentSky = current >> 4;
+					const currentBlock = current & 0x0f;
+
+					const nextSky = sourceSky > currentSky ? sourceSky : currentSky;
+
+					const nextBlock =
+						sourceBlock > currentBlock ? sourceBlock : currentBlock;
+
+					if (nextSky === currentSky && nextBlock === currentBlock) {
+						continue;
+					}
+
+					light[targetIndex] = (nextSky << 4) | nextBlock;
+
+					queue[writeTail & queueMask] = targetIndex;
+					writeTail++;
 				}
 			}
 		}
 
-		return t;
+		return writeTail;
 	}
 
-	/**
-	 * Shared internal seeding routine.
-	 */
 	private seedInitialLightIntoSharedQueue(
 		_chunkX: number,
 		chunkY: number,
@@ -362,31 +351,28 @@ export class LightGenerator {
 		light: Uint8Array,
 		topSunlightMask?: Uint8Array,
 	): number {
-		let tail = 0;
-
 		const queue = this.lightQueue;
-		const CHUNK_SIZE = this.chunkSize;
-		const CHUNK_SIZE_SQ = this.chunkSizeSq;
+		const chunkSize = this.chunkSize;
+		const chunkSizeSq = this.chunkSizeSq;
 		const transparentLUT = LightGenerator._transparentLUT;
 		const filtersFullSunLUT = LightGenerator._filtersFullSunLUT;
 		const emissionLUT = LightGenerator._emissionLUT;
+		const closedFaceMaskLUT = LightGenerator.closedFaceMaskLUT;
+		const minimumWorldY = LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y;
 
-		const chunkWorldY = chunkY * CHUNK_SIZE;
+		const chunkWorldY = chunkY * chunkSize;
+		let tail = 0;
 
-		// If callers reuse buffers, this prevents old lighting data from leaking.
 		light.fill(0);
 
-		if (
-			chunkWorldY + CHUNK_SIZE - 1 <
-			LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y
-		) {
+		if (chunkWorldY + chunkSize - 1 < minimumWorldY) {
 			return 0;
 		}
 
-		for (let x = 0; x < CHUNK_SIZE; x++) {
-			for (let z = 0; z < CHUNK_SIZE; z++) {
-				const columnIndex = x + z * CHUNK_SIZE;
-				const colBase = x + z * CHUNK_SIZE_SQ;
+		for (let x = 0; x < chunkSize; x++) {
+			for (let z = 0; z < chunkSize; z++) {
+				const columnIndex = x + z * chunkSize;
+				const columnBase = x + z * chunkSizeSq;
 
 				let incomingSkyLight =
 					topSunlightMask === undefined || topSunlightMask[columnIndex] !== 0
@@ -394,36 +380,34 @@ export class LightGenerator {
 						: 0;
 
 				let sourceFiltersFullSun = 0;
-				let idx = colBase + (CHUNK_SIZE - 1) * CHUNK_SIZE;
+				let index = columnBase + (chunkSize - 1) * chunkSize;
 
-				for (let y = CHUNK_SIZE - 1; y >= 0; y--, idx -= CHUNK_SIZE) {
+				for (let y = chunkSize - 1; y >= 0; y--, index -= chunkSize) {
 					const worldY = chunkWorldY + y;
 
-					if (worldY < LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y) {
+					if (worldY < minimumWorldY) {
 						incomingSkyLight = 0;
 						sourceFiltersFullSun = 0;
 						continue;
 					}
 
-					const packed = blocks[idx];
+					const packed = blocks[index];
 					const blockId = packed & PACKED_ID_MASK;
-					const lut = LightGenerator.closedFaceMaskLUT;
+					const closedFaces = closedFaceMaskLUT
+						? closedFaceMaskLUT[packed & 0xffff]
+						: 0;
 
-					// Sky descends into a cell through its TOP face. With the
-					// shape LUT, multi-box blocks whose top half is open (e.g.
-					// bottom slabs) accept skylight like the live engine.
-					const blocked = lut
-						? (lut[packed & 0xffff] & FACE_PY) !== 0
-						: blockId >= 1024 || transparentLUT[blockId] === 0;
+					const blocked = closedFaceMaskLUT
+						? (closedFaces & FACE_PY) !== 0
+						: transparentLUT[blockId] === 0;
 
 					if (blocked) {
 						incomingSkyLight = 0;
 						sourceFiltersFullSun = 0;
 
-						// Preserve existing special lava behavior.
 						if (blockId === 24) {
-							light[idx] = (light[idx] & 0xf0) | 15;
-							queue[tail++] = idx;
+							light[index] = (light[index] & 0xf0) | 15;
+							queue[tail++] = index;
 						}
 
 						continue;
@@ -449,89 +433,79 @@ export class LightGenerator {
 						continue;
 					}
 
-					light[idx] = (light[idx] & 0x0f) | (cellSkyLight << 4);
+					light[index] = (light[index] & 0x0f) | (cellSkyLight << 4);
 
-					const shouldSeed =
-						blockFiltersFullSun === 0 || sourceFiltersFullSun === 0;
-
-					if (shouldSeed) {
-						queue[tail++] = idx;
+					if (blockFiltersFullSun === 0 || sourceFiltersFullSun === 0) {
+						queue[tail++] = index;
 					}
 
-					// The column continues downward only if this cell is open
-					// at its BOTTOM face as well (shape-aware parity: a slab's
-					// closed underside stops the vertical sun column).
-					if (lut && (lut[packed & 0xffff] & FACE_NY) !== 0) {
+					if (closedFaceMaskLUT && (closedFaces & FACE_NY) !== 0) {
 						incomingSkyLight = 0;
 					} else {
 						incomingSkyLight = cellSkyLight;
 					}
+
 					sourceFiltersFullSun = blockFiltersFullSun;
 				}
 			}
 		}
 
-		// Seed block light from all emission sources.
-		for (let i = 0, len = blocks.length; i < len; i++) {
-			const emission = emissionLUT[blocks[i] & PACKED_ID_MASK];
+		for (let index = 0; index < blocks.length; index++) {
+			const emission = emissionLUT[blocks[index] & PACKED_ID_MASK];
 
-			if (emission > 0 && (light[i] & 0x0f) < emission) {
-				light[i] = (light[i] & 0xf0) | emission;
-				queue[tail++] = i;
+			if (emission > 0 && (light[index] & 0x0f) < emission) {
+				light[index] = (light[index] & 0xf0) | emission;
+				queue[tail++] = index;
 			}
 		}
 
 		return tail;
 	}
 
-	/**
-	 * Internal BFS propagation used by both:
-	 * - immediate full-light path
-	 * - deferred refinement path
-	 */
 	private propagateLightFromQueue(
 		blocks: Uint8Array | Uint16Array,
 		light: Uint8Array,
 		queue: Uint16Array,
 		initialTail: number,
 	): void {
+		const mask = this.queueMask;
+		const chunkSize = this.chunkSize;
+		const chunkSizeSq = this.chunkSizeSq;
+		const csShift = this.csShift;
+		const csShift2 = this.csShift2;
+		const csMask = chunkSize - 1;
+		const transparentLUT = LightGenerator._transparentLUT;
+		const filtersFullSunLUT = LightGenerator._filtersFullSunLUT;
+		const emissionLUT = LightGenerator._emissionLUT;
+		const closedFaceMaskLUT = LightGenerator.closedFaceMaskLUT;
+
 		let head = 0;
 		let tail = initialTail;
 
-		const mask = this.queueMask;
-		const CHUNK_SIZE = this.chunkSize;
-		const CHUNK_SIZE_SQ = this.chunkSizeSq;
-		const csShift = this.csShift;
-		const csShift2 = this.csShift2;
-		const csMask = CHUNK_SIZE - 1;
-		const transparentLUT = LightGenerator._transparentLUT;
-		const filtersFullSunLUT = LightGenerator._filtersFullSunLUT;
-
 		while (head < tail) {
-			const idx = queue[head & mask];
+			const index = queue[head & mask];
 			head++;
 
-			const lightVal = light[idx];
-			const skyLight = lightVal >> 4;
-			const blockLight = lightVal & 0x0f;
+			const sourceLight = light[index];
+			const skyLight = sourceLight >> 4;
+			const blockLight = sourceLight & 0x0f;
 
 			if (skyLight <= 1 && blockLight <= 1) {
 				continue;
 			}
 
-			const sourcePacked = blocks[idx];
+			const sourcePacked = blocks[index];
 			const sourceBlockId = sourcePacked & PACKED_ID_MASK;
-			const sourceFiltersFullSun =
-				sourceBlockId < 1024 ? filtersFullSunLUT[sourceBlockId] : 0;
+			const sourceFiltersFullSun = filtersFullSunLUT[sourceBlockId];
 
-			const skyM1 = skyLight - 1;
-			const blkM1 = blockLight - 1;
+			const reducedSky = skyLight - 1;
+			const reducedBlock = blockLight - 1;
 
-			if ((idx & csMask) !== csMask) {
-				tail = this.tryPropagate(
-					idx + 1,
-					skyM1,
-					blkM1,
+			if ((index & csMask) !== csMask) {
+				tail = tryPropagate(
+					index + 1,
+					reducedSky,
+					reducedBlock,
 					sourceFiltersFullSun,
 					false,
 					FACE_NX,
@@ -544,14 +518,16 @@ export class LightGenerator {
 					mask,
 					transparentLUT,
 					filtersFullSunLUT,
+					emissionLUT,
+					closedFaceMaskLUT,
 				);
 			}
 
-			if ((idx & csMask) !== 0) {
-				tail = this.tryPropagate(
-					idx - 1,
-					skyM1,
-					blkM1,
+			if ((index & csMask) !== 0) {
+				tail = tryPropagate(
+					index - 1,
+					reducedSky,
+					reducedBlock,
 					sourceFiltersFullSun,
 					false,
 					FACE_PX,
@@ -564,14 +540,18 @@ export class LightGenerator {
 					mask,
 					transparentLUT,
 					filtersFullSunLUT,
+					emissionLUT,
+					closedFaceMaskLUT,
 				);
 			}
 
-			if (((idx >> csShift) & csMask) !== csMask) {
-				tail = this.tryPropagate(
-					idx + CHUNK_SIZE,
-					skyM1,
-					blkM1,
+			const y = (index >> csShift) & csMask;
+
+			if (y !== csMask) {
+				tail = tryPropagate(
+					index + chunkSize,
+					reducedSky,
+					reducedBlock,
 					sourceFiltersFullSun,
 					false,
 					FACE_NY,
@@ -584,25 +564,26 @@ export class LightGenerator {
 					mask,
 					transparentLUT,
 					filtersFullSunLUT,
+					emissionLUT,
+					closedFaceMaskLUT,
 				);
 			}
 
-			if (((idx >> csShift) & csMask) !== 0) {
-				const belowIdx = idx - CHUNK_SIZE;
-				const belowFiltersFullSun =
-					(blocks[belowIdx] & PACKED_ID_MASK) < 1024
-						? filtersFullSunLUT[blocks[belowIdx] & PACKED_ID_MASK]
-						: 0;
+			if (y !== 0) {
+				const belowIndex = index - chunkSize;
+				const belowPacked = blocks[belowIndex];
+				const belowBlockId = belowPacked & PACKED_ID_MASK;
+				const belowFiltersFullSun = filtersFullSunLUT[belowBlockId];
 
 				const preservesFullSunDown =
 					skyLight === 15 &&
 					sourceFiltersFullSun === 0 &&
 					belowFiltersFullSun === 0;
 
-				tail = this.tryPropagate(
-					belowIdx,
-					preservesFullSunDown ? 15 : skyM1,
-					blkM1,
+				tail = tryPropagate(
+					belowIndex,
+					preservesFullSunDown ? 15 : reducedSky,
+					reducedBlock,
 					sourceFiltersFullSun,
 					true,
 					FACE_PY,
@@ -615,14 +596,18 @@ export class LightGenerator {
 					mask,
 					transparentLUT,
 					filtersFullSunLUT,
+					emissionLUT,
+					closedFaceMaskLUT,
 				);
 			}
 
-			if (idx >> csShift2 !== csMask) {
-				tail = this.tryPropagate(
-					idx + CHUNK_SIZE_SQ,
-					skyM1,
-					blkM1,
+			const z = index >> csShift2;
+
+			if (z !== csMask) {
+				tail = tryPropagate(
+					index + chunkSizeSq,
+					reducedSky,
+					reducedBlock,
 					sourceFiltersFullSun,
 					false,
 					FACE_NZ,
@@ -635,14 +620,16 @@ export class LightGenerator {
 					mask,
 					transparentLUT,
 					filtersFullSunLUT,
+					emissionLUT,
+					closedFaceMaskLUT,
 				);
 			}
 
-			if (idx >> csShift2 !== 0) {
-				tail = this.tryPropagate(
-					idx - CHUNK_SIZE_SQ,
-					skyM1,
-					blkM1,
+			if (z !== 0) {
+				tail = tryPropagate(
+					index - chunkSizeSq,
+					reducedSky,
+					reducedBlock,
 					sourceFiltersFullSun,
 					false,
 					FACE_PZ,
@@ -655,83 +642,11 @@ export class LightGenerator {
 					mask,
 					transparentLUT,
 					filtersFullSunLUT,
+					emissionLUT,
+					closedFaceMaskLUT,
 				);
 			}
 		}
-	}
-
-	private tryPropagate(
-		nIdx: number,
-		targetSky: number,
-		targetBlock: number,
-		sourceFiltersFullSun: number,
-		isDown: boolean,
-		enterBit: number,
-		exitBit: number,
-		sourcePacked: number,
-		blocks: Uint8Array | Uint16Array,
-		light: Uint8Array,
-		queue: Uint16Array,
-		tail: number,
-		mask: number,
-		transparentLUT: Uint8Array,
-		filtersFullSunLUT: Uint8Array,
-	): number {
-		const targetPacked = blocks[nIdx];
-		const targetBlockId = targetPacked & PACKED_ID_MASK;
-		const lut = LightGenerator.closedFaceMaskLUT;
-
-		// Light enters the target through the face opposite the travel
-		// direction. With the shape LUT, open halves of multi-box blocks
-		// accept light exactly like the client's incremental engine.
-		let enterable: boolean;
-		if (lut) {
-			enterable = (lut[targetPacked & 0xffff] & enterBit) === 0;
-		} else {
-			enterable = targetBlockId < 1024 && transparentLUT[targetBlockId] !== 0;
-		}
-		if (!enterable) {
-			return tail;
-		}
-
-		// ...and exits the source through its travel-direction face, unless
-		// the source itself emits (lava/torch cells store light but are
-		// otherwise closed).
-		if (lut) {
-			const sourceOpens =
-				(lut[sourcePacked & 0xffff] & exitBit) === 0 ||
-				LightGenerator._emissionLUT[sourcePacked & PACKED_ID_MASK] > 0;
-			if (!sourceOpens) {
-				return tail;
-			}
-		}
-
-		// Skylight water/filter rules:
-		// - filtered blocks receive lateral skylight only from filtered blocks
-		// - filtered blocks emit lateral skylight only into filtered blocks
-		// - downward propagation is allowed
-		if (
-			targetSky > 0 &&
-			!isDown &&
-			filtersFullSunLUT[targetBlockId] !== sourceFiltersFullSun
-		) {
-			return tail;
-		}
-
-		const currentVal = light[nIdx];
-		const currentSky = currentVal >> 4;
-		const currentBlock = currentVal & 0x0f;
-
-		const newSky = targetSky > currentSky ? targetSky : currentSky;
-		const newBlock = targetBlock > currentBlock ? targetBlock : currentBlock;
-
-		if (newSky !== currentSky || newBlock !== currentBlock) {
-			light[nIdx] = (newSky << 4) | newBlock;
-			queue[tail & mask] = nIdx;
-			return tail + 1;
-		}
-
-		return tail;
 	}
 
 	public static getLightEmission(blockId: number): number {
@@ -740,7 +655,6 @@ export class LightGenerator {
 			: 0;
 	}
 
-	/** True when the block lets light pass (air, water, glass, ...). */
 	public static isBlockTransparent(blockId: number): boolean {
 		return (
 			blockId >= 0 &&
@@ -749,10 +663,6 @@ export class LightGenerator {
 		);
 	}
 
-	/**
-	 * True when the block filters full sunlight (e.g. leaves/water): light
-	 * passing through decrements instead of propagating at full strength.
-	 */
 	public static blockFiltersFullSunlight(blockId: number): boolean {
 		return (
 			blockId >= 0 &&
@@ -762,12 +672,82 @@ export class LightGenerator {
 	}
 }
 
-/** Returns the smallest power of two that is >= n. */
+function tryPropagate(
+	targetIndex: number,
+	targetSky: number,
+	targetBlock: number,
+	sourceFiltersFullSun: number,
+	isDown: boolean,
+	enterBit: number,
+	exitBit: number,
+	sourcePacked: number,
+	blocks: Uint8Array | Uint16Array,
+	light: Uint8Array,
+	queue: Uint16Array,
+	tail: number,
+	queueMask: number,
+	transparentLUT: Uint8Array,
+	filtersFullSunLUT: Uint8Array,
+	emissionLUT: Uint8Array,
+	closedFaceMaskLUT: Uint8Array | null,
+): number {
+	const targetPacked = blocks[targetIndex];
+	const targetBlockId = targetPacked & PACKED_ID_MASK;
+
+	if (closedFaceMaskLUT) {
+		if ((closedFaceMaskLUT[targetPacked & 0xffff] & enterBit) !== 0) {
+			return tail;
+		}
+
+		const sourceClosedFaces = closedFaceMaskLUT[sourcePacked & 0xffff];
+
+		if (
+			(sourceClosedFaces & exitBit) !== 0 &&
+			emissionLUT[sourcePacked & PACKED_ID_MASK] === 0
+		) {
+			return tail;
+		}
+	} else if (transparentLUT[targetBlockId] === 0) {
+		return tail;
+	}
+
+	if (
+		targetSky > 0 &&
+		!isDown &&
+		filtersFullSunLUT[targetBlockId] !== sourceFiltersFullSun
+	) {
+		return tail;
+	}
+
+	const current = light[targetIndex];
+	const currentSky = current >> 4;
+	const currentBlock = current & 0x0f;
+
+	const nextSky = targetSky > currentSky ? targetSky : currentSky;
+
+	const nextBlock = targetBlock > currentBlock ? targetBlock : currentBlock;
+
+	if (nextSky === currentSky && nextBlock === currentBlock) {
+		return tail;
+	}
+
+	light[targetIndex] = (nextSky << 4) | nextBlock;
+	queue[tail & queueMask] = targetIndex;
+
+	return tail + 1;
+}
+
+/** Returns the smallest power of two greater than or equal to n. */
 function nextPowerOfTwo(n: number): number {
-	if (n <= 1) return 1;
+	if (n <= 1) {
+		return 1;
+	}
 
-	let p = 1;
-	while (p < n) p <<= 1;
+	let power = 1;
 
-	return p;
+	while (power < n) {
+		power *= 2;
+	}
+
+	return power;
 }

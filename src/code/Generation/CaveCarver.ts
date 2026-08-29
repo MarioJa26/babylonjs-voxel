@@ -6,8 +6,11 @@ export const NO_SURFACE_Y = -32768;
 
 const SURFACE_ENTRY_DEPTH = 24;
 const SURFACE_CHEESE_RAMP = 40;
-const SURFACE_THRESHOLD_BIAS = 0.38;
+const SURFACE_CHEESE_START = 8;
+const SURFACE_THRESHOLD_BIAS = 0.12;
 const SURFACE_TUNNEL_BOOST = 0.18;
+const SURFACE_BREAKOUT_ABOVE = 6;
+const SURFACE_TUNNEL_CORE_DEPTH = 8;
 const CONNECTIVITY_MARGIN = 0.06;
 
 export type CaveCarveEvaluation = {
@@ -41,7 +44,20 @@ export function getDepthBelowSurface(surfaceY: number, worldY: number): number {
 
 export function getSurfaceCarveBlend(depthBelowSurface: number): number {
 	if (depthBelowSurface === Number.POSITIVE_INFINITY) return 1;
-	return clamp01((depthBelowSurface + 3) / 18);
+	return clamp01(
+		(depthBelowSurface + SURFACE_BREAKOUT_ABOVE) / SURFACE_BREAKOUT_ABOVE,
+	);
+}
+
+function rejectNearSurface(
+	out: CaveCarveEvaluation,
+	depthBelowSurface: number,
+): CaveCarveEvaluation {
+	out.shouldCarve = false;
+	out.carveStrength = 0;
+	out.tunnelCore = false;
+	out.depthBelowSurface = depthBelowSurface;
+	return out;
 }
 
 export function evaluateCaveCarve(
@@ -57,12 +73,16 @@ export function evaluateCaveCarve(
 	const o = out ?? caveCarveScratch;
 	const depthBelowSurface = getDepthBelowSurface(surfaceY, worldY);
 	const depthFinite = depthBelowSurface !== Number.POSITIVE_INFINITY;
-	if (depthFinite && depthBelowSurface < 0) {
-		o.shouldCarve = false;
-		o.carveStrength = 0;
-		o.tunnelCore = false;
-		o.depthBelowSurface = depthBelowSurface;
-		return o;
+
+	if (depthFinite) {
+		const underwater = surfaceY < params.SEA_LEVEL;
+		if (underwater) {
+			if (depthBelowSurface < SURFACE_TUNNEL_CORE_DEPTH) {
+				return rejectNearSurface(o, depthBelowSurface);
+			}
+		} else if (depthBelowSurface < -SURFACE_BREAKOUT_ABOVE) {
+			return rejectNearSurface(o, depthBelowSurface);
+		}
 	}
 
 	// fullDepthDenom/depthT/caveDensity depend only on params + worldY, so
@@ -86,7 +106,7 @@ export function evaluateCaveCarve(
 		? clamp01(depthBelowSurface / SURFACE_ENTRY_DEPTH)
 		: 1;
 	const cheeseDepthT = depthFinite
-		? clamp01((depthBelowSurface - 4) / SURFACE_CHEESE_RAMP)
+		? clamp01((depthBelowSurface - SURFACE_CHEESE_START) / SURFACE_CHEESE_RAMP)
 		: 1;
 	const thresholdBias =
 		(1 - surfaceDepthT) * SURFACE_THRESHOLD_BIAS + (1 - caveDensity) * 0.18;
@@ -119,8 +139,12 @@ export function evaluateCaveCarve(
 		connectedTunnelStrength > -0.015 ||
 		(tunnelDelta > -0.05 && cheeseDelta > 0.02);
 
-	o.shouldCarve = carveStrength > 0;
-	o.carveStrength = carveStrength > 0 ? carveStrength : 0;
+	const nearSurfaceBreakout =
+		depthFinite && depthBelowSurface < SURFACE_TUNNEL_CORE_DEPTH;
+	const shouldCarve = carveStrength > 0 && (!nearSurfaceBreakout || tunnelCore);
+
+	o.shouldCarve = shouldCarve;
+	o.carveStrength = shouldCarve ? carveStrength : 0;
 	o.tunnelCore = tunnelCore;
 	o.depthBelowSurface = depthBelowSurface;
 	return o;

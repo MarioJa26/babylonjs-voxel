@@ -215,7 +215,7 @@ export class UndergroundGenerator {
 
 				if (
 					(!tunnelCore && carvedNeighbors <= 1) ||
-					solidNeighbors >= MIN_SOLID_NEIGHBORS ||
+					(!tunnelCore && solidNeighbors >= MIN_SOLID_NEIGHBORS) ||
 					(!tunnelCore && solidNeighbors >= 3 && carvedNeighbors <= 2)
 				) {
 					_carve[idx] = 0;

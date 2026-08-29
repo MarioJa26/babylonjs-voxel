@@ -60,6 +60,21 @@ import { getFarTileLevels, isFarTilesEnabled } from "./FarTileLadder";
 const MAX_TILE_REQUESTS_PER_UPDATE = 24;
 const UNLOAD_MARGIN_CHUNKS = 4;
 
+// Collision-free tile-key packing using 26 bits per axis (same as
+// packColumnKey) plus 6 bits for level — uses BigInt to stay unique for the
+// full ±33M tile range without overflow.
+const TILE_KEY_AXIS_BITS = 26;
+const TILE_KEY_AXIS_MASK = 0x3ffffff;
+const TILE_KEY_LEVEL_SHIFT = BigInt(TILE_KEY_AXIS_BITS * 2);
+
+function packTileKey(levelIndex: number, tx: number, tz: number): bigint {
+	return (
+		(BigInt(levelIndex) << TILE_KEY_LEVEL_SHIFT) |
+		(BigInt(tx & TILE_KEY_AXIS_MASK) << BigInt(TILE_KEY_AXIS_BITS)) |
+		BigInt(tz & TILE_KEY_AXIS_MASK)
+	);
+}
+
 // Bytes per face word record (4 u32).
 const FT_FACE_BYTES = 16;
 const FT_FACE_WORDS = 4;
@@ -100,6 +115,16 @@ interface FarMeshLike extends Mesh {
 }
 
 // ---------------------------------------------------------------------------
+// Allocation-reduced helpers
+// ---------------------------------------------------------------------------
+
+const QUANTIZE_SCALE = 256;
+
+function quantize256(value: number): number {
+	return Math.round(value * QUANTIZE_SCALE) / QUANTIZE_SCALE;
+}
+
+// ---------------------------------------------------------------------------
 // Face-word arena: verbatim worker words + stable per-tile slots.
 // ---------------------------------------------------------------------------
 
@@ -114,10 +139,14 @@ class FaceWordArena {
 	cpu: Uint32Array = new Uint32Array(0);
 	buffer: StorageBuffer | null = null;
 	capacityFaces = 0;
-	appendedFaces = 0; // high-water extent (holes included)
+	appendedFaces = 0;
 	holes: FarSlot[] = [];
-	dirtyRanges: DirtyRange[] = [];
-	initialCapacity: number;
+
+	// Parallel numeric arrays avoid allocating one DirtyRange object per write.
+	private dirtyStarts: number[] = [];
+	private dirtyCounts: number[] = [];
+
+	readonly initialCapacity: number;
 	bufferRebound = false;
 
 	constructor(initialCapacity: number) {
@@ -126,96 +155,191 @@ class FaceWordArena {
 
 	private ensureCpu(faceCount: number): void {
 		if (faceCount <= this.capacityFaces) return;
+
 		const maxFaces = maxFarFacesPerArena();
-		const cap = Math.min(
-			Math.max(faceCount, this.capacityFaces * 4 || this.initialCapacity, 256),
+		const grownCapacity =
+			this.capacityFaces > 0 ? this.capacityFaces * 4 : this.initialCapacity;
+		const capacity = Math.min(
+			Math.max(faceCount, grownCapacity, 256),
 			maxFaces,
 		);
 
-		const next = new Uint32Array(cap * FT_FACE_WORDS);
+		const next = new Uint32Array(capacity * FT_FACE_WORDS);
 		next.set(this.cpu.subarray(0, this.appendedFaces * FT_FACE_WORDS));
-		this.cpu = next;
-		this.capacityFaces = cap;
 
-		const old = this.buffer;
+		this.cpu = next;
+		this.capacityFaces = capacity;
+
+		const oldBuffer = this.buffer;
 		this.buffer = createStorageBuffer(engineRef!, this.cpu, "farTileFaces");
-		if (old) disposeBufferAfterGpuWork(old);
+
+		if (oldBuffer) {
+			disposeBufferAfterGpuWork(oldBuffer);
+		}
+
 		this.bufferRebound = true;
 	}
 
-	/** Allocate a contiguous slot; returns null when the arena is full. */
 	alloc(count: number): FarSlot | null {
-		if (count === 0) return { base: 0, count: 0 };
-		if (count > maxFarFacesPerArena()) return null;
+		if (count === 0) {
+			return { base: 0, count: 0 };
+		}
 
-		for (let i = 0; i < this.holes.length; i++) {
-			const h = this.holes[i];
-			if (h.count >= count) {
-				this.holes.splice(i, 1);
-				if (h.count > count) {
-					this.insertHole(h.base + count, h.count - count);
-				}
-				return { base: h.base, count };
+		if (count > maxFarFacesPerArena()) {
+			return null;
+		}
+
+		const holes = this.holes;
+
+		for (let i = 0; i < holes.length; i++) {
+			const hole = holes[i];
+
+			if (hole.count < count) {
+				continue;
+			}
+
+			const base = hole.base;
+			const remaining = hole.count - count;
+
+			if (remaining === 0) {
+				holes.splice(i, 1);
+			} else {
+				// Reuse the existing hole object rather than removing it and
+				// allocating a replacement remainder object.
+				hole.base += count;
+				hole.count = remaining;
+			}
+
+			return { base, count };
+		}
+
+		const required = this.appendedFaces + count;
+
+		if (required > this.capacityFaces) {
+			this.ensureCpu(required);
+
+			if (required > this.capacityFaces) {
+				return null;
 			}
 		}
 
-		if (this.appendedFaces + count > this.capacityFaces) {
-			this.ensureCpu(this.appendedFaces + count);
-			if (this.appendedFaces + count > this.capacityFaces) return null;
-		}
-		const slot = { base: this.appendedFaces, count };
-		this.appendedFaces += count;
+		const slot = {
+			base: this.appendedFaces,
+			count,
+		};
+
+		this.appendedFaces = required;
 		return slot;
 	}
 
 	insertHole(base: number, count: number): void {
-		let lo = 0;
-		while (lo < this.holes.length && this.holes[lo].base < base) lo++;
-		this.holes.splice(lo, 0, { base, count });
+		if (count <= 0) return;
+
+		const holes = this.holes;
+		let index = 0;
+
+		while (index < holes.length && holes[index].base < base) {
+			index++;
+		}
+
+		// Merge with the previous and/or next hole. This lowers hole-object
+		// count and improves the chance that future allocations reuse space.
+		const previous = index > 0 ? holes[index - 1] : null;
+		const next = index < holes.length ? holes[index] : null;
+
+		if (previous && previous.base + previous.count >= base) {
+			const end = Math.max(previous.base + previous.count, base + count);
+			previous.count = end - previous.base;
+
+			if (next && previous.base + previous.count >= next.base) {
+				const mergedEnd = Math.max(
+					previous.base + previous.count,
+					next.base + next.count,
+				);
+				previous.count = mergedEnd - previous.base;
+				holes.splice(index, 1);
+			}
+
+			return;
+		}
+
+		if (next && base + count >= next.base) {
+			const end = Math.max(base + count, next.base + next.count);
+			next.base = base;
+			next.count = end - base;
+			return;
+		}
+
+		holes.splice(index, 0, { base, count });
 	}
 
 	free(slot: FarSlot): void {
 		if (slot.count === 0) return;
-		// CPU-side zero-fill only (hygiene: growth wholesale-copies the prefix,
-		// so cleared holes keep the buffer deterministic). PERF: no GPU upload
-		// — both winding lists drop their references to these faces BEFORE
-		// free() runs, so the stale GPU words are never consumed.
-		const b4 = slot.base * FT_FACE_WORDS;
-		const n4 = slot.count * FT_FACE_WORDS;
-		this.cpu.fill(0, b4, b4 + n4);
+
+		const wordStart = slot.base * FT_FACE_WORDS;
+		const wordEnd = wordStart + slot.count * FT_FACE_WORDS;
+
+		this.cpu.fill(0, wordStart, wordEnd);
 		this.insertHole(slot.base, slot.count);
 	}
 
 	pushDirty(start: number, count: number): void {
 		if (count <= 0) return;
-		const ranges = this.dirtyRanges;
-		const last = ranges.length > 0 ? ranges[ranges.length - 1] : null;
-		if (last && last.start + last.count === start) {
-			last.count += count;
-			return;
+
+		const starts = this.dirtyStarts;
+		const counts = this.dirtyCounts;
+		const length = starts.length;
+
+		if (length > 0) {
+			const lastIndex = length - 1;
+			const lastStart = starts[lastIndex];
+			const lastEnd = lastStart + counts[lastIndex];
+			const newEnd = start + count;
+
+			// Merge adjacent or overlapping ranges.
+			if (start <= lastEnd && newEnd >= lastStart) {
+				const mergedStart = Math.min(lastStart, start);
+				const mergedEnd = Math.max(lastEnd, newEnd);
+				starts[lastIndex] = mergedStart;
+				counts[lastIndex] = mergedEnd - mergedStart;
+				return;
+			}
 		}
-		ranges.push({ start, count });
+
+		starts.push(start);
+		counts.push(count);
 	}
 
 	flushDirty(): void {
+		const starts = this.dirtyStarts;
+		const counts = this.dirtyCounts;
 		const engine = engineRef;
-		if (!engine || !this.buffer) {
-			this.dirtyRanges.length = 0;
+		const buffer = this.buffer;
+
+		if (!engine || !buffer) {
+			starts.length = 0;
+			counts.length = 0;
 			return;
 		}
-		for (const r of this.dirtyRanges) {
+
+		for (let i = 0; i < starts.length; i++) {
+			const start = starts[i];
+			const count = counts[i];
+			const wordStart = start * FT_FACE_WORDS;
+			const wordEnd = wordStart + count * FT_FACE_WORDS;
+
 			updateStorageBuffer(
 				engine,
-				this.buffer,
-				this.cpu.subarray(
-					r.start * FT_FACE_WORDS,
-					(r.start + r.count) * FT_FACE_WORDS,
-				),
-				r.start * FT_FACE_BYTES,
+				buffer,
+				this.cpu.subarray(wordStart, wordEnd),
+				start * FT_FACE_BYTES,
 			);
-			_farUploadBytesThisFrame += r.count * FT_FACE_BYTES;
+
+			_farUploadBytesThisFrame += count * FT_FACE_BYTES;
 		}
-		this.dirtyRanges.length = 0;
+
+		starts.length = 0;
+		counts.length = 0;
 	}
 }
 
@@ -244,16 +368,12 @@ const REVERSED_INDICES = new Uint32Array([0, 2, 1, 0, 3, 2]);
 
 class WindingMesh {
 	mesh: FarMeshLike | null = null;
-	/** Compact instance records; lane x = absolute face index in the arena. */
 	records = new Float32Array(0);
 	count = 0;
 	capacityFaces = 0;
-	// PERF: half-open dirty range [dirtyMin, dirtyMax) with an Infinity
-	// sentinel. Resetting dirtyMin to 0 pins the range start there after the
-	// first sync, so every append re-uploads the ENTIRE instance prefix; with
-	// the sentinel only the actually-written records are uploaded.
 	dirtyMin = Number.POSITIVE_INFINITY;
 	dirtyMax = 0;
+
 	readonly straight: boolean;
 
 	constructor(straight: boolean) {
@@ -263,76 +383,205 @@ class WindingMesh {
 	appendFace(faceIndex: number): void {
 		this.ensureRecordCapacity(this.count + 1);
 
-		const o = this.count * 4;
-		this.records[o] = faceIndex;
-		this.records[o + 1] = 0;
-		this.records[o + 2] = 0;
-		this.records[o + 3] = 0;
-		this.count++;
-		this.markDirty(this.count - 1, this.count);
+		const recordOffset = this.count * 4;
+		this.records[recordOffset] = faceIndex;
+
+		// The remaining lanes are already zero for newly allocated typed-array
+		// storage. Explicitly clear them because this slot may be reused after
+		// compaction.
+		this.records[recordOffset + 1] = 0;
+		this.records[recordOffset + 2] = 0;
+		this.records[recordOffset + 3] = 0;
+
+		const changedIndex = this.count++;
+		this.markDirty(changedIndex, changedIndex + 1);
 	}
 
-	/** Order-preserving removal of every face index inside `slot`. */
+	/**
+	 * Allocation-free single-slot removal.
+	 *
+	 * This avoids removeSlots([slot]), which allocates a temporary array and
+	 * previously also cloned the slot.
+	 */
 	removeSlot(slot: FarSlot): void {
 		const oldCount = this.count;
-		if (slot.count === 0 || oldCount === 0) return;
-		const lo = slot.base;
-		const hi = slot.base + slot.count;
 
-		// Find the first removed record — everything before it is untouched
-		// and must not be re-uploaded.
-		let read = 0;
-		while (read < oldCount) {
-			const fi = this.records[read * 4];
-			if (fi >= lo && fi < hi) break;
-			read++;
+		if (oldCount === 0 || slot.count === 0) {
+			return;
 		}
-		if (read === oldCount) return;
 
-		const firstChanged = read;
-		let write = read;
-		for (; read < oldCount; read++) {
-			const src = read * 4;
-			const fi = this.records[src];
-			if (fi >= lo && fi < hi) continue;
-			if (write !== read) {
-				const dst = write * 4;
-				this.records[dst] = fi;
-				this.records[dst + 1] = this.records[src + 1];
-				this.records[dst + 2] = this.records[src + 2];
-				this.records[dst + 3] = this.records[src + 3];
+		const removeStart = slot.base;
+		const removeEnd = removeStart + slot.count;
+
+		let write = 0;
+		let firstChanged = Number.POSITIVE_INFINITY;
+		const records = this.records;
+
+		for (let read = 0; read < oldCount; read++) {
+			const sourceOffset = read * 4;
+			const faceIndex = records[sourceOffset];
+
+			if (faceIndex >= removeStart && faceIndex < removeEnd) {
+				if (firstChanged === Number.POSITIVE_INFINITY) {
+					firstChanged = write;
+				}
+				continue;
 			}
+
+			if (write !== read) {
+				const targetOffset = write * 4;
+				records[targetOffset] = records[sourceOffset];
+				records[targetOffset + 1] = records[sourceOffset + 1];
+				records[targetOffset + 2] = records[sourceOffset + 2];
+				records[targetOffset + 3] = records[sourceOffset + 3];
+			}
+
 			write++;
 		}
 
 		this.count = write;
-		// Only the shifted surviving suffix needs uploading; records beyond
-		// the new draw count are never consumed by the GPU.
-		if (write > firstChanged) {
+
+		if (firstChanged !== Number.POSITIVE_INFINITY && write > firstChanged) {
+			this.markDirty(firstChanged, write);
+		}
+	}
+
+	/**
+	 * Batched order-preserving removal.
+	 *
+	 * The supplied array is sorted in place, but the FarSlot objects are not
+	 * mutated. In this manager all callers pass reusable scratch arrays, so
+	 * sorting the array has no observable effect.
+	 */
+	removeSlots(slots: FarSlot[]): void {
+		const oldCount = this.count;
+		const slotCount = slots.length;
+
+		if (oldCount === 0 || slotCount === 0) {
+			return;
+		}
+
+		if (slotCount === 1) {
+			this.removeSlot(slots[0]);
+			return;
+		}
+
+		slots.sort(compareSlotsByBase);
+
+		const records = this.records;
+		let write = 0;
+		let intervalIndex = 0;
+		let firstChanged = Number.POSITIVE_INFINITY;
+
+		for (let read = 0; read < oldCount; read++) {
+			const sourceOffset = read * 4;
+			const faceIndex = records[sourceOffset];
+
+			// Advance past intervals that end before this face. Face indices
+			// are appended in ascending arena order, so this remains O(n + m).
+			while (intervalIndex < slotCount) {
+				const interval = slots[intervalIndex];
+
+				if (interval.count <= 0) {
+					intervalIndex++;
+					continue;
+				}
+
+				if (faceIndex >= interval.base + interval.count) {
+					intervalIndex++;
+					continue;
+				}
+
+				break;
+			}
+
+			let remove = false;
+
+			if (intervalIndex < slotCount) {
+				// Handle overlapping or contiguous input slots without
+				// allocating a merged interval list.
+				let scanIndex = intervalIndex;
+
+				while (scanIndex < slotCount) {
+					const interval = slots[scanIndex];
+
+					if (interval.count <= 0) {
+						scanIndex++;
+						continue;
+					}
+
+					if (interval.base > faceIndex) {
+						break;
+					}
+
+					if (faceIndex < interval.base + interval.count) {
+						remove = true;
+						break;
+					}
+
+					scanIndex++;
+				}
+			}
+
+			if (remove) {
+				if (firstChanged === Number.POSITIVE_INFINITY) {
+					firstChanged = write;
+				}
+				continue;
+			}
+
+			if (write !== read) {
+				const targetOffset = write * 4;
+				records[targetOffset] = records[sourceOffset];
+				records[targetOffset + 1] = records[sourceOffset + 1];
+				records[targetOffset + 2] = records[sourceOffset + 2];
+				records[targetOffset + 3] = records[sourceOffset + 3];
+			}
+
+			write++;
+		}
+
+		this.count = write;
+
+		if (firstChanged !== Number.POSITIVE_INFINITY && write > firstChanged) {
 			this.markDirty(firstChanged, write);
 		}
 	}
 
 	sync(): void {
-		const needLen = this.count * 4;
-		if (needLen > this.records.length) {
-			let cap = this.records.length > 0 ? this.records.length : 1024;
-			while (cap < needLen) cap *= 2;
-			const next = new Float32Array(cap);
+		const requiredLanes = this.count * 4;
+		const currentLanes = this.records.length;
+
+		// Growth is already normally handled by appendFace(), but retain this
+		// path for callers that may change count by another route.
+		if (requiredLanes > currentLanes) {
+			let capacity = currentLanes > 0 ? currentLanes : 1024;
+
+			while (capacity < requiredLanes) {
+				capacity *= 2;
+			}
+
+			const next = new Float32Array(capacity);
 			next.set(this.records);
 			this.records = next;
-		} else if (
-			this.records.length >= 4096 &&
-			needLen * 4 <= this.records.length
-		) {
-			const next = new Float32Array(Math.max(1024, needLen));
-			next.set(this.records.subarray(0, needLen));
+			this.markDirty(0, this.count);
+		} else if (currentLanes >= 16384 && requiredLanes * 8 <= currentLanes) {
+			// Round shrinking to a power-of-two capacity. Shrinking exactly to
+			// requiredLanes causes an immediate allocation on the next append.
+			let capacity = 1024;
+			const target = Math.max(1024, requiredLanes * 2);
+
+			while (capacity < target) {
+				capacity *= 2;
+			}
+
+			const next = new Float32Array(capacity);
+			next.set(this.records.subarray(0, requiredLanes));
 			this.records = next;
-			// Fresh CPU buffer — the replacement GPU buffer needs the active
-			// records re-uploaded in full.
 			this.markDirty(0, this.count);
 		}
-		this.capacityFaces = this.records.length / 4;
+
+		this.capacityFaces = this.records.length >>> 2;
 	}
 
 	clearDirty(): void {
@@ -341,17 +590,23 @@ class WindingMesh {
 	}
 
 	private ensureRecordCapacity(requiredFaces: number): void {
-		if (requiredFaces * 4 <= this.records.length) return;
+		const requiredLanes = requiredFaces * 4;
 
-		let cap = this.records.length > 0 ? this.records.length : 1024;
-		while (cap < requiredFaces * 4) cap *= 2;
-		const next = new Float32Array(cap);
+		if (requiredLanes <= this.records.length) {
+			return;
+		}
+
+		let capacity = this.records.length > 0 ? this.records.length : 1024;
+
+		while (capacity < requiredLanes) {
+			capacity *= 2;
+		}
+
+		const next = new Float32Array(capacity);
 		next.set(this.records.subarray(0, this.count * 4));
 		this.records = next;
+		this.capacityFaces = capacity >>> 2;
 
-		// Replacement CPU buffer — the GPU buffer must be re-seeded with the
-		// active records (syncThinInstanceCount's growth path handles the
-		// full upload).
 		if (this.count > 0) {
 			this.markDirty(0, this.count);
 		}
@@ -359,9 +614,18 @@ class WindingMesh {
 
 	private markDirty(start: number, end: number): void {
 		if (end <= start) return;
-		if (start < this.dirtyMin) this.dirtyMin = start;
-		if (end > this.dirtyMax) this.dirtyMax = end;
+
+		if (start < this.dirtyMin) {
+			this.dirtyMin = start;
+		}
+
+		if (end > this.dirtyMax) {
+			this.dirtyMax = end;
+		}
 	}
+}
+function compareSlotsByBase(a: FarSlot, b: FarSlot): number {
+	return a.base - b.base;
 }
 
 class FarTileManagerImpl {
@@ -404,12 +668,24 @@ class FarTileManagerImpl {
 	private originsDirtyMin = Number.POSITIVE_INFINITY;
 	private originsDirtyMax = 0;
 
-	private readonly tiles = new Map<string, TileEntry>();
-	private readonly pendingByKey = new Set<string>();
-	private readonly keyByRequestId = new Map<number, string>();
+	private readonly tiles = new Map<bigint, TileEntry>();
+	private readonly pendingByKey = new Set<bigint>();
+	private readonly keyByRequestId = new Map<number, bigint>();
 
 	private lastPlayerChunkX = Number.NaN;
 	private lastPlayerChunkZ = Number.NaN;
+
+	// Reused scratch arrays for update() — avoids per-frame allocations
+	private _wantedKeys: bigint[] = [];
+	private _wantedLevels: number[] = [];
+	private _wantedTx: number[] = [];
+	private _wantedTz: number[] = [];
+	private _wantedDist: number[] = [];
+	private _evictKeys: bigint[] = [];
+	private _evictEntries: TileEntry[] = [];
+	private _evictWaterSlots: FarSlot[] = [];
+	private _evictStraightByLevel: FarSlot[][] = [];
+	private _evictReversedByLevel: FarSlot[][] = [];
 
 	// Uniform caches (mirrors DistantTerrain's steady-state skip).
 	private fogInfosScratch = new Float32Array(4);
@@ -428,8 +704,9 @@ class FarTileManagerImpl {
 	private lastFogInvRange = Number.NaN;
 
 	public init(engine: EngineContext, scene: SceneContext): void {
-		if (!isFarTilesEnabled()) return;
-		if (this.engine) return;
+		if (!isFarTilesEnabled() || this.engine) {
+			return;
+		}
 
 		this.engine = engine;
 		this.scene = scene;
@@ -447,13 +724,18 @@ class FarTileManagerImpl {
 				textureScale: 32,
 				nameSuffix: String(i),
 			});
+
 			this.terrainMaterials.push(material);
 			this.terrainArenas.push(new FaceWordArena(8192));
 			this.terrainStraight.push(new WindingMesh(true));
 			this.terrainReversed.push(new WindingMesh(false));
-		}
-		this.waterMaterial = createFarTileWaterMaterial();
 
+			// Allocate per-level scratch arrays once.
+			this._evictStraightByLevel.push([]);
+			this._evictReversedByLevel.push([]);
+		}
+
+		this.waterMaterial = createFarTileWaterMaterial();
 		this.ensureOrigins(1024);
 
 		const pool = ChunkWorkerPool.getInstance();
@@ -486,13 +768,17 @@ class FarTileManagerImpl {
 		this.lastPlayerChunkX = pcx;
 		this.lastPlayerChunkZ = pcz;
 
-		const wanted: {
-			key: string;
-			levelIndex: number;
-			tx: number;
-			tz: number;
-			dist: number;
-		}[] = [];
+		// Reuse scratch arrays — no per-frame object/string allocations
+		const wantedKeys = this._wantedKeys;
+		const wantedLevels = this._wantedLevels;
+		const wantedTx = this._wantedTx;
+		const wantedTz = this._wantedTz;
+		const wantedDist = this._wantedDist;
+		wantedKeys.length = 0;
+		wantedLevels.length = 0;
+		wantedTx.length = 0;
+		wantedTz.length = 0;
+		wantedDist.length = 0;
 
 		for (let li = 0; li < levels.length; li++) {
 			const lv = levels[li];
@@ -517,30 +803,72 @@ class FarTileManagerImpl {
 						continue;
 					}
 
-					const key = `${li}:${tx}:${tz}`;
+					const key = packTileKey(li, tx, tz);
 					if (this.tiles.has(key) || this.pendingByKey.has(key)) continue;
 
-					wanted.push({ key, levelIndex: li, tx, tz, dist: d });
+					wantedKeys.push(key);
+					wantedLevels.push(li);
+					wantedTx.push(tx);
+					wantedTz.push(tz);
+					wantedDist.push(d);
 				}
 			}
 		}
 
-		wanted.sort((a, b) => a.dist - b.dist);
-
-		let requested = 0;
-		const pool = ChunkWorkerPool.getInstance();
-		for (const w of wanted) {
-			if (requested >= MAX_TILE_REQUESTS_PER_UPDATE) break;
-
-			const requestId = pool.scheduleFarTile(w.levelIndex, w.tx, w.tz);
-			this.pendingByKey.add(w.key);
-			this.keyByRequestId.set(requestId, w.key);
-			requested++;
+		// Select nearest MAX_TILE_REQUESTS_PER_UPDATE without full sort (allocation-free)
+		const wantedCount = wantedKeys.length;
+		const toRequest =
+			wantedCount < MAX_TILE_REQUESTS_PER_UPDATE
+				? wantedCount
+				: MAX_TILE_REQUESTS_PER_UPDATE;
+		for (let r = 0; r < toRequest; r++) {
+			let bestIdx = r;
+			let bestDist = wantedDist[r];
+			for (let i = r + 1; i < wantedCount; i++) {
+				const d = wantedDist[i];
+				if (d < bestDist) {
+					bestDist = d;
+					bestIdx = i;
+				}
+			}
+			if (bestIdx !== r) {
+				const tmpKey = wantedKeys[r];
+				wantedKeys[r] = wantedKeys[bestIdx];
+				wantedKeys[bestIdx] = tmpKey;
+				let tmp: number;
+				tmp = wantedLevels[r];
+				wantedLevels[r] = wantedLevels[bestIdx];
+				wantedLevels[bestIdx] = tmp;
+				tmp = wantedTx[r];
+				wantedTx[r] = wantedTx[bestIdx];
+				wantedTx[bestIdx] = tmp;
+				tmp = wantedTz[r];
+				wantedTz[r] = wantedTz[bestIdx];
+				wantedTz[bestIdx] = tmp;
+				tmp = wantedDist[r];
+				wantedDist[r] = wantedDist[bestIdx];
+				wantedDist[bestIdx] = tmp;
+			}
 		}
 
-		// Unload tiles outside their window: beyond ringOuter+margin (walked
-		// away) OR inside ringInner (approached — real chunks now cover this
-		// area, and a lingering far tile would z-fight/poke through them).
+		const pool = ChunkWorkerPool.getInstance();
+		for (let i = 0; i < toRequest; i++) {
+			const key = wantedKeys[i];
+			const requestId = pool.scheduleFarTile(
+				wantedLevels[i],
+				wantedTx[i],
+				wantedTz[i],
+			);
+			this.pendingByKey.add(key);
+			this.keyByRequestId.set(requestId, key);
+		}
+
+		// Unload tiles outside their window — batched single-pass compaction
+		// to avoid O(m*n) repeated scans (previous per-tile removeSlot).
+		const evictKeys = this._evictKeys;
+		const evictEntries = this._evictEntries;
+		evictKeys.length = 0;
+		evictEntries.length = 0;
 		for (const [key, entry] of this.tiles) {
 			const lv = levels[entry.levelIndex];
 			if (!lv) continue;
@@ -554,8 +882,74 @@ class FarTileManagerImpl {
 				d >= lv.ringOuterChunks + UNLOAD_MARGIN_CHUNKS ||
 				d < lv.ringInnerChunks
 			) {
-				this.releaseEntry(entry);
-				this.tiles.delete(key);
+				evictKeys.push(key);
+				evictEntries.push(entry);
+			}
+		}
+
+		if (evictEntries.length > 0) {
+			const straightByLevel = this._evictStraightByLevel;
+			const reversedByLevel = this._evictReversedByLevel;
+			const waterSlots = this._evictWaterSlots;
+
+			waterSlots.length = 0;
+
+			// Reuse all per-level arrays rather than Map.clear() followed by creation
+			// of new arrays during every eviction update.
+			for (
+				let levelIndex = 0;
+				levelIndex < straightByLevel.length;
+				levelIndex++
+			) {
+				straightByLevel[levelIndex].length = 0;
+				reversedByLevel[levelIndex].length = 0;
+			}
+
+			for (let i = 0; i < evictEntries.length; i++) {
+				const entry = evictEntries[i];
+				const levelIndex = entry.levelIndex;
+				const arena = this.terrainArenas[levelIndex];
+				const opaque = entry.opaque;
+				const water = entry.water;
+
+				if (arena && opaque) {
+					arena.free(opaque);
+					straightByLevel[levelIndex].push(opaque);
+					reversedByLevel[levelIndex].push(opaque);
+				}
+
+				if (water) {
+					this.waterArena.free(water);
+					waterSlots.push(water);
+				}
+
+				this.releaseOrigin(entry.originSlot);
+			}
+
+			for (
+				let levelIndex = 0;
+				levelIndex < straightByLevel.length;
+				levelIndex++
+			) {
+				const straightSlots = straightByLevel[levelIndex];
+
+				if (straightSlots.length > 0) {
+					this.terrainStraight[levelIndex].removeSlots(straightSlots);
+				}
+
+				const reversedSlots = reversedByLevel[levelIndex];
+
+				if (reversedSlots.length > 0) {
+					this.terrainReversed[levelIndex].removeSlots(reversedSlots);
+				}
+			}
+
+			if (waterSlots.length > 0) {
+				this.waterReversed.removeSlots(waterSlots);
+			}
+
+			for (let i = 0; i < evictKeys.length; i++) {
+				this.tiles.delete(evictKeys[i]);
 			}
 		}
 
@@ -566,7 +960,7 @@ class FarTileManagerImpl {
 		const key = this.keyByRequestId.get(data.requestId);
 		this.keyByRequestId.delete(data.requestId);
 
-		if (!key) return;
+		if (key === undefined) return;
 		this.pendingByKey.delete(key);
 
 		// Stale result for an unloaded tile — drop it.
@@ -710,8 +1104,15 @@ class FarTileManagerImpl {
 	}
 
 	public isFarTilesVisible(): boolean {
-		const mesh = this.terrainReversed.find((wm) => wm.mesh)?.mesh;
-		return mesh ? (mesh as FarMeshLike).isVisible !== false : true;
+		for (let i = 0; i < this.terrainReversed.length; i++) {
+			const mesh = this.terrainReversed[i].mesh;
+
+			if (mesh) {
+				return mesh.isVisible !== false;
+			}
+		}
+
+		return true;
 	}
 
 	private pendingIsStillWanted(
@@ -920,100 +1321,123 @@ class FarTileManagerImpl {
 	// ------------------------------------------------------------------
 
 	private updateUniforms(): void {
-		if (this.terrainMaterials.length === 0 || !this.waterMaterial) return;
+		const waterMaterial = this.waterMaterial;
+		const terrainMaterials = this.terrainMaterials;
+		const terrainMaterialCount = terrainMaterials.length;
+
+		if (terrainMaterialCount === 0 || !waterMaterial) {
+			return;
+		}
 
 		const lightDir = GLOBAL_VALUES.skyLightDirection;
 		const shaderDirY = -lightDir.y;
 
-		const t = (shaderDirY + 0.2) / 0.4;
-		const clampedT = t < 0 ? 0 : t > 1 ? 1 : t;
-		const rawBlend = 1 - clampedT;
+		const interpolation = (shaderDirY + 0.2) / 0.4;
+		const clampedInterpolation =
+			interpolation < 0 ? 0 : interpolation > 1 ? 1 : interpolation;
+
+		const rawBlend = 1 - clampedInterpolation;
 		const blend = rawBlend * rawBlend * (3 - 2 * rawBlend);
-		const invBlend = 1 - blend;
+		const inverseBlend = 1 - blend;
 
-		const lx = -lightDir.x * invBlend;
-		const ly = -lightDir.y * invBlend + blend;
-		const lz = -lightDir.z * invBlend;
+		const lightX = -lightDir.x * inverseBlend;
+		const lightY = -lightDir.y * inverseBlend + blend;
+		const lightZ = -lightDir.z * inverseBlend;
 
-		const rawIntensity = (-lightDir.y + 0.1) * 4.0;
-		const sunLightIntensity =
+		const rawIntensity = (-lightDir.y + 0.1) * 4;
+		const intensity =
 			rawIntensity < 0 ? 0 : rawIntensity > 1 ? 1 : rawIntensity;
 
-		// Quantize to 1/256 steps so continuous day-cycle drift doesn't
-		// re-write every far-tile material UBO each frame.
-		const q = (v: number): number => Math.round(v * 256) / 256;
-		const lxQ = q(lx);
-		const lyQ = q(ly);
-		const lzQ = q(lz);
-		const sunQ = q(sunLightIntensity);
+		// A module-level helper avoids allocating a closure every frame.
+		const lightXQuantized = quantize256(lightX);
+		const lightYQuantized = quantize256(lightY);
+		const lightZQuantized = quantize256(lightZ);
+		const intensityQuantized = quantize256(intensity);
 
-		const camera = this.scene ? this.scene.camera : null;
-		const camPos = camera ? getCameraPosition(camera) : null;
-		const isUnderWater = camPos
-			? isEyeUnderwater(camPos.x, camPos.y, camPos.z)
+		const camera = this.scene?.camera;
+		const cameraPosition = camera ? getCameraPosition(camera) : null;
+
+		const underWater = cameraPosition
+			? isEyeUnderwater(cameraPosition.x, cameraPosition.y, cameraPosition.z)
 			: false;
 
-		const start = MapFog.getFogStart(isUnderWater);
-		const end = MapFog.getFogEnd(isUnderWater);
-		const fogColor = MapFog.getFogColor(isUnderWater);
-		const fogInvRange = 1.0 / Math.max(end - start, 1e-4);
+		const fogStart = MapFog.getFogStart(underWater);
+		const fogEnd = MapFog.getFogEnd(underWater);
+		const fogColor = MapFog.getFogColor(underWater);
+		const fogInverseRange = 1 / Math.max(fogEnd - fogStart, 1e-4);
 
-		const staticChanged =
-			lxQ !== this.lastLx ||
-			lyQ !== this.lastLy ||
-			lzQ !== this.lastLz ||
-			sunQ !== this.lastSunIntensity;
+		const lightingChanged =
+			lightXQuantized !== this.lastLx ||
+			lightYQuantized !== this.lastLy ||
+			lightZQuantized !== this.lastLz ||
+			intensityQuantized !== this.lastSunIntensity;
 
 		const fogChanged =
-			isUnderWater !== this.lastUnderWater ||
-			start !== this.lastFogStart ||
-			end !== this.lastFogEnd ||
+			underWater !== this.lastUnderWater ||
+			fogStart !== this.lastFogStart ||
+			fogEnd !== this.lastFogEnd ||
 			fogColor[0] !== this.lastFogColorR ||
 			fogColor[1] !== this.lastFogColorG ||
 			fogColor[2] !== this.lastFogColorB ||
-			fogInvRange !== this.lastFogInvRange;
+			fogInverseRange !== this.lastFogInvRange;
 
-		if (!staticChanged && !fogChanged) return;
+		if (!lightingChanged && !fogChanged) {
+			return;
+		}
 
-		const mats = [...this.terrainMaterials, this.waterMaterial];
+		if (lightingChanged) {
+			const scratch = this.lightDirScratch;
+			scratch[0] = lightXQuantized;
+			scratch[1] = lightYQuantized;
+			scratch[2] = lightZQuantized;
 
-		if (staticChanged) {
-			this.lightDirScratch[0] = lxQ;
-			this.lightDirScratch[1] = lyQ;
-			this.lightDirScratch[2] = lzQ;
-			this.lastLx = lxQ;
-			this.lastLy = lyQ;
-			this.lastLz = lzQ;
-			this.lastSunIntensity = sunQ;
+			this.lastLx = lightXQuantized;
+			this.lastLy = lightYQuantized;
+			this.lastLz = lightZQuantized;
+			this.lastSunIntensity = intensityQuantized;
 
-			for (const m of mats) {
-				setShaderUniform(m, "lightDirection", this.lightDirScratch);
-				setShaderUniform(m, "sunLightIntensity", sunQ);
+			// Avoid [...terrainMaterials, waterMaterial], which allocated a new
+			// array whenever either group of uniforms changed.
+			for (let i = 0; i < terrainMaterialCount; i++) {
+				const material = terrainMaterials[i];
+				setShaderUniform(material, "lightDirection", scratch);
+				setShaderUniform(material, "sunLightIntensity", intensityQuantized);
 			}
+
+			setShaderUniform(waterMaterial, "lightDirection", scratch);
+			setShaderUniform(waterMaterial, "sunLightIntensity", intensityQuantized);
 		}
 
 		if (fogChanged) {
-			this.fogInfosScratch[0] = 0;
-			this.fogInfosScratch[1] = start;
-			this.fogInfosScratch[2] = end;
-			this.fogInfosScratch[3] = 0;
-			this.fogColorScratch[0] = fogColor[0];
-			this.fogColorScratch[1] = fogColor[1];
-			this.fogColorScratch[2] = fogColor[2];
+			const fogInfos = this.fogInfosScratch;
+			fogInfos[0] = 0;
+			fogInfos[1] = fogStart;
+			fogInfos[2] = fogEnd;
+			fogInfos[3] = 0;
 
-			this.lastUnderWater = isUnderWater;
-			this.lastFogStart = start;
-			this.lastFogEnd = end;
+			const fogColorScratch = this.fogColorScratch;
+			fogColorScratch[0] = fogColor[0];
+			fogColorScratch[1] = fogColor[1];
+			fogColorScratch[2] = fogColor[2];
+
+			this.lastUnderWater = underWater;
+			this.lastFogStart = fogStart;
+			this.lastFogEnd = fogEnd;
 			this.lastFogColorR = fogColor[0];
 			this.lastFogColorG = fogColor[1];
 			this.lastFogColorB = fogColor[2];
-			this.lastFogInvRange = fogInvRange;
+			this.lastFogInvRange = fogInverseRange;
 
-			for (const m of mats) {
-				setShaderUniform(m, "fogInfos", this.fogInfosScratch);
-				setShaderUniform(m, "fogColor", this.fogColorScratch);
-				setShaderUniform(m, "fogInvRange", fogInvRange);
+			for (let i = 0; i < terrainMaterialCount; i++) {
+				const material = terrainMaterials[i];
+				setShaderUniform(material, "fogInfos", fogInfos);
+				setShaderUniform(material, "fogColor", fogColorScratch);
+				setShaderUniform(material, "fogInvRange", fogInverseRange);
 			}
+
+			setShaderUniform(waterMaterial, "fogInfos", fogInfos);
+			setShaderUniform(waterMaterial, "fogColor", fogColorScratch);
+			setShaderUniform(waterMaterial, "fogInvRange", fogInverseRange);
 		}
 	}
 }
