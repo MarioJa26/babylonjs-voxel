@@ -94,29 +94,34 @@ export class NetClient {
 	private callbacks: NetClientCallbacks = {};
 
 	private readonly remotePlayers = new Map<string, RemotePlayer>();
-
-	// Dense array indexed by server-assigned room player index. This avoids the
-	// old index -> sessionId -> player double lookup on the 20 Hz state path.
 	private playersByIndex: (RemotePlayer | undefined)[] = [];
 
 	private ownIndex = -1;
 	private playerName = "";
 
 	private readonly binaryHandlers: BinaryHandler[] = [];
-
-	// Subscribers notified whenever the connection drops (leave, error,
-	// explicit disconnect). Used by entity managers to clear ghost meshes so
-	// stale server state can never leak into the next session.
 	private readonly disconnectListeners: (() => void)[] = [];
 
-	// Reusable decode scratch for the hot player-state path.
 	private readonly batchScratch: PlayerStateBatchEntry[] = [];
-
-	// Prevent warn spam if a state batch references an index we do not know.
 	private readonly warnedUnknownIndices = new Set<number>();
 
-	// Monotonic connection generation. Room handlers capture this value so
-	// packets/events from older rooms are ignored after reconnects.
+	/*
+	 * writeBlockEdit currently accepts an object. Reusing this object avoids
+	 * allocating one object for every block edit.
+	 *
+	 * This is safe as long as BinaryEncoder.writeBlockEdit consumes the fields
+	 * synchronously and does not retain the object reference.
+	 */
+	private readonly blockEditScratch: BlockEditData = {
+		sessionId: "",
+		x: 0,
+		y: 0,
+		z: 0,
+		blockId: 0,
+		blockState: 0,
+		action: 0,
+	};
+
 	private roomGeneration = 0;
 
 	worldName = "default";
@@ -124,12 +129,11 @@ export class NetClient {
 	constructor(private serverUrl: string = NetClient.defaultServerUrl()) {}
 
 	private static defaultServerUrl(): string {
-		if (typeof window !== "undefined") {
-			const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-			return `${proto}//${window.location.hostname}:2567`;
+		if (typeof window === "undefined") {
+			return "ws://localhost:2567";
 		}
-
-		return "ws://localhost:2567";
+		const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+		return `${proto}//${window.location.hostname}:2567`;
 	}
 
 	setCallbacks(callbacks: NetClientCallbacks): void {
@@ -141,24 +145,23 @@ export class NetClient {
 		worldName: string,
 		seed: string,
 	): Promise<void> {
-		// Make reconnect explicit and safe. Old room events are ignored by the
-		// generation guard in setupRoomHandlers.
 		this.detachCurrentRoom();
 
 		this.playerName = playerName;
 		this.worldName = worldName;
-		this.client = new ColyseusSDK(this.serverUrl);
+
+		const client = new ColyseusSDK(this.serverUrl);
+		this.client = client;
 
 		const generation = ++this.roomGeneration;
 
 		try {
-			const room = await this.client.joinOrCreate("voxel", {
+			const room = await client.joinOrCreate("voxel", {
 				name: playerName,
 				worldName,
 				seed,
 			});
 
-			// A newer connect/disconnect happened while this join was in flight.
 			if (generation !== this.roomGeneration) {
 				void room.leave();
 				throw new Error("Connection superseded");
@@ -167,9 +170,9 @@ export class NetClient {
 			this.room = room;
 			this.setupRoomHandlers(room, generation);
 			this.connected = true;
+
 			this.callbacks.onConnected?.();
 
-			// Fire-and-forget: share this client's avatar skin with the room.
 			void this.uploadOwnSkin();
 		} catch (err) {
 			if (generation === this.roomGeneration) {
@@ -185,8 +188,11 @@ export class NetClient {
 	}
 
 	private setupRoomHandlers(room: any, generation: number): void {
+		/*
+		 * These three closures are allocated once per connection. They capture
+		 * the room generation, which is necessary to reject stale events.
+		 */
 		room.onMessage("binary", (data: Uint8Array) => {
-			// Drop packets from stale rooms after reconnect.
 			if (!this.isCurrentRoom(room, generation)) return;
 			this.handleBinaryMessage(data);
 		});
@@ -196,6 +202,8 @@ export class NetClient {
 
 			this.connected = false;
 			this.room = null;
+			this.client = null;
+
 			this.resetRemoteState();
 			this.callbacks.onDisconnected?.(code, reason);
 		});
@@ -212,7 +220,8 @@ export class NetClient {
 
 	removeBinaryHandler(handler: BinaryHandler): void {
 		const index = this.binaryHandlers.indexOf(handler);
-		if (index >= 0) {
+
+		if (index !== -1) {
 			this.binaryHandlers.splice(index, 1);
 		}
 	}
@@ -223,136 +232,189 @@ export class NetClient {
 
 	removeDisconnectListener(listener: () => void): void {
 		const index = this.disconnectListeners.indexOf(listener);
-		if (index !== -1) this.disconnectListeners.splice(index, 1);
+
+		if (index !== -1) {
+			this.disconnectListeners.splice(index, 1);
+		}
 	}
 
 	private handleBinaryMessage(data: Uint8Array): void {
 		const handlers = this.binaryHandlers;
 
-		// External handlers first, preserving existing behavior. Individual
-		// handler failures are isolated so one consumer cannot break NetClient.
-		for (let i = 0; i < handlers.length; i++) {
+		/*
+		 * Capture the original length so a handler added during dispatch does
+		 * not unexpectedly receive the packet currently being dispatched.
+		 *
+		 * This matches normal array-loop behavior more predictably while still
+		 * avoiding copies such as handlers.slice().
+		 */
+		const handlerCount = handlers.length;
+
+		for (let i = 0; i < handlerCount; i++) {
+			const handler = handlers[i];
+
+			/*
+			 * A preceding handler can remove entries. Preserve the old
+			 * defensive behavior without allocating a snapshot array.
+			 */
+			if (handler === undefined) break;
+
 			try {
-				handlers[i](data);
+				handler(data);
 			} catch (err) {
 				console.error("[NetClient] Binary handler failed:", err);
 			}
 		}
 
-		if (data.byteLength < 1) return;
+		if (data.byteLength === 0) return;
 
 		const dec = this.decoder;
 		dec.setBuffer(data);
 
 		try {
-			const msgType = dec.readUint8();
+			const callbacks = this.callbacks;
 
-			switch (msgType) {
-				case MessageType.PlayerStateBatch:
-					this.handlePlayerStateBatch(dec);
-					break;
+			// Loop to handle concatenated messages (e.g. server merges multiple
+			// PlayerJoin frames into one binary payload for late joiners).
+			// This is notification-driven: each join/skin is an event, not a poll.
+			while (dec.remaining > 0) {
+				const msgType = dec.readUint8();
 
-				case MessageType.PlayerJoin:
-					this.handlePlayerJoin(dec);
-					break;
+				switch (msgType) {
+					case MessageType.PlayerStateBatch:
+						this.handlePlayerStateBatch(dec);
+						break;
 
-				case MessageType.PlayerSkin: {
-					const skin = decodePlayerSkin(data);
-					const player = this.playersByIndex[skin.index];
-					if (player === undefined) {
-						// Server sends join before skin, so this is a protocol oddity.
-						console.warn(
-							`[NetClient] Skin for unknown player index ${skin.index}, skipping`,
-						);
+					case MessageType.PlayerJoin:
+						this.handlePlayerJoin(dec);
+						break;
+
+					case MessageType.PlayerSkin: {
+						const index = dec.readUint8();
+						const len = dec.readUint16();
+						if (len === 0 || len > MAX_SKIN_BYTES) {
+							throw new Error(`skin payload out of range: ${len}`);
+						}
+						const png = dec.readBytes(len);
+						const player = this.playersByIndex[index];
+
+						if (player === undefined) {
+							console.warn(
+								`[NetClient] Skin for unknown player index ${index}, skipping`,
+							);
+							break;
+						}
+
+						player.skinPng = png;
+						callbacks.onPlayerSkin?.(player, png);
 						break;
 					}
-					player.skinPng = skin.png;
-					this.callbacks.onPlayerSkin?.(player, skin.png);
-					break;
-				}
 
-				case MessageType.PlayerLeave:
-					this.handlePlayerLeave(dec);
-					break;
+					case MessageType.PlayerLeave:
+						this.handlePlayerLeave(dec);
+						break;
 
-				case MessageType.BlockEditBroadcast: {
-					const edit = decodeBlockEditBroadcastFrom(dec);
-					this.callbacks.onBlockEdit?.(edit);
-					break;
-				}
+					case MessageType.BlockEditBroadcast:
+						callbacks.onBlockEdit?.(decodeBlockEditBroadcastFrom(dec));
+						break;
 
-				case MessageType.BlockEditRejected: {
-					const rejection = decodeBlockEditRejectedFrom(dec);
-					this.callbacks.onBlockEditRejected?.(rejection);
-					break;
-				}
+					case MessageType.BlockEditRejected:
+						callbacks.onBlockEditRejected?.(decodeBlockEditRejectedFrom(dec));
+						break;
 
-				case MessageType.ChatMessage: {
-					const chat = dec.readChatMessage();
-					this.callbacks.onChatMessage?.(chat);
-					break;
-				}
+					case MessageType.ChatMessage:
+						callbacks.onChatMessage?.(dec.readChatMessage());
+						break;
 
-				case MessageType.BlockEditBatch: {
-					const edits = decodeBlockEditBatch(data);
-					for (let i = 0; i < edits.length; i++) {
-						this.callbacks.onBlockEdit?.(edits[i]);
+					case MessageType.BlockEditBatch: {
+						const count = dec.readUint16();
+						const callback = callbacks.onBlockEdit;
+						if (callback !== undefined) {
+							for (let i = 0; i < count; i++) {
+								callback({
+									sessionId: "",
+									x: dec.readInt32(),
+									y: dec.readInt32(),
+									z: dec.readInt32(),
+									blockId: dec.readUint16(),
+									blockState: dec.readUint8(),
+									action: dec.readUint8(),
+								});
+							}
+						} else {
+							for (let i = 0; i < count; i++) {
+								dec.readInt32();
+								dec.readInt32();
+								dec.readInt32();
+								dec.readUint16();
+								dec.readUint8();
+								dec.readUint8();
+							}
+						}
+						break;
 					}
-					break;
+
+					case MessageType.WorldTime:
+						callbacks.onWorldTime?.(dec.readFloat32());
+						break;
+
+					case MessageType.WorldConfig: {
+						const seed = dec.readString();
+						const dayDurationMs = dec.readFloat32();
+						const dayCycle = dec.readUint8() !== 0;
+						callbacks.onWorldConfig?.({ seed, dayDurationMs, dayCycle });
+						break;
+					}
+
+					case MessageType.SpawnPosition:
+						/*
+						 * This allocation is callback-visible. Reusing an object
+						 * would be unsafe because a callback may retain it.
+						 */
+						callbacks.onSpawnPosition?.({
+							x: dec.readFloat32(),
+							y: dec.readFloat32(),
+							z: dec.readFloat32(),
+							yaw: dec.readFloat32(),
+							pitch: dec.readFloat32(),
+						});
+						break;
+
+					case MessageType.ChunkData:
+					case MessageType.ChunkDataBatch:
+					case MessageType.ChunkDataDeflated:
+					case MessageType.ChunkDataDeflatedBatch:
+					case MessageType.ChunkUnchanged:
+					case MessageType.ChunkUnchangedBatch:
+						// Handled by RemoteChunkProvider via addBinaryHandler.
+						// Payload is variable-length; we cannot skip it without
+						// decoding, so stop the loop and let the delegated handler
+						// own the buffer.
+						return;
+
+					case MessageType.MobSpawn:
+					case MessageType.MobUpdateBatch:
+					case MessageType.MobDespawn:
+						// Handled by RemoteMobManager via addBinaryHandler.
+						return;
+
+					case MessageType.ItemSpawn:
+					case MessageType.ItemUpdateBatch:
+					case MessageType.ItemDespawn:
+						// Handled by RemoteItemManager via addBinaryHandler.
+						return;
+
+					case MessageType.ArrowSpawn:
+						// Handled by Arrow.ensureNetworkHandler via addBinaryHandler.
+						return;
+
+					default:
+						console.warn(
+							`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,
+						);
+						// Unknown payload length — stop to avoid desync.
+						return;
 				}
-
-				case MessageType.WorldTime: {
-					const timeOfDay = dec.readFloat32();
-					this.callbacks.onWorldTime?.(timeOfDay);
-					break;
-				}
-
-				case MessageType.WorldConfig: {
-					const config = decodeWorldConfig(data);
-					this.callbacks.onWorldConfig?.(config);
-					break;
-				}
-
-				case MessageType.SpawnPosition:
-					this.callbacks.onSpawnPosition?.({
-						x: dec.readFloat32(),
-						y: dec.readFloat32(),
-						z: dec.readFloat32(),
-						yaw: dec.readFloat32(),
-						pitch: dec.readFloat32(),
-					});
-					break;
-
-				case MessageType.ChunkData:
-				case MessageType.ChunkDataBatch:
-				case MessageType.ChunkDataDeflated:
-				case MessageType.ChunkDataDeflatedBatch:
-				case MessageType.ChunkUnchanged:
-				case MessageType.ChunkUnchangedBatch:
-					// Handled by RemoteChunkProvider via addBinaryHandler.
-					break;
-
-				case MessageType.MobSpawn:
-				case MessageType.MobUpdateBatch:
-				case MessageType.MobDespawn:
-					// Handled by RemoteMobManager via addBinaryHandler.
-					break;
-
-				case MessageType.ItemSpawn:
-				case MessageType.ItemUpdateBatch:
-				case MessageType.ItemDespawn:
-					// Handled by RemoteItemManager via addBinaryHandler.
-					break;
-
-				case MessageType.ArrowSpawn:
-					// Handled by Arrow.ensureNetworkHandler via addBinaryHandler.
-					break;
-
-				default:
-					console.warn(
-						`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,
-					);
-					break;
 			}
 		} catch (err) {
 			console.error("[NetClient] Failed to handle binary message:", err);
@@ -364,27 +426,31 @@ export class NetClient {
 
 		const scratch = this.batchScratch;
 		const players = this.playersByIndex;
+		const ownIndex = this.ownIndex;
 
 		for (let i = 0; i < scratch.length; i++) {
 			const state = scratch[i];
 
-			if (state.index === this.ownIndex) continue;
+			if (state.index === ownIndex) continue;
 
 			const existing = players[state.index];
+
 			if (existing === undefined) {
 				if (!this.warnedUnknownIndices.has(state.index)) {
 					this.warnedUnknownIndices.add(state.index);
+
 					console.warn(
 						`[NetClient] State for unknown player index ${state.index}, skipping`,
 					);
 				}
+
 				continue;
 			}
 
 			existing.targetX = state.x;
 			existing.targetY = state.y;
 			existing.targetZ = state.z;
-			existing.targetYaw = (state.yaw / 255) * 360;
+			existing.targetYaw = state.yaw * (360 / 255);
 			existing.pitch = state.pitch;
 			existing.animation = state.animation;
 		}
@@ -402,18 +468,20 @@ export class NetClient {
 
 		let player = this.remotePlayers.get(join.sessionId);
 
-		if (player) {
-			// Same session joined again, likely after an index reassignment.
+		if (player !== undefined) {
 			this.playersByIndex[player.index] = undefined;
 
 			player.index = join.index;
 			player.name = join.name;
+
 			player.x = 0;
 			player.y = 80;
 			player.z = 0;
+
 			player.yaw = 0;
 			player.pitch = 0;
 			player.animation = 0;
+
 			player.targetX = 0;
 			player.targetY = 80;
 			player.targetZ = 0;
@@ -441,6 +509,7 @@ export class NetClient {
 
 		this.playersByIndex[join.index] = player;
 		this.warnedUnknownIndices.delete(join.index);
+
 		this.callbacks.onPlayerJoin?.(player);
 	}
 
@@ -457,10 +526,9 @@ export class NetClient {
 		this.remotePlayers.delete(existing.sessionId);
 		this.playersByIndex[index] = undefined;
 		this.warnedUnknownIndices.delete(index);
+
 		this.callbacks.onPlayerLeave?.(existing.sessionId, existing.name);
 	}
-
-	// Outgoing messages
 
 	sendPlayerState(
 		x: number,
@@ -471,13 +539,17 @@ export class NetClient {
 		animation: number,
 	): void {
 		const room = this.getConnectedRoom();
-		if (!room) return;
-
-		const yawByte = NetClient.encodeYawByte(yaw);
-		const pitchByte = NetClient.encodePitchByte(pitch);
+		if (room === null) return;
 
 		this.encoder.reset();
-		this.encoder.writePlayerStateRaw(x, y, z, yawByte, pitchByte, animation);
+		this.encoder.writePlayerStateRaw(
+			x,
+			y,
+			z,
+			NetClient.encodeYawByte(yaw),
+			NetClient.encodePitchByte(pitch),
+			animation,
+		);
 
 		room.sendBytes("binary", this.encoder.getBytes());
 	}
@@ -491,38 +563,40 @@ export class NetClient {
 		blockState = 0,
 	): void {
 		const room = this.getConnectedRoom();
-		if (!room) return;
+		if (room === null) return;
+
+		const edit = this.blockEditScratch;
+		edit.x = x;
+		edit.y = y;
+		edit.z = z;
+		edit.blockId = blockId;
+		edit.blockState = blockState;
+		edit.action = action;
 
 		this.encoder.reset();
-		this.encoder.writeBlockEdit({
-			sessionId: "",
-			x,
-			y,
-			z,
-			blockId,
-			blockState,
-			action,
-		});
+		this.encoder.writeBlockEdit(edit);
 
 		room.sendBytes("binary", this.encoder.getBytes());
 	}
 
 	sendChat(message: string): void {
 		const room = this.getConnectedRoom();
-		if (!room) return;
+		if (room === null) return;
 
-		this.encoder.reset();
-
+		/*
+		 * This object must not be reused because it is passed to a consumer
+		 * through onChatMessage, and that consumer may retain the reference.
+		 */
 		const chat: ChatMessageData = {
 			sessionId: room.sessionId,
 			name: this.playerName,
 			message,
 		};
 
+		this.encoder.reset();
 		this.encoder.writeChatMessage(chat);
 		room.sendBytes("binary", this.encoder.getBytes());
 
-		// Local echo. The server relays to everyone except the sender.
 		this.callbacks.onChatMessage?.(chat);
 	}
 
@@ -535,7 +609,7 @@ export class NetClient {
 	): void {
 		const room = this.getConnectedRoom();
 
-		if (!room) {
+		if (room === null) {
 			console.warn(
 				`[NetClient] sendChunkRequest skipped (not connected): ${cx},${cy},${cz}`,
 			);
@@ -544,6 +618,7 @@ export class NetClient {
 
 		this.encoder.reset();
 		this.encoder.writeChunkRequest(cx, cy, cz, lod, cachedVersion);
+
 		room.sendBytes("binary", this.encoder.getBytes());
 	}
 
@@ -552,7 +627,7 @@ export class NetClient {
 
 		const room = this.getConnectedRoom();
 
-		if (!room) {
+		if (room === null) {
 			console.warn(
 				`[NetClient] sendChunkRequestBatch skipped (connected=${this.connected}): ${requests.length} chunks`,
 			);
@@ -561,10 +636,10 @@ export class NetClient {
 
 		this.encoder.reset();
 		this.encoder.writeChunkRequestBatch(requests);
+
 		room.sendBytes("binary", this.encoder.getBytes());
 	}
 
-	/** C→S: a player dropped an item into the world (server-authoritative). */
 	sendItemDrop(
 		itemId: number,
 		stackSize: number,
@@ -576,59 +651,61 @@ export class NetClient {
 		vz: number,
 	): void {
 		const room = this.getConnectedRoom();
-		if (!room) return;
+		if (room === null) return;
 
-		this.encoder.reset();
-		this.encoder.writeUint8(MessageType.ItemDrop);
-		this.encoder.writeUint16(itemId);
-		this.encoder.writeUint16(stackSize);
-		this.encoder.writeFloat32(x);
-		this.encoder.writeFloat32(y);
-		this.encoder.writeFloat32(z);
-		this.encoder.writeFloat32(vx);
-		this.encoder.writeFloat32(vy);
-		this.encoder.writeFloat32(vz);
-		room.sendBytes("binary", this.encoder.getBytes());
+		const encoder = this.encoder;
+		encoder.reset();
+		encoder.writeUint8(MessageType.ItemDrop);
+		encoder.writeUint16(itemId);
+		encoder.writeUint16(stackSize);
+		encoder.writeFloat32(x);
+		encoder.writeFloat32(y);
+		encoder.writeFloat32(z);
+		encoder.writeFloat32(vx);
+		encoder.writeFloat32(vy);
+		encoder.writeFloat32(vz);
+
+		room.sendBytes("binary", encoder.getBytes());
 	}
 
-	/** C→S: a player picked up a server item, referenced by its instance id. */
 	sendItemPickup(instanceId: number): void {
 		const room = this.getConnectedRoom();
-		if (!room) return;
+		if (room === null) return;
 
 		this.encoder.reset();
 		this.encoder.writeUint8(MessageType.ItemPickup);
 		this.encoder.writeUint32(instanceId);
+
 		room.sendBytes("binary", this.encoder.getBytes());
 	}
 
-	/** C→S: a player used a spawn egg — the server spawns a cap-exempt mob. */
 	sendMobSpawnRequest(typeId: number, x: number, y: number, z: number): void {
 		const room = this.getConnectedRoom();
-		if (!room) return;
+		if (room === null) return;
 
-		this.encoder.reset();
-		this.encoder.writeUint8(MessageType.MobSpawnRequest);
-		this.encoder.writeUint8(typeId);
-		this.encoder.writeFloat32(x);
-		this.encoder.writeFloat32(y);
-		this.encoder.writeFloat32(z);
-		room.sendBytes("binary", this.encoder.getBytes());
+		const encoder = this.encoder;
+		encoder.reset();
+		encoder.writeUint8(MessageType.MobSpawnRequest);
+		encoder.writeUint8(typeId);
+		encoder.writeFloat32(x);
+		encoder.writeFloat32(y);
+		encoder.writeFloat32(z);
+
+		room.sendBytes("binary", encoder.getBytes());
 	}
 
-	/** C→S: this client's projectile hit a server mob (server applies HP). */
 	sendMobDamage(mobId: number, damage: number): void {
 		const room = this.getConnectedRoom();
-		if (!room) return;
+		if (room === null) return;
 
 		this.encoder.reset();
 		this.encoder.writeUint8(MessageType.MobDamage);
 		this.encoder.writeUint16(mobId);
 		this.encoder.writeFloat32(damage);
+
 		room.sendBytes("binary", this.encoder.getBytes());
 	}
 
-	/** C→S: this client fired an arrow (relayed to the other clients). */
 	sendArrowShoot(
 		x: number,
 		y: number,
@@ -639,42 +716,52 @@ export class NetClient {
 		arrowType: number,
 	): void {
 		const room = this.getConnectedRoom();
-		if (!room) return;
+		if (room === null) return;
 
-		this.encoder.reset();
-		this.encoder.writeUint8(MessageType.ArrowShoot);
-		this.encoder.writeFloat32(x);
-		this.encoder.writeFloat32(y);
-		this.encoder.writeFloat32(z);
-		this.encoder.writeFloat32(vx);
-		this.encoder.writeFloat32(vy);
-		this.encoder.writeFloat32(vz);
-		this.encoder.writeUint8(arrowType);
-		room.sendBytes("binary", this.encoder.getBytes());
+		const encoder = this.encoder;
+		encoder.reset();
+		encoder.writeUint8(MessageType.ArrowShoot);
+		encoder.writeFloat32(x);
+		encoder.writeFloat32(y);
+		encoder.writeFloat32(z);
+		encoder.writeFloat32(vx);
+		encoder.writeFloat32(vy);
+		encoder.writeFloat32(vz);
+		encoder.writeUint8(arrowType);
+
+		room.sendBytes("binary", encoder.getBytes());
 	}
 
-	/** C→S: share this client's avatar skin PNG with the room. */
 	uploadSkin(png: Uint8Array): void {
 		const room = this.getConnectedRoom();
-		if (!room) return;
 
-		if (png.byteLength === 0 || png.byteLength > MAX_SKIN_BYTES) return;
+		if (
+			room === null ||
+			png.byteLength === 0 ||
+			png.byteLength > MAX_SKIN_BYTES
+		) {
+			return;
+		}
+
 		room.sendBytes("binary", encodeSkinUpload(png));
 	}
 
-	/** Fetch the local skin PNG and upload it (best-effort, once per connect). */
 	private async uploadOwnSkin(): Promise<void> {
 		try {
-			const res = await fetch(PLAYER_SKIN_PATH);
-			if (!res.ok) return;
-			const buf = await res.arrayBuffer();
-			this.uploadSkin(new Uint8Array(buf));
+			const response = await fetch(PLAYER_SKIN_PATH);
+			if (!response.ok) return;
+
+			const buffer = await response.arrayBuffer();
+
+			/*
+			 * Uint8Array(ArrayBuffer) creates a view over the buffer. It does
+			 * not copy the PNG bytes.
+			 */
+			this.uploadSkin(new Uint8Array(buffer));
 		} catch {
-			// Skin sharing is best-effort; never block gameplay.
+			// Skin sharing is best-effort.
 		}
 	}
-
-	// Remote player access
 
 	getRemotePlayers(): Map<string, RemotePlayer> {
 		return this.remotePlayers;
@@ -697,18 +784,22 @@ export class NetClient {
 			player.z += (player.targetZ - player.z) * lerpFactor;
 
 			let yawDiff = player.targetYaw - player.yaw;
-			if (yawDiff > 180) yawDiff -= 360;
-			else if (yawDiff < -180) yawDiff += 360;
+
+			if (yawDiff > 180) {
+				yawDiff -= 360;
+			} else if (yawDiff < -180) {
+				yawDiff += 360;
+			}
 
 			player.yaw += yawDiff * lerpFactor;
 
-			// Keep yaw bounded over long sessions to avoid unbounded drift.
-			if (player.yaw >= 360) player.yaw -= 360;
-			else if (player.yaw < 0) player.yaw += 360;
+			if (player.yaw >= 360) {
+				player.yaw -= 360;
+			} else if (player.yaw < 0) {
+				player.yaw += 360;
+			}
 		}
 	}
-
-	// Lifecycle
 
 	disconnect(): void {
 		this.detachCurrentRoom();
@@ -726,21 +817,31 @@ export class NetClient {
 	private detachCurrentRoom(): void {
 		const room = this.room;
 
-		// Invalidate existing handlers before calling leave so late events from
-		// this room cannot affect the next connection.
 		this.roomGeneration++;
 		this.connected = false;
 		this.room = null;
 
-		if (room) {
+		/*
+		 * Release the SDK object immediately. The local room variable remains
+		 * alive only long enough to call leave().
+		 */
+		this.client = null;
+
+		if (room !== null) {
 			void room.leave();
 		}
 	}
 
 	private resetRemoteState(): void {
-		for (const listener of this.disconnectListeners) {
+		const listeners = this.disconnectListeners;
+
+		/*
+		 * An indexed loop avoids creating an array iterator in this cleanup
+		 * path and preserves the original no-copy dispatch behavior.
+		 */
+		for (let i = 0; i < listeners.length; i++) {
 			try {
-				listener();
+				listeners[i]();
 			} catch (err) {
 				console.error("[NetClient] Disconnect listener failed:", err);
 			}
@@ -761,15 +862,14 @@ export class NetClient {
 		return this.connected ? this.room : null;
 	}
 
-	public static encodeYawByte(yaw: number): number {
+	static encodeYawByte(yaw: number): number {
 		const normalized = ((yaw % 360) + 360) % 360;
-		return Math.round((normalized / 360) * 255) & 0xff;
+		return Math.round(normalized * (255 / 360)) & 0xff;
 	}
 
-	public static encodePitchByte(pitch: number): number {
-		// Valid pitch range is expected to be -90..90. Clamp instead of wrapping
-		// so bad input does not turn into a seemingly valid opposite angle.
+	static encodePitchByte(pitch: number): number {
 		const clamped = pitch < -90 ? -90 : pitch > 90 ? 90 : pitch;
-		return Math.round(((clamped + 90) / 180) * 255) & 0xff;
+
+		return Math.round((clamped + 90) * (255 / 180)) & 0xff;
 	}
 }

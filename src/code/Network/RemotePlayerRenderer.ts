@@ -1,5 +1,5 @@
 /**
- * RemotePlayerRenderer — visual representation of other players.
+ * RemotePlayerRenderer: visual representation of other players.
  *
  * Creates Minecraft-style player rigs for remote players with server-synced
  * skin PNGs and camera-facing Minecraft-style name tags.
@@ -54,6 +54,36 @@ import {
 } from "../Player/PlayerModel";
 import type { RemotePlayer } from "./NetClient";
 
+// Flush billboard deferred builders that `addFacingBillboardSystem` registers.
+// Lite only drains `_deferredBuilders` in `buildScene` (at `registerScene`);
+// any system added after that (remote players) must be flushed manually —
+// `rebuildSceneRenderables` does NOT handle them, which is why a new player
+// stayed invisible until another system (e.g. a mob's `ensureInstancedGroupBuild`)
+// forced a shader-group rebuild that also drained the queue.
+async function flushDeferredBillboards(scene: SceneContext): Promise<void> {
+	const ctx = scene as unknown as {
+		_deferredBuilders?: Array<() => Promise<void>>;
+		_renderables?: Array<{ order: number }>;
+		_renderableVersion?: number;
+		_materialEpoch?: number;
+		_frameGraph?: { build(): void };
+		_built?: boolean;
+	};
+	// Only needed after the scene is built; before that `registerScene` will drain.
+	if (
+		!ctx._built ||
+		!ctx._deferredBuilders ||
+		ctx._deferredBuilders.length === 0
+	)
+		return;
+	const builders = ctx._deferredBuilders.splice(0);
+	await Promise.all(builders.map((b) => b()));
+	ctx._renderables?.sort((a, b) => a.order - b.order);
+	if (ctx._renderableVersion !== undefined) ctx._renderableVersion++;
+	if (ctx._materialEpoch !== undefined) ctx._materialEpoch++;
+	ctx._frameGraph?.build();
+}
+
 const NAME_TAG_FONT_PX = 30;
 const NAME_TAG_PADDING = 12;
 export const NAME_TAG_HEIGHT_WORLD = 0.55;
@@ -65,67 +95,57 @@ const NAME_TAG_FONT = "monospace";
 const ELLIPSIS = "…";
 
 const DEG_TO_RAD = Math.PI / 180;
+const PITCH_BYTE_TO_RAD = (180 / 255) * DEG_TO_RAD;
+const HALF_PI = Math.PI * 0.5;
 
 const WHITE_COLOR: [number, number, number, number] = [1, 1, 1, 1];
 
 const LIGHT_RESAMPLE_MS = 250;
-
-// Walk-speed sampling window for inferred remote animation.
 const WALK_SAMPLE_MS = 40;
+
+const WALK_SPEED_ZERO_EPS = 0.01;
+const WALK_AMP_SNAP_EPS = 0.002;
+const HEAD_PITCH_SNAP_EPS = 0.001;
 
 const REMOTE_CULL_ENTER_DIST_SQ = 96 * 96;
 const REMOTE_CULL_EXIT_DIST_SQ = 88 * 88;
 
-async function decodeSkinToTexture(
-	engine: EngineContext,
-	png: Uint8Array,
-): Promise<Texture2D> {
-	// Blob does not reliably accept SharedArrayBuffer-backed typed arrays.
-	const bytes = new Uint8Array(png.byteLength);
-	bytes.set(png);
+const SKIN_SIZE = 64;
+const SKIN_ROW_BYTES = SKIN_SIZE * 4;
 
-	const blob = new Blob([bytes], { type: "image/png" });
-	const bitmap = await createImageBitmap(blob);
-
-	try {
-		const canvas = new OffscreenCanvas(64, 64);
-		const ctx = canvas.getContext("2d");
-
-		if (!ctx) {
-			throw new Error("Unable to create skin decoding canvas context");
-		}
-
-		ctx.imageSmoothingEnabled = false;
-		ctx.drawImage(bitmap, 0, 0, 64, 64);
-
-		const src = ctx.getImageData(0, 0, 64, 64).data;
-		const rowBytes = 64 * 4;
-		const flipped = new Uint8Array(src.length);
-
-		for (let dstY = 0, srcY = 63; dstY < 64; dstY++, srcY--) {
-			const srcOffset = srcY * rowBytes;
-			flipped.set(
-				src.subarray(srcOffset, srcOffset + rowBytes),
-				dstY * rowBytes,
-			);
-		}
-
-		return createTexture2DFromPixels(engine, flipped, 64, 64);
-	} finally {
-		bitmap.close();
-	}
-}
+let skinDecodeCtx: OffscreenCanvasRenderingContext2D | null = null;
+const skinRowScratch = new Uint8Array(SKIN_ROW_BYTES);
 
 let measureCtx: OffscreenCanvasRenderingContext2D | null = null;
 
-function getMeasureCtx(): OffscreenCanvasRenderingContext2D {
-	if (measureCtx) {
-		return measureCtx;
+function getSkinDecodeContext(): OffscreenCanvasRenderingContext2D {
+	let ctx = skinDecodeCtx;
+
+	if (ctx !== null) {
+		return ctx;
 	}
 
-	const ctx = new OffscreenCanvas(1, 1).getContext("2d");
+	ctx = new OffscreenCanvas(SKIN_SIZE, SKIN_SIZE).getContext("2d");
 
-	if (!ctx) {
+	if (ctx === null) {
+		throw new Error("Unable to create skin decoding canvas context");
+	}
+
+	ctx.imageSmoothingEnabled = false;
+	skinDecodeCtx = ctx;
+	return ctx;
+}
+
+function getMeasureCtx(): OffscreenCanvasRenderingContext2D {
+	let ctx = measureCtx;
+
+	if (ctx !== null) {
+		return ctx;
+	}
+
+	ctx = new OffscreenCanvas(1, 1).getContext("2d");
+
+	if (ctx === null) {
 		throw new Error("Unable to create name-tag measurement context");
 	}
 
@@ -133,20 +153,106 @@ function getMeasureCtx(): OffscreenCanvasRenderingContext2D {
 	return ctx;
 }
 
-function clampInt(value: number, min: number, max: number): number {
-	const intValue = Math.trunc(value);
+/**
+ * Blob accepts ArrayBuffer-backed views directly.
+ *
+ * SharedArrayBuffer-backed views are copied because Blob implementations and
+ * TypeScript's BlobPart declarations do not consistently accept them.
+ */
+function pngToBlobPart(png: Uint8Array): BlobPart {
+	if (png.buffer instanceof ArrayBuffer) {
+		return png as Uint8Array<ArrayBuffer>;
+	}
 
-	if (intValue < min) {
+	const bytes = new Uint8Array(png.byteLength);
+	bytes.set(png);
+	return bytes;
+}
+
+async function decodeSkinToTexture(
+	engine: EngineContext,
+	png: Uint8Array,
+): Promise<Texture2D> {
+	const blob = new Blob([pngToBlobPart(png)], { type: "image/png" });
+	const bitmap = await createImageBitmap(blob);
+
+	try {
+		const ctx = getSkinDecodeContext();
+		ctx.clearRect(0, 0, SKIN_SIZE, SKIN_SIZE);
+		ctx.drawImage(bitmap, 0, 0, SKIN_SIZE, SKIN_SIZE);
+
+		const imageData = ctx.getImageData(0, 0, SKIN_SIZE, SKIN_SIZE).data;
+
+		const pixels = new Uint8Array(
+			imageData.buffer,
+			imageData.byteOffset,
+			imageData.byteLength,
+		);
+
+		let topOffset = 0;
+		let bottomOffset = (SKIN_SIZE - 1) * SKIN_ROW_BYTES;
+
+		while (topOffset < bottomOffset) {
+			skinRowScratch.set(
+				pixels.subarray(topOffset, topOffset + SKIN_ROW_BYTES),
+			);
+
+			pixels.copyWithin(topOffset, bottomOffset, bottomOffset + SKIN_ROW_BYTES);
+
+			pixels.set(skinRowScratch, bottomOffset);
+
+			topOffset += SKIN_ROW_BYTES;
+			bottomOffset -= SKIN_ROW_BYTES;
+		}
+
+		return createTexture2DFromPixels(engine, pixels, SKIN_SIZE, SKIN_SIZE);
+	} finally {
+		bitmap.close();
+	}
+}
+
+function clampInt(value: number, min: number, max: number): number {
+	const integer = Math.trunc(value);
+
+	if (integer < min) {
 		return min;
 	}
 
-	if (intValue > max) {
-		return max;
-	}
-
-	return intValue;
+	return integer > max ? max : integer;
 }
 
+function isHighSurrogate(codeUnit: number): boolean {
+	return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+function isLowSurrogate(codeUnit: number): boolean {
+	return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
+
+/**
+ * Adjust a UTF-16 index so substring(0, index) cannot end between the two
+ * code units of a surrogate pair.
+ */
+function adjustCodePointBoundary(text: string, index: number): number {
+	if (
+		index > 0 &&
+		index < text.length &&
+		isHighSurrogate(text.charCodeAt(index - 1)) &&
+		isLowSurrogate(text.charCodeAt(index))
+	) {
+		return index - 1;
+	}
+
+	return index;
+}
+
+/**
+ * Finds the longest prefix fitting the available width.
+ *
+ * Unlike Array.from(text), this does not allocate an array containing every
+ * code point. Each binary-search iteration allocates only the candidate string
+ * required by CanvasRenderingContext2D.measureText.
+ */
 function fitTextWithEllipsis(
 	ctx: OffscreenCanvasRenderingContext2D,
 	text: string,
@@ -160,32 +266,26 @@ function fitTextWithEllipsis(
 		return ELLIPSIS;
 	}
 
-	/*
-	 * Array.from splits by Unicode code points instead of UTF-16 code units.
-	 * This avoids cutting a surrogate pair in half for names containing emoji
-	 * or supplementary-plane characters.
-	 *
-	 * This allocation occurs only when an oversized name tag is created.
-	 */
-	const codePoints = Array.from(text);
-
 	let low = 0;
-	let high = codePoints.length;
-	let best = ELLIPSIS;
+	let high = text.length;
+	let bestEnd = 0;
 
 	while (low <= high) {
-		const middle = (low + high) >>> 1;
-		const candidate = codePoints.slice(0, middle).join("") + ELLIPSIS;
+		let middle = (low + high) >>> 1;
+		middle = adjustCodePointBoundary(text, middle);
+
+		const candidate = text.substring(0, middle) + ELLIPSIS;
 
 		if (ctx.measureText(candidate).width <= maxTextWidthPx) {
-			best = candidate;
+			bestEnd = middle;
 			low = middle + 1;
 		} else {
 			high = middle - 1;
 		}
 	}
 
-	return best;
+	bestEnd = adjustCodePointBoundary(text, bestEnd);
+	return text.substring(0, bestEnd) + ELLIPSIS;
 }
 
 export function rasteriseNameTag(
@@ -196,42 +296,38 @@ export function rasteriseNameTag(
 	width: number;
 	height: number;
 } {
-	const safeName = name.length > 0 ? name : "Player";
+	const safeName = name.length === 0 ? "Player" : name;
 	const measurementContext = getMeasureCtx();
 
 	const fontPx = NAME_TAG_FONT_PX * scale;
 	const padding = NAME_TAG_PADDING * scale;
-	const texHeight = NAME_TAG_TEX_HEIGHT * scale;
-	const maxTexWidth = NAME_TAG_MAX_TEX_WIDTH * scale;
-	const minTexWidth = Math.max(1, NAME_TAG_MIN_TEX_WIDTH * scale);
+	const height = NAME_TAG_TEX_HEIGHT * scale;
+	const maxWidth = NAME_TAG_MAX_TEX_WIDTH * scale;
+	const minWidth = Math.max(1, NAME_TAG_MIN_TEX_WIDTH * scale);
 
-	measurementContext.font = `bold ${fontPx}px ${NAME_TAG_FONT}`;
-
-	const maxTextWidth = maxTexWidth - padding * 2;
+	const font = `bold ${fontPx}px ${NAME_TAG_FONT}`;
+	measurementContext.font = font;
 
 	const displayName = fitTextWithEllipsis(
 		measurementContext,
 		safeName,
-		maxTextWidth,
+		maxWidth - padding * 2,
 	);
-
-	const textWidth = measurementContext.measureText(displayName).width;
 
 	const width = clampInt(
-		Math.ceil(textWidth + padding * 2),
-		minTexWidth,
-		maxTexWidth,
+		Math.ceil(measurementContext.measureText(displayName).width + padding * 2),
+		minWidth,
+		maxWidth,
 	);
 
-	const height = texHeight;
 	const canvas = new OffscreenCanvas(width, height);
 	const ctx = canvas.getContext("2d");
 
-	if (!ctx) {
+	if (ctx === null) {
 		throw new Error("Unable to create name-tag rendering context");
 	}
 
-	ctx.font = measurementContext.font;
+	ctx.font = font;
 	ctx.textAlign = "center";
 	ctx.textBaseline = "middle";
 
@@ -244,11 +340,7 @@ export function rasteriseNameTag(
 	ctx.fillStyle = "#ffffff";
 	ctx.fillText(displayName, width * 0.5, height * 0.5);
 
-	return {
-		canvas,
-		width,
-		height,
-	};
+	return { canvas, width, height };
 }
 
 export class RemotePlayerVisual {
@@ -272,39 +364,40 @@ export class RemotePlayerVisual {
 	private lastZ = Number.NaN;
 	private lastYaw = Number.NaN;
 
-	private lastTargetX = Number.NaN;
-	private lastTargetY = Number.NaN;
-	private lastTargetZ = Number.NaN;
-	private lastTargetYaw = Number.NaN;
-
 	private lastLightX = Number.NaN;
 	private lastLightY = Number.NaN;
 	private lastLightZ = Number.NaN;
 	private lastLightSampleMs = -Infinity;
 
-	// Walk-swing state, driven by speed inferred from interpolated positions.
 	private walkPhase = 0;
 	private walkAmp = 0;
 	private smoothedSpeed = 0;
 	private walkSampleX = Number.NaN;
 	private walkSampleZ = Number.NaN;
 	private walkSampleMs = Number.NaN;
-	// Head pitch eased toward the server's pitch byte each frame.
+	private sentWalkPhase = Number.NaN;
+	private sentWalkAmp = Number.NaN;
+
 	private headPitch = 0;
+	private headPitchTarget = 0;
+	private lastPitchByte = -1;
 
-	private readonly positionScratch: [number, number, number] = [0, 0, 0];
+	private readonly billboardPosition: [number, number, number] = [0, 0, 0];
 
-	// Sprint-dust emission, derived entirely from locally-interpolated motion
-	// (no server sprint flag is transmitted). Each remote player keeps its own
-	// throttle state and a per-frame position sample to estimate velocity.
 	private readonly sprintEmitter: SprintEmitterState = makeSprintEmitterState();
+
 	private sprintPrevX = Number.NaN;
 	private sprintPrevZ = Number.NaN;
 	private sprintPrevMs = Number.NaN;
 
 	private lastFlushMs = -Infinity;
 
-	private static readonly VISUAL_REFRESH_MS = 16;
+	// Notification-driven refresh: skin / join events force a visual sync
+	// without waiting for movement polling.
+	private needsForcedRefresh = true;
+	private needsBillboardSync = true;
+
+	private readonly requestFlush: () => void;
 
 	private readonly billboardOptions: {
 		position: [number, number, number];
@@ -312,11 +405,15 @@ export class RemotePlayerVisual {
 		color: [number, number, number, number];
 	};
 
+	private static readonly VISUAL_REFRESH_MS = 16;
+
 	constructor(
 		private readonly engine: EngineContext,
 		private readonly scene: SceneContext,
 		private readonly player: RemotePlayer,
+		requestFlush?: () => void,
 	) {
+		this.requestFlush = requestFlush ?? (() => {});
 		this.mesh = createPlayerRigMesh(
 			engine,
 			`remoteRig_${player.sessionId.slice(0, 8)}`,
@@ -329,41 +426,46 @@ export class RemotePlayerVisual {
 		this.mesh.visible = false;
 
 		addToScene(scene, this.mesh);
+		// Shader meshes added after `registerScene` are normally built via
+		// `processMaterialSwaps` next frame, but if a `rebuildSceneRenderables`
+		// is already in flight (`_runtimeBuilds.w`) that queue stalls. Force a
+		// direct shader-group build like `MobInstancePool.ensureInstancedGroupBuild`
+		// so the rig appears without needing a mob spawn to kick the group.
+		{
+			const bg = (
+				this.mat as unknown as {
+					_buildGroup?: (scene: unknown, meshes: unknown[]) => Promise<unknown>;
+				}
+			)._buildGroup;
+			if (typeof bg === "function") {
+				void bg(scene, [this.mesh]).catch(() => {});
+			}
+		}
 
 		applyRigSkin(
 			engine,
 			this.mat,
-			() => {
-				if (this.alive) {
-					this.skinBound = true;
-				}
-			},
-			() => this.alive,
-			(currentEngine) => this.getSkinTexture(currentEngine),
+			this.handleInitialSkinBound,
+			this.isAlive,
+			this.getSkinTexture,
 		);
 
-		const {
-			canvas,
-			width: textureWidth,
-			height: textureHeight,
-		} = rasteriseNameTag(player.name);
+		const nameTag = rasteriseNameTag(player.name);
+		const widthWorld = NAME_TAG_HEIGHT_WORLD * (nameTag.width / nameTag.height);
 
-		const nameTagWidthWorld =
-			NAME_TAG_HEIGHT_WORLD * (textureWidth / textureHeight);
-
-		this.tex = createDynamicTexture(engine, textureWidth, textureHeight, {
+		this.tex = createDynamicTexture(engine, nameTag.width, nameTag.height, {
 			magFilter: "linear",
 			minFilter: "linear",
 			srgb: true,
 		});
 
-		updateDynamicTexture(engine, this.tex, canvas, {
+		updateDynamicTexture(engine, this.tex, nameTag.canvas, {
 			invertY: false,
 		});
 
 		this.atlas = createGridSpriteAtlas(this.tex, {
-			cellWidthPx: textureWidth,
-			cellHeightPx: textureHeight,
+			cellWidthPx: nameTag.width,
+			cellHeightPx: nameTag.height,
 		});
 
 		this.billboard = createFacingBillboardSystem(this.atlas, {
@@ -372,33 +474,72 @@ export class RemotePlayerVisual {
 		});
 
 		addFacingBillboardSystem(scene, this.billboard);
+		// Billboard systems are deferred builders, not shader groups.
+		// `rebuildSceneRenderables` does not drain them — flush explicitly
+		// like `BlockBreakParticles` does, otherwise the name tag stays
+		// invisible until an unrelated `buildScene` (e.g. mob spawn) drains it.
+		void flushDeferredBillboards(scene);
 
 		this.billboardOptions = {
-			position: this.positionScratch,
-			sizeWorld: [nameTagWidthWorld, NAME_TAG_HEIGHT_WORLD],
+			position: this.billboardPosition,
+			sizeWorld: [widthWorld, NAME_TAG_HEIGHT_WORLD],
 			color: WHITE_COLOR,
 		};
 	}
 
-	private getSkinTexture(engine: EngineContext): Promise<Texture2D> {
-		if (this.skinPromise) {
-			return this.skinPromise;
+	private readonly handleInitialSkinBound = (): void => {
+		if (!this.alive) return;
+		this.skinBound = true;
+		// Notification: skin is ready — make mesh visible and force a billboard/
+		// transform flush without waiting for position polling.
+		if (!this.culled) {
+			this.mesh.visible = true;
+		}
+		this.needsForcedRefresh = true;
+		this.needsBillboardSync = true;
+		this.requestFlush();
+		this.syncBillboardIfNeeded(this.player.x, this.player.y, this.player.z);
+	};
+
+	private syncBillboardIfNeeded(x: number, y: number, z: number): void {
+		if (!this.alive || this.culled || this.billboardActive) return;
+		// If billboard not yet active (first join), create it immediately
+		// so late joiners see the name tag without movement.
+		const position = this.billboardPosition;
+		position[0] = x;
+		position[1] = y + NAME_TAG_Y_OFFSET;
+		position[2] = z;
+		clearBillboardSprites(this.billboard);
+		addBillboardSpriteIndex(this.billboard, this.billboardOptions);
+		this.billboardActive = true;
+		this.needsBillboardSync = false;
+	}
+
+	private readonly isAlive = (): boolean => this.alive;
+
+	private readonly getSkinTexture = (
+		engine: EngineContext,
+	): Promise<Texture2D> => {
+		let promise = this.skinPromise;
+
+		if (promise !== null) {
+			return promise;
 		}
 
-		const existingPng = this.player.skinPng;
+		const png = this.player.skinPng;
 
-		if (existingPng) {
-			this.skinPromise = decodeSkinToTexture(engine, existingPng);
+		if (png !== undefined && png !== null) {
+			promise = decodeSkinToTexture(engine, png);
 		} else {
-			this.skinPromise = new Promise<Texture2D>((resolve) => {
+			promise = new Promise<Texture2D>((resolve) => {
 				this.skinArrived = resolve;
 			});
 		}
 
-		return this.skinPromise;
-	}
+		this.skinPromise = promise;
+		return promise;
+	};
 
-	/** Called when the server delivers this player's skin PNG. */
 	onSkinPng(png: Uint8Array): void {
 		if (!this.alive) {
 			return;
@@ -406,7 +547,7 @@ export class RemotePlayerVisual {
 
 		const pendingResolve = this.skinArrived;
 
-		if (pendingResolve) {
+		if (pendingResolve !== null) {
 			this.skinArrived = null;
 
 			void decodeSkinToTexture(this.engine, png).then(
@@ -427,24 +568,36 @@ export class RemotePlayerVisual {
 
 		void decodeSkinToTexture(this.engine, png).then(
 			(texture) => {
-				if (!this.alive) {
-					return;
-				}
-
+				if (!this.alive) return;
 				setShaderTexture(this.mat, "diffuseTexture", texture);
 				this.skinBound = true;
+				// Notification: skin updated — force visibility/billboard sync
+				if (!this.culled) {
+					this.mesh.visible = true;
+				}
+				this.needsForcedRefresh = true;
+				this.needsBillboardSync = true;
+				this.requestFlush();
+				this.syncBillboardIfNeeded(this.player.x, this.player.y, this.player.z);
 			},
 			() => {
-				// Preserve the currently bound texture on update failure.
+				// Keep the currently bound texture when an update fails.
 			},
 		);
 	}
 
+	/** Notification hook — called when a player state batch changes position/yaw. */
+	notifyStateChanged(): void {
+		if (!this.alive) return;
+		this.needsForcedRefresh = true;
+	}
+
 	private syncLight(now: number): void {
 		const player = this.player;
+		const sampleY = player.y + PLAYER_LIGHT_SAMPLE_Y_OFFSET;
 
 		const lightX = Math.floor(player.x);
-		const lightY = Math.floor(player.y + PLAYER_LIGHT_SAMPLE_Y_OFFSET);
+		const lightY = Math.floor(sampleY);
 		const lightZ = Math.floor(player.z);
 
 		if (
@@ -461,70 +614,101 @@ export class RemotePlayerVisual {
 		this.lastLightZ = lightZ;
 		this.lastLightSampleMs = now;
 
-		const packedLight = getLightByWorldCoords(
-			player.x,
-			player.y + PLAYER_LIGHT_SAMPLE_Y_OFFSET,
-			player.z,
-		);
+		const packedLight = getLightByWorldCoords(player.x, sampleY, player.z);
 
 		setRigLightColor(this.mat, packedLightToLightColor(packedLight));
 	}
 
-	/**
-	 * Advance the walk swing from speed inferred from interpolated positions.
-	 * Sampled on a short window so per-frame jitter doesn't feed the easing.
-	 */
 	private syncWalk(now: number): void {
-		const p = this.player;
+		const player = this.player;
 
-		// First sample after spawn/cull: record the baseline — there is no
-		// previous position to measure speed against yet.
 		if (!Number.isFinite(this.walkSampleMs)) {
-			this.walkSampleX = p.x;
-			this.walkSampleZ = p.z;
+			this.walkSampleX = player.x;
+			this.walkSampleZ = player.z;
 			this.walkSampleMs = now;
 			return;
 		}
 
-		const dtMs = now - this.walkSampleMs;
-		if (dtMs < WALK_SAMPLE_MS) return;
+		const elapsedMs = now - this.walkSampleMs;
 
-		const dt = Math.min(dtMs / 1000, 0.25); // clamp: tab-switch / cull gaps
-		const instSpeed =
-			Math.hypot(p.x - this.walkSampleX, p.z - this.walkSampleZ) / dt;
+		if (elapsedMs < WALK_SAMPLE_MS) {
+			return;
+		}
+
+		const dt = Math.min(elapsedMs * 0.001, 0.25);
+		const dx = player.x - this.walkSampleX;
+		const dz = player.z - this.walkSampleZ;
+		const instantaneousSpeed = Math.sqrt(dx * dx + dz * dz) / dt;
+
 		this.smoothedSpeed +=
-			(instSpeed - this.smoothedSpeed) * Math.min(1, dt * 6);
+			(instantaneousSpeed - this.smoothedSpeed) * Math.min(1, dt * 6);
 
-		this.walkSampleX = p.x;
-		this.walkSampleZ = p.z;
+		if (instantaneousSpeed === 0 && this.smoothedSpeed < WALK_SPEED_ZERO_EPS) {
+			this.smoothedSpeed = 0;
+		}
+
+		this.walkSampleX = player.x;
+		this.walkSampleZ = player.z;
 		this.walkSampleMs = now;
 
 		this.walkPhase += this.smoothedSpeed * dt * WALK_STRIDE_FACTOR;
+
 		const targetAmp = Math.min(1, this.smoothedSpeed / WALK_REF_SPEED);
+
 		this.walkAmp += (targetAmp - this.walkAmp) * Math.min(1, dt * 10);
+
+		if (Math.abs(targetAmp - this.walkAmp) < WALK_AMP_SNAP_EPS) {
+			this.walkAmp = targetAmp;
+		}
+
+		if (
+			this.walkPhase === this.sentWalkPhase &&
+			this.walkAmp === this.sentWalkAmp
+		) {
+			return;
+		}
+
+		this.sentWalkPhase = this.walkPhase;
+		this.sentWalkAmp = this.walkAmp;
 		setRigWalk(this.mat, this.walkPhase, this.walkAmp);
 	}
 
-	/** Ease the head toward the server pitch byte (0-255 → -90°..+90°). */
 	private syncHeadPitch(): void {
-		// Network convention is negative-looks-down; the rig shader expects
-		// the camera convention (positive = down), so invert the decode.
-		const target = -(this.player.pitch * (180 / 255) - 90) * DEG_TO_RAD;
-		this.headPitch += (target - this.headPitch) * 0.2;
+		const pitchByte = this.player.pitch;
+		let target = this.headPitchTarget;
+
+		if (pitchByte !== this.lastPitchByte) {
+			this.lastPitchByte = pitchByte;
+			target = HALF_PI - pitchByte * PITCH_BYTE_TO_RAD;
+			this.headPitchTarget = target;
+		}
+
+		if (this.headPitch === target) {
+			return;
+		}
+
+		const difference = target - this.headPitch;
+
+		this.headPitch =
+			Math.abs(difference) < HEAD_PITCH_SNAP_EPS
+				? target
+				: this.headPitch + difference * 0.2;
+
 		setRigHeadPitch(this.mat, this.headPitch);
 	}
 
 	update(camX: number, camY: number, camZ: number, now: number): void {
 		const player = this.player;
-
 		const x = player.x;
 		const y = player.y;
 		const z = player.z;
 
-		const dx = x - camX;
-		const dy = y - camY;
-		const dz = z - camZ;
-		const distanceSquared = dx * dx + dy * dy + dz * dz;
+		const cameraDx = x - camX;
+		const cameraDy = y - camY;
+		const cameraDz = z - camZ;
+
+		const distanceSquared =
+			cameraDx * cameraDx + cameraDy * cameraDy + cameraDz * cameraDz;
 
 		let forceVisualRefresh = false;
 
@@ -535,11 +719,11 @@ export class RemotePlayerVisual {
 
 			this.culled = false;
 			forceVisualRefresh = true;
-
-			/*
-			 * Establish a fresh walk baseline after unculling. Without this reset,
-			 * movement that occurred while culled could create a one-frame spike.
-			 */
+			this.needsForcedRefresh = true;
+			this.needsBillboardSync = true;
+			if (this.skinBound) {
+				this.mesh.visible = true;
+			}
 			this.walkSampleMs = Number.NaN;
 			this.sprintPrevMs = Number.NaN;
 		} else if (distanceSquared >= REMOTE_CULL_ENTER_DIST_SQ) {
@@ -556,86 +740,81 @@ export class RemotePlayerVisual {
 			return;
 		}
 
-		/*
-		 * These systems must continue updating for stationary visible players:
-		 *
-		 * - light can change without the player moving;
-		 * - walk amplitude needs to ease back to zero;
-		 * - head pitch can change independently of position and yaw.
-		 */
-
-		// Sprint dust is inferred purely from interpolated motion: when the
-		// player's horizontal speed clears the sprint gate, kick up ground dust
-		// behind them. No sprint flag is transmitted — we have the position
-		// stream and that is everything we need.
 		if (Number.isFinite(this.sprintPrevMs)) {
-			const dt = (now - this.sprintPrevMs) / 1000;
+			const dt = (now - this.sprintPrevMs) * 0.001;
+
 			if (dt > 0) {
-				const velX = (x - this.sprintPrevX) / dt;
-				const velZ = (z - this.sprintPrevZ) / dt;
-				if (velX * velX + velZ * velZ >= SPRINT_MIN_SPEED_SQ) {
+				const velocityX = (x - this.sprintPrevX) / dt;
+				const velocityZ = (z - this.sprintPrevZ) / dt;
+
+				if (
+					velocityX * velocityX + velocityZ * velocityZ >=
+					SPRINT_MIN_SPEED_SQ
+				) {
 					playSprint(
 						this.sprintEmitter,
 						x,
 						y - SPRINT_FEET_OFFSET,
 						z,
-						velX,
-						velZ,
+						velocityX,
+						velocityZ,
 					);
 				}
 			}
 		}
+
 		this.sprintPrevX = x;
 		this.sprintPrevZ = z;
 		this.sprintPrevMs = now;
 
-		this.syncLight(now);
+		if (this.skinBound) {
+			this.syncLight(now);
+		}
+
 		this.syncWalk(now);
 		this.syncHeadPitch();
 
-		this.mesh.visible = this.skinBound;
-
-		const yaw = player.yaw;
-
-		const positionChanged =
-			x !== this.lastX || y !== this.lastY || z !== this.lastZ;
-
-		const yawChanged = yaw !== this.lastYaw;
-
-		/*
-		 * Target changes do not directly alter either renderable. However, retain
-		 * their cached values so existing interpolation/debug assumptions remain
-		 * observable and no stale comparison state accumulates.
-		 */
-		const targetX = player.targetX;
-		const targetY = player.targetY;
-		const targetZ = player.targetZ;
-		const targetYaw = player.targetYaw;
-
-		const targetChanged =
-			targetX !== this.lastTargetX ||
-			targetY !== this.lastTargetY ||
-			targetZ !== this.lastTargetZ ||
-			targetYaw !== this.lastTargetYaw;
-
-		if (targetChanged) {
-			this.lastTargetX = targetX;
-			this.lastTargetY = targetY;
-			this.lastTargetZ = targetZ;
-			this.lastTargetYaw = targetYaw;
+		// Visibility: primary path is notification-driven (handleInitialSkinBound /
+		// onSkinPng) but keep a lightweight per-frame fallback so a missed
+		// notification (e.g. skin bound while culled) still recovers without
+		// requiring camera movement. This is not the "poll every frame for skin"
+		// anti-pattern — it's a single boolean compare.
+		{
+			const desiredVisible = this.skinBound && !this.culled;
+			if (this.mesh.visible !== desiredVisible) {
+				this.mesh.visible = desiredVisible;
+				if (desiredVisible) {
+					this.needsForcedRefresh = true;
+					this.needsBillboardSync = true;
+				}
+			}
 		}
 
-		if (!forceVisualRefresh && !positionChanged && !yawChanged) {
+		const yaw = player.yaw;
+		const positionChanged =
+			x !== this.lastX || y !== this.lastY || z !== this.lastZ;
+		const yawChanged = yaw !== this.lastYaw;
+
+		const needsForced = this.needsForcedRefresh;
+		const needsBillboard = this.needsBillboardSync;
+
+		// If nothing changed and no notification forced a refresh, skip.
+		if (
+			!forceVisualRefresh &&
+			!needsForced &&
+			!needsBillboard &&
+			!positionChanged &&
+			!yawChanged
+		) {
 			return;
 		}
 
-		/*
-		 * Preserve the original refresh throttle for ordinary interpolated
-		 * movement. An uncull bypasses it because both renderables must be
-		 * restored immediately.
-		 */
+		// Throttle transform flushes, but never throttle a notification-forced
+		// billboard/visibility sync — those must appear immediately on join/skin.
 		if (
 			!forceVisualRefresh &&
+			!needsForced &&
+			!needsBillboard &&
 			now - this.lastFlushMs < RemotePlayerVisual.VISUAL_REFRESH_MS
 		) {
 			return;
@@ -643,36 +822,39 @@ export class RemotePlayerVisual {
 
 		this.lastFlushMs = now;
 
-		/*
-		 * Update only the mesh properties that actually changed. Babylon-style
-		 * observable vectors can mark transforms dirty on every setter call, so
-		 * avoiding unchanged writes reduces downstream matrix work.
-		 */
-		if (forceVisualRefresh || positionChanged) {
+		// Consume the forced flag — it bypasses position/yaw gating once.
+		if (needsForced) {
+			this.needsForcedRefresh = false;
+		}
+
+		if (forceVisualRefresh || needsForced || positionChanged) {
 			this.lastX = x;
 			this.lastY = y;
 			this.lastZ = z;
 			this.mesh.position.set(x, y, z);
 		}
 
-		if (forceVisualRefresh || yawChanged) {
+		if (forceVisualRefresh || needsForced || yawChanged) {
 			this.lastYaw = yaw;
 			this.mesh.rotation.y = yaw * DEG_TO_RAD;
 		}
 
-		/*
-		 * The name tag depends only on position. Do not clear and recreate it for
-		 * yaw-only or interpolation-target-only updates.
-		 */
-		if (forceVisualRefresh || positionChanged || !this.billboardActive) {
-			const billboardPosition = this.positionScratch;
-			billboardPosition[0] = x;
-			billboardPosition[1] = y + NAME_TAG_Y_OFFSET;
-			billboardPosition[2] = z;
+		if (
+			forceVisualRefresh ||
+			needsForced ||
+			needsBillboard ||
+			positionChanged ||
+			!this.billboardActive
+		) {
+			const position = this.billboardPosition;
+			position[0] = x;
+			position[1] = y + NAME_TAG_Y_OFFSET;
+			position[2] = z;
 
 			clearBillboardSprites(this.billboard);
 			addBillboardSpriteIndex(this.billboard, this.billboardOptions);
 			this.billboardActive = true;
+			this.needsBillboardSync = false;
 		}
 	}
 
@@ -695,21 +877,11 @@ export class RemotePlayerVisual {
 		removeFromScene(this.scene, this.mesh);
 
 		const mesh = this.mesh;
+		const disposeMesh = (): void => {
+			disposeMeshGpu(mesh);
+		};
 
-		void onGpuWorkDone(this.engine).then(
-			() => {
-				disposeMeshGpu(mesh);
-			},
-			() => {
-				disposeMeshGpu(mesh);
-			},
-		);
-
-		/*
-		 * Explicit billboard, atlas, dynamic-texture, material, and decoded-skin
-		 * cleanup should be added here if @babylonjs/lite exposes matching
-		 * disposal APIs.
-		 */
+		void onGpuWorkDone(this.engine).then(disposeMesh, disposeMesh);
 	}
 }
 
@@ -733,6 +905,10 @@ export class RemotePlayerRenderer {
 		}
 	}
 
+	private readonly finishRenderableRebuild = (): void => {
+		this.rebuildInFlight = false;
+	};
+
 	private flushSceneRenderablesIfNeeded(): void {
 		if (this.disposed || !this.pendingFlush || this.rebuildInFlight) {
 			return;
@@ -742,12 +918,8 @@ export class RemotePlayerRenderer {
 		this.rebuildInFlight = true;
 
 		void rebuildSceneRenderables(this.scene).then(
-			() => {
-				this.rebuildInFlight = false;
-			},
-			() => {
-				this.rebuildInFlight = false;
-			},
+			this.finishRenderableRebuild,
+			this.finishRenderableRebuild,
 		);
 	}
 
@@ -763,13 +935,24 @@ export class RemotePlayerRenderer {
 		}
 
 		const index = this.list.length;
-		const visual = new RemotePlayerVisual(this.engine, this.scene, player);
 
-		this.list.push(visual);
+		this.list.push(
+			new RemotePlayerVisual(this.engine, this.scene, player, () =>
+				this.requestSceneRenderableFlush(),
+			),
+		);
 		this.ids.push(sessionId);
 		this.indexById.set(sessionId, index);
 
 		this.requestSceneRenderableFlush();
+	}
+
+	/** Notification hook — called when a PlayerStateBatch updates targets. */
+	notifyPlayerStatesChanged(): void {
+		if (this.disposed) return;
+		for (let i = 0; i < this.list.length; i++) {
+			this.list[i].notifyStateChanged();
+		}
 	}
 
 	onPlayerSkin(sessionId: string, png: Uint8Array): void {
@@ -824,19 +1007,14 @@ export class RemotePlayerRenderer {
 
 		this.flushSceneRenderablesIfNeeded();
 
-		const cameraPosition = camera?.position;
-		const camX = cameraPosition?.x ?? 0;
-		const camY = cameraPosition?.y ?? 0;
-		const camZ = cameraPosition?.z ?? 0;
-
-		/*
-		 * Read performance.now once for the whole renderer rather than once or
-		 * twice per remote player.
-		 */
+		const position = camera.position;
+		const camX = position?.x ?? 0;
+		const camY = position?.y ?? 0;
+		const camZ = position?.z ?? 0;
 		const now = performance.now();
 		const list = this.list;
 
-		for (let index = 0, count = list.length; index < count; index++) {
+		for (let index = 0; index < list.length; index++) {
 			list[index].update(camX, camY, camZ, now);
 		}
 	}
@@ -850,14 +1028,13 @@ export class RemotePlayerRenderer {
 
 		const list = this.list;
 
-		for (let index = 0, count = list.length; index < count; index++) {
+		for (let index = 0; index < list.length; index++) {
 			list[index].dispose();
 		}
 
 		list.length = 0;
 		this.ids.length = 0;
 		this.indexById.clear();
-
 		this.pendingFlush = false;
 	}
 }
