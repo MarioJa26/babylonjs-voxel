@@ -11,6 +11,7 @@ import {
 	vec3,
 } from "@babylonjs/lite";
 import { Arrow } from "./Entities/Arrow/Arrow";
+import { preloadMobSkins } from "./Entities/Mobs/MobInstancePool";
 import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
 import { setTerrainSeed } from "./Generation/TerrainHeightMap";
 import { initBlockBreakParticles } from "./Maps/BlockBreakParticles";
@@ -171,6 +172,8 @@ export class TestScene {
 			getPlayerName() || `Player${Math.floor(Math.random() * 1000)}`;
 
 		const map = new Map1(engine, scene, player);
+
+		await preloadMobSkins();
 
 		this.#networkManager = new NetworkManager(player, serverUrl);
 		player.networkManager = this.#networkManager;

@@ -271,6 +271,8 @@ export class ChunkStreamingController {
 	// Packed as desiredLod + revision * 8.
 	// Keyed by chunk.numericId, because number keys avoid BigInt box churn.
 	private desiredStates = new Map<number, number>();
+	// Bucketed by revision to avoid O(n) prune iteration (previously 3.8 MB Set churn).
+	private desiredStateBuckets = new Map<number, Set<number>>();
 
 	private loadQueueRequestMap = new Map<number, QueuedChunkRequest>();
 
@@ -294,6 +296,41 @@ export class ChunkStreamingController {
 
 	public getDesiredState(numericId: number): number | undefined {
 		return this.desiredStates.get(numericId);
+	}
+
+	private trackDesiredState(
+		numericId: number,
+		packed: number,
+		revision: number,
+	): void {
+		this.desiredStates.set(numericId, packed);
+		let bucket = this.desiredStateBuckets.get(revision);
+		if (!bucket) {
+			bucket = new Set<number>();
+			this.desiredStateBuckets.set(revision, bucket);
+		}
+		bucket.add(numericId);
+	}
+
+	private pruneDesiredStates(currentRevision: number): void {
+		const oldestKept = Math.max(
+			0,
+			currentRevision -
+				ChunkStreamingController.DESIRED_STATE_REVISION_RETENTION,
+		);
+		// Delete buckets older than oldestKept – O(k) where k = chunks inserted at that revision
+		for (const [rev, bucket] of this.desiredStateBuckets) {
+			if (rev < oldestKept) {
+				for (const id of bucket) {
+					// Only delete if still mapping to that old revision (may have been overwritten)
+					const cur = this.desiredStates.get(id);
+					if (cur !== undefined && unpackRevision(cur) === rev) {
+						this.desiredStates.delete(id);
+					}
+				}
+				this.desiredStateBuckets.delete(rev);
+			}
+		}
 	}
 
 	private nextRuleGeneration(): number {
@@ -547,9 +584,10 @@ export class ChunkStreamingController {
 					chunkZ,
 				);
 
-				this.desiredStates.set(
+				this.trackDesiredState(
 					chunk.numericId,
 					packLodRevision(desiredLod, revision),
+					revision,
 				);
 
 				this.loadQueueRequestMap.set(chunk.numericId, request);
@@ -677,16 +715,7 @@ export class ChunkStreamingController {
 				revision % ChunkStreamingController.DESIRED_STATE_REVISION_RETENTION ===
 					0
 			) {
-				const oldestKeptRevision = Math.max(
-					0,
-					revision - ChunkStreamingController.DESIRED_STATE_REVISION_RETENTION,
-				);
-
-				for (const [id, packed] of this.desiredStates) {
-					if (unpackRevision(packed) < oldestKeptRevision) {
-						this.desiredStates.delete(id);
-					}
-				}
+				this.pruneDesiredStates(revision);
 			}
 
 			this.adapter.onQueueSnapshotChanged?.();
@@ -889,12 +918,10 @@ export class ChunkStreamingController {
 		const hDist = absX > absZ ? absX : absZ;
 		const vDist = relY < 0 ? -relY : relY;
 
-		// ALLOCATION GUARD (profile: 45% of heap churn flowed through here
-		// via `new Chunk` for empty sky cells): skip columns provably above
-		// the terrain surface in the far vertical bands. Underground bands
-		// are governed by undergroundDesired during LOD resolution below.
-		const nearVertical = lodRuleSet.verticalRadiusFor(1);
-		if (vDist > nearVertical && y >= 0 && y > columnTopChunkY(x, z) + 1) {
+		// ALLOCATION GUARD (profile: 45% of heap churn via `new Chunk` for empty
+		// sky cells): skip columns provably above terrain. Reuses per-frame
+		// columnTop cache so the height probe is free after first Y in column.
+		if (y >= 0 && y > columnTopChunkY(x, z) + 1) {
 			return;
 		}
 
@@ -949,7 +976,7 @@ export class ChunkStreamingController {
 		let chunk = existingChunk;
 
 		if (!chunk) {
-			chunk = new Chunk(x, y, z);
+			chunk = Chunk.obtain(x, y, z);
 		}
 
 		const revision = this.streamRevision;
@@ -969,9 +996,10 @@ export class ChunkStreamingController {
 
 		const includeVoxelData = desiredLod <= 1;
 
-		this.desiredStates.set(
+		this.trackDesiredState(
 			chunk.numericId,
 			packLodRevision(desiredLod, revision),
+			revision,
 		);
 
 		if (chunk.isLoaded && previousLod !== desiredLod) {

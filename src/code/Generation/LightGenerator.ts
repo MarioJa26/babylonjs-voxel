@@ -238,7 +238,6 @@ export class LightGenerator {
 		const queue = this.lightQueue;
 		const queueMask = this.queueMask;
 		const chunkSize = this.chunkSize;
-		const chunkSizeSq = this.chunkSizeSq;
 		const chunkVolume = this.chunkVolume;
 		const csShift = this.csShift;
 		const csShift2 = this.csShift2;
@@ -259,7 +258,6 @@ export class LightGenerator {
 
 			for (let a = 0; a < chunkSize; a++) {
 				const aY = a << csShift;
-				const aZ = a << csShift2;
 
 				for (let b = 0; b < chunkSize; b++) {
 					const bY = b << csShift;

@@ -161,7 +161,7 @@ function runChunkDisposeHooks(chunk: Chunk): void {
 }
 
 export class Chunk {
-	public readonly id: bigint;
+	public id: bigint = 0n;
 	public lodLevel = 0;
 
 	public static readonly SIZE = GenerationParams.CHUNK_SIZE;
@@ -169,6 +169,74 @@ export class Chunk {
 	public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
 	public static readonly SM1 = Chunk.SIZE - 1;
 	public static readonly chunkInstances = new Map<bigint, Chunk>();
+
+	// Pooled shells to avoid `new Chunk` churn in streaming (≈344 kB / frame).
+	private static _pool: Chunk[] = [];
+	private static _poolSize = 0;
+
+	private static allocPooledChunk(x: number, y: number, z: number): Chunk {
+		const pool = Chunk._pool;
+		let c: Chunk | undefined;
+		// Find reusable entry with no live references (pool only contains fully disposed shells)
+		if (pool.length > 0) {
+			c = pool.pop()!;
+			// Rehydrate minimal fields – mirrors constructor without extra allocations
+			(c as any).chunkX = x;
+			(c as any).chunkY = y;
+			(c as any).chunkZ = z;
+			(c as any).id = packCoords(x, y, z);
+			(c as any).numericId = Chunk._nextNumericId++;
+			c.light_array = Chunk.EMPTY_LIGHT_ARRAY;
+			(c as any)._la32 = null;
+			(c as any).lightHeaderSlot = Chunk.allocLightHeaderSlot();
+			(c as any)._isDarkCached = false;
+			(c as any)._block_array = null;
+			(c as any)._isUniform = true;
+			(c as any)._uniformBlockId = 0;
+			(c as any)._palette = null;
+			(c as any)._paletteOpacity = null;
+			(c as any)._denseOpacity = null;
+			(c as any)._hasVoxelData = false;
+			(c as any)._cachedLODMeshes = null;
+			c.isLoaded = false;
+			c.isModified = false;
+			c.isDirty = false;
+			c.isTerrainScheduled = false;
+			c.isLightDirty = false;
+			c.persistenceRevision = 0;
+			c.remeshQueued = false;
+			c.rerunRemeshAfterInflight = false;
+			c.meshRevision = 0;
+			// blockRevision / generation keep their pooled values + bump on next loadFromStorage
+			c.mergedGroupKey = null;
+			c.faceConnectivity = 0;
+			c.connectivityDirty = true;
+			c.bfsQueryId = 0;
+			c.bfsVisitedFaces = 0;
+			c.bfsQueuedForConnectivity = false;
+			// neighborRefs already nulled in dispose – keep the same 6-length array
+			if (!c.neighborRefs || c.neighborRefs.length !== 6) {
+				(c as any).neighborRefs = [null, null, null, null, null, null];
+			}
+			c.mesh = null;
+			c.waterMesh = null;
+			c.cutoutMesh = null;
+			c.opaqueMeshData = null;
+			c.waterMeshData = null;
+			c.cutoutMeshData = null;
+			Chunk.chunkInstances.set(c.id, c);
+			c.linkNeighbors();
+			return c;
+		}
+		return new Chunk(x, y, z);
+	}
+
+	public static obtain(x: number, y: number, z: number): Chunk {
+		// Fast-path: existing live instance
+		const existing = Chunk.chunkInstances.get(packCoords(x, y, z));
+		if (existing) return existing;
+		return Chunk.allocPooledChunk(x, y, z);
+	}
 
 	public static readonly loadedChunks = new Set<Chunk>();
 	public static readonly loadedChunkIndex = new LoadedChunkIndex();
@@ -1757,6 +1825,13 @@ export class Chunk {
 		this.bfsQueuedForConnectivity = false;
 
 		runChunkDisposeHooks(this);
+
+		// Pool the empty shell for reuse – avoids `new Chunk` churn (≈344 kB / frame).
+		// Cap to avoid unbounded retention if world is explored extensively.
+		if (Chunk._pool.length < 2048) {
+			// Keep neighborRefs array for reuse (already nulled above)
+			Chunk._pool.push(this);
+		}
 	}
 }
 
