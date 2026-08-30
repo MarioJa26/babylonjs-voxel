@@ -427,6 +427,7 @@ export class NetworkManager {
 
 		if (action === BlockActionType.Place) {
 			deleteBlock(x, y, z);
+			this.player.playerInventory.createAndAddItem(blockId, 1);
 		} else if (action === BlockActionType.Break) {
 			setBlock(x, y, z, blockId, blockState);
 		}

@@ -23,6 +23,14 @@ export interface ToolKind {
 	description: string;
 }
 
+export enum ToolKindId {
+	Pickaxe = 0,
+	Sword = 1,
+	Axe = 2,
+	Shovel = 3,
+	Hoe = 4,
+}
+
 export const TOOL_KINDS: ToolKind[] = [
 	{
 		name: "Pickaxe",
@@ -111,12 +119,60 @@ export function registerProceduralTools(
 	}
 }
 
+/** Mining-speed multiplier for Wood/Stone tools (not in TOOL_MATERIALS). */
+const STATIC_TOOL_SPEED: Record<number, number> = {
+	// Wood 1000-1004
+	1000: 1.8,
+	1001: 1.8,
+	1002: 1.8,
+	1003: 1.8,
+	1004: 1.8,
+	// Stone 1005-1009
+	1005: 2.2,
+	1006: 2.2,
+	1007: 2.2,
+	1008: 2.2,
+	1009: 2.2,
+};
+
 /** Mining-speed multiplier for a tool item id, or undefined for non-tools. */
 export function getToolSpeedMultiplier(toolItemId: number): number | undefined {
 	for (const material of TOOL_MATERIALS) {
 		const offset = toolItemId - material.baseToolItemId;
 		if (offset >= 0 && offset < TOOL_KINDS.length) {
 			return material.speedMultiplier;
+		}
+	}
+	return STATIC_TOOL_SPEED[toolItemId];
+}
+
+/** Numeric tool kind for a tool item id, or undefined for non-tools. */
+export function getToolKind(toolItemId: number): ToolKindId | undefined {
+	for (const material of TOOL_MATERIALS) {
+		const offset = toolItemId - material.baseToolItemId;
+		if (offset >= 0 && offset < TOOL_KINDS.length) {
+			return offset as ToolKindId;
+		}
+	}
+	if (toolItemId >= 1000 && toolItemId <= 1004) {
+		return (toolItemId - 1000) as ToolKindId;
+	}
+	if (toolItemId >= 1005 && toolItemId <= 1009) {
+		return (toolItemId - 1005) as ToolKindId;
+	}
+	return undefined;
+}
+
+/** Parse a case-insensitive tool kind name or numeric id to enum. */
+export function parseToolKind(value: unknown): ToolKindId | undefined {
+	if (typeof value === "number" && Number.isInteger(value)) {
+		if (value >= 0 && value < TOOL_KINDS.length) return value as ToolKindId;
+		return undefined;
+	}
+	if (typeof value === "string") {
+		const lower = value.toLowerCase();
+		for (let i = 0; i < TOOL_KINDS.length; i++) {
+			if (TOOL_KINDS[i]!.name.toLowerCase() === lower) return i as ToolKindId;
 		}
 	}
 	return undefined;

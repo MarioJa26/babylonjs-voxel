@@ -1,4 +1,9 @@
-import { getToolSpeedMultiplier } from "@/code/Player/Inventory/ProceduralTools";
+import {
+	getToolKind,
+	getToolSpeedMultiplier,
+	parseToolKind,
+	type ToolKindId,
+} from "@/code/Player/Inventory/ProceduralTools";
 import { BlockType } from "./BlockType";
 
 export interface TextureDefinition {
@@ -7,6 +12,7 @@ export interface TextureDefinition {
 	path: string;
 	hardness?: number;
 	shape?: string;
+	preferredTool?: ToolKindId;
 }
 
 const BLOCKS_URL = "/data/blocks.json";
@@ -85,6 +91,11 @@ async function loadBlockDefinitions(): Promise<TextureDefinition[]> {
 				definition.shape = raw.shape;
 			}
 
+			const preferred = parseToolKind(raw.preferredTool);
+			if (preferred !== undefined) {
+				definition.preferredTool = preferred;
+			}
+
 			normalized.push(definition);
 		}
 
@@ -112,18 +123,37 @@ function normalizeBlockId(id: unknown): BlockType | null {
 }
 
 export function getBlockBreakTime(id: number, toolItemId?: number): number {
-	const hardness =
-		TextureDefinitionMap.get(id)?.hardness ?? DEFAULT_BLOCK_HARDNESS;
+	const def = TextureDefinitionMap.get(id);
+	const hardness = def?.hardness ?? DEFAULT_BLOCK_HARDNESS;
 
 	if (hardness === Infinity) {
 		return Infinity;
 	}
 
-	const speedMultiplier = toolItemId
-		? (getToolSpeedMultiplier(toolItemId) ?? DEFAULT_TOOL_SPEED_MULTIPLIER)
-		: 1;
+	if (!toolItemId) {
+		return hardness * BREAK_TIME_SCALE;
+	}
 
-	return (hardness * BREAK_TIME_SCALE) / speedMultiplier;
+	const preferredTool = def?.preferredTool;
+	const toolKind = getToolKind(toolItemId);
+	const speedMultiplier = getToolSpeedMultiplier(toolItemId);
+
+	// Block has a preferred tool: only correct tool kind gets its speed bonus.
+	// Wrong tool or non-tool → hand speed (1x).
+	if (preferredTool !== undefined) {
+		if (toolKind !== preferredTool) {
+			return hardness * BREAK_TIME_SCALE;
+		}
+		// Correct tool kind: apply its multiplier (fallback to default if unknown material)
+		return (
+			(hardness * BREAK_TIME_SCALE) /
+			(speedMultiplier ?? DEFAULT_TOOL_SPEED_MULTIPLIER)
+		);
+	}
+
+	// No preferred tool: any tool still speeds up (backward compatible).
+	const effectiveSpeed = speedMultiplier ?? DEFAULT_TOOL_SPEED_MULTIPLIER;
+	return (hardness * BREAK_TIME_SCALE) / effectiveSpeed;
 }
 
 export function getBlockInfo(id: number): TextureDefinition | undefined {

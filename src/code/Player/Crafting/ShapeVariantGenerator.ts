@@ -108,6 +108,7 @@ export async function generateShapeVariants(): Promise<void> {
 				path: sourceDef.path,
 				hardness: sourceDef.hardness,
 				shape: targetShape.name,
+				preferredTool: sourceDef.preferredTool,
 			};
 
 			TextureDefinitions.push(variantDef);

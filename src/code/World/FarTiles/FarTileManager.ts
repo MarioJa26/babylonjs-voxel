@@ -368,6 +368,10 @@ class WindingMesh {
 	capacityFaces = 0;
 	dirtyMin = Number.POSITIVE_INFINITY;
 	dirtyMax = 0;
+	// Arena slots are normally appended in ascending order. Hole reuse can
+	// append a lower face index after a higher one, so retain the invariant
+	// explicitly instead of making batched removal assume it forever.
+	private recordsSortedByFaceIndex = true;
 
 	readonly straight: boolean;
 
@@ -377,6 +381,14 @@ class WindingMesh {
 
 	appendFace(faceIndex: number): void {
 		this.ensureRecordCapacity(this.count + 1);
+
+		if (
+			this.recordsSortedByFaceIndex &&
+			this.count > 0 &&
+			faceIndex < this.records[(this.count - 1) * 4]
+		) {
+			this.recordsSortedByFaceIndex = false;
+		}
 
 		const recordOffset = this.count * 4;
 		this.records[recordOffset] = faceIndex;
@@ -447,6 +459,11 @@ class WindingMesh {
 	 * The supplied array is sorted in place, but the FarSlot objects are not
 	 * mutated. In this manager all callers pass reusable scratch arrays, so
 	 * sorting the array has no observable effect.
+	 *
+	 * Records are sorted while the arena only grows. Once a freed arena hole is
+	 * reused, however, the newly appended records can have lower face indices
+	 * than records already in this list. Keep the O(n + m) scan for the common
+	 * ordered case, and use allocation-free binary interval lookups otherwise.
 	 */
 	removeSlots(slots: FarSlot[]): void {
 		const oldCount = this.count;
@@ -467,54 +484,83 @@ class WindingMesh {
 		let write = 0;
 		let intervalIndex = 0;
 		let firstChanged = Number.POSITIVE_INFINITY;
+		const recordsSorted = this.recordsSortedByFaceIndex;
+		let previousKeptFaceIndex = Number.NEGATIVE_INFINITY;
+		let keptRecordsRemainSorted = true;
 
 		for (let read = 0; read < oldCount; read++) {
 			const sourceOffset = read * 4;
 			const faceIndex = records[sourceOffset];
-
-			// Advance past intervals that end before this face. Face indices
-			// are appended in ascending arena order, so this remains O(n + m).
-			while (intervalIndex < slotCount) {
-				const interval = slots[intervalIndex];
-
-				if (interval.count <= 0) {
-					intervalIndex++;
-					continue;
-				}
-
-				if (faceIndex >= interval.base + interval.count) {
-					intervalIndex++;
-					continue;
-				}
-
-				break;
-			}
-
 			let remove = false;
 
-			if (intervalIndex < slotCount) {
-				// Handle overlapping or contiguous input slots without
-				// allocating a merged interval list.
-				let scanIndex = intervalIndex;
-
-				while (scanIndex < slotCount) {
-					const interval = slots[scanIndex];
+			if (recordsSorted) {
+				// Advance past intervals that end before this face. This is the
+				// O(n + m) path used until arena-hole reuse changes record order.
+				while (intervalIndex < slotCount) {
+					const interval = slots[intervalIndex];
 
 					if (interval.count <= 0) {
-						scanIndex++;
+						intervalIndex++;
 						continue;
 					}
 
-					if (interval.base > faceIndex) {
-						break;
+					if (faceIndex >= interval.base + interval.count) {
+						intervalIndex++;
+						continue;
 					}
 
-					if (faceIndex < interval.base + interval.count) {
-						remove = true;
-						break;
-					}
+					break;
+				}
 
-					scanIndex++;
+				if (intervalIndex < slotCount) {
+					// Handle overlapping or contiguous input slots without
+					// allocating a merged interval list.
+					let scanIndex = intervalIndex;
+
+					while (scanIndex < slotCount) {
+						const interval = slots[scanIndex];
+
+						if (interval.count <= 0) {
+							scanIndex++;
+							continue;
+						}
+
+						if (interval.base > faceIndex) {
+							break;
+						}
+
+						if (faceIndex < interval.base + interval.count) {
+							remove = true;
+							break;
+						}
+
+						scanIndex++;
+					}
+				}
+			} else {
+				// Reused holes append lower arena indices at the tail, so the
+				// record order is arbitrary. Binary-search the sorted removal
+				// intervals to keep this fallback allocation-free.
+				let lo = 0;
+				let hi = slotCount;
+
+				while (lo < hi) {
+					const middle = (lo + hi) >>> 1;
+					const interval = slots[middle];
+
+					if (interval.base + interval.count <= faceIndex) {
+						lo = middle + 1;
+					} else {
+						hi = middle;
+					}
+				}
+
+				if (lo < slotCount) {
+					const interval = slots[lo];
+					remove =
+						interval.count > 0 &&
+						faceIndex >= interval.base &&
+						faceIndex < interval.base + interval.count;
 				}
 			}
 
@@ -524,6 +570,11 @@ class WindingMesh {
 				}
 				continue;
 			}
+
+			if (faceIndex < previousKeptFaceIndex) {
+				keptRecordsRemainSorted = false;
+			}
+			previousKeptFaceIndex = faceIndex;
 
 			if (write !== read) {
 				const targetOffset = write * 4;
@@ -537,6 +588,7 @@ class WindingMesh {
 		}
 
 		this.count = write;
+		this.recordsSortedByFaceIndex = keptRecordsRemainSorted;
 
 		if (firstChanged !== Number.POSITIVE_INFINITY && write > firstChanged) {
 			this.markDirty(firstChanged, write);

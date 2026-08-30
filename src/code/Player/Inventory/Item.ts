@@ -15,6 +15,7 @@ import {
 	pickBlock,
 } from "../Hud/BlockHighlight/BlockRaycaster";
 import type { Player } from "../Player";
+import { Gamemodes } from "../PlayerStats";
 import { drawCubeIcon, iconAtlasesReadyPromise } from "./CubeIcon";
 import { getRegisteredItemById } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
@@ -324,12 +325,18 @@ export class Item implements IUsable {
 
 			if (boatCtx.boatChunk.isInsideLocalBounds(plX, plY, plZ)) {
 				boatCtx.boatChunk.setBlockLocal(plX, plY, plZ, blockId, blockState);
+				if (player.stats.gamemode !== Gamemodes.Creative) {
+					player.playerInventory.removeItems(item.itemId, 1);
+				}
 				return;
 			}
 		}
 
 		setBlock(x, y, z, blockId, blockState);
 		_onBlockPlaced?.(x, y, z, blockId, blockState);
+		if (player.stats.gamemode !== Gamemodes.Creative) {
+			player.playerInventory.removeItems(item.itemId, 1);
+		}
 	}
 
 	// ─── Zero-allocation boat context extraction ───
