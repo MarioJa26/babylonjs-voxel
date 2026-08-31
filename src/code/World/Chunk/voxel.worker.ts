@@ -79,6 +79,89 @@ const _pendingMetadata = new Map<
 >();
 
 const _voxelRegistrations = new Map<bigint, VoxelRegistration>();
+
+// ---------------------------------------------------------------------------
+// Allocation-free neighbor offsets
+// ---------------------------------------------------------------------------
+
+// Offset order remains:
+// dz outer -> dy middle -> dx inner, with center omitted.
+const NEIGHBOR_DX = new Int8Array(26);
+const NEIGHBOR_DY = new Int8Array(26);
+const NEIGHBOR_DZ = new Int8Array(26);
+
+{
+	let slot = 0;
+
+	for (let dz = -1; dz <= 1; dz++) {
+		for (let dy = -1; dy <= 1; dy++) {
+			for (let dx = -1; dx <= 1; dx++) {
+				if (dx === 0 && dy === 0 && dz === 0) continue;
+
+				NEIGHBOR_DX[slot] = dx;
+				NEIGHBOR_DY[slot] = dy;
+				NEIGHBOR_DZ[slot] = dz;
+				slot++;
+			}
+		}
+	}
+}
+
+// chunk_size is always Chunk.SIZE (32); 32^2 covers the largest face slab.
+const _MAX_BORDER = 32 * 32;
+
+const _blockBorderScratch: Uint16Array[] = new Array(26);
+const _lightBorderScratch: Uint8Array[] = new Array(26);
+
+for (let i = 0; i < 26; i++) {
+	_blockBorderScratch[i] = new Uint16Array(_MAX_BORDER);
+	_lightBorderScratch[i] = new Uint8Array(_MAX_BORDER);
+}
+
+const _neighborBlocks: (Uint16Array | undefined)[] = new Array(26);
+const _neighborLights: (Uint8Array | undefined)[] = new Array(26);
+
+// Truthy presence marker. It is never dereferenced.
+const _PRESENT = new Uint16Array(0);
+
+const _presenceMaskCache = new Map<number, (Uint16Array | undefined)[]>();
+const _PRESENCE_MASK_CACHE_MAX = 64;
+
+function presenceFromMask(mask: number): (Uint16Array | undefined)[] {
+	const normalizedMask = mask >>> 0;
+	const cached = _presenceMaskCache.get(normalizedMask);
+
+	if (cached !== undefined) {
+		// Maintain true LRU order. This does not allocate a replacement array.
+		_presenceMaskCache.delete(normalizedMask);
+		_presenceMaskCache.set(normalizedMask, cached);
+		return cached;
+	}
+
+	const presence = new Array<Uint16Array | undefined>(26);
+	let bits = normalizedMask;
+
+	for (let i = 0; i < 26; i++) {
+		presence[i] = (bits & 1) !== 0 ? _PRESENT : undefined;
+		bits >>>= 1;
+	}
+
+	if (_presenceMaskCache.size >= _PRESENCE_MASK_CACHE_MAX) {
+		const oldest = _presenceMaskCache.keys().next();
+
+		if (!oldest.done) {
+			_presenceMaskCache.delete(oldest.value);
+		}
+	}
+
+	_presenceMaskCache.set(normalizedMask, presence);
+	return presence;
+}
+
+// ---------------------------------------------------------------------------
+// Voxel registration
+// ---------------------------------------------------------------------------
+
 function createVoxelRegistration(args: {
 	blockSAB?: SharedArrayBuffer | null;
 	paletteSAB?: SharedArrayBuffer | null;
@@ -90,13 +173,12 @@ function createVoxelRegistration(args: {
 	const blockSAB = args.blockSAB ?? null;
 	const paletteSAB = args.paletteSAB ?? null;
 	const lightSAB = args.lightSAB ?? null;
-	const blockBytesPerElement = args.blockBytesPerElement;
 
 	let blockU8: Uint8Array | null = null;
 	let blockU16: Uint16Array | null = null;
 
-	if (blockSAB) {
-		if (blockBytesPerElement === 1) {
+	if (blockSAB !== null) {
+		if (args.blockBytesPerElement === 1) {
 			blockU8 = new Uint8Array(blockSAB);
 		} else {
 			blockU16 = new Uint16Array(blockSAB);
@@ -107,17 +189,120 @@ function createVoxelRegistration(args: {
 		blockSAB,
 		paletteSAB,
 		lightSAB,
-
 		blockU8,
 		blockU16,
-		palette: paletteSAB ? new Uint16Array(paletteSAB) : null,
-		light: lightSAB ? new Uint8Array(lightSAB) : null,
-
-		blockBytesPerElement,
+		palette: paletteSAB === null ? null : new Uint16Array(paletteSAB),
+		light: lightSAB === null ? null : new Uint8Array(lightSAB),
+		blockBytesPerElement: args.blockBytesPerElement,
 		isUniform: args.isUniform,
 		uniformBlockId: args.uniformBlockId,
 	};
 }
+
+/**
+ * Primitive-argument implementation used by both single and batch messages.
+ * This avoids constructing one temporary request object per batch item.
+ */
+function registerVoxel(
+	chunkX: number,
+	chunkY: number,
+	chunkZ: number,
+	blockSAB: SharedArrayBuffer | null,
+	paletteSAB: SharedArrayBuffer | null,
+	lightSAB: SharedArrayBuffer | null,
+	blockBytesPerElement: 1 | 2,
+	isUniform: boolean,
+	uniformBlockId: number,
+	direct: boolean,
+): void {
+	const key = packCoords(chunkX, chunkY, chunkZ);
+
+	if (direct) {
+		_pendingMetadata.delete(key);
+		_pendingChannelData.delete(key);
+
+		_voxelRegistrations.set(
+			key,
+			createVoxelRegistration({
+				blockSAB,
+				paletteSAB,
+				lightSAB,
+				blockBytesPerElement,
+				isUniform,
+				uniformBlockId,
+			}),
+		);
+		return;
+	}
+
+	const pending = _pendingChannelData.get(key);
+
+	if (pending !== undefined) {
+		_pendingChannelData.delete(key);
+
+		pending.isUniform = isUniform;
+		pending.uniformBlockId = uniformBlockId;
+
+		_voxelRegistrations.set(key, pending);
+		return;
+	}
+
+	const metadata = _pendingMetadata.get(key);
+
+	if (metadata !== undefined) {
+		// Reuse the existing metadata object if duplicate metadata arrives
+		// before the worker-to-worker SAB message.
+		metadata.isUniform = isUniform;
+		metadata.uniformBlockId = uniformBlockId;
+	} else {
+		_pendingMetadata.set(key, {
+			isUniform,
+			uniformBlockId,
+		});
+	}
+}
+
+function _handleVoxelRegister(req: {
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	blockSAB: SharedArrayBuffer | null;
+	paletteSAB: SharedArrayBuffer | null;
+	lightSAB: SharedArrayBuffer | null;
+	blockStorageBytesPerElement: 1 | 2;
+	isUniform: boolean;
+	uniformBlockId: number;
+	direct?: boolean;
+}): void {
+	registerVoxel(
+		req.chunkX,
+		req.chunkY,
+		req.chunkZ,
+		req.blockSAB,
+		req.paletteSAB,
+		req.lightSAB,
+		req.blockStorageBytesPerElement,
+		req.isUniform,
+		req.uniformBlockId,
+		req.direct === true,
+	);
+}
+
+function unregisterVoxel(chunkX: number, chunkY: number, chunkZ: number): void {
+	const key = packCoords(chunkX, chunkY, chunkZ);
+
+	_voxelRegistrations.delete(key);
+	_pendingChannelData.delete(key);
+	_pendingMetadata.delete(key);
+
+	// These caches are keyed by chunkId rather than coordinates, so they
+	// cannot safely be cleared here without the chunkId.
+}
+
+function _handleVoxelUnregister(req: VoxelUnregisterChunkRequest): void {
+	unregisterVoxel(req.chunkX, req.chunkY, req.chunkZ);
+}
+
 function _handleChannelMessage(event: MessageEvent): void {
 	const data = event.data;
 	if (!data || (data as { _type?: string })._type !== "voxelData") return;
@@ -141,58 +326,6 @@ function _handleChannelMessage(event: MessageEvent): void {
 		_pendingChannelData.set(key, voxel);
 	}
 }
-function _handleVoxelRegister(req: {
-	chunkX: number;
-	chunkY: number;
-	chunkZ: number;
-	blockSAB: SharedArrayBuffer | null;
-	paletteSAB: SharedArrayBuffer | null;
-	lightSAB: SharedArrayBuffer | null;
-	blockStorageBytesPerElement: 1 | 2;
-	isUniform: boolean;
-	uniformBlockId: number;
-	direct?: boolean;
-}): void {
-	const key = packCoords(req.chunkX, req.chunkY, req.chunkZ);
-
-	if (req.direct) {
-		_pendingMetadata.delete(key);
-		_pendingChannelData.delete(key);
-		_voxelRegistrations.set(
-			key,
-			createVoxelRegistration({
-				blockSAB: req.blockSAB,
-				paletteSAB: req.paletteSAB,
-				lightSAB: req.lightSAB,
-				blockBytesPerElement: req.blockStorageBytesPerElement,
-				isUniform: req.isUniform,
-				uniformBlockId: req.uniformBlockId,
-			}),
-		);
-		return;
-	}
-
-	const pending = _pendingChannelData.get(key);
-	if (pending) {
-		_pendingChannelData.delete(key);
-		pending.isUniform = req.isUniform;
-		pending.uniformBlockId = req.uniformBlockId;
-		_voxelRegistrations.set(key, pending);
-		return;
-	}
-
-	_pendingMetadata.set(key, {
-		isUniform: req.isUniform,
-		uniformBlockId: req.uniformBlockId,
-	});
-}
-
-function _handleVoxelUnregister(req: VoxelUnregisterChunkRequest): void {
-	const key = packCoords(req.chunkX, req.chunkY, req.chunkZ);
-	_voxelRegistrations.delete(key);
-	_pendingChannelData.delete(key);
-	_pendingMetadata.delete(key);
-}
 
 function _handleVoxelUpdateBuffers(req: VoxelUpdateChunkBuffersRequest): void {
 	const key = packCoords(req.chunkX, req.chunkY, req.chunkZ);
@@ -214,74 +347,8 @@ function _handleVoxelUpdateBuffers(req: VoxelUpdateChunkBuffersRequest): void {
 }
 
 // ---------------------------------------------------------------------------
-// SAB border extraction
-//
-// Ported from the main thread's postFullRemesh extraction (which is deleted):
-// the worker now builds the 26 block/light border slabs itself, directly from
-// the neighbor chunks' SharedArrayBuffers. Slab values are written into
-// per-slot scratch buffers (reused across tasks — begin() copies them into
-// the padded grid before the scratch is next touched).
+// Allocation-free border copying
 // ---------------------------------------------------------------------------
-
-// Offset order must match the main thread's remesh mask (slot i = mask bit i):
-// dz outer → dx inner, center (0,0,0) omitted.
-const NEIGHBOR_OFFSETS: readonly {
-	readonly dx: number;
-	readonly dy: number;
-	readonly dz: number;
-}[] = (() => {
-	const out: { dx: number; dy: number; dz: number }[] = [];
-	for (let z = -1; z <= 1; z++) {
-		for (let y = -1; y <= 1; y++) {
-			for (let x = -1; x <= 1; x++) {
-				if (x === 0 && y === 0 && z === 0) continue;
-				out.push({ dx: x, dy: y, dz: z });
-			}
-		}
-	}
-	return out;
-})();
-
-// chunk_size is always Chunk.SIZE (32); 32^2 covers the largest (face) slab.
-const _MAX_BORDER = 32 * 32;
-
-const _blockBorderScratch: Uint16Array[] = Array.from(
-	{ length: 26 },
-	() => new Uint16Array(_MAX_BORDER),
-);
-const _lightBorderScratch: Uint8Array[] = Array.from(
-	{ length: 26 },
-	() => new Uint8Array(_MAX_BORDER),
-);
-
-// 26-slot input arrays consumed by begin() within the same task.
-const _neighborBlocks: (Uint16Array | undefined)[] = new Array(26);
-const _neighborLights: (Uint8Array | undefined)[] = new Array(26);
-
-// Truthy presence marker for the relight cache's per-entry presence array —
-// never dereferenced (block borders are skipped on light-only rebuilds).
-const _PRESENT = new Uint16Array(0);
-// Avoid allocating a fresh 26-slot presence array on every full mesh.
-// These arrays must be treated as immutable after creation.
-const _presenceMaskCache = new Map<number, (Uint16Array | undefined)[]>();
-const _PRESENCE_MASK_CACHE_MAX = 64;
-function presenceFromMask(mask: number): (Uint16Array | undefined)[] {
-	const cached = _presenceMaskCache.get(mask);
-	if (cached) return cached;
-
-	const arr = new Array<Uint16Array | undefined>(26);
-	for (let i = 0; i < 26; i++) {
-		arr[i] = (mask & (1 << i)) !== 0 ? _PRESENT : undefined;
-	}
-
-	if (_presenceMaskCache.size >= _PRESENCE_MASK_CACHE_MAX) {
-		const oldest = _presenceMaskCache.keys().next();
-		if (!oldest.done) _presenceMaskCache.delete(oldest.value);
-	}
-
-	_presenceMaskCache.set(mask, arr);
-	return arr;
-}
 
 function extractBlockBorder(
 	reg: VoxelRegistration,
@@ -308,8 +375,9 @@ function extractBlockBorder(
 	const size2 = size * size;
 
 	const dense16 = reg.blockU16;
-	if (dense16) {
-		let ci = 0;
+
+	if (dense16 !== null) {
+		let write = 0;
 
 		for (let bz = 0; bz < zCount; bz++) {
 			const zBase = (lzStart + bz) * size2;
@@ -318,10 +386,14 @@ function extractBlockBorder(
 				const rowBase = zBase + (lyStart + by) * size;
 
 				if (dx === 0) {
-					out.set(dense16.subarray(rowBase, rowBase + xCount), ci);
-					ci += xCount;
+					// Avoid dense16.subarray(...), which creates a new view.
+					const rowEnd = rowBase + xCount;
+
+					for (let read = rowBase; read < rowEnd; read++) {
+						out[write++] = dense16[read];
+					}
 				} else {
-					out[ci++] = dense16[rowBase + lxStart];
+					out[write++] = dense16[rowBase + lxStart];
 				}
 			}
 		}
@@ -330,16 +402,17 @@ function extractBlockBorder(
 	}
 
 	const packed = reg.blockU8;
-	if (!packed) {
+
+	if (packed === null) {
 		out.fill(0, 0, total);
 		return out;
 	}
 
 	const palette = reg.palette;
-	const paletteLen = palette?.length ?? 0;
+	const paletteLength = palette?.length ?? 0;
 
-	if (palette && paletteLen > 1) {
-		let ci = 0;
+	if (palette !== null && paletteLength > 1) {
+		let write = 0;
 
 		for (let bz = 0; bz < zCount; bz++) {
 			const zBase = (lzStart + bz) * size2;
@@ -348,23 +421,38 @@ function extractBlockBorder(
 				const rowBase = zBase + (lyStart + by) * size;
 
 				if (dx === 0) {
-					let packedIndex = rowBase >>> 1;
-					const pairCount = xCount >>> 1;
+					let blockIndex = rowBase;
+					const rowEnd = rowBase + xCount;
 
-					for (let pair = 0; pair < pairCount; pair++) {
-						const byte = packed[packedIndex++];
-						const lo = byte & 0x0f;
-						const hi = (byte >>> 4) & 0x0f;
+					while (blockIndex + 1 < rowEnd) {
+						const byte = packed[blockIndex >>> 1];
+						const low = byte & 0x0f;
+						const high = byte >>> 4;
 
-						out[ci++] = lo < paletteLen ? palette[lo] : 0;
-						out[ci++] = hi < paletteLen ? palette[hi] : 0;
+						out[write++] = low < paletteLength ? palette[low] : 0;
+						out[write++] = high < paletteLength ? palette[high] : 0;
+
+						blockIndex += 2;
+					}
+
+					// Retains correct behavior if a non-standard odd chunk
+					// size is ever passed.
+					if (blockIndex < rowEnd) {
+						const byte = packed[blockIndex >>> 1];
+						const paletteIndex =
+							(blockIndex & 1) === 0 ? byte & 0x0f : byte >>> 4;
+
+						out[write++] =
+							paletteIndex < paletteLength ? palette[paletteIndex] : 0;
 					}
 				} else {
-					const idx = rowBase + lxStart;
-					const byte = packed[idx >>> 1];
-					const pIdx = (idx & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
+					const blockIndex = rowBase + lxStart;
+					const byte = packed[blockIndex >>> 1];
+					const paletteIndex =
+						(blockIndex & 1) === 0 ? byte & 0x0f : byte >>> 4;
 
-					out[ci++] = pIdx < paletteLen ? palette[pIdx] : 0;
+					out[write++] =
+						paletteIndex < paletteLength ? palette[paletteIndex] : 0;
 				}
 			}
 		}
@@ -372,7 +460,7 @@ function extractBlockBorder(
 		return out;
 	}
 
-	let ci = 0;
+	let write = 0;
 
 	for (let bz = 0; bz < zCount; bz++) {
 		const zBase = (lzStart + bz) * size2;
@@ -381,10 +469,15 @@ function extractBlockBorder(
 			const rowBase = zBase + (lyStart + by) * size;
 
 			if (dx === 0) {
-				out.set(packed.subarray(rowBase, rowBase + xCount), ci);
-				ci += xCount;
+				// Preserve the original no-palette byte interpretation while
+				// avoiding packed.subarray(...).
+				const rowEnd = rowBase + xCount;
+
+				for (let read = rowBase; read < rowEnd; read++) {
+					out[write++] = packed[read];
+				}
 			} else {
-				out[ci++] = packed[rowBase + lxStart];
+				out[write++] = packed[rowBase + lxStart];
 			}
 		}
 	}
@@ -400,8 +493,9 @@ function extractLightBorder(
 	dy: number,
 	dz: number,
 ): Uint8Array | undefined {
-	const nLight = reg.light;
-	if (!nLight) return undefined;
+	const light = reg.light;
+
+	if (light === null) return undefined;
 
 	const xCount = dx === 0 ? size : 1;
 	const yCount = dy === 0 ? size : 1;
@@ -411,8 +505,8 @@ function extractLightBorder(
 	const lzStart = dz < 0 ? size - 1 : 0;
 	const size2 = size * size;
 
-	const lb = _lightBorderScratch[slot];
-	let li = 0;
+	const out = _lightBorderScratch[slot];
+	let write = 0;
 
 	for (let bz = 0; bz < zCount; bz++) {
 		const zBase = (lzStart + bz) * size2;
@@ -421,25 +515,20 @@ function extractLightBorder(
 			const rowBase = zBase + (lyStart + by) * size;
 
 			if (dx === 0) {
-				lb.set(nLight.subarray(rowBase, rowBase + xCount), li);
-				li += xCount;
+				// Avoid light.subarray(...), which creates one typed-array
+				// view for every copied face row.
+				const rowEnd = rowBase + xCount;
+
+				for (let read = rowBase; read < rowEnd; read++) {
+					out[write++] = light[read];
+				}
 			} else {
-				lb[li++] = nLight[rowBase + lxStart];
+				out[write++] = light[rowBase + lxStart];
 			}
 		}
 	}
 
-	return lb;
-}
-
-const NEIGHBOR_DX = new Int8Array(26);
-const NEIGHBOR_DY = new Int8Array(26);
-const NEIGHBOR_DZ = new Int8Array(26);
-
-for (let i = 0; i < 26; i++) {
-	NEIGHBOR_DX[i] = NEIGHBOR_OFFSETS[i].dx;
-	NEIGHBOR_DY[i] = NEIGHBOR_OFFSETS[i].dy;
-	NEIGHBOR_DZ[i] = NEIGHBOR_OFFSETS[i].dz;
+	return out;
 }
 
 function buildNeighborArrays(
@@ -450,51 +539,43 @@ function buildNeighborArrays(
 	mask: number,
 	includeBlocks = true,
 ): void {
-	const regs = _voxelRegistrations;
-	const neighborBlocks = _neighborBlocks;
-	const neighborLights = _neighborLights;
-	const dxs = NEIGHBOR_DX;
-	const dys = NEIGHBOR_DY;
-	const dzs = NEIGHBOR_DZ;
-
-	// Force unsigned 32-bit shifting. The neighbor mask only uses 26 bits.
 	let bits = mask >>> 0;
 
-	for (let i = 0; i < 26; i++, bits >>>= 1) {
+	for (let i = 0; i < 26; i++) {
 		if ((bits & 1) === 0) {
-			neighborBlocks[i] = undefined;
-			neighborLights[i] = undefined;
+			_neighborBlocks[i] = undefined;
+			_neighborLights[i] = undefined;
+			bits >>>= 1;
 			continue;
 		}
 
-		const dx = dxs[i];
-		const dy = dys[i];
-		const dz = dzs[i];
+		const dx = NEIGHBOR_DX[i];
+		const dy = NEIGHBOR_DY[i];
+		const dz = NEIGHBOR_DZ[i];
+		const key = packCoords(cx + dx, cy + dy, cz + dz);
+		const reg = _voxelRegistrations.get(key);
 
-		const reg = regs.get(packCoords(cx + dx, cy + dy, cz + dz));
-		if (!reg) {
-			neighborBlocks[i] = undefined;
-			neighborLights[i] = undefined;
+		if (reg === undefined) {
+			_neighborBlocks[i] = undefined;
+			_neighborLights[i] = undefined;
+			bits >>>= 1;
 			continue;
 		}
 
-		neighborBlocks[i] = includeBlocks
+		_neighborBlocks[i] = includeBlocks
 			? extractBlockBorder(reg, i, size, dx, dy, dz)
 			: undefined;
 
-		neighborLights[i] = extractLightBorder(reg, i, size, dx, dy, dz);
+		_neighborLights[i] = extractLightBorder(reg, i, size, dx, dy, dz);
+
+		bits >>>= 1;
 	}
 }
 
-// T3-1: decoded center-block cache.
-//
-// Palette-encoded chunks paid a fresh 64 KiB expandPalette allocation on
-// every full remesh (decodeCenterBlocks), feeding minor GC on busy remesh
-// frames. Dense results are cached per chunk and validated against
-// (generation, blockRevision) — the same staleness contract as the relight
-// cache — so repeated full rebuilds of an unmodified chunk reuse the expanded
-// grid. Direct SAB views (dense16/packed) are returned as-is and never
-// cached; they are stable and need no copy.
+// ---------------------------------------------------------------------------
+// Decoded center cache
+// ---------------------------------------------------------------------------
+
 type DecodedBlocksEntry = {
 	generation: number;
 	blockRevision: number;
@@ -514,35 +595,41 @@ function getDecodedCenterBlocks(
 	blockRevision: number,
 	size: number,
 ): Uint8Array | Uint16Array | null {
-	if (!reg?.blockSAB) return null;
+	if (reg === undefined || reg.blockSAB === null) return null;
 
-	const dense16 = reg.blockU16;
-	if (dense16) return dense16;
+	if (reg.blockU16 !== null) {
+		return reg.blockU16;
+	}
 
 	const packed = reg.blockU8;
-	if (!packed) return null;
+
+	if (packed === null) return null;
 
 	const palette = reg.palette;
-	if (!palette || palette.length <= 0) return packed;
+
+	if (palette === null || palette.length === 0) {
+		return packed;
+	}
 
 	const totalBlocks = size * size * size;
-
 	const cached = decodedBlocksCache.get(chunkId);
+
 	if (
-		cached &&
+		cached !== undefined &&
 		cached.generation === generation &&
 		cached.blockRevision === blockRevision &&
 		cached.blocks.length === totalBlocks
 	) {
-		// Refresh insertion order so Map eviction stays LRU.
 		decodedBlocksCache.delete(chunkId);
 		decodedBlocksCache.set(chunkId, cached);
 		return cached.blocks;
 	}
 
 	let blocks: Uint8Array | Uint16Array;
+
 	if (palette.length === 1) {
 		const blockId = palette[0];
+
 		if (blockId === 0) return null;
 
 		blocks = new Uint16Array(totalBlocks);
@@ -553,9 +640,28 @@ function getDecodedCenterBlocks(
 
 	if (decodedBlocksCache.size >= DECODED_BLOCKS_CACHE_MAX) {
 		const oldest = decodedBlocksCache.keys().next();
-		if (!oldest.done) decodedBlocksCache.delete(oldest.value);
+
+		if (!oldest.done) {
+			decodedBlocksCache.delete(oldest.value);
+		}
 	}
-	decodedBlocksCache.set(chunkId, { generation, blockRevision, blocks });
+
+	const existing = cached;
+
+	if (existing !== undefined) {
+		// Reuse the cache-entry shell even when its decoded storage became
+		// stale. The decoded array itself must still be replaced.
+		existing.generation = generation;
+		existing.blockRevision = blockRevision;
+		existing.blocks = blocks;
+		decodedBlocksCache.set(chunkId, existing);
+	} else {
+		decodedBlocksCache.set(chunkId, {
+			generation,
+			blockRevision,
+			blocks,
+		});
+	}
 
 	return blocks;
 }
@@ -728,16 +834,55 @@ function givePooledMeshBuffer(buf: Uint8Array): void {
 	_recyclePoolCount++;
 }
 
+// ---------------------------------------------------------------------------
+// Transfer buffer handling
+// ---------------------------------------------------------------------------
+
+function copyMeshBytes(
+	source: Uint8Array,
+	target: Uint8Array,
+	byteLength: number,
+): void {
+	// A manual copy avoids allocating source.subarray(0, byteLength).
+	for (let i = 0; i < byteLength; i++) {
+		target[i] = source[i];
+	}
+}
+
 function fillMeshBuffer(
 	rta: ResizableTypedArray<Uint8Array>,
 	byteLength: number,
 ): Uint8Array {
 	const pooled = takePooledMeshBuffer(byteLength);
-	if (pooled) {
-		pooled.set(rta.backingArray.subarray(0, byteLength));
+
+	if (pooled !== null) {
+		copyMeshBytes(rta.backingArray, pooled, byteLength);
 		return pooled;
 	}
+
+	// This exact-size allocation is required because the buffer is transferred
+	// and downstream code derives counts from its exact byte length.
 	return rta.finalArray;
+}
+
+// Reused relight-miss message.
+const _relightMissScratch: RelightMeshMissMessage = {
+	type: WorkerTaskType.RelightMesh,
+	chunkId: 0n,
+	meshRevision: 0,
+	lod: 0,
+};
+
+function postRelightMiss(
+	chunkId: bigint,
+	meshRevision: number,
+	lod: number,
+): void {
+	const miss = _relightMissScratch;
+	miss.chunkId = chunkId;
+	miss.meshRevision = meshRevision;
+	miss.lod = lod;
+	self.postMessage(miss);
 }
 
 // PERF: MeshData shells are reused across responses. self.postMessage clones
@@ -816,183 +961,197 @@ function postMeshResponse(
 	if (cutout) _meshShellPool.push(cutout);
 }
 
+// ---------------------------------------------------------------------------
+// Message dispatch
+// ---------------------------------------------------------------------------
+
 self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	const data = event.data;
 
-	if (data.type === WorkerTaskType.VoxelRegisterChunk) {
-		_handleVoxelRegister(data);
-		return;
-	}
-
-	if (data.type === WorkerTaskType.VoxelRegisterChunkBatch) {
-		const n = data.chunkIds.length;
-		if (data.coords.length !== n * 3 || data.meta.length !== n * 3) {
-			throw new Error(
-				`bad VoxelRegisterChunkBatch lengths (ids ${n}, ` +
-					`coords ${data.coords.length}, meta ${data.meta.length})`,
-			);
-		}
-		for (let i = 0; i < n; i++) {
-			_handleVoxelRegister({
-				chunkX: data.coords[i * 3],
-				chunkY: data.coords[i * 3 + 1],
-				chunkZ: data.coords[i * 3 + 2],
-				isUniform: data.meta[i * 3] === 1,
-				uniformBlockId: data.meta[i * 3 + 1],
-				blockStorageBytesPerElement: data.meta[i * 3 + 2] as 1 | 2,
-				direct: true,
-				blockSAB: data.blockSABs[i],
-				paletteSAB: data.paletteSABs[i],
-				lightSAB: data.lightSABs[i],
-			});
-		}
-		return;
-	}
-
-	if (data.type === WorkerTaskType.VoxelUnregisterChunk) {
-		_handleVoxelUnregister(data);
-		return;
-	}
-
-	if (data.type === WorkerTaskType.VoxelUnregisterChunkBatch) {
-		const n = data.coords.length / 3;
-		for (let i = 0; i < n; i++) {
-			_handleVoxelUnregister({
-				type: WorkerTaskType.VoxelUnregisterChunk,
-				chunkX: data.coords[i * 3],
-				chunkY: data.coords[i * 3 + 1],
-				chunkZ: data.coords[i * 3 + 2],
-			});
-		}
-		return;
-	}
-
-	if (data.type === WorkerTaskType.VoxelUpdateChunkBuffers) {
-		_handleVoxelUpdateBuffers(data);
-		return;
-	}
-
-	if (data.type === WorkerTaskType.VoxelRecycleBuffers) {
-		const buffers = data.buffers;
-		for (let i = 0; i < buffers.length; i++) {
-			givePooledMeshBuffer(new Uint8Array(buffers[i]));
-		}
-		return;
-	}
-
-	if (data.type === WorkerTaskType.RelightMesh) {
-		const entry = relightCache.get(data.chunkId);
-		const expectedPaddedVol =
-			(data.chunk_size + 2) * (data.chunk_size + 2) * (data.chunk_size + 2);
-
-		if (
-			!entry ||
-			entry.generation !== data.generation ||
-			entry.blockRevision !== data.blockRevision ||
-			entry.grids.block.length !== expectedPaddedVol
-		) {
-			const miss: RelightMeshMissMessage = {
-				type: WorkerTaskType.RelightMesh,
-				chunkId: data.chunkId,
-				meshRevision: data.meshRevision,
-				lod: data.lod,
-			};
-			self.postMessage(miss);
+	switch (data.type) {
+		case WorkerTaskType.VoxelRegisterChunk: {
+			_handleVoxelRegister(data);
 			return;
 		}
 
-		touchRelightEntry(data.chunkId, entry);
+		case WorkerTaskType.VoxelRegisterChunkBatch: {
+			const count = data.chunkIds.length;
 
-		const reg = _voxelRegistrations.get(
-			packCoords(data.chunkX, data.chunkY, data.chunkZ),
-		);
-
-		buildNeighborArrays(
-			data.chunkX,
-			data.chunkY,
-			data.chunkZ,
-			data.chunk_size,
-			data.neighborMask,
-			false,
-		);
-
-		buildVoxelMeshFromInput(
-			{
-				neighbors: entry.neighbors,
-				light_array: centerLightArray(reg),
-				neighborLights: _neighborLights,
-				borderSkirtSides: data.borderSkirtSides,
-				borderSkirtNearInset: data.borderSkirtNearInset,
-			},
-			data.chunk_size,
-			data.lod,
-			entry.grids,
-			true,
-		);
-
-		postMeshResponse(data.chunkId, data.meshRevision, data.lod);
-
-		return;
-	}
-	if (data.type === WorkerTaskType.InitWorkerChannel) {
-		const port = data.port;
-		port.onmessage = _handleChannelMessage;
-		port.start();
-		return;
-	}
-	if (data.type !== WorkerTaskType.GenerateFullMesh) return;
-
-	{
-		const size = data.chunk_size;
-		const reg = _voxelRegistrations.get(
-			packCoords(data.chunkX, data.chunkY, data.chunkZ),
-		);
-
-		buildNeighborArrays(
-			data.chunkX,
-			data.chunkY,
-			data.chunkZ,
-			size,
-			data.neighborMask,
-			true,
-		);
-
-		const generation = data.generation ?? -1;
-		const blockRevision = data.blockRevision ?? -1;
-		const uniform = data.uniformBlockId !== undefined;
-		const centerBlockArray = uniform
-			? null
-			: getDecodedCenterBlocks(
-					reg,
-					data.chunkId,
-					generation,
-					blockRevision,
-					size,
+			if (data.coords.length !== count * 3 || data.meta.length !== count * 3) {
+				throw new Error(
+					`bad VoxelRegisterChunkBatch lengths (ids ${count}, ` +
+						`coords ${data.coords.length}, meta ${data.meta.length})`,
 				);
+			}
 
-		const entry = getOrCreateRelightEntry(
-			data.chunkId,
-			generation,
-			blockRevision,
-			presenceFromMask(data.neighborMask),
-		);
+			for (let i = 0, offset = 0; i < count; i++, offset += 3) {
+				registerVoxel(
+					data.coords[offset],
+					data.coords[offset + 1],
+					data.coords[offset + 2],
+					data.blockSABs[i],
+					data.paletteSABs[i],
+					data.lightSABs[i],
+					data.meta[offset + 2] as 1 | 2,
+					data.meta[offset] === 1,
+					data.meta[offset + 1],
+					true,
+				);
+			}
 
-		buildVoxelMeshFromInput(
-			{
-				block_array: centerBlockArray,
-				uniformFill: uniform ? data.uniformBlockId : undefined,
-				light_array: centerLightArray(reg),
-				neighbors: _neighborBlocks,
-				neighborLights: _neighborLights,
-				borderSkirtSides: data.borderSkirtSides,
-				borderSkirtNearInset: data.borderSkirtNearInset,
-			},
-			size,
-			data.lod ?? 0,
-			entry.grids,
-			false,
-		);
+			return;
+		}
 
-		postMeshResponse(data.chunkId, data.meshRevision, data.lod ?? 0);
+		case WorkerTaskType.VoxelUnregisterChunk: {
+			unregisterVoxel(data.chunkX, data.chunkY, data.chunkZ);
+			return;
+		}
+
+		case WorkerTaskType.VoxelUnregisterChunkBatch: {
+			const coords = data.coords;
+
+			for (let offset = 0; offset + 2 < coords.length; offset += 3) {
+				unregisterVoxel(coords[offset], coords[offset + 1], coords[offset + 2]);
+			}
+
+			return;
+		}
+
+		case WorkerTaskType.VoxelUpdateChunkBuffers: {
+			_handleVoxelUpdateBuffers(data);
+			return;
+		}
+
+		case WorkerTaskType.VoxelRecycleBuffers: {
+			const buffers = data.buffers;
+
+			for (let i = 0; i < buffers.length; i++) {
+				// The Uint8Array shell is required to access and pool the
+				// transferred ArrayBuffer. Its backing memory is not copied.
+				givePooledMeshBuffer(new Uint8Array(buffers[i]));
+			}
+
+			return;
+		}
+
+		case WorkerTaskType.RelightMesh: {
+			const entry = relightCache.get(data.chunkId);
+			const paddedSize = data.chunk_size + 2;
+			const expectedPaddedVolume = paddedSize * paddedSize * paddedSize;
+
+			if (
+				entry === undefined ||
+				entry.generation !== data.generation ||
+				entry.blockRevision !== data.blockRevision ||
+				entry.grids.block.length !== expectedPaddedVolume
+			) {
+				postRelightMiss(data.chunkId, data.meshRevision, data.lod);
+				return;
+			}
+
+			touchRelightEntry(data.chunkId, entry);
+
+			const reg = _voxelRegistrations.get(
+				packCoords(data.chunkX, data.chunkY, data.chunkZ),
+			);
+
+			buildNeighborArrays(
+				data.chunkX,
+				data.chunkY,
+				data.chunkZ,
+				data.chunk_size,
+				data.neighborMask,
+				false,
+			);
+
+			// This object remains a per-task allocation because WorkerMeshInput
+			// is consumed synchronously by begin(). If begin() retains input,
+			// reusing a shared object would be unsafe.
+			buildVoxelMeshFromInput(
+				{
+					neighbors: entry.neighbors,
+					light_array: centerLightArray(reg),
+					neighborLights: _neighborLights,
+					borderSkirtSides: data.borderSkirtSides,
+					borderSkirtNearInset: data.borderSkirtNearInset,
+				},
+				data.chunk_size,
+				data.lod,
+				entry.grids,
+				true,
+			);
+
+			postMeshResponse(data.chunkId, data.meshRevision, data.lod);
+			return;
+		}
+
+		case WorkerTaskType.InitWorkerChannel: {
+			const port = data.port;
+			port.onmessage = _handleChannelMessage;
+			port.start();
+			return;
+		}
+
+		case WorkerTaskType.GenerateFullMesh: {
+			const size = data.chunk_size;
+			const lod = data.lod ?? 0;
+			const generation = data.generation ?? -1;
+			const blockRevision = data.blockRevision ?? -1;
+
+			const reg = _voxelRegistrations.get(
+				packCoords(data.chunkX, data.chunkY, data.chunkZ),
+			);
+
+			buildNeighborArrays(
+				data.chunkX,
+				data.chunkY,
+				data.chunkZ,
+				size,
+				data.neighborMask,
+				true,
+			);
+
+			const uniformBlockId = data.uniformBlockId;
+			const isUniform = uniformBlockId !== undefined;
+
+			const centerBlockArray = isUniform
+				? null
+				: getDecodedCenterBlocks(
+						reg,
+						data.chunkId,
+						generation,
+						blockRevision,
+						size,
+					);
+
+			const entry = getOrCreateRelightEntry(
+				data.chunkId,
+				generation,
+				blockRevision,
+				presenceFromMask(data.neighborMask),
+			);
+
+			buildVoxelMeshFromInput(
+				{
+					block_array: centerBlockArray,
+					uniformFill: isUniform ? uniformBlockId : undefined,
+					light_array: centerLightArray(reg),
+					neighbors: _neighborBlocks,
+					neighborLights: _neighborLights,
+					borderSkirtSides: data.borderSkirtSides,
+					borderSkirtNearInset: data.borderSkirtNearInset,
+				},
+				size,
+				lod,
+				entry.grids,
+				false,
+			);
+
+			postMeshResponse(data.chunkId, data.meshRevision, lod);
+			return;
+		}
+
+		default:
+			return;
 	}
 };

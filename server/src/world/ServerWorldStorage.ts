@@ -8,6 +8,7 @@
 
 import { LightGenerator } from "@/code/Generation/LightGenerator";
 import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
+import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath.ts";
 import { precomputeClosedFaceMasks } from "@/code/World/Chunk/ChunkFaceMasks";
 import {
 	packBlockValue,
@@ -122,8 +123,6 @@ export interface PersistedMob {
 const DEFAULT_CACHE_SIZE = 1024;
 const DEFAULT_BLOB_CACHE_SIZE = 128;
 
-const CHUNK_SIZE = 32;
-const CHUNK_SHIFT = 5;
 const WATER_BLOCK_ID = 30;
 const FLUSH_DELAY_MS = 500;
 

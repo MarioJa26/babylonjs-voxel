@@ -1,3 +1,4 @@
+import { CHUNK_SIZE } from "../Lib/VoxelMath";
 import { BlockType } from "../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "./Biome/BiomeTypes";
 import {
@@ -463,7 +464,6 @@ export class SurfaceGenerator {
 		localX: number;
 		localZ: number;
 	} {
-		const CHUNK_SIZE = this.params.CHUNK_SIZE;
 		const chunkX = Math.floor(worldX / CHUNK_SIZE);
 		const chunkZ = Math.floor(worldZ / CHUNK_SIZE);
 		const entry = this.getOrBuildColumnPrepass(chunkX, chunkZ);
@@ -487,7 +487,6 @@ export class SurfaceGenerator {
 			return cached;
 		}
 
-		const CHUNK_SIZE = this.params.CHUNK_SIZE;
 		const SEA_LEVEL = this.params.SEA_LEVEL;
 		const chunkWorldX = chunkX * CHUNK_SIZE;
 		const chunkWorldZ = chunkZ * CHUNK_SIZE;
@@ -707,7 +706,6 @@ export class SurfaceGenerator {
 		const cached = cache.get(key);
 		if (cached) return cached;
 
-		const CHUNK_SIZE = this.params.CHUNK_SIZE;
 		const SEA_LEVEL = this.params.SEA_LEVEL;
 		const chunkWorldX = chunkX * CHUNK_SIZE;
 		const chunkWorldZ = chunkZ * CHUNK_SIZE;
@@ -1016,7 +1014,6 @@ export class SurfaceGenerator {
 			ow?: boolean,
 		) => void,
 	): SurfaceGenerationResult {
-		const CHUNK_SIZE = this.params.CHUNK_SIZE;
 		const SEA_LEVEL = this.params.SEA_LEVEL;
 		const NO_SURFACE_Y = CAVE_NO_SURFACE_Y;
 		const INFLUENCE = SurfaceGenerator.DENSITY_INFLUENCE_RANGE;

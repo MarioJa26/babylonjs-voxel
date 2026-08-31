@@ -108,27 +108,27 @@ const MIN_INSTANCE_DATA_ELEMENTS = INSTANCE_FLOATS;
 // Retain the existing safety limit.
 const MAX_INSTANCE_DATA_ELEMENTS = 1 << 23;
 
+const MAX_FREE_INTERVAL_POOL_SIZE = 4096;
+const INSTANCE_SHRINK_RATIO = 4;
+
+interface FreeInterval {
+	base: number;
+	count: number;
+}
+
 interface PackedMeshState {
 	faceArena: number;
 	faceBase: number;
 	faceCount: number;
 	offsetBase: number;
-	/** Retained compact instance buffer (INSTANCE_FLOATS floats per face);
-	 *  reused across updates. Grows monotonically (power-of-two capacity),
-	 *  so repeated face-count growth never reallocates, but a larger need
-	 *  still reallocates. */
+
 	instanceMatrices?: Float32Array;
-	/** Number of instances whose lanes are currently valid in
-	 *  `instanceMatrices` (monotonic: lanes are only ever appended). */
 	instanceLanesValid?: number;
-	/** Retained mesh-visible bounds; reused across updates (no realloc). */
+
 	boundMin?: [number, number, number];
 	boundMax?: [number, number, number];
-	/** Cached u32 view over the caller's input.faceData — rebuilt only when
-	 *  the underlying buffer identity or range changes. */
+
 	faceWords?: Uint32Array;
-	/** Scratch flag used by compactArena to mark meshes whose faceBase moved
-	 *  (their instance-record faceBase lanes need rewriting). */
 	_compactMoved?: boolean;
 }
 
@@ -147,14 +147,16 @@ const _pendingDisposal: Mesh[] = [];
 let _disposalScheduled = false;
 
 function instanceCapacityFor(needLen: number): number {
-	let capacity = MIN_INSTANCE_DATA_ELEMENTS;
-
-	// Multiplication is intentional. Bit shifts would truncate to signed i32.
-	while (capacity < needLen) {
-		capacity *= 2;
+	if (needLen <= MIN_INSTANCE_DATA_ELEMENTS) {
+		return MIN_INSTANCE_DATA_ELEMENTS;
 	}
 
-	return capacity;
+	/*
+	 * Computing the exponent avoids repeatedly multiplying in a loop.
+	 * MAX_INSTANCE_DATA_ELEMENTS is below the range where Math.log2 loses
+	 * integer precision.
+	 */
+	return 2 ** Math.ceil(Math.log2(needLen));
 }
 
 function scheduleDeferredDisposal(mesh: Mesh): void {
@@ -206,26 +208,51 @@ let offsetBuffer: StorageBuffer | null = null;
 // fresh literal on every freeFaces() call. Under steady-state churn (roughly
 // as many merges as frees) the pool stays warm and converges to near-zero
 // allocation for unload bursts.
-const _freeIntervalPool: Array<{ base: number; count: number }> = [];
+const _freeIntervalPool: FreeInterval[] = [];
 
-function acquireInterval(
-	base: number,
-	count: number,
-): {
-	base: number;
-	count: number;
-} {
-	const node = _freeIntervalPool.pop();
-	if (node) {
+function acquireInterval(base: number, count: number): FreeInterval {
+	const last = _freeIntervalPool.length - 1;
+
+	if (last >= 0) {
+		const node = _freeIntervalPool[last];
+		_freeIntervalPool.length = last;
 		node.base = base;
 		node.count = count;
 		return node;
 	}
+
 	return { base, count };
 }
 
-function releaseInterval(node: { base: number; count: number }): void {
-	_freeIntervalPool.push(node);
+function releaseInterval(node: FreeInterval): void {
+	if (_freeIntervalPool.length < MAX_FREE_INTERVAL_POOL_SIZE) {
+		_freeIntervalPool.push(node);
+	}
+}
+function removeIntervalAt(free: FreeInterval[], index: number): FreeInterval {
+	const node = free[index];
+	const newLength = free.length - 1;
+
+	for (let i = index; i < newLength; i++) {
+		free[i] = free[i + 1];
+	}
+
+	free.length = newLength;
+	return node;
+}
+function insertIntervalAt(
+	free: FreeInterval[],
+	index: number,
+	node: FreeInterval,
+): void {
+	const oldLength = free.length;
+	free.length = oldLength + 1;
+
+	for (let i = oldLength; i > index; i--) {
+		free[i] = free[i - 1];
+	}
+
+	free[index] = node;
 }
 
 let offsetCpu = new Float32Array(0);
@@ -608,7 +635,7 @@ function tryExtendFaces(
 }
 
 function freeFaceInterval(
-	free: Array<{ base: number; count: number }>,
+	free: FreeInterval[],
 	base: number,
 	count: number,
 ): void {
@@ -627,61 +654,47 @@ function freeFaceInterval(
 		}
 	}
 
-	let i = lo;
-	const node = acquireInterval(base, count);
+	/*
+	 * Merge directly with existing nodes where possible. The original
+	 * implementation always acquired and inserted a node first, even when
+	 * the interval was immediately merged away.
+	 */
+	const left = lo > 0 ? free[lo - 1] : undefined;
+	const right = lo < free.length ? free[lo] : undefined;
+	const joinsLeft = left !== undefined && left.base + left.count === base;
+	const joinsRight = right !== undefined && base + count === right.base;
 
-	// Manual insert avoids Array.splice allocation/slow path overhead.
-	const oldLen = free.length;
-	free.length = oldLen + 1;
+	if (joinsLeft) {
+		left.count += count;
 
-	for (let j = oldLen; j > i; j--) {
-		free[j] = free[j - 1];
-	}
-
-	free[i] = node;
-
-	// Merge left.
-	if (i > 0) {
-		const prev = free[i - 1];
-		const curr = free[i];
-
-		if (prev.base + prev.count === curr.base) {
-			prev.count += curr.count;
-
-			for (let j = i; j < free.length - 1; j++) {
-				free[j] = free[j + 1];
-			}
-
-			free.length--;
-			releaseInterval(curr);
-			i--;
+		if (joinsRight) {
+			left.count += right.count;
+			releaseInterval(removeIntervalAt(free, lo));
 		}
+
+		return;
 	}
 
-	// Merge right.
-	if (i < free.length - 1) {
-		const curr = free[i];
-		const next = free[i + 1];
-
-		if (curr.base + curr.count === next.base) {
-			curr.count += next.count;
-
-			for (let j = i + 1; j < free.length - 1; j++) {
-				free[j] = free[j + 1];
-			}
-
-			free.length--;
-			releaseInterval(next);
-		}
+	if (joinsRight) {
+		/*
+		 * Reuse the right node rather than allocating a new interval.
+		 */
+		right.base = base;
+		right.count += count;
+		return;
 	}
+
+	insertIntervalAt(free, lo, acquireInterval(base, count));
 }
 
-function freeFaces(arena: number, base: number, count: number): void {
-	if (arena < 0 || arena >= faceArenas.length) return;
-	freeFaceInterval(faceArenas[arena].free, base, count);
-	// Merges inside freeFaceInterval only move counts between nodes — the
-	// sum grows by exactly `count`.
-	faceArenas[arena].freeCount += count;
+function freeFaces(arenaIndex: number, base: number, count: number): void {
+	if (count <= 0 || arenaIndex < 0 || arenaIndex >= faceArenas.length) {
+		return;
+	}
+
+	const arena = faceArenas[arenaIndex];
+	freeFaceInterval(arena.free, base, count);
+	arena.freeCount += count;
 }
 
 function freeOffsetBlock(base: number): void {
@@ -719,101 +732,179 @@ function largestHoleFaces(a: FaceArena): number {
 	}
 	return max;
 }
+interface CompactEntry {
+	mesh: Mesh;
+	state: PackedMeshState;
+}
 
+const _compactEntries: CompactEntry[] = [];
+function compactEntryCompare(a: CompactEntry, b: CompactEntry): number {
+	return a.state.faceBase - b.state.faceBase;
+}
 function compactArena(index: number): boolean {
 	const arena = faceArenas[index];
-	if (!arena || _compacting) return false;
-	if (arena.freeCount <= 0 || arena.free.length === 0) return false;
+
+	if (
+		!arena ||
+		_compacting ||
+		arena.freeCount <= 0 ||
+		arena.free.length === 0
+	) {
+		return false;
+	}
 
 	_compacting = true;
+
 	try {
-		const entries: Array<{ mesh: Mesh; s: PackedMeshState }> = [];
-		for (const [mesh, s] of meshState) {
-			if (s.faceArena === index && s.faceCount > 0) entries.push({ mesh, s });
-		}
-		if (entries.length === 0) return false;
-		entries.sort((a, b) => a.s.faceBase - b.s.faceBase);
+		const entries = _compactEntries;
+		let entryCount = 0;
 
-		const cpu = arena.cpu;
-		let write = 0;
-		let runDst = -1;
-		let runSrc = -1;
-		let runLen = 0;
-		let moved = 0;
-
-		const flushRun = (): void => {
-			if (runLen > 0) {
-				cpu.copyWithin(
-					runDst * FACE_WORDS,
-					runSrc * FACE_WORDS,
-					(runSrc + runLen) * FACE_WORDS,
-				);
-				runDst = -1;
-				runSrc = -1;
-				runLen = 0;
-			}
-		};
-
-		for (let i = 0; i < entries.length; i++) {
-			const s = entries[i].s;
-			const src = s.faceBase;
-			if (src === write) {
-				write += s.faceCount;
+		for (const [mesh, state] of meshState) {
+			if (state.faceArena !== index || state.faceCount <= 0) {
 				continue;
 			}
-			if (
-				runLen > 0 &&
-				(runDst + runLen !== write || runSrc + runLen !== src)
-			) {
-				flushRun();
+
+			let entry = entries[entryCount];
+
+			if (entry) {
+				entry.mesh = mesh;
+				entry.state = state;
+			} else {
+				entry = { mesh, state };
+				entries[entryCount] = entry;
 			}
-			if (runLen === 0) {
-				runDst = write;
-				runSrc = src;
-			}
-			runLen += s.faceCount;
-			s.faceBase = write;
-			s._compactMoved = true;
-			moved++;
-			write += s.faceCount;
+
+			entryCount++;
 		}
-		flushRun();
 
-		if (moved === 0) return false;
+		if (entryCount === 0) {
+			entries.length = 0;
+			return false;
+		}
 
-		// One contiguous upload covers the compacted prefix; any untouched
-		// blocks inside it re-upload identical bytes (CPU mirror is truth).
-		uploadFaceRange(index, 0, write);
+		entries.length = entryCount;
+		entries.sort(compactEntryCompare);
 
-		arena.used = write;
+		const cpu = arena.cpu;
+		let writeFace = 0;
+		let runDestination = 0;
+		let runSource = 0;
+		let runLength = 0;
+		let movedCount = 0;
+
+		for (let i = 0; i < entryCount; i++) {
+			const state = entries[i].state;
+			const sourceFace = state.faceBase;
+
+			if (sourceFace === writeFace) {
+				writeFace += state.faceCount;
+				continue;
+			}
+
+			if (
+				runLength > 0 &&
+				(runDestination + runLength !== writeFace ||
+					runSource + runLength !== sourceFace)
+			) {
+				cpu.copyWithin(
+					runDestination * FACE_WORDS,
+					runSource * FACE_WORDS,
+					(runSource + runLength) * FACE_WORDS,
+				);
+				runLength = 0;
+			}
+
+			if (runLength === 0) {
+				runDestination = writeFace;
+				runSource = sourceFace;
+			}
+
+			runLength += state.faceCount;
+			state.faceBase = writeFace;
+			state._compactMoved = true;
+			movedCount++;
+			writeFace += state.faceCount;
+		}
+
+		if (runLength > 0) {
+			cpu.copyWithin(
+				runDestination * FACE_WORDS,
+				runSource * FACE_WORDS,
+				(runSource + runLength) * FACE_WORDS,
+			);
+		}
+
+		if (movedCount === 0) {
+			return false;
+		}
+
+		uploadFaceRange(index, 0, writeFace);
+
+		arena.used = writeFace;
+
+		for (let i = 0; i < arena.free.length; i++) {
+			releaseInterval(arena.free[i]);
+		}
+
 		arena.free.length = 0;
 		arena.freeCount = 0;
-		const tail = arena.capacity - write;
 
-		for (let i = 0; i < entries.length; i++) {
-			const { mesh, s } = entries[i];
-			if (!s._compactMoved) continue;
-			s._compactMoved = false;
-			const data = s.instanceMatrices;
-			if (!data) continue;
-			const lanes = Math.min(
-				s.instanceLanesValid ?? s.faceCount,
-				(data.length / INSTANCE_FLOATS) | 0,
-			);
-			let idx = FACE_BASE_INSTANCE_INDEX;
-			for (let f = 0; f < lanes; f++) {
-				data[idx] = s.faceBase;
-				idx += INSTANCE_FLOATS;
+		const recoveredTail = arena.capacity - writeFace;
+
+		for (let i = 0; i < entryCount; i++) {
+			const entry = entries[i];
+			const state = entry.state;
+
+			if (!state._compactMoved) {
+				continue;
 			}
-			setThinInstancesRange(mesh, data, s.faceCount, 0, s.faceCount);
+
+			state._compactMoved = false;
+
+			const data = state.instanceMatrices;
+			if (!data) continue;
+
+			const capacity = Math.floor(data.length / INSTANCE_FLOATS);
+			const lanes = Math.min(
+				state.instanceLanesValid ?? state.faceCount,
+				capacity,
+			);
+
+			for (
+				let face = 0, lane = FACE_BASE_INSTANCE_INDEX;
+				face < lanes;
+				face++, lane += INSTANCE_FLOATS
+			) {
+				data[lane] = state.faceBase;
+			}
+
+			setThinInstancesRange(
+				entry.mesh,
+				data,
+				state.faceCount,
+				0,
+				state.faceCount,
+			);
 		}
 
 		console.warn(
 			`[PackedChunkMesh] defragmented face arena #${index}: relocated ` +
-				`${moved} mesh(es), recovered ${tail}-face contiguous tail.`,
+				`${movedCount} mesh(es), recovered ${recoveredTail}-face ` +
+				`contiguous tail.`,
 		);
+
 		return true;
 	} finally {
+		/*
+		 * Retain entry objects for reuse, but clear mesh and state references
+		 * so disposed meshes are not accidentally kept alive by scratch data.
+		 */
+		for (let i = 0; i < _compactEntries.length; i++) {
+			const entry = _compactEntries[i];
+			entry.mesh = null as unknown as Mesh;
+			entry.state = null as unknown as PackedMeshState;
+		}
+
 		_compacting = false;
 	}
 }
@@ -1075,49 +1166,29 @@ export interface PackedMeshInput {
 	boundsMax: [number, number, number];
 }
 
-// `input` is the caller's (reused, module-level scratch) `PackedMeshInput`,
-// so its typed array is only ever replaced when the merged-group buffers
-// grow — the view below stays valid across calls and is rebuilt only when
-// the buffer identity or range changes.
-// Reinterpreting faceData (a byte array with a 12-multiple length and
-// offset) as a Uint32Array over the SAME buffer is safe: WebGPU browsers
-// are all little-endian, so each 4-byte lane reads back exactly the u32 the
-// worker packed.
-// Rebuild the cached u32 view over `input`'s face data.
 function ensureFaceWordViews(
 	state: PackedMeshState,
 	input: PackedMeshInput,
-): void {
-	const words = input.faceData.length >>> 2;
+): Uint32Array {
+	const bytes = input.faceData;
+	const wordLength = bytes.byteLength >>> 2;
+	const cached = state.faceWords;
 
-	let faceWords = state.faceWords;
 	if (
-		!faceWords ||
-		faceWords.buffer !== input.faceData.buffer ||
-		faceWords.byteOffset !== input.faceData.byteOffset ||
-		faceWords.length !== words
+		cached &&
+		cached.buffer === bytes.buffer &&
+		cached.byteOffset === bytes.byteOffset &&
+		cached.length === wordLength
 	) {
-		faceWords = new Uint32Array(
-			input.faceData.buffer,
-			input.faceData.byteOffset,
-			words,
-		);
-		state.faceWords = faceWords;
+		return cached;
 	}
+
+	const words = new Uint32Array(bytes.buffer, bytes.byteOffset, wordLength);
+
+	state.faceWords = words;
+	return words;
 }
 
-// Pack only the given merged-face ranges into the arena. `ranges` are in
-// merged-face coordinates (the concatenated group layout); the arena layout
-// is identical, shifted by state.faceBase. Ranges are clamped to the mesh's
-// face count so a stale/mismatched list can never corrupt the arena.
-// Each face is 3 u32 words; the per-face chunk index (ci) is already stamped
-// into word2 byte 3 by the merged-group assembly, so the words are copied
-// verbatim.
-//
-// PERF: the worker now emits faces already interleaved (3 consecutive words
-// per record), so source and destination share one contiguous layout and
-// each range packs as a single memcpy (TypedArray.set) instead of the old
-// 4-way-unrolled three-stream gather.
 function packFaceRanges(
 	state: PackedMeshState,
 	input: PackedMeshInput,
@@ -1125,22 +1196,18 @@ function packFaceRanges(
 ): void {
 	if (ranges.length === 0) return;
 
-	ensureFaceWordViews(state, input);
-
-	const faceCount = input.faceData.length / 12;
-
-	if (faceCount <= 0) return;
-
 	const arena = faceArenas[state.faceArena];
 	if (!arena) return;
 
-	const faceCpu = arena.cpu;
-	const words = state.faceWords!;
-	const baseWord = state.faceBase * FACE_WORDS;
+	const faceCount = input.faceData.byteLength / FACE_BYTES;
+	if (faceCount <= 0) return;
 
-	for (let r = 0, len = ranges.length; r < len; r++) {
-		const range = ranges[r];
+	const words = ensureFaceWordViews(state, input);
+	const destination = arena.cpu;
+	const destinationBase = state.faceBase * FACE_WORDS;
 
+	for (let i = 0; i < ranges.length; i++) {
+		const range = ranges[i];
 		let start = range.start;
 		let count = range.count;
 
@@ -1153,36 +1220,33 @@ function packFaceRanges(
 			continue;
 		}
 
-		if (start + count > faceCount) {
-			count = faceCount - start;
-		}
+		const end = start + count > faceCount ? faceCount : start + count;
 
-		faceCpu.set(
-			words.subarray(start * FACE_WORDS, (start + count) * FACE_WORDS),
-			baseWord + start * FACE_WORDS,
+		const sourceWordStart = start * FACE_WORDS;
+		const sourceWordEnd = end * FACE_WORDS;
+
+		/*
+		 * TypedArray.set requires an array-like source. This subarray view is
+		 * a small JavaScript object, not a copy of the underlying face bytes.
+		 * No large temporary face buffer is created.
+		 */
+		destination.set(
+			words.subarray(sourceWordStart, sourceWordEnd),
+			destinationBase + sourceWordStart,
 		);
 	}
 }
-/**
- * Full-mesh packing without creating a temporary subarray view.
- *
- * state.faceWords describes exactly input.faceData, so the complete source
- * view can be passed directly to TypedArray.set().
- */
-function packFaces(state: PackedMeshState, input: PackedMeshInput): void {
-	ensureFaceWordViews(state, input);
 
+function packFaces(state: PackedMeshState, input: PackedMeshInput): void {
 	const arena = faceArenas[state.faceArena];
 	if (!arena) return;
 
-	const faceCount = input.faceData.length / FACE_BYTES;
+	const faceCount = input.faceData.byteLength / FACE_BYTES;
 	if (faceCount <= 0) return;
 
-	const words = state.faceWords!;
-
-	// Defensive consistency check. Under the documented input contract these
-	// values are always equal.
+	const words = ensureFaceWordViews(state, input);
 	const requiredWords = faceCount * FACE_WORDS;
+
 	if (words.length < requiredWords) {
 		console.warn(
 			`[PackedChunkMesh] face-data view is shorter than expected: ` +
@@ -1191,8 +1255,6 @@ function packFaces(state: PackedMeshState, input: PackedMeshInput): void {
 		return;
 	}
 
-	// No words.subarray(...) allocation is needed because the cached view
-	// already spans only input.faceData.
 	arena.cpu.set(words, state.faceBase * FACE_WORDS);
 }
 
@@ -1245,7 +1307,7 @@ function packOffsets(state: PackedMeshState, input: PackedMeshInput): void {
 // of attempting a multi-gigabyte allocation (which hard-crashes the tab with
 // "Array buffer allocation failed").
 function buildInstanceData(
-	prev: Float32Array | undefined,
+	previous: Float32Array | undefined,
 	arena: number,
 	faceBase: number,
 	offsetBase: number,
@@ -1254,60 +1316,74 @@ function buildInstanceData(
 ): Float32Array | null {
 	if (!Number.isInteger(count) || count < 0) {
 		console.warn(
-			`[PackedChunkMesh] refusing instance buffer: ` +
-				`invalid face count ${count}.`,
+			`[PackedChunkMesh] refusing instance buffer: invalid face count ` +
+				`${count}.`,
 		);
 		return null;
 	}
 
-	const needLen = count * INSTANCE_FLOATS;
+	const requiredLength = count * INSTANCE_FLOATS;
 
-	if (needLen > MAX_INSTANCE_DATA_ELEMENTS) {
+	if (requiredLength > MAX_INSTANCE_DATA_ELEMENTS) {
 		console.warn(
-			`[PackedChunkMesh] refusing instance buffer: ` +
-				`${count} faces (${needLen} elements) exceeds the safe ` +
-				`limit of ${MAX_INSTANCE_DATA_ELEMENTS / INSTANCE_FLOATS} ` +
-				`faces per mesh. Mesh update skipped.`,
+			`[PackedChunkMesh] refusing instance buffer: ${count} faces ` +
+				`(${requiredLength} elements) exceeds the safe limit of ` +
+				`${MAX_INSTANCE_DATA_ELEMENTS / INSTANCE_FLOATS} faces per mesh. ` +
+				`Mesh update skipped.`,
 		);
 		return null;
 	}
 
-	let data = prev;
+	let data = previous;
+	let mustInitializeAll = false;
 
-	if (!data || data.length < needLen) {
-		const capacity = instanceCapacityFor(needLen);
+	const needsGrowth = !data || data.length < requiredLength;
+	const shouldShrink =
+		data !== undefined &&
+		data.length > MIN_INSTANCE_DATA_ELEMENTS &&
+		requiredLength * INSTANCE_SHRINK_RATIO <= data.length;
+
+	if (needsGrowth || shouldShrink) {
+		const capacity = instanceCapacityFor(requiredLength);
 
 		try {
 			data = new Float32Array(capacity);
 		} catch {
 			console.warn(
 				`[PackedChunkMesh] instance allocation failed ` +
-					`(${capacity} elements, ${(capacity * 4) >> 20} MiB). ` +
+					`(${capacity} elements, ${Math.ceil(capacity / 262144)} MiB). ` +
 					`Mesh update skipped.`,
 			);
 			return null;
 		}
 
-		// A new typed array has no valid records, so initialize all records.
-		start = 0;
-	} else {
-		// Guard against a stale instanceLanesValid value or a count decrease.
-		if (start < 0) {
-			start = 0;
-		} else if (start > count) {
-			start = count;
-		}
+		mustInitializeAll = true;
 	}
 
-	let idx = start * INSTANCE_FLOATS;
+	if (!data) {
+		return null;
+	}
 
-	for (let i = start; i < count; i++) {
-		data[idx + FACE_BASE_INSTANCE_INDEX] = faceBase;
-		data[idx + ARENA_INSTANCE_INDEX] = arena;
-		data[idx + OFFSET_BASE_INSTANCE_INDEX] = offsetBase;
-		// The fourth lane remains zero because newly allocated typed arrays
-		// are zero-filled and existing records never write that lane.
-		idx += INSTANCE_FLOATS;
+	if (mustInitializeAll) {
+		start = 0;
+	} else if (start < 0) {
+		start = 0;
+	} else if (start > count) {
+		start = count;
+	}
+
+	/*
+	 * All three values are constant across the instances belonging to this
+	 * mesh. The fourth lane remains zero.
+	 */
+	for (
+		let instance = start, index = start * INSTANCE_FLOATS;
+		instance < count;
+		instance++, index += INSTANCE_FLOATS
+	) {
+		data[index + FACE_BASE_INSTANCE_INDEX] = faceBase;
+		data[index + ARENA_INSTANCE_INDEX] = arena;
+		data[index + OFFSET_BASE_INSTANCE_INDEX] = offsetBase;
 	}
 
 	return data;
@@ -1387,116 +1463,108 @@ function setThinInstancesRange(
 	ti!._dirtyMax = inSync ? hi : Math.max(ti!._dirtyMax, hi);
 	ti!._version++;
 }
-function reuseOrCloneVec3(
-	prev: [number, number, number] | undefined,
-	src: readonly [number, number, number],
-): [number, number, number] {
-	if (prev) {
-		prev[0] = src[0];
-		prev[1] = src[1];
-		prev[2] = src[2];
-		return prev;
-	}
-	return [src[0], src[1], src[2]];
-}
 
 export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
-	const engine = engineRef!;
-	const scene = sceneRef!;
+	const engine = engineRef;
+	const scene = sceneRef;
 
-	const faceCount = input.faceData.length / 12;
-
-	// Refuse before doing any work (arena/offset allocation, mesh creation):
-	// a corrupt face count would otherwise reach buildInstanceMatrices and
-	// attempt a multi-gigabyte allocation.
-	if (faceCount * INSTANCE_FLOATS > MAX_INSTANCE_DATA_ELEMENTS) {
+	if (!engine || !scene) {
 		console.warn(
-			`[PackedChunkMesh] skipping mesh for "${input.name}": ` +
-				`${faceCount} faces exceeds the safe per-mesh limit of ` +
-				`${MAX_INSTANCE_DATA_ELEMENTS / INSTANCE_FLOATS}.`,
+			"[PackedChunkMesh] cannot create mesh before arena initialization.",
 		);
 		return null;
 	}
 
-	const alloc = allocFaces(faceCount);
+	const faceCount = input.faceData.byteLength / FACE_BYTES;
 
-	if (alloc.arena < 0) {
+	if (
+		!Number.isInteger(faceCount) ||
+		faceCount * INSTANCE_FLOATS > MAX_INSTANCE_DATA_ELEMENTS
+	) {
 		console.warn(
 			`[PackedChunkMesh] skipping mesh for "${input.name}": ` +
-				`face arenas full (${totalFacesUsed()}/${totalFaceCapacity()}).`,
+				`invalid or oversized face count ${faceCount}.`,
 		);
 		return null;
 	}
 
-	// Allocate offset block only after face allocation succeeds.
-	// The previous order leaked offset blocks when allocFaces failed.
+	/*
+	 * Allocate instance memory before consuming arena space. This matters
+	 * under memory pressure because a failed instance allocation otherwise
+	 * briefly reserves face and offset blocks that must be rolled back.
+	 */
+	const instanceMatrices = buildInstanceData(undefined, 0, 0, 0, faceCount, 0);
+
+	if (!instanceMatrices) {
+		return null;
+	}
+
+	const allocation = allocFaces(faceCount);
+
+	if (allocation.arena < 0) {
+		console.warn(
+			`[PackedChunkMesh] skipping mesh for "${input.name}": face arenas ` +
+				`full (${totalFacesUsed()}/${totalFaceCapacity()}).`,
+		);
+		return null;
+	}
+
 	const offsetBase = allocOffsetBlock();
 
+	/*
+	 * The provisional instance data used zeros because arena allocation had
+	 * not happened yet. Rewrite its active records with the actual constants.
+	 * No second typed array is allocated.
+	 */
+	for (
+		let face = 0, index = 0;
+		face < faceCount;
+		face++, index += INSTANCE_FLOATS
+	) {
+		instanceMatrices[index + FACE_BASE_INSTANCE_INDEX] = allocation.base;
+		instanceMatrices[index + ARENA_INSTANCE_INDEX] = allocation.arena;
+		instanceMatrices[index + OFFSET_BASE_INSTANCE_INDEX] = offsetBase;
+	}
+
 	const state: PackedMeshState = {
-		faceArena: alloc.arena,
-		faceBase: alloc.base,
+		faceArena: allocation.arena,
+		faceBase: allocation.base,
 		faceCount,
 		offsetBase,
+		instanceMatrices,
+		instanceLanesValid: faceCount,
 	};
 
 	packFaces(state, input);
 	packOffsets(state, input);
 
-	uploadFaceRange(alloc.arena, alloc.base, faceCount);
+	uploadFaceRange(allocation.arena, allocation.base, faceCount);
 	uploadOffsetRange(offsetBase);
 
-	const mesh = createMeshFromData(
-		engine,
-		input.name,
-		SHARED_QUAD_POSITIONS,
-		SHARED_QUAD_NORMALS,
-		SHARED_QUAD_INDICES,
-	);
+	let mesh: Mesh;
 
-	mesh.material = input.material;
-	mesh.position.set(input.position[0], input.position[1], input.position[2]);
-	mesh.pickable = false;
-
-	const anyMesh = mesh as PackedMesh;
-
-	const boundMin = reuseOrCloneVec3(state.boundMin, input.boundsMin);
-	const boundMax = reuseOrCloneVec3(state.boundMax, input.boundsMax);
-
-	state.boundMin = boundMin;
-	state.boundMax = boundMax;
-
-	anyMesh.boundMin = boundMin;
-	anyMesh.boundMax = boundMax;
-	anyMesh.isVisible = true;
-
-	const instanceMatrices = buildInstanceData(
-		undefined,
-		alloc.arena,
-		alloc.base,
-		offsetBase,
-		faceCount,
-		0,
-	);
-
-	if (!instanceMatrices) {
-		// Unreachable after the count validation above; keep the guard so a
-		// future regression cannot leak the arena block, offset block and
-		// mesh. The mesh was never added to the scene, so disposing its GPU
-		// resources immediately is safe.
-		freeFaces(alloc.arena, alloc.base, faceCount);
+	try {
+		mesh = createMeshFromData(
+			engine,
+			input.name,
+			SHARED_QUAD_POSITIONS,
+			SHARED_QUAD_NORMALS,
+			SHARED_QUAD_INDICES,
+		);
+	} catch (error) {
+		freeFaces(allocation.arena, allocation.base, faceCount);
 		freeOffsetBlock(offsetBase);
-		disposeMeshGpu(mesh);
-		return null;
+		throw error;
 	}
 
-	state.instanceMatrices = instanceMatrices;
-	state.instanceLanesValid = faceCount;
+	mesh.material = input.material;
+	mesh.pickable = false;
 
+	applyMeshMeta(mesh, state, input);
 	setThinInstancesRange(mesh, instanceMatrices, faceCount, 0, faceCount);
 
 	addToScene(scene, mesh);
 	meshState.set(mesh, state);
-
 	ensureInstancedBuild(input.material, mesh);
 
 	return mesh;
@@ -1513,13 +1581,20 @@ export function updatePackedChunkMesh(
 		return createPackedChunkMesh(input) ?? mesh;
 	}
 
-	const faceCount = input.faceData.length / 12;
+	const faceCount = input.faceData.byteLength / FACE_BYTES;
+
+	if (!Number.isInteger(faceCount)) {
+		console.warn(
+			`[PackedChunkMesh] skipping update: face data length ` +
+				`${input.faceData.byteLength} is not divisible by ${FACE_BYTES}.`,
+		);
+		return mesh;
+	}
 
 	if (faceCount === state.faceCount) {
 		applyMeshMeta(mesh, state, input);
 
-		// Empty dirty range means no face data changed.
-		if (dirtyRanges && dirtyRanges.length === 0) {
+		if (dirtyRanges?.length === 0) {
 			return mesh;
 		}
 
@@ -1531,15 +1606,14 @@ export function updatePackedChunkMesh(
 			uploadFaceRange(state.faceArena, state.faceBase, faceCount);
 		}
 
+		/*
+		 * Offsets are intentionally not uploaded here. This preserves the
+		 * original behavior, which treats same-count updates as face-only
+		 * changes plus metadata changes.
+		 */
 		return mesh;
 	}
 
-	// Slow path: face count changed.
-	//
-	// Refuse oversized counts up front, before either sub-path mutates
-	// anything: the full-realloc path below re-allocs/packs faces BEFORE
-	// building matrices, and a refusal there would leave thin-instance
-	// lanes pointing at the old arena block (corrupted rendering).
 	if (faceCount * INSTANCE_FLOATS > MAX_INSTANCE_DATA_ELEMENTS) {
 		console.warn(
 			`[PackedChunkMesh] skipping mesh update: ${faceCount} faces ` +
@@ -1548,81 +1622,56 @@ export function updatePackedChunkMesh(
 		);
 		return mesh;
 	}
-	//
-	// Fast sub-path: grow the existing arena block in place. Streaming
-	// appends (the common case) extend a group mesh at the tail, so the
-	// block's base and the instance-matrix constants (faceBase/arena/
-	// offsetBase) are all unchanged — only the appended face range needs
-	// packing/uploading and only the appended instances' matrix lanes need
-	// writing.
-	if (faceCount > state.faceCount) {
-		const arena = faceArenas[state.faceArena];
-		const oldValid = state.instanceLanesValid ?? 0;
-		const prevMatrices = state.instanceMatrices;
 
-		// Build the instance matrices BEFORE touching the arena: a corrupt
-		// huge face count then bails here with the arena block intact.
-		const instanceMatrices = buildInstanceData(
-			prevMatrices,
-			state.faceArena,
-			state.faceBase,
+	const oldArenaIndex = state.faceArena;
+	const oldBase = state.faceBase;
+	const oldCount = state.faceCount;
+	const oldMatrices = state.instanceMatrices;
+	const oldValid = state.instanceLanesValid ?? oldCount;
+
+	/*
+	 * Fast path for tail growth or growth into an adjacent free interval.
+	 */
+	if (faceCount > oldCount) {
+		const candidateMatrices = buildInstanceData(
+			oldMatrices,
+			oldArenaIndex,
+			oldBase,
 			state.offsetBase,
 			faceCount,
 			oldValid,
 		);
 
-		if (!instanceMatrices) {
-			console.warn(
-				`[PackedChunkMesh] skipping growth update for chunk mesh ` +
-					`(${faceCount} faces) — instance-matrix limit hit.`,
-			);
+		if (!candidateMatrices) {
 			return mesh;
 		}
 
+		const arena = faceArenas[oldArenaIndex];
+
 		if (
 			arena &&
-			tryExtendFaces(
-				arena,
-				state.faceArena,
-				state.faceBase,
-				state.faceCount,
-				faceCount,
-			)
+			tryExtendFaces(arena, oldArenaIndex, oldBase, oldCount, faceCount)
 		) {
 			state.faceCount = faceCount;
 
 			if (dirtyRanges && dirtyRanges.length > 0) {
 				packFaceRanges(state, input, dirtyRanges);
-				uploadFaceRanges(
-					state.faceArena,
-					state.faceBase,
-					faceCount,
-					dirtyRanges,
-				);
+				uploadFaceRanges(oldArenaIndex, oldBase, faceCount, dirtyRanges);
 			} else {
-				// No ranges (boat-chunk path, or defensive fallback): the
-				// block stayed put, so repack it fully in place — still
-				// avoids the allocFaces/freeFaces shuffle and keeps the
-				// instance-matrix constants intact.
 				packFaces(state, input);
-				uploadFaceRange(state.faceArena, state.faceBase, faceCount);
+				uploadFaceRange(oldArenaIndex, oldBase, faceCount);
 			}
 
-			// buildInstanceMatrices only reallocates the retained buffer when the
-			// new face count outgrows it (power-of-two growth). If it did, every
-			// lane is freshly written, so the dirty range must be full; if not,
-			// only the appended lanes [oldValid, faceCount) changed. (When it
-			// reallocates, capacity grew, so setThinInstancesRange self-selects
-			// the growth path and the `0` here is ignored anyway.)
-			const reallocated = instanceMatrices !== prevMatrices;
+			const bufferChanged = candidateMatrices !== oldMatrices;
 
-			state.instanceMatrices = instanceMatrices;
+			state.instanceMatrices = candidateMatrices;
 			state.instanceLanesValid = faceCount;
+
 			setThinInstancesRange(
 				mesh,
-				instanceMatrices,
+				candidateMatrices,
 				faceCount,
-				reallocated ? 0 : oldValid,
+				bufferChanged ? 0 : oldValid,
 				faceCount,
 			);
 
@@ -1631,125 +1680,156 @@ export function updatePackedChunkMesh(
 		}
 	}
 
-	// Full realloc path: face count changed and the block could not grow in
-	// place (shrinks, mid-arena blocks with no adjacent hole), so this mesh
-	// needs a new arena interval.
-	const oldArenaIdx = state.faceArena;
-	const oldBase = state.faceBase;
-	const oldCount = state.faceCount;
+	/*
+	 * Build or resize instance memory before freeing the current face block.
+	 * This makes an allocation failure leave the old mesh fully intact.
+	 *
+	 * The arena constants are patched after the new face allocation succeeds.
+	 */
+	const candidateMatrices = buildInstanceData(
+		oldMatrices,
+		oldArenaIndex,
+		oldBase,
+		state.offsetBase,
+		faceCount,
+		0,
+	);
 
-	let alloc = allocFaces(faceCount);
-	let oldFreed = false;
+	if (!candidateMatrices) {
+		console.warn(
+			`[PackedChunkMesh] skipping update for ${faceCount}-face mesh: ` +
+				`instance allocation failed.`,
+		);
+		return mesh;
+	}
 
-	if (alloc.arena < 0 && oldCount > 0) {
-		// Near-full allocator wedge: requiring the NEW block to fit BEFORE
-		// releasing the old one means every resize needs old+new headroom at
-		// once — once the arenas reach the aggregate budget, resizes fail
-		// forever and keep the arenas pinned at their high-water mark. Free
-		// this mesh's block first and retry.
-		//
-		// The retry cannot strand the mesh: freeing produced a contiguous run
-		// of >= oldCount faces (freeFaceInterval merges with neighbors), and
-		// nothing else runs between the failed retry and the restore below,
-		// so allocFaces(oldCount) always succeeds and the snapshot restores
-		// the previous geometry verbatim wherever it lands.
-		const oldCpu = faceArenas[oldArenaIdx]?.cpu;
-		const snapshot = oldCpu
-			? oldCpu.slice(oldBase * FACE_WORDS, (oldBase + oldCount) * FACE_WORDS)
-			: null;
-		freeFaces(oldArenaIdx, oldBase, oldCount);
-		oldFreed = true;
+	let allocation = allocFaces(faceCount);
+	let oldBlockFreed = false;
+	let snapshot: Uint32Array | null = null;
 
-		alloc = allocFaces(faceCount);
+	if (allocation.arena < 0 && oldCount > 0) {
+		const oldArena = faceArenas[oldArenaIndex];
 
-		if (alloc.arena < 0) {
+		/*
+		 * This is the sole unavoidable large temporary allocation in the
+		 * recovery path. It is needed because allocFaces may compact arenas
+		 * while retrying, so merely remembering the old coordinates is not
+		 * enough to restore the original geometry safely.
+		 */
+		if (oldArena) {
+			snapshot = oldArena.cpu.slice(
+				oldBase * FACE_WORDS,
+				(oldBase + oldCount) * FACE_WORDS,
+			);
+		}
+
+		freeFaces(oldArenaIndex, oldBase, oldCount);
+		oldBlockFreed = true;
+		allocation = allocFaces(faceCount);
+
+		if (allocation.arena < 0) {
 			const restore =
-				snapshot !== null ? allocFaces(oldCount) : { arena: -1, base: -1 };
-			if (restore.arena >= 0 && snapshot) {
-				faceArenas[restore.arena]!.cpu.set(snapshot, restore.base * FACE_WORDS);
+				snapshot === null ? { arena: -1, base: -1 } : allocFaces(oldCount);
+
+			if (restore.arena >= 0 && snapshot !== null) {
+				const restoreArena = faceArenas[restore.arena];
+				restoreArena.cpu.set(snapshot, restore.base * FACE_WORDS);
+
 				state.faceArena = restore.arena;
 				state.faceBase = restore.base;
+				state.faceCount = oldCount;
+
 				uploadFaceRange(restore.arena, restore.base, oldCount);
-				if (restore.arena !== oldArenaIdx || restore.base !== oldBase) {
-					const data = buildInstanceData(
-						state.instanceMatrices,
+
+				if (restore.arena !== oldArenaIndex || restore.base !== oldBase) {
+					const restoredMatrices = buildInstanceData(
+						oldMatrices,
 						restore.arena,
 						restore.base,
 						state.offsetBase,
 						oldCount,
 						0,
 					);
-					if (data) {
-						state.instanceMatrices = data;
+
+					if (restoredMatrices) {
+						state.instanceMatrices = restoredMatrices;
 						state.instanceLanesValid = oldCount;
-						setThinInstancesRange(mesh, data, oldCount, 0, oldCount);
+						setThinInstancesRange(
+							mesh,
+							restoredMatrices,
+							oldCount,
+							0,
+							oldCount,
+						);
 					} else {
 						(mesh as PackedMesh).isVisible = false;
 					}
 				}
+
 				console.warn(
 					`[PackedChunkMesh] arenas exhausted for remesh ` +
 						`(${oldCount} -> ${faceCount} faces); kept previous geometry.`,
 				);
+
 				return mesh;
 			}
-			// Unreachable per the invariant above; fail safe anyway — stop
-			// drawing rather than risk stale lanes rendering another mesh's
-			// faces. applyMeshMeta revives visibility on a later success.
+
 			(mesh as PackedMesh).isVisible = false;
+
 			console.error(
 				`[PackedChunkMesh] arena restore failed for ${faceCount}-face ` +
-					`remesh — mesh hidden until its next successful update.`,
+					`remesh; mesh hidden until its next successful update.`,
 			);
+
 			return mesh;
 		}
 	}
 
-	if (alloc.arena < 0) {
+	if (allocation.arena < 0) {
 		console.warn(
-			`[PackedChunkMesh] skipping update for chunk mesh: ` +
-				`face arenas full (${totalFacesUsed()}/${totalFaceCapacity()}).`,
+			`[PackedChunkMesh] skipping update for chunk mesh: face arenas ` +
+				`full (${totalFacesUsed()}/${totalFaceCapacity()}).`,
 		);
 		return mesh;
 	}
 
-	if (!oldFreed) freeFaces(oldArenaIdx, oldBase, oldCount);
+	/*
+	 * Patch the retained instance buffer before committing state. This loop
+	 * performs no allocations.
+	 */
+	for (
+		let face = 0, index = 0;
+		face < faceCount;
+		face++, index += INSTANCE_FLOATS
+	) {
+		candidateMatrices[index + FACE_BASE_INSTANCE_INDEX] = allocation.base;
+		candidateMatrices[index + ARENA_INSTANCE_INDEX] = allocation.arena;
+		candidateMatrices[index + OFFSET_BASE_INSTANCE_INDEX] = state.offsetBase;
+	}
 
-	state.faceArena = alloc.arena;
-	state.faceBase = alloc.base;
+	if (!oldBlockFreed) {
+		freeFaces(oldArenaIndex, oldBase, oldCount);
+	}
+
+	state.faceArena = allocation.arena;
+	state.faceBase = allocation.base;
 	state.faceCount = faceCount;
+	state.instanceMatrices = candidateMatrices;
+	state.instanceLanesValid = faceCount;
 
 	packFaces(state, input);
+
+	/*
+	 * offsetBase does not change during remeshing, but chunkOffsets may.
+	 */
 	packOffsets(state, input);
 
-	uploadFaceRange(alloc.arena, alloc.base, faceCount);
+	uploadFaceRange(allocation.arena, allocation.base, faceCount);
 	uploadOffsetRange(state.offsetBase);
 
+	setThinInstancesRange(mesh, candidateMatrices, faceCount, 0, faceCount);
+
 	applyMeshMeta(mesh, state, input);
-
-	const instanceMatrices = buildInstanceData(
-		state.instanceMatrices,
-		alloc.arena,
-		alloc.base,
-		state.offsetBase,
-		faceCount,
-		0,
-	);
-
-	if (!instanceMatrices) {
-		console.warn(
-			`[PackedChunkMesh] skipping thin-instance update for chunk mesh ` +
-				`(${faceCount} faces) — instance-matrix limit hit.`,
-		);
-		return mesh;
-	}
-
-	state.instanceMatrices = instanceMatrices;
-	state.instanceLanesValid = faceCount;
-	// Full realloc: arena/faceBase moved, so every lane's faceBase/arena/
-	// offsetBase changed — keep the dirty range full.
-	setThinInstancesRange(mesh, instanceMatrices, faceCount, 0, faceCount);
-
 	return mesh;
 }
 
@@ -1818,34 +1898,59 @@ export function disposePackedMesh(mesh: Mesh): void {
 }
 
 export function destroyPackedArenas(): void {
-	// Tear down every live packed mesh first so none lingers in the scene
-	// referencing the arena buffers we are about to destroy.
 	for (const mesh of meshState.keys()) {
-		if (sceneRef && mesh) removeFromScene(sceneRef, mesh);
+		if (sceneRef) {
+			removeFromScene(sceneRef, mesh);
+		}
+
 		scheduleDeferredDisposal(mesh);
 	}
+
 	meshState.clear();
 
 	const engine = engineRef;
 	const arenas = faceArenas;
-	const o = offsetBuffer;
+	const offsets = offsetBuffer;
+
 	if (engine) {
-		const e = engine;
-		void onGpuWorkDone(e).then(() => {
-			for (const a of arenas) disposeStorageBuffer(a.buffer);
-			if (o) disposeStorageBuffer(o);
+		void onGpuWorkDone(engine).then(() => {
+			for (let i = 0; i < arenas.length; i++) {
+				disposeStorageBuffer(arenas[i].buffer);
+			}
+
+			if (offsets) {
+				disposeStorageBuffer(offsets);
+			}
 		});
 	} else {
-		for (const a of arenas) disposeStorageBuffer(a.buffer);
-		if (o) disposeStorageBuffer(o);
+		for (let i = 0; i < arenas.length; i++) {
+			disposeStorageBuffer(arenas[i].buffer);
+		}
+
+		if (offsets) {
+			disposeStorageBuffer(offsets);
+		}
 	}
+
 	faceArenas = [];
 	offsetBuffer = null;
 	offsetCpu = new Float32Array(0);
+	offsetCapacityGroups = 0;
 	offsetUsedGroups = 0;
+
 	offsetFree.length = 0;
+	_freeIntervalPool.length = 0;
+	_compactEntries.length = 0;
+
 	registeredMaterials.length = 0;
 	boundMaterials.clear();
+	forcedBuilds.clear();
+
+	/*
+	 * Do not clear _pendingDisposal here. Those meshes are still awaiting
+	 * safe GPU disposal and must remain referenced until the submitted work
+	 * completes.
+	 */
 	engineRef = null;
 	sceneRef = null;
 }

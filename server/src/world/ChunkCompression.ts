@@ -3,28 +3,33 @@
  *
  * Blocks are stored as a 32³ (32768-entry) array. To cut memory and
  * network payload size, chunks are compressed on generation:
- * - uniform chunk: all voxels share one block id → stores nothing (0 bytes)
- * - ≤16 unique ids: 4-bit palette-packed (half the size)
- * - otherwise: raw copy (Uint8Array for 8-bit ids, Uint16Array when any
- *   id exceeds 255 — e.g. mason shape-variant ids in the 500+ range)
- *
- * The inverse (decompressBlocks) is needed when applying block edits to a
- * stored chunk: edits target world coordinates, so the full array must be
- * materialized first.
+ * - uniform chunk: all voxels share one block id, stores nothing
+ * - 16 or fewer unique values: 4-bit palette-packed
+ * - otherwise: raw input buffer
  *
  * Entries are packed block values: a 10-bit block id with its 6-bit shape
- * state (rotation/flipY/slice) packed above it — see BlockEncoding.
- * packBlockValue. Values fit a u16; raw generated ids are packed values
- * with state 0, so unedited chunks need no conversion.
+ * state packed above it. Every value therefore fits in a u16.
  */
 
 export const CHUNK_VOLUME = 32 * 32 * 32;
 
-/** Matches the client's BLOCK_ID_BITS (World/Chunk/DataStructures/BlockEncoding.ts). */
+/**
+ * Matches the client's BLOCK_ID_BITS maximum block ID.
+ * Packed values may be larger because they also contain shape state.
+ */
 export const MAX_BLOCK_ID = 1023;
 
-/** Largest storable packed value: id | state << 10 (u16 range). */
-const MAX_PACKED_VALUE = 65535;
+/** Largest value representable by a Uint16Array element. */
+const PACKED_VALUE_COUNT = 65536;
+
+/** Maximum number of values representable by a 4-bit palette index. */
+const MAX_PALETTE_SIZE = 16;
+
+/**
+ * One additional slot is required to detect the first value that makes a
+ * chunk ineligible for palette compression.
+ */
+const UNIQUE_SCRATCH_SIZE = MAX_PALETTE_SIZE + 1;
 
 export interface CompressedBlocks {
 	data: Uint8Array | Uint16Array;
@@ -33,98 +38,149 @@ export interface CompressedBlocks {
 	uniformBlockId: number;
 }
 
-// Module-level scratch buffers reused across calls instead of allocating a
-// fresh Uint16Array(65536)/Uint8Array(65536) on every single chunk compressed.
-// Safe to share: compressBlocks is fully synchronous (no `await` inside),
-// and JS run-to-completion semantics guarantee one call always finishes
-// before the next starts, even when many "concurrent" callers invoke it
-// back-to-back via Promise.all — there's never mid-function interleaving.
-const _countsScratch = new Uint16Array(MAX_PACKED_VALUE + 1);
-const _blockToPaletteScratch = new Uint8Array(MAX_PACKED_VALUE + 1);
-// First-seen order collection of unique values (palette build input).
-const _uniqueValuesScratch = new Uint16Array(17);
+/**
+ * Scratch storage used only during synchronous compression.
+ *
+ * _seenScratch is a membership table, not a frequency table. Compression only
+ * needs to know whether a value has already appeared, so maintaining counts
+ * provides no benefit.
+ *
+ * Instead of clearing all 65,536 entries before every chunk, compressBlocks()
+ * records each touched value in _uniqueValuesScratch and clears only those
+ * entries before returning. At most 17 entries are touched because raw mode is
+ * selected immediately after the seventeenth unique value.
+ */
+const _seenScratch = new Uint8Array(PACKED_VALUE_COUNT);
+const _uniqueValuesScratch = new Uint16Array(UNIQUE_SCRATCH_SIZE);
 
-// Small pool of pre-allocated 32KB decompression buffers. Avoids GC pressure
-// from allocating a fresh Uint8Array(32768) on every decompressBlocks call.
-// Pool is safe without locks: JS is single-threaded and decompressBlocks is
-// synchronous, so no caller can observe a mid-use buffer.
+/**
+ * Maps packed block values to their 4-bit palette indices.
+ *
+ * Entries do not need to be globally cleared. Every value read from this table
+ * was encountered in the current call and assigned below.
+ */
+const _blockToPaletteScratch = new Uint8Array(PACKED_VALUE_COUNT);
+
+/**
+ * Small pool for temporary 8-bit decompression buffers.
+ *
+ * Uint16Array results are not pooled because wide-value chunks are expected to
+ * be uncommon and each buffer consumes twice as much memory.
+ */
 const _decompPool: Uint8Array[] = [];
 const DECOMP_POOL_MAX = 4;
 
 /**
- * Compress a full 32³ block array. The returned `data` is either a fresh
- * packed buffer or (when raw) the input buffer itself — never a copy of the
- * input in the raw case.
+ * Clear only the membership entries touched by the current compression call.
+ */
+function clearSeenValues(uniqueValues: Uint16Array, uniqueCount: number): void {
+	for (let i = 0; i < uniqueCount; i++) {
+		_seenScratch[uniqueValues[i]] = 0;
+	}
+}
+
+/**
+ * Obtain a full-sized temporary Uint8Array.
+ */
+function acquireDecompBuffer(): Uint8Array {
+	return _decompPool.pop() ?? new Uint8Array(CHUNK_VOLUME);
+}
+
+/**
+ * Compress a full block array.
  *
- * Optimized: reused count/palette-index scratch buffers instead of fresh
- * per-call allocations, single-pass palette build with early exit once all
- * unique ids are found, and dropped mask ops that were always no-ops given
- * the value ranges involved (see inline notes).
+ * The returned data is:
+ * - a fresh empty Uint8Array for a uniform chunk
+ * - a fresh palette-packed Uint8Array for 2 to 16 unique values
+ * - the original input object when more than 16 unique values are present
+ *
+ * Returning the original object in raw mode preserves zero-copy transfer
+ * behavior in the worker.
  */
 export function compressBlocks(
 	blocks: Uint8Array | Uint16Array,
 ): CompressedBlocks {
-	const len = blocks.length;
-
-	const counts = _countsScratch;
-	counts.fill(0);
-
-	let uniqueCount = 0;
-	let uniqueValueCount = 0;
-	let firstBlockId = -1;
+	const length = blocks.length;
+	const seen = _seenScratch;
 	const uniqueValues = _uniqueValuesScratch;
 
-	for (let i = 0; i < len; i++) {
+	let uniqueCount = 0;
+
+	for (let i = 0; i < length; i++) {
 		const value = blocks[i];
 
-		if (counts[value] === 0) {
-			counts[value] = 1;
-			uniqueCount++;
+		if (seen[value] !== 0) {
+			continue;
+		}
 
-			if (uniqueValueCount < uniqueValues.length) {
-				uniqueValues[uniqueValueCount++] = value;
-			}
+		seen[value] = 1;
+		uniqueValues[uniqueCount++] = value;
 
-			if (firstBlockId === -1) {
-				firstBlockId = value;
-			}
+		if (uniqueCount > MAX_PALETTE_SIZE) {
+			/*
+			 * Clear the 17 touched entries before returning. No scan of the
+			 * remaining input is needed because the chunk can no longer use a
+			 * 4-bit palette.
+			 */
+			clearSeenValues(uniqueValues, uniqueCount);
 
-			if (uniqueCount > 16) {
-				return {
-					data: blocks,
-					isUniform: false,
-					uniformBlockId: 0,
-				};
-			}
-		} else {
-			counts[value]++;
+			return {
+				data: blocks,
+				isUniform: false,
+				uniformBlockId: 0,
+			};
 		}
 	}
 
+	/*
+	 * Clear membership state before constructing the result. This also keeps
+	 * the scratch state valid if later result construction is changed to call
+	 * code that can throw.
+	 */
+	clearSeenValues(uniqueValues, uniqueCount);
+
 	if (uniqueCount === 1) {
+		/*
+		 * A fresh empty view is intentional. Worker postMessage() may transfer
+		 * its ArrayBuffer, so a shared module-level empty array could become
+		 * detached and would not be safe to reuse.
+		 */
 		return {
 			data: new Uint8Array(0),
 			isUniform: true,
-			uniformBlockId: firstBlockId,
+			uniformBlockId: uniqueValues[0],
 		};
 	}
 
-	const palette: number[] = [];
+	/*
+	 * Preserve the existing behavior for an empty input. Although production
+	 * chunks are expected to contain CHUNK_VOLUME entries, the original
+	 * implementation returned an empty palette-packed result for length zero.
+	 */
+	const palette = new Array<number>(uniqueCount);
 	const blockToPalette = _blockToPaletteScratch;
 
-	// Build the palette from the tracked unique values (first-seen order)
-	// instead of scanning a 64K range — values may be packed id|state.
-	for (let i = 0; i < uniqueValueCount; i++) {
+	for (let i = 0; i < uniqueCount; i++) {
 		const value = uniqueValues[i];
-		blockToPalette[value] = palette.length;
-		palette.push(value);
+
+		palette[i] = value;
+		blockToPalette[value] = i;
 	}
 
-	const packed = new Uint8Array(len >> 1);
+	/*
+	 * Production chunks always have an even length. Using length >> 1 matches
+	 * the original allocation and packing behavior.
+	 */
+	const packed = new Uint8Array(length >> 1);
 
-	for (let i = 0, j = 0; i < len; i += 2, j++) {
-		packed[j] =
-			blockToPalette[blocks[i]] | (blockToPalette[blocks[i + 1]] << 4);
+	for (
+		let inputIndex = 0, outputIndex = 0;
+		inputIndex < length;
+		inputIndex += 2, outputIndex++
+	) {
+		packed[outputIndex] =
+			blockToPalette[blocks[inputIndex]] |
+			(blockToPalette[blocks[inputIndex + 1]] << 4);
 	}
 
 	return {
@@ -136,80 +192,80 @@ export function compressBlocks(
 }
 
 /**
- * Expand a compressed chunk back into the full 32³ block array.
- * Returns a fresh buffer when the chunk was palette-packed; for raw chunks
- * the stored buffer is returned as-is (no copy).
+ * Expand compressed blocks into a full block array.
  *
- * The result is a Uint16Array whenever any block id exceeds 255 (uniform
- * ids, palette entries, or raw u16 storage); otherwise a pooled Uint8Array.
+ * Behavior:
+ * - uniform chunks allocate or acquire a full output buffer
+ * - palette chunks allocate or acquire a full output buffer
+ * - raw chunks return the stored data object unchanged
  *
- * Uses a small buffer pool to avoid per-call 32KB allocations on the hot
- * path (block edit flushes). Callers that need to hold the buffer beyond
- * the synchronous scope should copy it.
+ * A Uint16Array is used whenever the decompressed values cannot fit in u8.
  */
 export function decompressBlocks(
 	compressed: CompressedBlocks,
 ): Uint8Array | Uint16Array {
 	const { data, palette, isUniform, uniformBlockId } = compressed;
-	const len = CHUNK_VOLUME;
 
 	if (isUniform) {
 		if (uniformBlockId > 255) {
-			const out = new Uint16Array(len);
-			out.fill(uniformBlockId);
-			return out;
+			const output = new Uint16Array(CHUNK_VOLUME);
+			output.fill(uniformBlockId);
+			return output;
 		}
 
-		const out = _decompPool.pop() ?? new Uint8Array(len);
-		out.fill(uniformBlockId);
-		return out;
+		const output = acquireDecompBuffer();
+		output.fill(uniformBlockId);
+		return output;
 	}
 
-	if (palette && palette.length > 0) {
-		let hasWideIds = false;
-		for (let i = 0; i < palette.length; i++) {
-			if (palette[i] > 255) {
-				hasWideIds = true;
-				break;
-			}
-		}
-
-		if (hasWideIds) {
-			const out = new Uint16Array(len);
-			for (let i = 0, j = 0; i < len; i += 2, j++) {
-				const packed = data[j];
-				out[i] = palette[packed & 0x0f];
-				out[i + 1] = palette[packed >> 4];
-			}
-			return out;
-		}
-
-		const out = _decompPool.pop() ?? new Uint8Array(len);
-
-		for (let i = 0, j = 0; i < len; i += 2, j++) {
-			const packed = data[j];
-			out[i] = palette[packed & 0x0f];
-			out[i + 1] = palette[packed >> 4];
-		}
-
-		return out;
+	if (palette === undefined || palette.length === 0) {
+		return data;
 	}
 
-	return data;
+	let hasWideValues = false;
+
+	for (let i = 0; i < palette.length; i++) {
+		if (palette[i] > 255) {
+			hasWideValues = true;
+			break;
+		}
+	}
+
+	/*
+	 * Both typed arrays support numeric indexed writes, so one unpacking loop
+	 * can serve both widths without duplicating the hot loop.
+	 */
+	const output: Uint8Array | Uint16Array = hasWideValues
+		? new Uint16Array(CHUNK_VOLUME)
+		: acquireDecompBuffer();
+
+	for (
+		let outputIndex = 0, packedIndex = 0;
+		outputIndex < CHUNK_VOLUME;
+		outputIndex += 2, packedIndex++
+	) {
+		const packedValue = data[packedIndex];
+
+		output[outputIndex] = palette[packedValue & 0x0f];
+		output[outputIndex + 1] = palette[packedValue >> 4];
+	}
+
+	return output;
 }
 
 /**
- * Return a decompression buffer to the pool for reuse.
- * Call after you're done with the buffer from decompressBlocks (e.g. after
- * compressing the modified blocks or after mesh generation copies the data).
- * Uint16Array results are never pooled (they are rare, freshly allocated).
+ * Return an eligible decompression buffer to the reuse pool.
+ *
+ * Only call this for an owned temporary result returned by decompressBlocks().
+ * Do not release a raw stored chunk merely because it is a full-sized
+ * Uint8Array, since raw decompression returns the original storage object.
  */
-export function releaseDecompBuffer(buf: Uint8Array | Uint16Array): void {
+export function releaseDecompBuffer(buffer: Uint8Array | Uint16Array): void {
 	if (
-		buf instanceof Uint8Array &&
-		buf.length === CHUNK_VOLUME &&
+		buffer instanceof Uint8Array &&
+		buffer.length === CHUNK_VOLUME &&
 		_decompPool.length < DECOMP_POOL_MAX
 	) {
-		_decompPool.push(buf);
+		_decompPool.push(buffer);
 	}
 }

@@ -24,7 +24,7 @@ import {
 	MOB_SPAWN_CONFIGS,
 	MOB_STATS,
 } from "@/code/Entities/MobConfig";
-import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
+import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding";
 import {
 	packChunkKeyFast,
@@ -64,6 +64,16 @@ export interface ServerMob {
 	 */
 	egg: boolean;
 }
+type PlayerPosition = Readonly<{
+	x: number;
+	y: number;
+	z: number;
+}>;
+
+type PlayerColumnPosition = Readonly<{
+	x: number;
+	z: number;
+}>;
 
 interface ServerWaypoint {
 	x: number;
@@ -123,74 +133,182 @@ const STUCK_MS = 1500;
 const FALL_LIMIT = 24; // Blocks of free-fall before the mob is removed
 const MAX_SPAWN_SCAN_Y = 1024;
 
+const COLUMN_SCAN_WATER = Number.POSITIVE_INFINITY;
+const COLUMN_SCAN_UNKNOWN = Number.NEGATIVE_INFINITY;
+const COLUMN_SCAN_AIR = Number.MAX_VALUE;
+
+const FULL_YAW = 256;
+const HALF_YAW = 128;
+const QUARTER_YAW = 64;
+const YAW_MASK = 255;
+const TWO_PI = Math.PI * 2;
+const MS_TO_SECONDS = 0.001;
+
+const PATH_DX = new Int8Array([1, -1, 0, 0]);
+const PATH_DZ = new Int8Array([0, 0, 1, -1]);
+
 /**
  * Block sampler for one simulation tick. Caches the decompressed chunk
  * arrays it touches so a mob scanning a column doesn't re-fetch the same
  * chunk for every voxel, and so the storage decompress pool isn't thrashed.
  */
+const INV_CHUNK_SIZE = 1 / CHUNK_SIZE;
+
 class TickBlockSampler {
 	private readonly chunkCache = new Map<
 		number,
 		Uint8Array | Uint16Array | null
 	>();
-	private readonly pendingBlocks = new Map<string, number>();
+
+	/*
+	 * Chunk key -> local voxel index -> raw block ID.
+	 *
+	 * Local indices occupy 15 bits:
+	 *   bits 0..4   = X
+	 *   bits 5..9   = Y
+	 *   bits 10..14 = Z
+	 */
+	private readonly pendingBlocksByChunk = new Map<
+		number,
+		Map<number, number>
+	>();
+
+	private pendingBlockCount = 0;
+
+	/*
+	 * Sampling is commonly spatially coherent. These fields avoid a Map
+	 * lookup when consecutive samples access the same chunk.
+	 */
+	private lastChunkKey: number | undefined;
+	private lastChunkBlocks: Uint8Array | Uint16Array | null = null;
+	private lastPendingEdits: Map<number, number> | undefined;
 
 	constructor(private readonly storage: ServerWorldStorage) {}
 
 	begin(): void {
 		this.chunkCache.clear();
+
+		this.lastChunkKey = undefined;
+		this.lastChunkBlocks = null;
+		this.lastPendingEdits = undefined;
 	}
 
-	setPendingBlock(x: number, y: number, z: number, blockId: number): void {
-		this.pendingBlocks.set(`${x},${y},${z}`, blockId);
-	}
-
-	clearPending(): void {
-		this.pendingBlocks.clear();
-	}
-
-	sample(worldX: number, worldY: number, worldZ: number): number | null {
-		// Mob positions are sub-block floats; voxel lookups must use the
-		// containing integer coordinate or every array index becomes invalid.
+	setPendingBlock(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+		blockId: number,
+	): void {
 		const x = Math.floor(worldX);
 		const y = Math.floor(worldY);
 		const z = Math.floor(worldZ);
-		const pending = this.pendingBlocks.get(`${x},${y},${z}`);
-		if (pending !== undefined) return pending;
-		const cx = Math.floor(x / CHUNK_SIZE);
-		const cy = Math.floor(y / CHUNK_SIZE);
-		const cz = Math.floor(z / CHUNK_SIZE);
-		const key = packChunkKeyFast(cx, cy, cz);
 
-		let blocks = this.chunkCache.get(key);
-		if (blocks === undefined) {
-			blocks = this.storage.getCachedChunkBlocks(cx, cy, cz);
-			this.chunkCache.set(key, blocks);
+		const chunkX = Math.floor(x * INV_CHUNK_SIZE);
+		const chunkY = Math.floor(y * INV_CHUNK_SIZE);
+		const chunkZ = Math.floor(z * INV_CHUNK_SIZE);
+
+		const chunkKey = packChunkKeyFast(chunkX, chunkY, chunkZ);
+
+		let edits = this.pendingBlocksByChunk.get(chunkKey);
+
+		if (edits === undefined) {
+			edits = new Map<number, number>();
+			this.pendingBlocksByChunk.set(chunkKey, edits);
 		}
-		if (!blocks) return null;
 
-		const localX = x - cx * CHUNK_SIZE;
-		const localY = y - cy * CHUNK_SIZE;
-		const localZ = z - cz * CHUNK_SIZE;
-		// Block layout matches generation: index = x + (y << 5) + (z << 10).
-		// Entries are packed id|state values — return the raw block id so
-		// every BlockType/isCollidableBlock comparison keeps working.
-		return unpackBlockId(blocks[localX + (localY << 5) + (localZ << 10)]);
+		const localX = x - chunkX * CHUNK_SIZE;
+		const localY = y - chunkY * CHUNK_SIZE;
+		const localZ = z - chunkZ * CHUNK_SIZE;
+
+		const localIndex =
+			localX | (localY << CHUNK_SHIFT) | (localZ << (CHUNK_SHIFT * 2));
+
+		/*
+		 * Block IDs are numbers, so undefined unambiguously means that the
+		 * local index has not been edited yet. This avoids has() followed by
+		 * set(), which would perform two Map searches.
+		 */
+		if (edits.get(localIndex) === undefined) {
+			this.pendingBlockCount++;
+		}
+
+		edits.set(localIndex, blockId);
+
+		/*
+		 * Keep the one-entry pending-edit cache coherent if this is currently
+		 * the hot chunk.
+		 */
+		if (this.lastChunkKey === chunkKey) {
+			this.lastPendingEdits = edits;
+		}
+	}
+
+	clearPending(): void {
+		this.pendingBlocksByChunk.clear();
+		this.pendingBlockCount = 0;
+		this.lastPendingEdits = undefined;
+	}
+
+	sample(worldX: number, worldY: number, worldZ: number): number | null {
+		const x = Math.floor(worldX);
+		const y = Math.floor(worldY);
+		const z = Math.floor(worldZ);
+
+		const chunkX = Math.floor(x * INV_CHUNK_SIZE);
+		const chunkY = Math.floor(y * INV_CHUNK_SIZE);
+		const chunkZ = Math.floor(z * INV_CHUNK_SIZE);
+
+		const localX = x - chunkX * CHUNK_SIZE;
+		const localY = y - chunkY * CHUNK_SIZE;
+		const localZ = z - chunkZ * CHUNK_SIZE;
+
+		const localIndex =
+			localX | (localY << CHUNK_SHIFT) | (localZ << (CHUNK_SHIFT * 2));
+
+		const chunkKey = packChunkKeyFast(chunkX, chunkY, chunkZ);
+
+		let blocks: Uint8Array | Uint16Array | null;
+		let edits: Map<number, number> | undefined;
+
+		if (chunkKey === this.lastChunkKey) {
+			blocks = this.lastChunkBlocks;
+			edits = this.lastPendingEdits;
+		} else {
+			edits =
+				this.pendingBlockCount === 0
+					? undefined
+					: this.pendingBlocksByChunk.get(chunkKey);
+
+			const cached = this.chunkCache.get(chunkKey);
+
+			if (cached !== undefined) {
+				blocks = cached;
+			} else {
+				blocks = this.storage.getCachedChunkBlocks(chunkX, chunkY, chunkZ);
+
+				this.chunkCache.set(chunkKey, blocks);
+			}
+
+			this.lastChunkKey = chunkKey;
+			this.lastChunkBlocks = blocks;
+			this.lastPendingEdits = edits;
+		}
+
+		if (edits !== undefined) {
+			const pendingBlockId = edits.get(localIndex);
+
+			if (pendingBlockId !== undefined) {
+				return pendingBlockId;
+			}
+		}
+
+		if (blocks === null) {
+			return null;
+		}
+
+		return unpackBlockId(blocks[localIndex]);
 	}
 }
-
-/**
- * Result of scanning one world column from the sky down.
- * - ground: found a solid voxel (non-air, non-water) at `y`
- * - water:  hit water before any solid voxel (mob must turn around)
- * - unknown: a chunk wasn't cached — caller keeps the current height
- * - air:    nothing solid found within the scan limit
- */
-type ColumnScan =
-	| { kind: "ground"; y: number }
-	| { kind: "water" }
-	| { kind: "unknown" }
-	| { kind: "air" };
 
 export class ServerMobSimulation {
 	private readonly mobs = new Map<number, ServerMob>();
@@ -373,10 +491,15 @@ export class ServerMobSimulation {
 		byType: Record<number, number>;
 		lastSpawnCount: number;
 	} {
-		const byType: Record<number, number> = {};
-		for (const m of this.mobs.values()) {
-			byType[m.typeId] = (byType[m.typeId] ?? 0) + 1;
+		const byType: Record<number, number> = Object.create(null) as Record<
+			number,
+			number
+		>;
+
+		for (const [typeId, count] of this.typeCounts) {
+			byType[typeId] = count;
 		}
+
 		return {
 			total: this.mobs.size,
 			byType,
@@ -679,71 +802,106 @@ export class ServerMobSimulation {
 			}
 		}
 
-		// Vertical movement — straight path to random water block (5×3×4 box)
+		// Vertical movement: follow the selected water target.
 		if (inWater) {
 			const wanderTarget = this.aquaticTargets.get(mob.id);
 			let targetY: number;
+
 			if (wanderTarget) {
 				targetY = wanderTarget.y;
 			} else {
-				// Fallback: legacy depth range if no water target yet
-				const depthRange = stats.depthRange ?? { min: 1, max: 4 };
-				const maxDepth = waterSurfaceY - waterFloorY;
-				const clampedMin = Math.min(depthRange.min, Math.max(0, maxDepth - 1));
-				const clampedMax = Math.min(depthRange.max, Math.max(0, maxDepth - 1));
-				if (!this.depthTargets.has(mob.id) || mob.headingTimer <= 0) {
-					const targetDepth =
+				/*
+				 * Do not use `?? { min: 1, max: 4 }` here because that allocates a new
+				 * fallback object every time an aquatic mob lacks depthRange.
+				 */
+				const depthRange = stats.depthRange;
+				const minimumDepth = depthRange?.min ?? 1;
+				const maximumDepth = depthRange?.max ?? 4;
+
+				const maxAvailableDepth = waterSurfaceY - waterFloorY;
+
+				const depthLimit = Math.max(0, maxAvailableDepth - 1);
+
+				const clampedMin = Math.min(minimumDepth, depthLimit);
+
+				const clampedMax = Math.min(maximumDepth, depthLimit);
+
+				let targetDepth = this.depthTargets.get(mob.id);
+
+				if (targetDepth === undefined || mob.headingTimer <= 0) {
+					targetDepth =
 						clampedMin + Math.random() * Math.max(0, clampedMax - clampedMin);
+
 					this.depthTargets.set(mob.id, targetDepth);
 				}
-				const targetDepth = this.depthTargets.get(mob.id) ?? clampedMin;
+
 				targetY = waterSurfaceY - targetDepth - stats.halfHeight;
 			}
 
-			// Very slow depth drift (real water, not sea level)
 			const depthError = targetY - mob.y;
 			const depthSpeed = fleeing ? 0.075 : 0.0375;
+
 			mob.y += depthError * Math.min(1, dt * depthSpeed);
 
-			// Keep mob within water bounds (when known)
 			const minY = waterFloorY + stats.halfHeight;
+
 			const maxY = waterSurfaceY - stats.halfHeight - 0.1;
+
 			if (waterFloorY !== centerY || waterSurfaceY !== centerY) {
 				mob.y = Math.max(minY, Math.min(maxY, mob.y));
 			}
 		} else {
-			// Beached — gently sink (will despawn via lifecycle).
-			// Track falls so beached aquatics take damage from long drops.
+			// Beached: descend slowly and track the fall.
 			if (Number.isNaN(mob.fallStartY)) {
 				mob.fallStartY = mob.y;
 			}
+
 			mob.y = Math.max(mob.y - 2 * dt, 0);
-			// Check for ground — if landed, apply fall damage.
-			const ground = this.scanDown(
-				mob.x,
-				mob.z,
-				Math.floor(mob.y - stats.feetHeight),
-			);
-			if (ground.kind === "ground") {
-				const fallDistance = mob.fallStartY - mob.y;
-				const damage =
-					fallDistance > FALL_DAMAGE_THRESHOLD
-						? (fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK
-						: 0;
-				if (fallDistance > 0.5) {
-					events.push({ kind: "impact", mob, fallDistance, damage });
-				}
-				if (damage > 0) {
-					const killed = this.damageMob(mob.id, damage);
-					if (killed) return true;
-				}
-				mob.fallStartY = Number.NaN;
+
+			if (this.settleBeachedAquatic(mob, stats.feetHeight, events)) {
+				return true;
 			}
+
 			this.aquaticTargets.delete(mob.id);
 		}
+
 		return false;
 	}
+	private settleBeachedAquatic(
+		mob: ServerMob,
+		feetHeight: number,
+		events: ServerMobEvent[],
+	): boolean {
+		const groundY = this.scanDown(mob.x, mob.z, Math.floor(mob.y - feetHeight));
 
+		if (
+			groundY === COLUMN_SCAN_UNKNOWN ||
+			groundY === COLUMN_SCAN_WATER ||
+			groundY === COLUMN_SCAN_AIR
+		) {
+			return false;
+		}
+
+		const fallDistance = mob.fallStartY - mob.y;
+
+		const damage =
+			fallDistance > FALL_DAMAGE_THRESHOLD
+				? (fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK
+				: 0;
+
+		if (fallDistance > 0.5) {
+			events.push({
+				kind: "impact",
+				mob,
+				fallDistance,
+				damage,
+			});
+		}
+
+		mob.fallStartY = Number.NaN;
+
+		return damage > 0 && this.damageMob(mob.id, damage);
+	}
 	/** Follow a short land route using the same surface/headroom rules as NeutralMob. */
 	private followWanderPath(
 		mob: ServerMob,
@@ -842,89 +1000,135 @@ export class ServerMobSimulation {
 		targetY: number,
 		halfHeight: number,
 	): ServerWaypoint[] {
-		interface Node {
+		interface PathNode {
 			x: number;
 			z: number;
 			groundY: number;
 			g: number;
 			f: number;
-			parent: Node | null;
+			parent: PathNode | null;
 		}
 
-		const key = (x: number, z: number, y: number): string => `${x},${z},${y}`;
-		const heuristic = (x: number, z: number): number =>
-			Math.abs(x - targetX) + Math.abs(z - targetZ);
+		/*
+		 * The search is capped at 300 expansions and wander destinations are near
+		 * the mob. Nested numeric maps avoid collision-prone coordinate packing.
+		 */
+		const bestByX = new Map<number, Map<number, Map<number, number>>>();
 
-		const open = new MinHeap<Node>((a, b) => a.f < b.f);
+		const getBest = (x: number, z: number, y: number): number | undefined => {
+			return bestByX.get(x)?.get(z)?.get(y);
+		};
+
+		const setBest = (x: number, z: number, y: number, cost: number): void => {
+			let byZ = bestByX.get(x);
+
+			if (byZ === undefined) {
+				byZ = new Map<number, Map<number, number>>();
+				bestByX.set(x, byZ);
+			}
+
+			let byY = byZ.get(z);
+
+			if (byY === undefined) {
+				byY = new Map<number, number>();
+				byZ.set(z, byY);
+			}
+
+			byY.set(y, cost);
+		};
+
+		const open = new MinHeap<PathNode>((left, right) => left.f < right.f);
+
+		const startHeuristic =
+			Math.abs(startX - targetX) + Math.abs(startZ - targetZ);
+
 		open.push({
 			x: startX,
 			z: startZ,
 			groundY: startY,
 			g: 0,
-			f: heuristic(startX, startZ),
+			f: startHeuristic,
 			parent: null,
 		});
 
-		const best = new Map<string, number>();
-		best.set(key(startX, startZ, startY), 0);
-
-		const dirs = [
-			[1, 0],
-			[-1, 0],
-			[0, 1],
-			[0, -1],
-		] as const;
+		setBest(startX, startZ, startY, 0);
 
 		for (let expanded = 0; open.length > 0 && expanded < 300; expanded++) {
 			const current = open.pop()!;
-			const currentKey = key(current.x, current.z, current.groundY);
 
-			// Skip stale heap entries that were superseded by a cheaper path.
-			if ((best.get(currentKey) ?? Infinity) < current.g) continue;
+			const recordedCost = getBest(current.x, current.z, current.groundY);
+
+			if (recordedCost !== undefined && recordedCost < current.g) {
+				continue;
+			}
 
 			if (
 				current.x === targetX &&
 				current.z === targetZ &&
 				current.groundY === targetY
 			) {
-				const result: ServerWaypoint[] = [];
-				let node: Node | null = current;
+				let routeLength = 0;
+				let cursor: PathNode | null = current;
 
-				while (node?.parent) {
-					result.push({
-						x: node.x,
-						z: node.z,
-						groundY: node.groundY,
-					});
-					node = node.parent;
+				while (cursor !== null && cursor.parent !== null) {
+					routeLength++;
+					cursor = cursor.parent;
 				}
 
-				result.reverse();
+				/*
+				 * Allocate the result at its exact final size and fill it backwards.
+				 * This avoids repeated growth plus result.reverse().
+				 */
+				const result = new Array<ServerWaypoint>(routeLength);
+
+				cursor = current;
+
+				for (let index = routeLength - 1; index >= 0; index--) {
+					result[index] = {
+						x: cursor!.x,
+						z: cursor!.z,
+						groundY: cursor!.groundY,
+					};
+
+					cursor = cursor!.parent;
+				}
+
 				return result;
 			}
 
-			for (const [dx, dz] of dirs) {
-				const x = current.x + dx;
-				const z = current.z + dz;
-				const surface = this.findLandSurface(x, z, current.groundY, halfHeight);
+			for (let direction = 0; direction < 4; direction++) {
+				const x = current.x + PATH_DX[direction];
+				const z = current.z + PATH_DZ[direction];
 
-				if (!surface || Math.abs(surface.groundY - current.groundY) > 1) {
+				const surfaceY = this.findLandSurfaceY(
+					x,
+					z,
+					current.groundY,
+					halfHeight,
+				);
+
+				if (surfaceY === null || Math.abs(surfaceY - current.groundY) > 1) {
 					continue;
 				}
 
-				const stepCost = 1 + Math.abs(surface.groundY - current.groundY) * 4;
-				const g = current.g + stepCost;
-				const nodeKey = key(x, z, surface.groundY);
+				const heightDifference = Math.abs(surfaceY - current.groundY);
 
-				if ((best.get(nodeKey) ?? Infinity) <= g) continue;
+				const cost = current.g + 1 + heightDifference * 4;
 
-				best.set(nodeKey, g);
+				const previousBest = getBest(x, z, surfaceY);
+
+				if (previousBest !== undefined && previousBest <= cost) {
+					continue;
+				}
+
+				setBest(x, z, surfaceY, cost);
+
 				open.push({
 					x,
 					z,
-					groundY: surface.groundY,
-					g,
-					f: g + heuristic(x, z),
+					groundY: surfaceY,
+					g: cost,
+					f: cost + Math.abs(x - targetX) + Math.abs(z - targetZ),
 					parent: current,
 				});
 			}
@@ -932,24 +1136,65 @@ export class ServerMobSimulation {
 
 		return [];
 	}
+	private findLandSurfaceY(
+		x: number,
+		z: number,
+		startY: number,
+		halfHeight: number,
+	): number | null {
+		const headroom = Math.max(1, Math.ceil(halfHeight * 2));
 
+		for (let offset = 1; offset >= -2; offset--) {
+			const groundY = startY + offset;
+
+			if (!this.isSolid(x, groundY, z)) {
+				continue;
+			}
+
+			let clear = true;
+
+			for (let height = 1; height <= headroom; height++) {
+				if (this.isSolid(x, groundY + height, z)) {
+					clear = false;
+					break;
+				}
+			}
+
+			if (clear) {
+				return groundY;
+			}
+		}
+
+		return null;
+	}
 	private findNearestThreat(
 		mob: ServerMob,
-		players: ReadonlyArray<{ x: number; y: number; z: number }>,
-	): { x: number; y: number; z: number } | null {
+		players: ReadonlyArray<PlayerPosition>,
+	): PlayerPosition | null {
 		const fleeRadiusSq = MOB_STATS[mob.typeId].fleeRadiusSq;
-		if (fleeRadiusSq <= 0) return null;
 
-		let nearest: { x: number; y: number; z: number } | null = null;
-		let nearestDistSq = fleeRadiusSq;
+		if (fleeRadiusSq <= 0) {
+			return null;
+		}
 
-		for (const player of players) {
-			const dx = mob.x - player.x;
-			const dy = mob.y - player.y;
-			const dz = mob.z - player.z;
-			const distSq = dx * dx + dy * dy + dz * dz;
-			if (distSq < nearestDistSq) {
-				nearestDistSq = distSq;
+		let nearest: PlayerPosition | null = null;
+		let nearestDistanceSq = fleeRadiusSq;
+
+		const mobX = mob.x;
+		const mobY = mob.y;
+		const mobZ = mob.z;
+
+		for (let index = 0; index < players.length; index++) {
+			const player = players[index];
+
+			const dx = mobX - player.x;
+			const dy = mobY - player.y;
+			const dz = mobZ - player.z;
+
+			const distanceSq = dx * dx + dy * dy + dz * dz;
+
+			if (distanceSq < nearestDistanceSq) {
+				nearestDistanceSq = distanceSq;
 				nearest = player;
 			}
 		}
@@ -960,28 +1205,38 @@ export class ServerMobSimulation {
 	/** Find the nearest player regardless of distance (for damage-triggered panic). */
 	private findNearestPlayer(
 		mob: ServerMob,
-		players: ReadonlyArray<{ x: number; y: number; z: number }>,
-	): { x: number; y: number; z: number } | null {
-		let nearest: { x: number; y: number; z: number } | null = null;
-		let nearestDistSq = Infinity;
+		players: ReadonlyArray<PlayerPosition>,
+	): PlayerPosition | null {
+		let nearest: PlayerPosition | null = null;
+		let nearestDistanceSq = Number.POSITIVE_INFINITY;
 
-		for (const player of players) {
-			const dx = mob.x - player.x;
-			const dy = mob.y - player.y;
-			const dz = mob.z - player.z;
-			const distSq = dx * dx + dy * dy + dz * dz;
-			if (distSq < nearestDistSq) {
-				nearestDistSq = distSq;
+		const mobX = mob.x;
+		const mobY = mob.y;
+		const mobZ = mob.z;
+
+		for (let index = 0; index < players.length; index++) {
+			const player = players[index];
+
+			const dx = mobX - player.x;
+			const dy = mobY - player.y;
+			const dz = mobZ - player.z;
+
+			const distanceSq = dx * dx + dy * dy + dz * dz;
+
+			if (distanceSq < nearestDistanceSq) {
+				nearestDistanceSq = distanceSq;
 				nearest = player;
 			}
 		}
 
 		return nearest;
 	}
-
 	private vectorToYaw(x: number, z: number): number {
-		const radians = Math.atan2(x, z);
-		return ((Math.round((radians / (Math.PI * 2)) * 255) % 256) + 256) % 256;
+		/*
+		 * Bit masking is equivalent for the rounded integer here and avoids two
+		 * modulo operations.
+		 */
+		return Math.round((Math.atan2(x, z) / TWO_PI) * YAW_MASK) & YAW_MASK;
 	}
 
 	private getAquaticBias(typeId: number): number {
@@ -1052,39 +1307,59 @@ export class ServerMobSimulation {
 	 */
 	private canMoveTo(
 		mob: ServerMob,
-		nx: number,
-		nz: number,
+		nextX: number,
+		nextZ: number,
 		halfHeight: number,
 		feetHeight: number,
 	): boolean {
-		// Never advance into a column with no nearby support. The old check
-		// only tested the body/head voxels, so a mob could walk over a drop or
-		// chunk edge while its vertical fall caught up several frames later.
-		const support = this.scanDown(nx, nz, Math.floor(mob.y + 1));
-		if (support.kind !== "ground") return false;
+		const groundY = this.scanDown(nextX, nextZ, Math.floor(mob.y + 1));
 
-		const targetY = support.y + 1 + feetHeight;
-		if (targetY > mob.y + 1.01) return false;
+		/*
+		 * All sentinels are non-finite or extremely large. A normal ground result
+		 * is always a finite practical world coordinate.
+		 */
+		if (
+			groundY === COLUMN_SCAN_UNKNOWN ||
+			groundY === COLUMN_SCAN_WATER ||
+			groundY === COLUMN_SCAN_AIR
+		) {
+			return false;
+		}
+
+		const targetY = groundY + 1 + feetHeight;
+
+		if (targetY > mob.y + 1.01) {
+			return false;
+		}
 
 		const feetY = Math.floor(mob.y - feetHeight);
 		const bodyY = Math.floor(mob.y);
 		const headY = Math.floor(mob.y + halfHeight - 0.01);
 
-		if (this.isSolid(nx, bodyY, nz) || this.isSolid(nx, headY, nz)) {
-			// Step up one block if the target feet voxel is solid but the
-			// two voxels above it are free.
-			const aboveFeet = this.sampler.sample(nx, feetY + 1, nz);
-			const twoAbove = this.sampler.sample(nx, feetY + 2, nz);
+		const bodyBlock = this.sampler.sample(nextX, bodyY, nextZ);
+
+		const headBlock =
+			headY === bodyY ? bodyBlock : this.sampler.sample(nextX, headY, nextZ);
+
+		if (this.isSolidId(bodyBlock) || this.isSolidId(headBlock)) {
+			const feetBlock = this.sampler.sample(nextX, feetY, nextZ);
+
+			const aboveFeet = this.sampler.sample(nextX, feetY + 1, nextZ);
+
+			const twoAbove = this.sampler.sample(nextX, feetY + 2, nextZ);
+
 			if (
-				this.isSolid(nx, feetY, nz) &&
+				this.isSolidId(feetBlock) &&
 				!this.isSolidId(aboveFeet) &&
 				!this.isSolidId(twoAbove)
 			) {
 				mob.y = targetY;
 				return true;
 			}
+
 			return false;
 		}
+
 		return true;
 	}
 
@@ -1094,64 +1369,70 @@ export class ServerMobSimulation {
 		deltaMs: number,
 		events: ServerMobEvent[],
 	): boolean {
-		const scan = this.scanDown(mob.x, mob.z, Math.floor(mob.y - feetHeight));
+		const groundY = this.scanDown(mob.x, mob.z, Math.floor(mob.y - feetHeight));
 
-		switch (scan.kind) {
-			case "ground": {
-				// Feet sit on top of the ground voxel. A small step-down
-				// (≤ 1 block) or upward step snaps to the surface. A larger
-				// drop free-falls smoothly (Minecraft-style) until the mob
-				// is within 1 block of the ground, then snaps and lands.
-				const targetY = scan.y + 1 + feetHeight;
-				if (targetY >= mob.y - 1) {
-					mob.y = targetY;
-					// Landed — apply fall damage if the fall was long enough.
-					if (!Number.isNaN(mob.fallStartY)) {
-						const fallDistance = mob.fallStartY - mob.y;
-						const damage =
-							fallDistance > FALL_DAMAGE_THRESHOLD
-								? (fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK
-								: 0;
-						if (fallDistance > 0.5) {
-							events.push({ kind: "impact", mob, fallDistance, damage });
-						}
-						if (damage > 0) {
-							const killed = this.damageMob(mob.id, damage);
-							if (killed) return true;
-						}
-						mob.fallStartY = Number.NaN;
-					}
-				} else {
-					// Ground is more than 1 block below: free-fall.
-					if (Number.isNaN(mob.fallStartY)) {
-						mob.fallStartY = mob.y;
-					}
-					mob.y = Math.max(mob.y - 16 * (deltaMs / 1000), 0);
-				}
-				return false;
-			}
-			case "water":
-				// Standing at the shore: turn away from the water.
-				mob.yaw = (mob.yaw + 128) & 255;
-				mob.headingTimer = Math.min(mob.headingTimer, 800);
-				// Water breaks the fall — reset tracking.
-				mob.fallStartY = Number.NaN;
-				return false;
-			case "air": {
-				// Free fall (16 blocks/sec, matching gravity feel) until
-				// ground is found again or the fall limit removes the mob.
-				// Record the Y where the fall started.
-				if (Number.isNaN(mob.fallStartY)) {
-					mob.fallStartY = mob.y;
-				}
-				mob.y = Math.max(mob.y - 16 * (deltaMs / 1000), 0);
-				return false;
-			}
-			case "unknown":
-				// Chunk not cached — hold height rather than fall through
-				// terrain that exists but isn't in memory.
-				return false;
+		if (groundY === COLUMN_SCAN_UNKNOWN) {
+			/*
+			 * The chunk is not cached. Hold the current height rather than falling
+			 * through terrain that may exist in storage.
+			 */
+			return false;
 		}
+
+		if (groundY === COLUMN_SCAN_WATER) {
+			mob.yaw = (mob.yaw + HALF_YAW) & YAW_MASK;
+			mob.headingTimer = Math.min(mob.headingTimer, 800);
+			mob.fallStartY = Number.NaN;
+			return false;
+		}
+
+		if (groundY === COLUMN_SCAN_AIR) {
+			if (Number.isNaN(mob.fallStartY)) {
+				mob.fallStartY = mob.y;
+			}
+
+			mob.y = Math.max(mob.y - 16 * deltaMs * MS_TO_SECONDS, 0);
+
+			return false;
+		}
+
+		const targetY = groundY + 1 + feetHeight;
+
+		if (targetY < mob.y - 1) {
+			if (Number.isNaN(mob.fallStartY)) {
+				mob.fallStartY = mob.y;
+			}
+
+			mob.y = Math.max(mob.y - 16 * deltaMs * MS_TO_SECONDS, 0);
+
+			return false;
+		}
+
+		mob.y = targetY;
+
+		if (Number.isNaN(mob.fallStartY)) {
+			return false;
+		}
+
+		const fallDistance = mob.fallStartY - mob.y;
+
+		const damage =
+			fallDistance > FALL_DAMAGE_THRESHOLD
+				? (fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK
+				: 0;
+
+		if (fallDistance > 0.5) {
+			events.push({
+				kind: "impact",
+				mob,
+				fallDistance,
+				damage,
+			});
+		}
+
+		mob.fallStartY = Number.NaN;
+
+		return damage > 0 && this.damageMob(mob.id, damage);
 	}
 
 	/**
@@ -1159,16 +1440,27 @@ export class ServerMobSimulation {
 	 * Water short-circuits to "water"; an uncached chunk short-circuits to
 	 * "unknown"; anything else falls through.
 	 */
-	private scanDown(worldX: number, worldZ: number, startY: number): ColumnScan {
-		for (let y = startY; y > startY - FALL_LIMIT; y--) {
-			const id = this.sampler.sample(worldX, y, worldZ);
-			if (id === null) return { kind: "unknown" };
-			if (id === BlockType.Water) return { kind: "water" };
-			if (isCollidableBlock(id)) return { kind: "ground", y };
-		}
-		return { kind: "air" };
-	}
+	private scanDown(worldX: number, worldZ: number, startY: number): number {
+		const endY = startY - FALL_LIMIT;
 
+		for (let y = startY; y > endY; y--) {
+			const blockId = this.sampler.sample(worldX, y, worldZ);
+
+			if (blockId === null) {
+				return COLUMN_SCAN_UNKNOWN;
+			}
+
+			if (blockId === BlockType.Water) {
+				return COLUMN_SCAN_WATER;
+			}
+
+			if (isCollidableBlock(blockId)) {
+				return y;
+			}
+		}
+
+		return COLUMN_SCAN_AIR;
+	}
 	private isSolid(worldX: number, worldY: number, worldZ: number): boolean {
 		return this.isSolidId(this.sampler.sample(worldX, worldY, worldZ));
 	}
@@ -1307,17 +1599,25 @@ export class ServerMobSimulation {
 
 	/** Random species whose natural cap isn't reached yet (equal weights, like the client). */
 	private pickSpawnType(): number | null {
-		const available: number[] = [];
+		let selectedType: number | null = null;
+		let availableCount = 0;
 
-		for (const typeId of MOB_TYPE_IDS) {
+		for (let index = 0; index < MOB_TYPE_IDS.length; index++) {
+			const typeId = MOB_TYPE_IDS[index];
 			const spawnConfig = MOB_SPAWN_CONFIGS[typeId];
-			if ((this.naturalTypeCounts.get(typeId) ?? 0) < spawnConfig.maxCount) {
-				available.push(typeId);
+
+			if ((this.naturalTypeCounts.get(typeId) ?? 0) >= spawnConfig.maxCount) {
+				continue;
+			}
+
+			availableCount++;
+
+			if (Math.random() * availableCount < 1) {
+				selectedType = typeId;
 			}
 		}
 
-		if (available.length === 0) return null;
-		return available[Math.floor(Math.random() * available.length)];
+		return selectedType;
 	}
 
 	/**
@@ -1638,17 +1938,22 @@ export class ServerMobSimulation {
 	 * Counts active mobs within `radius` of a player's x/z. Used to enforce the
 	 * per-player spawn cap instead of a single shared global cap.
 	 */
-	private countMobsNear(
-		player: { x: number; z: number },
-		radius: number,
-	): number {
-		const r2 = radius * radius;
+	private countMobsNear(player: PlayerColumnPosition, radius: number): number {
+		const radiusSq = radius * radius;
+		const playerX = player.x;
+		const playerZ = player.z;
+
 		let count = 0;
+
 		for (const mob of this.mobs.values()) {
-			const dx = mob.x - player.x;
-			const dz = mob.z - player.z;
-			if (dx * dx + dz * dz <= r2) count++;
+			const dx = mob.x - playerX;
+			const dz = mob.z - playerZ;
+
+			if (dx * dx + dz * dz <= radiusSq) {
+				count++;
+			}
 		}
+
 		return count;
 	}
 }

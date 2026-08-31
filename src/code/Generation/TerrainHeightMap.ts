@@ -1,5 +1,5 @@
 import Alea from "alea";
-import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
+import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import { getBiomeFor } from "./Biome/Biomes";
 import type { Biome } from "./Biome/BiomeTypes";
 import {
@@ -21,7 +21,6 @@ import { RiverGenerator } from "./RiverGeneration";
 
 const params: GenerationParamsType = GenerationParams;
 
-const CHUNK_SIZE = 1 << CHUNK_SHIFT;
 const CHUNK_LAST_WORLD_OFFSET = CHUNK_SIZE - 1;
 
 const BIOME_TERRAIN_GRID = 192;

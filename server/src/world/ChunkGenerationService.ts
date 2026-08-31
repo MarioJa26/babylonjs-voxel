@@ -5,8 +5,9 @@
  * deduplication to avoid duplicate work, and batch dispatch for efficiency.
  *
  * After generation, chunks are persisted to LevelDB storage so they can be
- * served from disk on subsequent requests (no regeneration needed).
+ * served from disk on subsequent requests.
  */
+
 import { packChunkKeyFast } from "@/code/World/Storage/ChunkKey.ts";
 import { ChunkWorkerPool } from "../workers/ChunkWorkerPool.ts";
 import type { ServerWorldStorage } from "./ServerWorldStorage.ts";
@@ -15,7 +16,7 @@ export interface ChunkData {
 	chunkX: number;
 	chunkY: number;
 	chunkZ: number;
-	blocks: Uint8Array;
+	blocks: Uint8Array | Uint16Array;
 	light: Uint8Array;
 	palette?: number[];
 	isUniform: boolean;
@@ -30,21 +31,31 @@ interface ChunkCoord {
 }
 
 interface RawChunkResult {
-	blocks: Uint8Array;
+	blocks: Uint8Array | Uint16Array;
 	light: Uint8Array;
 	palette?: number[];
 	isUniform: boolean;
 	uniformBlockId: number;
 }
 
-/** One unique coordinate inside a batch, mapping to every output slot it fills. */
+/**
+ * One unique coordinate in a batch.
+ *
+ * outputIndices contains every position in the caller's input occupied by this
+ * coordinate, preserving duplicates and original ordering.
+ */
 interface UniqueBatchEntry extends ChunkCoord {
 	key: number;
 	outputIndices: number[];
 }
 
-interface OwnedBatchEntry {
-	entry: UniqueBatchEntry;
+/**
+ * A batch entry whose generation is owned by the current batch.
+ *
+ * Keeping the deferred fields directly on the entry avoids allocating a
+ * separate wrapper containing both the entry and its promise controls.
+ */
+interface OwnedBatchEntry extends UniqueBatchEntry {
 	promise: Promise<ChunkData>;
 	resolve(value: ChunkData): void;
 	reject(reason?: unknown): void;
@@ -59,7 +70,16 @@ function createOwnedBatchEntry(entry: UniqueBatchEntry): OwnedBatchEntry {
 		reject = rej;
 	});
 
-	return { entry, promise, resolve, reject };
+	return {
+		key: entry.key,
+		chunkX: entry.chunkX,
+		chunkY: entry.chunkY,
+		chunkZ: entry.chunkZ,
+		outputIndices: entry.outputIndices,
+		promise,
+		resolve,
+		reject,
+	};
 }
 
 function toChunkData(
@@ -81,6 +101,23 @@ function toChunkData(
 	};
 }
 
+function compareOwnedEntries(
+	left: OwnedBatchEntry,
+	right: OwnedBatchEntry,
+): number {
+	const xDifference = left.chunkX - right.chunkX;
+	if (xDifference !== 0) {
+		return xDifference;
+	}
+
+	const zDifference = left.chunkZ - right.chunkZ;
+	if (zDifference !== 0) {
+		return zDifference;
+	}
+
+	return left.chunkY - right.chunkY;
+}
+
 export class ChunkGenerationService {
 	private readonly pool = new ChunkWorkerPool();
 
@@ -92,17 +129,18 @@ export class ChunkGenerationService {
 	private initPromise: Promise<void> | null = null;
 	private storage: ServerWorldStorage | null = null;
 
-	// Keyed by packChunkKeyFast(cx, cy, cz).
-	// Every entry is settled and removed once its work finishes.
+	/**
+	 * Keyed by packChunkKeyFast(chunkX, chunkY, chunkZ).
+	 *
+	 * Every value is removed after settlement, provided it still owns its key.
+	 */
 	private readonly dedupMap = new Map<number, Promise<ChunkData>>();
 
 	/**
-	 * Configure the terrain seed. Immutable after initialization has started:
-	 * workers created for seed A would otherwise keep generating seed-A terrain
-	 * and saving it into storage after a seed change.
+	 * Configure terrain generation before initialization starts.
 	 */
 	setSeed(seed: string, wasmEnabled = true): void {
-		if (this.initialized || this.initPromise) {
+		if (this.initialized || this.initPromise !== null) {
 			throw new Error(
 				"Chunk generation configuration cannot change after initialization has started",
 			);
@@ -113,12 +151,15 @@ export class ChunkGenerationService {
 	}
 
 	/**
-	 * Attach a storage backend. After generation, chunks are saved here.
+	 * Attach or remove the storage backend used after generation.
 	 */
 	setStorage(storage: ServerWorldStorage | null): void {
 		this.storage = storage;
 	}
 
+	/**
+	 * Initialize the worker pool once, retrying after initialization failures.
+	 */
 	private ensurePool(): Promise<void> {
 		if (this.terminating) {
 			return Promise.reject(
@@ -127,50 +168,73 @@ export class ChunkGenerationService {
 		}
 
 		const existing = this.initPromise;
-		if (existing) return existing;
+		if (existing !== null) {
+			return existing;
+		}
 
-		const init = this.pool.initialize(this.seed, this.wasmEnabled);
-		this.initPromise = init;
+		const initialization = this.pool.initialize(this.seed, this.wasmEnabled);
 
-		void init.then(
+		this.initPromise = initialization;
+
+		/*
+		 * One derived promise is unavoidable here because initialization state
+		 * must be updated after settlement. Both branches handle settlement, so
+		 * the derived promise cannot become an unhandled rejection.
+		 */
+		void initialization.then(
 			() => {
-				this.initialized = true;
+				if (this.initPromise === initialization) {
+					this.initialized = true;
+				}
 			},
 			() => {
-				// Do not cache a permanent failure. The next request retries.
-				this.initPromise = null;
-				this.initialized = false;
+				/*
+				 * Do not cache a permanent failure. Clear only if this promise
+				 * still owns the initialization slot.
+				 */
+				if (this.initPromise === initialization) {
+					this.initPromise = null;
+					this.initialized = false;
+				}
 			},
 		);
 
-		return init;
+		return initialization;
 	}
 
+	/**
+	 * Generate one chunk, sharing any generation already in progress for the
+	 * same packed coordinate key.
+	 */
 	generateChunk(
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
 	): Promise<ChunkData> {
 		const key = packChunkKeyFast(chunkX, chunkY, chunkZ);
-
 		const existing = this.dedupMap.get(key);
-		if (existing) return existing;
 
-		const promise = this.generateAndPersist(chunkX, chunkY, chunkZ);
-		this.dedupMap.set(key, promise);
+		if (existing !== undefined) {
+			return existing;
+		}
 
-		void promise
-			.finally(() => {
-				// Delete only if this promise still owns the key.
-				if (this.dedupMap.get(key) === promise) {
-					this.dedupMap.delete(key);
-				}
-			})
-			.catch(() => {
-				// The original promise carries the rejection to its callers.
-			});
+		const generation = this.generateAndPersist(chunkX, chunkY, chunkZ);
 
-		return promise;
+		this.dedupMap.set(key, generation);
+
+		/*
+		 * Using then(success, failure) creates one derived promise instead of
+		 * the finally().catch() chain, which created two.
+		 */
+		const removeDedupEntry = (): void => {
+			if (this.dedupMap.get(key) === generation) {
+				this.dedupMap.delete(key);
+			}
+		};
+
+		void generation.then(removeDedupEntry, removeDedupEntry);
+
+		return generation;
 	}
 
 	private async generateAndPersist(
@@ -181,111 +245,154 @@ export class ChunkGenerationService {
 		await this.ensurePool();
 
 		const raw = await this.pool.dispatch(chunkX, chunkY, chunkZ);
+
 		const data = toChunkData(chunkX, chunkY, chunkZ, raw);
 
-		// Persist before returning and before the dedup entry is removed.
+		/*
+		 * Persistence completes before the caller receives the chunk and before
+		 * the owning dedup entry is removed.
+		 */
 		await this.persistChunk(data);
+
 		return data;
 	}
 
 	/**
-	 * Generate a batch of chunks. Deduplicates repeated coordinates within the
-	 * batch and against in-flight single/batch generations, preserves input
-	 * ordering, and rejects every waiter if any owned generation fails.
+	 * Generate a batch of chunks.
+	 *
+	 * This deduplicates:
+	 * - repeated coordinates within the input
+	 * - coordinates already being generated by another single request
+	 * - coordinates already owned by another batch
+	 *
+	 * Results retain the exact order and duplicate positions of the input.
 	 */
 	async generateChunksBatch(
 		coords: readonly ChunkCoord[],
 	): Promise<ChunkData[]> {
-		const coordCount = coords.length;
-		if (coordCount === 0) return [];
+		const coordinateCount = coords.length;
 
-		const results = new Array<ChunkData>(coordCount);
-		const localUnique = new Map<number, UniqueBatchEntry>();
+		if (coordinateCount === 0) {
+			return [];
+		}
 
-		// Deduplicate within this batch while retaining every original output slot.
-		for (let i = 0; i < coordCount; i++) {
-			const coord = coords[i];
-			const key = packChunkKeyFast(coord.chunkX, coord.chunkY, coord.chunkZ);
-			const existing = localUnique.get(key);
+		const uniqueByKey = new Map<number, UniqueBatchEntry>();
+		const uniqueEntries: UniqueBatchEntry[] = [];
 
-			if (existing) {
-				existing.outputIndices.push(i);
+		/*
+		 * Deduplicate locally while recording every output position.
+		 *
+		 * uniqueEntries avoids a later Array.from(uniqueByKey.values())
+		 * allocation and provides stable index alignment with promises.
+		 */
+		for (let index = 0; index < coordinateCount; index++) {
+			const coordinate = coords[index];
+
+			const key = packChunkKeyFast(
+				coordinate.chunkX,
+				coordinate.chunkY,
+				coordinate.chunkZ,
+			);
+
+			const existing = uniqueByKey.get(key);
+
+			if (existing !== undefined) {
+				existing.outputIndices.push(index);
 				continue;
 			}
 
-			localUnique.set(key, {
+			const entry: UniqueBatchEntry = {
 				key,
-				chunkX: coord.chunkX,
-				chunkY: coord.chunkY,
-				chunkZ: coord.chunkZ,
-				outputIndices: [i],
-			});
+				chunkX: coordinate.chunkX,
+				chunkY: coordinate.chunkY,
+				chunkZ: coordinate.chunkZ,
+				outputIndices: [index],
+			};
+
+			uniqueByKey.set(key, entry);
+			uniqueEntries.push(entry);
 		}
 
-		const uniqueCount = localUnique.size;
-		const waiters = new Array<Promise<void>>(uniqueCount);
+		const uniqueCount = uniqueEntries.length;
+		const promises = new Array<Promise<ChunkData>>(uniqueCount);
 		const owned: OwnedBatchEntry[] = [];
 
-		let waiterIndex = 0;
+		/*
+		 * Register every newly owned promise synchronously before the first
+		 * await. Overlapping requests can therefore reuse this work.
+		 */
+		for (let index = 0; index < uniqueCount; index++) {
+			const entry = uniqueEntries[index];
+			const existing = this.dedupMap.get(entry.key);
 
-		for (const entry of localUnique.values()) {
-			let promise = this.dedupMap.get(entry.key);
-
-			if (!promise) {
-				const ownedEntry = createOwnedBatchEntry(entry);
-				promise = ownedEntry.promise;
-
-				// Register before any await so overlapping requests reuse this work.
-				this.dedupMap.set(entry.key, promise);
-				owned.push(ownedEntry);
+			if (existing !== undefined) {
+				promises[index] = existing;
+				continue;
 			}
 
-			waiters[waiterIndex++] = promise.then((data) => {
-				const outputIndices = entry.outputIndices;
-				for (let i = 0; i < outputIndices.length; i++) {
-					results[outputIndices[i]] = data;
-				}
-			});
+			const ownedEntry = createOwnedBatchEntry(entry);
+
+			promises[index] = ownedEntry.promise;
+			owned.push(ownedEntry);
+			this.dedupMap.set(ownedEntry.key, ownedEntry.promise);
 		}
 
-		if (owned.length > 0) {
-			// Sort by column, then Y, so dispatchAll sends column-coherent batches.
-			owned.sort((a, b) => {
-				const ax = a.entry.chunkX;
-				const bx = b.entry.chunkX;
-				if (ax !== bx) return ax - bx;
+		if (owned.length !== 0) {
+			/*
+			 * Sort only entries generated by this batch. Entries already in
+			 * flight do not participate in this dispatch.
+			 */
+			owned.sort(compareOwnedEntries);
 
-				const az = a.entry.chunkZ;
-				const bz = b.entry.chunkZ;
-				if (az !== bz) return az - bz;
-
-				return a.entry.chunkY - b.entry.chunkY;
-			});
-
+			/*
+			 * dispatchOwnedBatch catches generation and persistence failures,
+			 * rejects all owned deferred promises, and removes their dedup keys.
+			 */
 			void this.dispatchOwnedBatch(owned);
 		}
 
-		await Promise.all(waiters);
+		/*
+		 * Await the original ChunkData promises directly. The previous version
+		 * allocated one closure and one Promise<void> per unique entry merely
+		 * to scatter each individual result.
+		 */
+		const uniqueResults = await Promise.all(promises);
+		const results = new Array<ChunkData>(coordinateCount);
+
+		/*
+		 * Scatter after all work completes. Duplicate positions reference the
+		 * same ChunkData object, matching the previous behavior.
+		 */
+		for (let uniqueIndex = 0; uniqueIndex < uniqueCount; uniqueIndex++) {
+			const data = uniqueResults[uniqueIndex];
+			const outputIndices = uniqueEntries[uniqueIndex].outputIndices;
+
+			for (let i = 0; i < outputIndices.length; i++) {
+				results[outputIndices[i]] = data;
+			}
+		}
+
 		return results;
 	}
 
+	/**
+	 * Generate, persist, and settle every chunk owned by one batch.
+	 */
 	private async dispatchOwnedBatch(owned: OwnedBatchEntry[]): Promise<void> {
+		const ownedCount = owned.length;
+
 		try {
 			await this.ensurePool();
 
-			const ownedCount = owned.length;
-			const request = new Array<ChunkCoord>(ownedCount);
-
-			for (let i = 0; i < ownedCount; i++) {
-				const entry = owned[i].entry;
-				request[i] = {
-					chunkX: entry.chunkX,
-					chunkY: entry.chunkY,
-					chunkZ: entry.chunkZ,
-				};
-			}
-
-			const rawResults = await this.pool.dispatchAll(request);
+			/*
+			 * OwnedBatchEntry structurally contains ChunkCoord, so it can be
+			 * passed directly. ChunkWorkerPool.dispatchAll() snapshots each
+			 * coordinate before queuing worker work.
+			 *
+			 * This avoids allocating one additional coordinate object per
+			 * owned chunk.
+			 */
+			const rawResults = await this.pool.dispatchAll(owned);
 
 			if (rawResults.length !== ownedCount) {
 				throw new Error(
@@ -295,85 +402,127 @@ export class ChunkGenerationService {
 
 			const chunks = new Array<ChunkData>(ownedCount);
 
-			for (let i = 0; i < ownedCount; i++) {
-				const entry = owned[i].entry;
-				chunks[i] = toChunkData(
+			for (let index = 0; index < ownedCount; index++) {
+				const entry = owned[index];
+
+				chunks[index] = toChunkData(
 					entry.chunkX,
 					entry.chunkY,
 					entry.chunkZ,
-					rawResults[i],
+					rawResults[index],
 				);
 			}
 
-			// Persist before resolving so storage catches up while dedup entries
-			// still block duplicate generation.
+			/*
+			 * Keep dedup entries active until storage catches up.
+			 */
 			await this.persistChunks(chunks);
 
-			for (let i = 0; i < ownedCount; i++) {
-				owned[i].resolve(chunks[i]);
+			for (let index = 0; index < ownedCount; index++) {
+				owned[index].resolve(chunks[index]);
 			}
-		} catch (error) {
-			// Reject every waiter. No permanently pending promises.
-			for (let i = 0; i < owned.length; i++) {
-				owned[i].reject(error);
+		} catch (error: unknown) {
+			/*
+			 * Reject every owned promise so no batch caller remains pending.
+			 */
+			for (let index = 0; index < ownedCount; index++) {
+				owned[index].reject(error);
 			}
 		} finally {
-			// Remove every entry this batch registered, ownership-checked.
-			for (let i = 0; i < owned.length; i++) {
-				const ownedEntry = owned[i];
-				if (this.dedupMap.get(ownedEntry.entry.key) === ownedEntry.promise) {
-					this.dedupMap.delete(ownedEntry.entry.key);
+			/*
+			 * Remove only keys still owned by this dispatch.
+			 */
+			for (let index = 0; index < ownedCount; index++) {
+				const entry = owned[index];
+
+				if (this.dedupMap.get(entry.key) === entry.promise) {
+					this.dedupMap.delete(entry.key);
 				}
 			}
 		}
 	}
 
-	private async persistChunk(data: ChunkData): Promise<void> {
+	private persistChunk(data: ChunkData): Promise<void> {
 		const storage = this.storage;
-		if (!storage) return;
 
-		await storage.writeChunk(data);
+		if (storage === null) {
+			return Promise.resolve();
+		}
+
+		return storage.writeChunk(data);
 	}
 
-	/** Persist a batch with bounded write concurrency. */
+	/**
+	 * Persist a batch with bounded write concurrency.
+	 */
 	private async persistChunks(
 		chunks: readonly ChunkData[],
 		concurrency = 8,
 	): Promise<void> {
 		const chunkCount = chunks.length;
-		if (chunkCount === 0) return;
 
-		const workerCount = Math.min(concurrency, chunkCount);
-		let next = 0;
-
-		const tasks = new Array<Promise<void>>(workerCount);
-
-		for (let worker = 0; worker < workerCount; worker++) {
-			tasks[worker] = (async () => {
-				for (;;) {
-					const index = next++;
-					if (index >= chunkCount) return;
-					await this.persistChunk(chunks[index]);
-				}
-			})();
+		if (chunkCount === 0) {
+			return;
 		}
 
-		await Promise.all(tasks);
+		const storage = this.storage;
+
+		/*
+		 * Check storage once for the whole batch instead of once per chunk.
+		 * This also preserves the original snapshot-like behavior after batch
+		 * persistence begins.
+		 */
+		if (storage === null) {
+			return;
+		}
+
+		const writerCount = Math.min(concurrency, chunkCount);
+
+		let nextIndex = 0;
+
+		/**
+		 * The shared counter is safe because JavaScript executes synchronously
+		 * until each await. Every writer claims an index before yielding.
+		 */
+		const writeNext = async (): Promise<void> => {
+			for (;;) {
+				const index = nextIndex++;
+
+				if (index >= chunkCount) {
+					return;
+				}
+
+				await storage.writeChunk(chunks[index]);
+			}
+		};
+
+		/*
+		 * Allocate one promise per active writer, capped by concurrency, rather
+		 * than one persistence promise per chunk.
+		 */
+		const writers = new Array<Promise<void>>(writerCount);
+
+		for (let index = 0; index < writerCount; index++) {
+			writers[index] = writeNext();
+		}
+
+		await Promise.all(writers);
 	}
 
 	async relightChunk(
-		cx: number,
-		cy: number,
-		cz: number,
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
 		blocks: Uint8Array | Uint16Array,
 		topSunlightMask?: Uint8Array,
 		neighborLight?: ReadonlyArray<Uint8Array | null>,
 	): Promise<Uint8Array> {
 		await this.ensurePool();
+
 		return this.pool.postRelight(
-			cx,
-			cy,
-			cz,
+			chunkX,
+			chunkY,
+			chunkZ,
 			blocks,
 			topSunlightMask,
 			neighborLight,
@@ -381,12 +530,17 @@ export class ChunkGenerationService {
 	}
 
 	async terminate(): Promise<void> {
-		if (this.terminating) return;
+		if (this.terminating) {
+			return;
+		}
+
 		this.terminating = true;
 
 		try {
-			// The pool settles every queued/in-flight task with a rejection, so
-			// in-flight generation promises and their waiters settle instead of hanging.
+			/*
+			 * Pool termination rejects queued and in-flight work, allowing all
+			 * deferred batch promises and single-generation promises to settle.
+			 */
 			await this.pool.terminate();
 		} finally {
 			this.dedupMap.clear();

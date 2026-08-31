@@ -1,3 +1,4 @@
+import { CHUNK_SIZE } from "../Lib/VoxelMath";
 import { WATER_BLOCK_ID } from "../World/Chunk/Worker/ChunkMesherConstants";
 import {
 	CAVE_FLAG_CARVED,
@@ -74,7 +75,6 @@ export class UndergroundGenerator {
 		) => void,
 		blocks?: Uint8Array,
 	): void {
-		const CHUNK_SIZE = this.CHUNK_SIZE;
 		const LAVA_LEVEL = this.LAVA_LEVEL;
 		const params = this.params;
 
