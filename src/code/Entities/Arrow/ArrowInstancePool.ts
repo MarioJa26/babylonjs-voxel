@@ -3,7 +3,6 @@ import {
 	createMeshFromData,
 	createShaderMaterial,
 	type Mesh,
-	onBeforeRender,
 	type ShaderMaterial,
 	setThinInstances,
 } from "@babylonjs/lite";
@@ -19,36 +18,23 @@ const MAT4_FLOATS = 16;
 const COLOR_FLOATS = 4;
 const DEFAULT_INITIAL_CAPACITY = 32;
 
-/**
- * Per-instance thin-instance pool for every arrow in flight.
- *
- * All arrows (any material type) render through ONE shared box mesh instead of
- * each owning its own mesh. The per-instance color buffer carries each arrow's
- * type tint, so instances are individually recolorable (see `writeColor` /
- * `Arrow.recolor`). Each arrow owns a lane and writes its world matrix (full
- * rotation from a quaternion — arrows point in arbitrary directions) into it; a
- * per-frame sync uploads only dirty lanes.
- *
- * Internal thin-instance fields (`_capacity`, `_dirtyMin`, `_dirtyMax`,
- * `_version`, `_colorVersion`, ...) are not in the public typings — same local
- * shape as MobInstancePool / PackedChunkMesh.
- */
 type PackedThinInstances = {
 	matrices: Float32Array;
 	colors?: Float32Array | null;
 	count: number;
 	_capacity?: number;
-	_dirtyMin: number;
-	_dirtyMax: number;
+
+	_dirtyMin?: number;
+	_dirtyMax?: number;
 	_version?: number;
+	_gpuVersion?: number;
+
 	_colorVersion?: number;
 	_colorGpuVersion?: number;
 	_colorDirtyMin?: number;
 	_colorDirtyMax?: number;
 };
 
-/** Mutable slot reference handed to an arrow; the pool rewrites `index` when a
- * lane is compacted on release, so arrows never store raw lane numbers. */
 export type InstanceSlotHandle = {
 	pool: ArrowInstancePool;
 	/** Active lane, or -1 once released. */
@@ -65,9 +51,20 @@ struct VSOut {
 @vertex
 fn mainVertex(input : VertexInput) -> VSOut {
   var out : VSOut;
-  let instanceWorld = mat4x4<f32>(input.world0, input.world1, input.world2, input.world3);
-  out.pos = shaderSystem.viewProjection * (instanceWorld * vec4<f32>(input.position, 1.0));
-  out.vNormal = (instanceWorld * vec4<f32>(input.normal, 0.0)).xyz;
+  let instanceWorld = mat4x4<f32>(
+    input.world0,
+    input.world1,
+    input.world2,
+    input.world3
+  );
+
+  out.pos =
+    shaderSystem.viewProjection *
+    (instanceWorld * vec4<f32>(input.position, 1.0));
+
+  out.vNormal =
+    (instanceWorld * vec4<f32>(input.normal, 0.0)).xyz;
+
   out.vTint = input.instanceColor.rgb;
   return out;
 }
@@ -108,18 +105,24 @@ export class ArrowInstancePool {
 	#colors: Float32Array;
 	#laneHolders: (InstanceSlotHandle | null)[];
 	#capacity: number;
+
 	#count = 0;
+
 	#dirtyMin = Number.POSITIVE_INFINITY;
 	#dirtyMax = Number.NEGATIVE_INFINITY;
+
 	#colorDirtyMin = Number.POSITIVE_INFINITY;
 	#colorDirtyMax = Number.NEGATIVE_INFINITY;
+
 	#needsSync = false;
 
 	constructor() {
 		this.#capacity = DEFAULT_INITIAL_CAPACITY;
-		this.#matrices = new Float32Array(this.#capacity * MAT4_FLOATS);
-		this.#colors = new Float32Array(this.#capacity * COLOR_FLOATS);
-		this.#laneHolders = new Array(this.#capacity).fill(null);
+		this.#matrices = new Float32Array(DEFAULT_INITIAL_CAPACITY * MAT4_FLOATS);
+		this.#colors = new Float32Array(DEFAULT_INITIAL_CAPACITY * COLOR_FLOATS);
+		this.#laneHolders = new Array<InstanceSlotHandle | null>(
+			DEFAULT_INITIAL_CAPACITY,
+		).fill(null);
 
 		const geometry = getBoxGeometry(ARROW_WIDTH, ARROW_HEIGHT, ARROW_LENGTH);
 
@@ -130,46 +133,48 @@ export class ArrowInstancePool {
 			geometry.normals,
 			geometry.indices,
 		);
+
 		mesh.pickable = false;
 		mesh.renderOrder = 1;
 
 		this.#material = createArrowMaterial();
 		mesh.material = this.#material;
 
-		// Seed thin instances at count 0 — lanes sync in per frame.
 		setThinInstances(mesh, this.#matrices, 0);
-		const ti = mesh.thinInstances as PackedThinInstances | undefined;
-		if (ti) {
-			ti.colors = this.#colors;
-			ti._colorVersion = (ti._colorVersion ?? 0) + 1;
-			ti._capacity = this.#capacity;
-			ti.count = 0;
-			ti._dirtyMin = 0;
-			ti._dirtyMax = 0;
+
+		const thinInstances = mesh.thinInstances as PackedThinInstances | undefined;
+
+		if (thinInstances) {
+			thinInstances.colors = this.#colors;
+			thinInstances.count = 0;
+			thinInstances._capacity = this.#capacity;
+
+			thinInstances._dirtyMin = 0;
+			thinInstances._dirtyMax = 0;
+
+			thinInstances._colorDirtyMin = 0;
+			thinInstances._colorDirtyMax = 0;
+			thinInstances._colorVersion = (thinInstances._colorVersion ?? 0) + 1;
 		}
 
 		addToScene(Map1.mainScene, mesh);
+
 		this.mesh = mesh;
 
-		registerPool(this);
 		this.#ensureInstancedGroupBuild(mesh);
 	}
 
-	/**
-	 * Scene-registered ShaderMaterial groups only run their deferred builder
-	 * once; later meshes fall back to a `_rebuildSingle` that is only captured
-	 * by an instanced group build. Without this force-build, the pooled mesh
-	 * silently never renders (same fix as MobInstancePool /
-	 * PackedChunkMesh.ensureInstancedBuild).
-	 */
 	#ensureInstancedGroupBuild(mesh: Mesh): void {
-		const bg = (
+		const buildGroup = (
 			this.#material as unknown as {
 				_buildGroup?: (scene: unknown, meshes: unknown[]) => Promise<unknown>;
 			}
 		)._buildGroup;
-		if (typeof bg === "function") {
-			void bg(Map1.mainScene, [mesh]).catch(() => {});
+
+		if (typeof buildGroup === "function") {
+			void buildGroup(Map1.mainScene, [mesh]).catch(() => {
+				// Preserve the existing non-fatal deferred build behavior.
+			});
 		}
 	}
 
@@ -177,36 +182,55 @@ export class ArrowInstancePool {
 		return this.#count;
 	}
 
-	/** Claim a lane for an arrow of the given tint. Call `writeMatrix` before
-	 * first render (the constructor does this). */
 	acquire(color: Color3): InstanceSlotHandle {
-		if (this.#count === this.#capacity) {
+		if (this.#count >= this.#capacity) {
 			this.#grow();
 		}
 
-		const index = this.#count++;
-		const holder: InstanceSlotHandle = { pool: this, index };
+		const index = this.#count;
+		this.#count = index + 1;
+
+		const holder: InstanceSlotHandle = {
+			pool: this,
+			index,
+		};
+
 		this.#laneHolders[index] = holder;
-		this.#writeColor(holder, color.r, color.g, color.b, 1);
-		this.#markDirty(index);
+
+		const colorOffset = index * COLOR_FLOATS;
+		const colors = this.#colors;
+
+		colors[colorOffset] = color.r;
+		colors[colorOffset + 1] = color.g;
+		colors[colorOffset + 2] = color.b;
+		colors[colorOffset + 3] = 1;
+
+		this.#markColorDirty(index);
+		this.#markMatrixDirty(index);
 
 		return holder;
 	}
 
-	/** Free a lane, compacting the last active lane into the hole. */
 	release(holder: InstanceSlotHandle): void {
-		if (holder.pool !== this) return;
+		if (holder.pool !== this) {
+			return;
+		}
 
 		const slot = holder.index;
-		if (slot < 0 || slot >= this.#count) return;
+		const count = this.#count;
 
-		const last = this.#count - 1;
+		if (slot < 0 || slot >= count) {
+			return;
+		}
+
+		const last = count - 1;
 
 		if (slot !== last) {
 			this.#copyLane(last, slot);
 
 			const movedHolder = this.#laneHolders[last];
-			if (movedHolder) {
+
+			if (movedHolder !== null) {
 				movedHolder.index = slot;
 				this.#laneHolders[slot] = movedHolder;
 			}
@@ -214,15 +238,16 @@ export class ArrowInstancePool {
 
 		this.#laneHolders[last] = null;
 		holder.index = -1;
-		this.#count--;
-		this.#markDirty(slot);
+		this.#count = last;
+
+		/*
+		 * A release must schedule a sync even when the removed instance was
+		 * already the final lane. In that case no matrix or color data needs
+		 * uploading, but the GPU-visible instance count must still change.
+		 */
+		this.#needsSync = true;
 	}
 
-	/**
-	 * Compose translation + full rotation (from a unit quaternion) into the
-	 * lane's matrix. Arrows point in arbitrary directions, so a Y-rotation-only
-	 * matrix is not enough — the quaternion is expanded into a 3x3 rotation.
-	 */
 	writeMatrix(
 		holder: InstanceSlotHandle,
 		px: number,
@@ -233,12 +258,20 @@ export class ArrowInstancePool {
 		qz: number,
 		qw: number,
 	): void {
+		if (holder.pool !== this) {
+			return;
+		}
+
 		const index = holder.index;
-		if (holder.pool !== this || index < 0 || index >= this.#count) return;
+
+		if (index < 0 || index >= this.#count) {
+			return;
+		}
 
 		const x2 = qx + qx;
 		const y2 = qy + qy;
 		const z2 = qz + qz;
+
 		const xx = qx * x2;
 		const xy = qx * y2;
 		const xz = qx * z2;
@@ -249,44 +282,40 @@ export class ArrowInstancePool {
 		const wy = qw * y2;
 		const wz = qw * z2;
 
-		const r00 = 1 - (yy + zz);
-		const r01 = xy - wz;
-		const r02 = xz + wy;
-		const r10 = xy + wz;
-		const r11 = 1 - (xx + zz);
-		const r12 = yz - wx;
-		const r20 = xz - wy;
-		const r21 = yz + wx;
-		const r22 = 1 - (xx + yy);
+		const offset = index * MAT4_FLOATS;
+		const matrices = this.#matrices;
 
-		const m = this.#matrices;
-		const o = index * MAT4_FLOATS;
+		/*
+		 * Column-major affine rotation and translation matrix.
+		 *
+		 * col0
+		 */
+		matrices[offset] = 1 - (yy + zz);
+		matrices[offset + 1] = xy + wz;
+		matrices[offset + 2] = xz - wy;
+		matrices[offset + 3] = 0;
 
-		// Column-major: col0, col1, col2, col3 (translation).
-		m[o] = r00;
-		m[o + 1] = r10;
-		m[o + 2] = r20;
-		m[o + 3] = 0;
+		// col1
+		matrices[offset + 4] = xy - wz;
+		matrices[offset + 5] = 1 - (xx + zz);
+		matrices[offset + 6] = yz + wx;
+		matrices[offset + 7] = 0;
 
-		m[o + 4] = r01;
-		m[o + 5] = r11;
-		m[o + 6] = r21;
-		m[o + 7] = 0;
+		// col2
+		matrices[offset + 8] = xz + wy;
+		matrices[offset + 9] = yz - wx;
+		matrices[offset + 10] = 1 - (xx + yy);
+		matrices[offset + 11] = 0;
 
-		m[o + 8] = r02;
-		m[o + 9] = r12;
-		m[o + 10] = r22;
-		m[o + 11] = 0;
+		// col3
+		matrices[offset + 12] = px;
+		matrices[offset + 13] = py;
+		matrices[offset + 14] = pz;
+		matrices[offset + 15] = 1;
 
-		m[o + 12] = px;
-		m[o + 13] = py;
-		m[o + 14] = pz;
-		m[o + 15] = 1;
-
-		this.#markDirty(index);
+		this.#markMatrixDirty(index);
 	}
 
-	/** Recolor an instance (per-instance color buffer). Enables live recolor. */
 	writeColor(
 		holder: InstanceSlotHandle,
 		r: number,
@@ -294,167 +323,203 @@ export class ArrowInstancePool {
 		b: number,
 		a = 1,
 	): void {
-		const index = holder.index;
-		if (holder.pool !== this || index < 0 || index >= this.#count) return;
-		this.#writeColor(holder, r, g, b, a);
-	}
+		if (holder.pool !== this) {
+			return;
+		}
 
-	#writeColor(
-		holder: InstanceSlotHandle,
-		r: number,
-		g: number,
-		b: number,
-		a: number,
-	): void {
 		const index = holder.index;
-		if (index < 0 || index >= this.#count) return;
 
-		const o = index * COLOR_FLOATS;
-		this.#colors[o] = r;
-		this.#colors[o + 1] = g;
-		this.#colors[o + 2] = b;
-		this.#colors[o + 3] = a;
+		if (index < 0 || index >= this.#count) {
+			return;
+		}
+
+		const offset = index * COLOR_FLOATS;
+		const colors = this.#colors;
+
+		colors[offset] = r;
+		colors[offset + 1] = g;
+		colors[offset + 2] = b;
+		colors[offset + 3] = a;
+
 		this.#markColorDirty(index);
 	}
 
 	sync(): void {
-		if (!this.#needsSync) return;
+		if (!this.#needsSync) {
+			return;
+		}
+
+		const thinInstances = this.mesh.thinInstances as
+			| PackedThinInstances
+			| undefined;
+
+		if (!thinInstances) {
+			/*
+			 * Keep the sync pending in case the thin-instance object becomes
+			 * available on a later frame.
+			 */
+			return;
+		}
+
 		this.#needsSync = false;
 
-		const ti = this.mesh.thinInstances as PackedThinInstances | undefined;
-		if (!ti) return;
+		const count = this.#count;
 
-		ti.matrices = this.#matrices;
-		if (Number.isFinite(this.#dirtyMin)) {
-			const lo = Math.max(0, this.#dirtyMin);
-			const hi = Math.min(this.#count, this.#dirtyMax);
-			if (hi > lo) {
-				ti._dirtyMin = Math.min(ti._dirtyMin, lo);
-				ti._dirtyMax = Math.max(ti._dirtyMax, hi);
-			}
-			// MANDATORY: the GPU uploader only runs while _version differs from
-			// _gpuVersion. Direct array mutation must bump it or the snapshot
-			// freezes after the first upload.
-			ti._version = (ti._version ?? 0) + 1;
-		}
-		this.#dirtyMin = Number.POSITIVE_INFINITY;
-		this.#dirtyMax = Number.NEGATIVE_INFINITY;
+		if (this.#dirtyMin !== Number.POSITIVE_INFINITY) {
+			const low = Math.max(0, this.#dirtyMin);
+			const high = Math.min(count, this.#dirtyMax);
 
-		ti.colors = this.#colors;
-		if (Number.isFinite(this.#colorDirtyMin)) {
-			const lo = Math.max(0, this.#colorDirtyMin);
-			const hi = Math.min(this.#count, this.#colorDirtyMax);
-			if (hi > lo) {
-				ti._colorDirtyMin = Math.min(
-					ti._colorDirtyMin ?? Number.POSITIVE_INFINITY,
-					lo,
+			if (high > low) {
+				thinInstances.matrices = this.#matrices;
+				thinInstances._dirtyMin = Math.min(
+					thinInstances._dirtyMin ?? Number.POSITIVE_INFINITY,
+					low,
 				);
-				ti._colorDirtyMax = Math.max(
-					ti._colorDirtyMax ?? Number.NEGATIVE_INFINITY,
-					hi,
+				thinInstances._dirtyMax = Math.max(
+					thinInstances._dirtyMax ?? Number.NEGATIVE_INFINITY,
+					high,
 				);
+				thinInstances._version = (thinInstances._version ?? 0) + 1;
 			}
-			// Same protocol as matrices: without a version bump the uploader
-			// never refreshes the color buffer.
-			ti._colorVersion = (ti._colorVersion ?? 0) + 1;
-		}
-		this.#colorDirtyMin = Number.POSITIVE_INFINITY;
-		this.#colorDirtyMax = Number.NEGATIVE_INFINITY;
 
-		ti.count = this.#count;
+			this.#dirtyMin = Number.POSITIVE_INFINITY;
+			this.#dirtyMax = Number.NEGATIVE_INFINITY;
+		}
+
+		if (this.#colorDirtyMin !== Number.POSITIVE_INFINITY) {
+			const low = Math.max(0, this.#colorDirtyMin);
+			const high = Math.min(count, this.#colorDirtyMax);
+
+			if (high > low) {
+				thinInstances.colors = this.#colors;
+				thinInstances._colorDirtyMin = Math.min(
+					thinInstances._colorDirtyMin ?? Number.POSITIVE_INFINITY,
+					low,
+				);
+				thinInstances._colorDirtyMax = Math.max(
+					thinInstances._colorDirtyMax ?? Number.NEGATIVE_INFINITY,
+					high,
+				);
+				thinInstances._colorVersion = (thinInstances._colorVersion ?? 0) + 1;
+			}
+
+			this.#colorDirtyMin = Number.POSITIVE_INFINITY;
+			this.#colorDirtyMax = Number.NEGATIVE_INFINITY;
+		}
+
+		/*
+		 * Update count last so copied data and buffer versions are visible
+		 * before the mesh is rendered with the new active range.
+		 */
+		thinInstances.count = count;
 	}
 
 	#copyLane(from: number, to: number): void {
-		this.#matrices.copyWithin(
-			to * MAT4_FLOATS,
-			from * MAT4_FLOATS,
-			from * MAT4_FLOATS + MAT4_FLOATS,
-		);
+		const matrixFrom = from * MAT4_FLOATS;
+		const matrixTo = to * MAT4_FLOATS;
 
-		this.#colors.copyWithin(
-			to * COLOR_FLOATS,
-			from * COLOR_FLOATS,
-			from * COLOR_FLOATS + COLOR_FLOATS,
-		);
+		this.#matrices.copyWithin(matrixTo, matrixFrom, matrixFrom + MAT4_FLOATS);
 
-		this.#markDirty(to);
+		const colorFrom = from * COLOR_FLOATS;
+		const colorTo = to * COLOR_FLOATS;
+
+		this.#colors.copyWithin(colorTo, colorFrom, colorFrom + COLOR_FLOATS);
+
+		this.#markMatrixDirty(to);
 		this.#markColorDirty(to);
 	}
 
 	#grow(): void {
-		const newCapacity = this.#capacity * 2;
+		const oldCapacity = this.#capacity;
+		const newCapacity = oldCapacity * 2;
 
-		const matrices = new Float32Array(newCapacity * MAT4_FLOATS);
-		matrices.set(this.#matrices);
-		this.#matrices = matrices;
+		const newMatrices = new Float32Array(newCapacity * MAT4_FLOATS);
+		newMatrices.set(this.#matrices);
+		this.#matrices = newMatrices;
 
-		const colors = new Float32Array(newCapacity * COLOR_FLOATS);
-		colors.set(this.#colors);
-		this.#colors = colors;
+		const newColors = new Float32Array(newCapacity * COLOR_FLOATS);
+		newColors.set(this.#colors);
+		this.#colors = newColors;
 
-		const laneHolders: (InstanceSlotHandle | null)[] = new Array(
+		/*
+		 * Avoid Array.splice(...largeArray), which materializes arguments and
+		 * can eventually hit an engine's maximum argument count.
+		 */
+		const newLaneHolders = new Array<InstanceSlotHandle | null>(
 			newCapacity,
 		).fill(null);
-		laneHolders.splice(0, this.#laneHolders.length, ...this.#laneHolders);
-		this.#laneHolders = laneHolders;
 
-		this.#capacity = newCapacity;
-
-		// Rebind the CPU arrays; the version bumps force full GPU re-uploads
-		// of every active lane into the resized buffers.
-		setThinInstances(this.mesh, this.#matrices, this.#count);
-		const ti = this.mesh.thinInstances as PackedThinInstances | undefined;
-		if (ti) {
-			ti.colors = this.#colors;
-			ti._colorVersion = (ti._colorVersion ?? 0) + 1;
-			ti._colorDirtyMin = 0;
-			ti._colorDirtyMax = this.#count;
-			ti._capacity = newCapacity;
+		for (let index = 0; index < oldCapacity; index++) {
+			newLaneHolders[index] = this.#laneHolders[index];
 		}
 
-		this.#dirtyMin = 0;
-		this.#dirtyMax = this.#count;
-		this.#colorDirtyMin = 0;
-		this.#colorDirtyMax = this.#count;
+		this.#laneHolders = newLaneHolders;
+		this.#capacity = newCapacity;
+
+		setThinInstances(this.mesh, newMatrices, this.#count);
+
+		const thinInstances = this.mesh.thinInstances as
+			| PackedThinInstances
+			| undefined;
+
+		if (thinInstances) {
+			thinInstances.matrices = newMatrices;
+			thinInstances.colors = newColors;
+			thinInstances.count = this.#count;
+			thinInstances._capacity = newCapacity;
+
+			thinInstances._dirtyMin = 0;
+			thinInstances._dirtyMax = this.#count;
+			thinInstances._version = (thinInstances._version ?? 0) + 1;
+
+			thinInstances._colorDirtyMin = 0;
+			thinInstances._colorDirtyMax = this.#count;
+			thinInstances._colorVersion = (thinInstances._colorVersion ?? 0) + 1;
+		}
+
+		if (this.#count > 0) {
+			this.#dirtyMin = 0;
+			this.#dirtyMax = this.#count;
+			this.#colorDirtyMin = 0;
+			this.#colorDirtyMax = this.#count;
+		}
+
+		this.#needsSync = true;
 	}
 
-	#markDirty(index: number): void {
-		if (index < this.#dirtyMin) this.#dirtyMin = index;
-		if (index + 1 > this.#dirtyMax) this.#dirtyMax = index + 1;
+	#markMatrixDirty(index: number): void {
+		if (index < this.#dirtyMin) {
+			this.#dirtyMin = index;
+		}
+
+		const end = index + 1;
+
+		if (end > this.#dirtyMax) {
+			this.#dirtyMax = end;
+		}
+
 		this.#needsSync = true;
 	}
 
 	#markColorDirty(index: number): void {
-		if (index < this.#colorDirtyMin) this.#colorDirtyMin = index;
-		if (index + 1 > this.#colorDirtyMax) this.#colorDirtyMax = index + 1;
+		if (index < this.#colorDirtyMin) {
+			this.#colorDirtyMin = index;
+		}
+
+		const end = index + 1;
+
+		if (end > this.#colorDirtyMax) {
+			this.#colorDirtyMax = end;
+		}
+
 		this.#needsSync = true;
 	}
 }
 
-// ─── Registry + per-frame sync ──────────────────────────────────────────────
-
-const livePools = new Set<ArrowInstancePool>();
-let syncObserverRegistered = false;
-
-function registerPool(pool: ArrowInstancePool): void {
-	livePools.add(pool);
-
-	if (syncObserverRegistered) return;
-	syncObserverRegistered = true;
-
-	onBeforeRender(Map1.mainScene, () => {
-		for (const pool of livePools) {
-			pool.sync();
-		}
-	});
-}
-
 let arrowPool: ArrowInstancePool | null = null;
 
-/** Lazily create (and reuse) the single shared arrow instance pool. */
+/** Lazily creates and reuses the shared arrow instance pool. */
 export function getArrowInstancePool(): ArrowInstancePool {
-	if (arrowPool === null) {
-		arrowPool = new ArrowInstancePool();
-	}
+	arrowPool ??= new ArrowInstancePool();
 	return arrowPool;
 }
