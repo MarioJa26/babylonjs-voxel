@@ -9,7 +9,7 @@ import {
 } from "../MeshPipeline/core/WorkerMeshHelpers";
 import { packCoords } from "./DataStructures/ChunkCoords";
 import { MeshData } from "./DataStructures/MeshData";
-import { PaletteExpander } from "./DataStructures/PaletteExpander";
+import { expandPalette } from "./DataStructures/PaletteExpander";
 import type { ResizableTypedArray } from "./DataStructures/ResizableTypedArray";
 import type { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData";
 import {
@@ -548,7 +548,7 @@ function getDecodedCenterBlocks(
 		blocks = new Uint16Array(totalBlocks);
 		blocks.fill(blockId);
 	} else {
-		blocks = _paletteExpander.expandPalette(packed, palette, totalBlocks);
+		blocks = expandPalette(packed, palette, totalBlocks);
 	}
 
 	if (decodedBlocksCache.size >= DECODED_BLOCKS_CACHE_MAX) {
@@ -643,8 +643,6 @@ function getOrCreateRelightEntry(
 	relightCache.set(chunkId, entry);
 	return entry;
 }
-
-const _paletteExpander = new PaletteExpander();
 
 // PERF: Reuse the session (padded grids, greedy scratch, cached pipeline) and
 // the output buffers across every mesh task in this worker.

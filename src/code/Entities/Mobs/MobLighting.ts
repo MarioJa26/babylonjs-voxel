@@ -61,6 +61,10 @@ type Entry = {
 	lastLZ: number;
 	lastSampleMs: number;
 
+	/**
+	 * Entries remain self-linked after removal. Membership is determined by
+	 * entriesBySlot, not by inspecting these links.
+	 */
 	next: Entry;
 	prev: Entry;
 };
@@ -69,12 +73,7 @@ const entriesBySlot = new Map<InstanceSlotHandle, Entry>();
 
 let entryCount = 0;
 
-/**
- * Next entry to process.
- *
- * The entries form a circular doubly linked list, so advancing and removing
- * entries do not require shifting an array or repairing numeric indices.
- */
+/** Next entry to process in the circular list. */
 let cursor: Entry | null = null;
 
 let lastTickMs = Number.NEGATIVE_INFINITY;
@@ -92,18 +91,41 @@ function ensureObserver(): void {
 	});
 }
 
-function readBaseColor(color: BaseColor): readonly [number, number, number] {
+/**
+ * Reads a BaseColor without allocating a temporary tuple.
+ *
+ * Array.isArray does not narrow readonly tuples reliably in all TypeScript
+ * configurations, so the object branch is narrowed explicitly.
+ */
+function assignBaseColor(entry: Entry, color: BaseColor): void {
 	if (Array.isArray(color)) {
-		return [color[0], color[1], color[2]];
+		entry.baseR = color[0];
+		entry.baseG = color[1];
+		entry.baseB = color[2];
+		return;
 	}
 
-	const rgb = color as {
-		r: number;
-		g: number;
-		b: number;
-	};
+	const rgb = color as { r: number; g: number; b: number };
 
-	return [rgb.r, rgb.g, rgb.b];
+	entry.baseR = rgb.r;
+	entry.baseG = rgb.g;
+	entry.baseB = rgb.b;
+}
+
+function baseColorEquals(entry: Entry, color: BaseColor): boolean {
+	if (Array.isArray(color)) {
+		return (
+			entry.baseR === color[0] &&
+			entry.baseG === color[1] &&
+			entry.baseB === color[2]
+		);
+	}
+
+	const rgb = color as { r: number; g: number; b: number };
+
+	return (
+		entry.baseR === rgb.r && entry.baseG === rgb.g && entry.baseB === rgb.b
+	);
 }
 
 /**
@@ -123,25 +145,24 @@ function refreshEntry(entry: Entry, now: number, force: boolean): boolean {
 	const ly = Math.floor(sampleY);
 	const lz = Math.floor(sampleZ);
 
-	const voxelChanged =
-		lx !== entry.lastLX || ly !== entry.lastLY || lz !== entry.lastLZ;
-
 	if (
 		!force &&
-		!voxelChanged &&
+		lx === entry.lastLX &&
+		ly === entry.lastLY &&
+		lz === entry.lastLZ &&
 		now - entry.lastSampleMs < DAY_NIGHT_FORCE_MS
 	) {
 		return false;
 	}
 
-	const packed = getLightByWorldCoords(sampleX, sampleY, sampleZ);
-	const light = packedLightToLightColor(packed);
+	const packedLight = getLightByWorldCoords(sampleX, sampleY, sampleZ);
+	const lightColor = packedLightToLightColor(packedLight);
 
 	entry.pool.writeLitColor(
 		entry.slot,
-		entry.baseR * light[0],
-		entry.baseG * light[1],
-		entry.baseB * light[2],
+		entry.baseR * lightColor[0],
+		entry.baseG * lightColor[1],
+		entry.baseB * lightColor[2],
 	);
 
 	entry.lastLX = lx;
@@ -153,67 +174,64 @@ function refreshEntry(entry: Entry, now: number, force: boolean): boolean {
 }
 
 function tick(now: number): void {
-	if (entryCount === 0 || cursor === null) {
+	if (cursor === null) {
 		return;
 	}
 
-	const hzSetting = Number(SETTING_PARAMS.MOB_LIGHT_UPDATE_HZ);
-	const hz = Number.isFinite(hzSetting) ? Math.max(0, hzSetting) : 0;
+	const hz = SETTING_PARAMS.MOB_LIGHT_UPDATE_HZ;
 
-	if (hz > 0) {
-		const intervalMs = 1000 / hz;
-
-		if (now - lastTickMs < intervalMs) {
-			return;
-		}
+	if (hz > 0 && now - lastTickMs < 1000 / hz) {
+		return;
 	}
 
 	lastTickMs = now;
 
-	const budgetSetting = Number(SETTING_PARAMS.MOB_LIGHT_UPDATES_PER_FRAME);
-	const configuredBudget = Number.isFinite(budgetSetting)
-		? Math.floor(budgetSetting)
-		: 0;
-
+	const configuredBudget = SETTING_PARAMS.MOB_LIGHT_UPDATES_PER_FRAME;
 	const budget =
-		configuredBudget > 0 ? Math.min(configuredBudget, entryCount) : entryCount;
+		configuredBudget === 0
+			? entryCount
+			: Math.min(configuredBudget, entryCount);
 
 	for (let processed = 0; processed < budget; processed++) {
-		/*
-		 * Advance before sampling. This keeps the cursor valid even if future
-		 * sampling code indirectly unregisters the current entry.
-		 */
 		const entry: any = cursor;
+
+		/*
+		 * Advance before invoking external code. If writeLitColor indirectly
+		 * unregisters this entry, cursor already points at another entry.
+		 */
 		cursor = entry.next;
 
 		refreshEntry(entry, now, false);
 
-		if (entryCount === 0 || cursor === null) {
-			break;
+		if (cursor === null) {
+			return;
 		}
 	}
 }
 
 function appendEntry(entry: Entry): void {
-	if (cursor === null) {
+	const currentCursor = cursor;
+
+	if (currentCursor === null) {
 		entry.next = entry;
 		entry.prev = entry;
+
 		cursor = entry;
 		entryCount = 1;
 		return;
 	}
 
 	/*
-	 * Append immediately before cursor. This preserves cursor as the next
-	 * entry to process and adds the new entry at the end of the current cycle.
+	 * Append immediately before cursor. Cursor remains the next entry to
+	 * process, while the new entry is placed at the end of the current cycle.
 	 */
-	const tail = cursor.prev;
+	const tail = currentCursor.prev;
 
 	entry.prev = tail;
-	entry.next = cursor;
+	entry.next = currentCursor;
 
 	tail.next = entry;
-	cursor.prev = entry;
+	currentCursor.prev = entry;
 
 	entryCount++;
 }
@@ -234,14 +252,14 @@ function removeEntry(entry: Entry): void {
 	}
 
 	/*
-	 * Break links so accidental reuse is easier to detect in debugging and
-	 * removed entries do not retain the rest of the circular list.
+	 * Break references to the remaining list. Self-linking also makes an
+	 * accidentally reused removed entry easier to identify while debugging.
 	 */
 	entry.next = entry;
 	entry.prev = entry;
 }
 
-export function registerMobLight(entry: {
+export function registerMobLight(registration: {
 	pool: MobInstancePool;
 	slot: InstanceSlotHandle;
 	getPos: () => MobPosition;
@@ -249,74 +267,69 @@ export function registerMobLight(entry: {
 }): void {
 	ensureObserver();
 
-	/*
-	 * Registering the same handle twice previously created duplicate work and
-	 * made unregistration ambiguous. Update the existing registration instead.
-	 */
-	const existing = entriesBySlot.get(entry.slot);
-	const [baseR, baseG, baseB] = readBaseColor(entry.baseColor);
+	const existing = entriesBySlot.get(registration.slot);
 
-	if (existing) {
-		existing.pool = entry.pool;
-		existing.getPos = entry.getPos;
-		existing.baseR = baseR;
-		existing.baseG = baseG;
-		existing.baseB = baseB;
+	if (existing !== undefined) {
+		existing.pool = registration.pool;
+		existing.getPos = registration.getPos;
+		assignBaseColor(existing, registration.baseColor);
 
 		refreshEntry(existing, performance.now(), true);
 		return;
 	}
 
 	const now = performance.now();
-	const pos = entry.getPos();
+	const pos = registration.getPos();
 
 	const sampleX = pos.x;
 	const sampleY = pos.y + LIGHT_Y_OFFSET;
 	const sampleZ = pos.z;
 
-	const packed = getLightByWorldCoords(sampleX, sampleY, sampleZ);
-	const light = packedLightToLightColor(packed);
-
-	entry.pool.writeLitColor(
-		entry.slot,
-		baseR * light[0],
-		baseG * light[1],
-		baseB * light[2],
-	);
-
 	/*
-	 * next and prev are initialized to the entry itself and then connected by
-	 * appendEntry().
+	 * Construct first, then self-link. This avoids null placeholders and
+	 * unsafe casts while preserving the circular-list invariant.
 	 */
 	const lightingEntry = {
-		pool: entry.pool,
-		slot: entry.slot,
-		getPos: entry.getPos,
+		pool: registration.pool,
+		slot: registration.slot,
+		getPos: registration.getPos,
 
-		baseR,
-		baseG,
-		baseB,
+		baseR: 0,
+		baseG: 0,
+		baseB: 0,
 
 		lastLX: Math.floor(sampleX),
 		lastLY: Math.floor(sampleY),
 		lastLZ: Math.floor(sampleZ),
 		lastSampleMs: now,
 
-		next: null as unknown as Entry,
-		prev: null as unknown as Entry,
-	} satisfies Entry;
+		next: undefined as unknown as Entry,
+		prev: undefined as unknown as Entry,
+	};
 
 	lightingEntry.next = lightingEntry;
 	lightingEntry.prev = lightingEntry;
 
-	entriesBySlot.set(entry.slot, lightingEntry);
+	assignBaseColor(lightingEntry, registration.baseColor);
+
+	const packedLight = getLightByWorldCoords(sampleX, sampleY, sampleZ);
+	const lightColor = packedLightToLightColor(packedLight);
+
+	registration.pool.writeLitColor(
+		registration.slot,
+		lightingEntry.baseR * lightColor[0],
+		lightingEntry.baseG * lightColor[1],
+		lightingEntry.baseB * lightColor[2],
+	);
+
+	entriesBySlot.set(registration.slot, lightingEntry);
 	appendEntry(lightingEntry);
 }
 
 export function unregisterMobLight(slot: InstanceSlotHandle): void {
 	const entry = entriesBySlot.get(slot);
 
-	if (!entry) {
+	if (entry === undefined) {
 		return;
 	}
 
@@ -330,48 +343,55 @@ export function updateMobBaseColor(
 ): void {
 	const entry = entriesBySlot.get(slot);
 
-	if (!entry) {
+	if (entry === undefined || baseColorEquals(entry, newBase)) {
 		return;
 	}
 
-	const [baseR, baseG, baseB] = readBaseColor(newBase);
-
-	if (entry.baseR === baseR && entry.baseG === baseG && entry.baseB === baseB) {
-		return;
-	}
-
-	entry.baseR = baseR;
-	entry.baseG = baseG;
-	entry.baseB = baseB;
+	assignBaseColor(entry, newBase);
 
 	/*
-	 * Update immediately rather than waiting for the configured tick interval.
-	 * This avoids displaying the old tint after a gameplay-driven color
-	 * change, while still performing only one position and light lookup.
+	 * Apply gameplay-driven color changes immediately instead of waiting for
+	 * the configured lighting tick.
 	 */
 	refreshEntry(entry, performance.now(), true);
 }
 
-/** Force an immediate refresh of every registered mob. */
+/** Force an immediate refresh of every currently registered mob. */
 export function forceRefreshAll(): void {
-	if (entryCount === 0 || cursor === null) {
+	const initialCount = entryCount;
+
+	if (initialCount === 0 || cursor === null) {
 		lastTickMs = Number.NEGATIVE_INFINITY;
 		return;
 	}
 
+	/*
+	 * Use a bounded count rather than a sentinel entry. A sentinel can become
+	 * invalid if refreshEntry indirectly unregisters the starting entry.
+	 * Newly registered entries are intentionally left for the next normal
+	 * tick, matching snapshot-style traversal.
+	 */
+	let remaining = initialCount;
+	let entry: Entry | null = cursor;
 	const now = performance.now();
-	const start = cursor;
-	let entry = start;
 
-	do {
-		const next = entry.next;
-		refreshEntry(entry, now, true);
-		entry = next;
-	} while (entryCount > 0 && cursor !== null && entry !== start);
+	while (remaining > 0 && entry !== null && entryCount > 0) {
+		const next: Entry = entry.next;
+
+		/*
+		 * The map check prevents refreshing an entry that was removed by an
+		 * earlier callback during this traversal.
+		 */
+		if (entriesBySlot.get(entry.slot) === entry) {
+			refreshEntry(entry, now, true);
+		}
+
+		entry = entryCount > 0 ? next : null;
+		remaining--;
+	}
 
 	/*
-	 * Preserve the original behavior where the next normal tick is not
-	 * throttled by the forced refresh.
+	 * A forced refresh must not throttle the next scheduled lighting tick.
 	 */
 	lastTickMs = Number.NEGATIVE_INFINITY;
 }
@@ -381,12 +401,9 @@ export function getMobLightingStats(): {
 	budget: number;
 	hz: number;
 } {
-	const budgetSetting = Number(SETTING_PARAMS.MOB_LIGHT_UPDATES_PER_FRAME);
-	const hzSetting = Number(SETTING_PARAMS.MOB_LIGHT_UPDATE_HZ);
-
 	return {
 		total: entryCount,
-		budget: Number.isFinite(budgetSetting) ? budgetSetting : 0,
-		hz: Number.isFinite(hzSetting) ? hzSetting : 0,
+		budget: SETTING_PARAMS.MOB_LIGHT_UPDATES_PER_FRAME,
+		hz: SETTING_PARAMS.MOB_LIGHT_UPDATE_HZ,
 	};
 }

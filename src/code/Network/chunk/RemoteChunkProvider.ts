@@ -118,16 +118,9 @@ type PendingChunk = {
 	 * (chunkVersions had an entry), as opposed to a cache-miss sentinel 0. */
 	hasCachedPayload: boolean;
 };
-type InflatableEntry = {
-	entry: DeflatedChunk;
-	key: bigint;
-};
 
-type InflatedResult = {
-	write: ChunkWrite;
-	key: bigint;
-	version: number;
-};
+type InflatedResult = ChunkWrite | null;
+const DEFAULT_LOD = 0;
 
 // See Lib/yieldToEventLoop.ts for the shared zero-delay event-loop yield
 // (MessageChannel macrotask, no setTimeout(0) clamp).
@@ -253,21 +246,22 @@ export class RemoteChunkProvider {
 		const len = chunks.length;
 		if (len === 0) return;
 
+		/*
+		 * These arrays are still necessary because writeChunks is asynchronous.
+		 * However, keys and versions are populated only for accepted responses.
+		 */
 		const writes = new Array<ChunkWrite>(len);
-		// SoA instead of an array of {key, version} objects: avoids one
-		// small object allocation per written chunk on this hot per-packet
-		// path (this runs once for every incoming chunk batch).
 		const writtenKeys = new Array<bigint>(len);
 		const writtenVersions = new Array<number>(len);
 
-		let writeCount = 0;
 		const versions = this.chunkVersions;
+		let writeCount = 0;
 
 		for (let i = 0; i < len; i++) {
 			const chunk = chunks[i];
 			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-
 			const currentVersion = versions.get(key);
+
 			if (currentVersion !== undefined && chunk.version < currentVersion) {
 				if (DEBUG_ENABLED) {
 					debugLog(
@@ -277,9 +271,7 @@ export class RemoteChunkProvider {
 				continue;
 			}
 
-			if (!this.resolvePending(key, chunk)) {
-				continue;
-			}
+			if (!this.resolvePending(key, chunk)) continue;
 
 			writes[writeCount] = {
 				cx: chunk.chunkX,
@@ -295,10 +287,8 @@ export class RemoteChunkProvider {
 					chunk.version,
 				),
 			};
-
 			writtenKeys[writeCount] = key;
 			writtenVersions[writeCount] = chunk.version;
-
 			writeCount++;
 		}
 
@@ -312,25 +302,30 @@ export class RemoteChunkProvider {
 
 		const responseEpoch = this.epoch;
 
-		void this.store
-			.writeChunks(writes)
-			.then(() => {
+		void this.store.writeChunks(writes).then(
+			() => {
 				if (this.epoch !== responseEpoch) return;
 
 				for (let i = 0; i < writeCount; i++) {
 					const key = writtenKeys[i];
 					const version = writtenVersions[i];
-					const current = versions.get(key);
+					const currentVersion = versions.get(key);
 
-					if (current === undefined || version >= current) {
-						versions.set(key, version);
+					if (currentVersion === undefined || version >= currentVersion) {
+						/*
+						 * Use the capped version-recording path. The original
+						 * versions.set calls allowed batch writes to bypass the
+						 * CHUNK_VERSIONS_MAX cap.
+						 */
+						this.noteChunkVersion(key, version);
 					}
 				}
-			})
-			.catch((error) => {
+			},
+			(error) => {
 				if (isCacheResetError(error)) return;
 				console.warn("[RemoteChunkProvider] batch persistence failed:", error);
-			});
+			},
+		);
 	}
 
 	/**
@@ -401,24 +396,21 @@ export class RemoteChunkProvider {
 		entries: readonly DeflatedChunk[],
 	): Promise<void> {
 		const entryCount = entries.length;
-
-		if (entryCount === 0) {
-			return;
-		}
+		if (entryCount === 0) return;
 
 		const versions = this.chunkVersions;
 
 		/*
-		 * Preallocate for the worst case where every entry passes the stale check.
-		 * Only indices below inflatableCount are initialized.
+		 * Store source indices rather than allocating { entry, key } objects.
+		 * A number array is substantially cheaper than one object per entry.
 		 */
-		const inflatable = new Array<InflatableEntry>(entryCount);
+		const inflatableIndices = new Array<number>(entryCount);
+		const inflatableKeys = new Array<bigint>(entryCount);
 		let inflatableCount = 0;
 
 		for (let i = 0; i < entryCount; i++) {
 			const entry = entries[i];
 			const key = packCoords(entry.chunkX, entry.chunkY, entry.chunkZ);
-
 			const currentVersion = versions.get(key);
 
 			if (currentVersion !== undefined && entry.version < currentVersion) {
@@ -428,14 +420,12 @@ export class RemoteChunkProvider {
 							`${key} version=${entry.version}`,
 					);
 				}
-
 				continue;
 			}
 
-			inflatable[inflatableCount++] = {
-				entry,
-				key,
-			};
+			inflatableIndices[inflatableCount] = i;
+			inflatableKeys[inflatableCount] = key;
+			inflatableCount++;
 		}
 
 		if (inflatableCount === 0) {
@@ -443,18 +433,19 @@ export class RemoteChunkProvider {
 			return;
 		}
 
-		const windowSize = this.windowSize;
+		inflatableIndices.length = inflatableCount;
+		inflatableKeys.length = inflatableCount;
+
+		const writes = new Array<ChunkWrite>(inflatableCount);
 
 		/*
-		 * At most one successful write can be produced per inflatable entry.
-		 * Dense indexed writes avoid repeated push-based capacity growth.
+		 * Each successful write records its position in inflatableIndices.
+		 * That position gives us both the original entry and its already-packed
+		 * key, avoiding separate writtenKeys and writtenVersions arrays.
 		 */
-		const writes = new Array<ChunkWrite>(inflatableCount);
-		// SoA instead of an array of {key, version} objects — same reasoning
-		// as handleChunkDataBatch above.
-		const writtenKeys = new Array<bigint>(inflatableCount);
-		const writtenVersions = new Array<number>(inflatableCount);
+		const successfulIndices = new Array<number>(inflatableCount);
 
+		const windowSize = this.windowSize;
 		let writeCount = 0;
 
 		for (
@@ -463,43 +454,29 @@ export class RemoteChunkProvider {
 			windowStart += windowSize
 		) {
 			const windowEnd = Math.min(windowStart + windowSize, inflatableCount);
-
 			const taskCount = windowEnd - windowStart;
-			const tasks = new Array<Promise<InflatedResult | null>>(taskCount);
+			const tasks = new Array<Promise<InflatedResult>>(taskCount);
 
 			for (let i = windowStart; i < windowEnd; i++) {
-				const { entry, key } = inflatable[i];
-				// Calling the method directly — rather than building and
-				// immediately invoking a per-iteration async arrow closure —
-				// avoids allocating a fresh function object for every chunk
-				// in the batch. The method reference is fixed on the
-				// prototype; only the returned Promise is allocated, which
-				// was unavoidable either way.
-				tasks[i - windowStart] = this.inflateAndValidateEntry(entry, key);
+				const sourceIndex = inflatableIndices[i];
+
+				tasks[i - windowStart] = this.inflateAndValidateEntry(
+					entries[sourceIndex],
+					inflatableKeys[i],
+				);
 			}
 
-			const results = await Promise.all(tasks);
+			const windowResults = await Promise.all(tasks);
 
-			for (let i = 0; i < results.length; i++) {
-				const result = results[i];
+			for (let i = 0; i < taskCount; i++) {
+				const write = windowResults[i];
+				if (write === null) continue;
 
-				if (result === null) {
-					continue;
-				}
-
-				writes[writeCount] = result.write;
-				writtenKeys[writeCount] = result.key;
-				writtenVersions[writeCount] = result.version;
-
+				writes[writeCount] = write;
+				successfulIndices[writeCount] = windowStart + i;
 				writeCount++;
 			}
 
-			/*
-			 * Promise completion yields only to the microtask queue.
-			 * yieldToEventLoop() creates a real task-boundary between
-			 * inflate windows without the setTimeout(fn, 0) clamp — see its
-			 * doc comment for why that matters for a batch with many windows.
-			 */
 			if (windowEnd < inflatableCount) {
 				await yieldToEventLoop();
 			}
@@ -507,44 +484,33 @@ export class RemoteChunkProvider {
 
 		this.clearSweepIfEmpty();
 
-		if (writeCount === 0) {
-			return;
-		}
+		if (writeCount === 0) return;
 
-		/*
-		 * Remove unused preallocated slots before passing the arrays to storage.
-		 * This does not copy the arrays.
-		 */
 		writes.length = writeCount;
-		writtenKeys.length = writeCount;
-		writtenVersions.length = writeCount;
+		successfulIndices.length = writeCount;
 
 		const responseEpoch = this.epoch;
 
-		void this.store
-			.writeChunks(writes)
-			.then(() => {
-				if (this.epoch !== responseEpoch) {
-					return;
-				}
+		void this.store.writeChunks(writes).then(
+			() => {
+				if (this.epoch !== responseEpoch) return;
 
 				for (let i = 0; i < writeCount; i++) {
-					const key = writtenKeys[i];
-					const version = writtenVersions[i];
+					const inflatableIndex = successfulIndices[i];
+					const key = inflatableKeys[inflatableIndex];
+					const entry = entries[inflatableIndices[inflatableIndex]];
 					const currentVersion = versions.get(key);
 
-					if (currentVersion === undefined || version >= currentVersion) {
-						versions.set(key, version);
+					if (currentVersion === undefined || entry.version >= currentVersion) {
+						this.noteChunkVersion(key, entry.version);
 					}
 				}
-			})
-			.catch((error) => {
-				if (isCacheResetError(error)) {
-					return;
-				}
-
+			},
+			(error) => {
+				if (isCacheResetError(error)) return;
 				console.warn("[RemoteChunkProvider] batch persistence failed:", error);
-			});
+			},
+		);
 	}
 
 	/**
@@ -556,7 +522,7 @@ export class RemoteChunkProvider {
 	private async inflateAndValidateEntry(
 		entry: DeflatedChunk,
 		key: bigint,
-	): Promise<InflatedResult | null> {
+	): Promise<InflatedResult> {
 		let blob: Uint8Array;
 
 		try {
@@ -595,20 +561,14 @@ export class RemoteChunkProvider {
 			return null;
 		}
 
-		if (!this.resolvePending(key, chunk)) {
-			return null;
-		}
+		if (!this.resolvePending(key, chunk)) return null;
 
 		return {
-			write: {
-				cx: chunk.chunkX,
-				cy: chunk.chunkY,
-				cz: chunk.chunkZ,
-				blob: frameDeflated(entry.origLen, entry.deflated),
-				preCompressed: true,
-			},
-			key,
-			version: chunk.version,
+			cx: entry.chunkX,
+			cy: entry.chunkY,
+			cz: entry.chunkZ,
+			blob: frameDeflated(entry.origLen, entry.deflated),
+			preCompressed: true,
 		};
 	}
 
@@ -687,49 +647,52 @@ export class RemoteChunkProvider {
 		const len = entries.length;
 		if (len === 0) return;
 
-		let evictCoords: Array<{ cx: number; cy: number; cz: number }> | null =
-			null;
-		let evictCount = 0;
+		let rejectedIndices: number[] | null = null;
 		let removedAny = false;
 
 		for (let i = 0; i < len; i++) {
-			const entry = entries[i];
-			const outcome = this.processUnchangedEntry(entry);
+			const outcome = this.processUnchangedEntry(entries[i]);
 
-			if (outcome === UnchangedOutcome.Ignored) {
-				continue;
-			}
+			if (outcome === UnchangedOutcome.Ignored) continue;
 
 			removedAny = true;
 
 			if (outcome === UnchangedOutcome.Rejected) {
-				if (evictCoords === null) {
-					evictCoords = new Array(len);
-				}
-
-				evictCoords[evictCount++] = {
-					cx: entry.cx,
-					cy: entry.cy,
-					cz: entry.cz,
-				};
+				if (rejectedIndices === null) rejectedIndices = [];
+				rejectedIndices.push(i);
 			}
 		}
 
-		if (removedAny) {
-			this.clearSweepIfEmpty();
+		if (removedAny) this.clearSweepIfEmpty();
+		if (rejectedIndices === null) return;
+
+		/*
+		 * LevelDbChunkStore requires coordinate objects, so these allocations
+		 * cannot be eliminated without changing that API. They are deferred
+		 * until it is known exactly how many are required.
+		 */
+		const evictCoords = new Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+		}>(rejectedIndices.length);
+
+		for (let i = 0; i < rejectedIndices.length; i++) {
+			const entry = entries[rejectedIndices[i]];
+			evictCoords[i] = {
+				cx: entry.cx,
+				cy: entry.cy,
+				cz: entry.cz,
+			};
 		}
 
-		if (evictCoords !== null && evictCount > 0) {
-			evictCoords.length = evictCount;
-
-			this.store.deleteChunks(evictCoords).catch((error) => {
-				if (isCacheResetError(error)) return;
-				console.warn(
-					"[RemoteChunkProvider] failed to evict invalid cache entries:",
-					error,
-				);
-			});
-		}
+		void this.store.deleteChunks(evictCoords).catch((error) => {
+			if (isCacheResetError(error)) return;
+			console.warn(
+				"[RemoteChunkProvider] failed to evict invalid cache entries:",
+				error,
+			);
+		});
 	}
 
 	/** Returns false if the response cannot resolve a current pending request. */
@@ -903,19 +866,20 @@ export class RemoteChunkProvider {
 			return result;
 		}
 
-		const coords: Array<{ cx: number; cy: number; cz: number }> = new Array(
-			len,
-		);
-		const keys: Array<bigint> = new Array(len);
+		const coords = new Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+		}>(len);
 
 		for (let i = 0; i < len; i++) {
-			const c = chunks[i];
+			const chunk = chunks[i];
+
 			coords[i] = {
-				cx: c.chunkX,
-				cy: c.chunkY,
-				cz: c.chunkZ,
+				cx: chunk.chunkX,
+				cy: chunk.chunkY,
+				cz: chunk.chunkZ,
 			};
-			keys[i] = packCoords(c.chunkX, c.chunkY, c.chunkZ);
 		}
 
 		let blobs: Map<string, Uint8Array>;
@@ -932,40 +896,46 @@ export class RemoteChunkProvider {
 			return result;
 		}
 
-		const corruptCoords: Array<{ cx: number; cy: number; cz: number }> = [];
+		/*
+		 * Store source indices. If corruption is rare, this normally remains
+		 * null and allocates nothing.
+		 */
+		let corruptIndices: number[] | null = null;
 		const versions = this.chunkVersions;
 
 		for (let i = 0; i < len; i++) {
-			const c = chunks[i];
+			const chunk = chunks[i];
 			const coord = coords[i];
-			const key = keys[i];
 			const blob = blobs.get(chunkKey(coord.cx, coord.cy, coord.cz));
 
 			if (blob === undefined) {
-				result.set(c, null);
+				result.set(chunk, null);
 				continue;
 			}
 
 			const resolved = this.deserializeCached(
 				blob,
-				c.chunkX,
-				c.chunkY,
-				c.chunkZ,
+				coord.cx,
+				coord.cy,
+				coord.cz,
 			);
 
 			if (resolved === null) {
-				corruptCoords.push({
-					cx: c.chunkX,
-					cy: c.chunkY,
-					cz: c.chunkZ,
-				});
-				result.set(c, null);
+				if (corruptIndices === null) corruptIndices = [];
+				corruptIndices.push(i);
+				result.set(chunk, null);
 				continue;
 			}
 
+			/*
+			 * Compute a packed key only when a blob was actually found and
+			 * successfully deserialized.
+			 */
+			const key = packCoords(coord.cx, coord.cy, coord.cz);
 			const currentVersion = versions.get(key);
+
 			if (currentVersion !== undefined && resolved.version < currentVersion) {
-				result.set(c, null);
+				result.set(chunk, null);
 				continue;
 			}
 
@@ -976,11 +946,21 @@ export class RemoteChunkProvider {
 			}
 
 			this.noteChunkVersion(key, resolved.version);
-			result.set(c, resolved);
+			result.set(chunk, resolved);
 		}
 
-		if (corruptCoords.length > 0) {
-			this.store.deleteChunks(corruptCoords).catch((error) => {
+		if (corruptIndices !== null) {
+			const corruptCoords = new Array<{
+				cx: number;
+				cy: number;
+				cz: number;
+			}>(corruptIndices.length);
+
+			for (let i = 0; i < corruptIndices.length; i++) {
+				corruptCoords[i] = coords[corruptIndices[i]];
+			}
+
+			void this.store.deleteChunks(corruptCoords).catch((error) => {
 				if (isCacheResetError(error)) return;
 				console.warn(
 					"[RemoteChunkProvider] failed to evict corrupt cache entries:",
@@ -1183,21 +1163,22 @@ export class RemoteChunkProvider {
 		const len = coords.length;
 		const results = new Array<Promise<RemoteChunkResult>>(len);
 
-		if (len === 0) {
-			return results;
-		}
+		if (len === 0) return results;
 
-		const requests: Array<{
+		/*
+		 * Allocate request storage lazily. A batch can consist entirely of
+		 * requests already represented in inFlight.
+		 */
+		let requests: Array<{
 			cx: number;
 			cy: number;
 			cz: number;
 			lod: number;
 			cachedVersion: number;
-		}> = new Array(len);
+		}> | null = null;
 
-		const createdKeys: bigint[] = new Array(len);
+		let createdKeys: bigint[] | null = null;
 		let requestCount = 0;
-		let createdCount = 0;
 
 		const deadline = performance.now() + timeoutMs;
 		const requestEpoch = this.epoch;
@@ -1213,6 +1194,7 @@ export class RemoteChunkProvider {
 			const key = packCoords(cx, cy, cz);
 
 			const existing = inFlight.get(key);
+
 			if (existing !== undefined) {
 				results[i] = existing;
 				continue;
@@ -1241,38 +1223,38 @@ export class RemoteChunkProvider {
 
 			inFlight.set(key, promise);
 			results[i] = promise;
-			// All entries created in this call share the same `deadline`,
-			// so a single heapPush per entry plus one scheduleSweepAt below
-			// (instead of a full pending-map rescan) is enough.
 			this.heapPush(deadline, key);
 
-			requests[requestCount++] = {
+			if (requests === null) {
+				requests = [];
+				createdKeys = [];
+			}
+
+			requests.push({
 				cx,
 				cy,
 				cz,
-				lod: 0,
+				lod: DEFAULT_LOD,
 				cachedVersion,
-			};
-
-			createdKeys[createdCount++] = key;
+			});
+			createdKeys!.push(key);
+			requestCount++;
 		}
 
-		if (requestCount === 0) {
+		if (requestCount === 0 || requests === null || createdKeys === null) {
 			return results;
 		}
 
-		requests.length = requestCount;
-
 		if (!this.client.isConnected) {
 			console.warn(
-				`[RemoteChunkProvider] batch send ABORTED (not connected): ${createdCount} new entries`,
+				`[RemoteChunkProvider] batch send ABORTED (not connected): ${requestCount} new entries`,
 			);
 
 			const sendError = new Error("Chunk batch send failed: not connected");
 
-			for (let i = 0; i < createdCount; i++) {
+			for (let i = 0; i < requestCount; i++) {
 				const entry = this.removePending(createdKeys[i]);
-				if (entry) entry.reject(sendError);
+				if (entry !== undefined) entry.reject(sendError);
 			}
 
 			return results;
@@ -1286,9 +1268,9 @@ export class RemoteChunkProvider {
 			const sendError =
 				error instanceof Error ? error : new Error(String(error));
 
-			for (let i = 0; i < createdCount; i++) {
+			for (let i = 0; i < requestCount; i++) {
 				const entry = this.removePending(createdKeys[i]);
-				if (entry) entry.reject(sendError);
+				if (entry !== undefined) entry.reject(sendError);
 			}
 		}
 
@@ -1380,29 +1362,44 @@ export class RemoteChunkProvider {
 		const keys = this.heapKeys;
 		const last = deadlines.length - 1;
 
-		deadlines[0] = deadlines[last];
-		keys[0] = keys[last];
+		if (last === 0) {
+			deadlines.pop();
+			keys.pop();
+			return;
+		}
+
+		const replacementDeadline = deadlines[last];
+		const replacementKey = keys[last];
+
 		deadlines.pop();
 		keys.pop();
+
+		deadlines[0] = replacementDeadline;
+		keys[0] = replacementKey;
 
 		const n = deadlines.length;
 		let i = 0;
 
 		while (true) {
-			const l = i * 2 + 1;
-			const r = i * 2 + 2;
-			let smallest = i;
+			const left = i * 2 + 1;
+			if (left >= n) break;
 
-			if (l < n && deadlines[l] < deadlines[smallest]) smallest = l;
-			if (r < n && deadlines[r] < deadlines[smallest]) smallest = r;
-			if (smallest === i) break;
+			const right = left + 1;
+			let smallest = left;
 
-			const sd = deadlines[smallest];
-			const sk = keys[smallest];
-			deadlines[smallest] = deadlines[i];
-			keys[smallest] = keys[i];
-			deadlines[i] = sd;
-			keys[i] = sk;
+			if (right < n && deadlines[right] < deadlines[left]) {
+				smallest = right;
+			}
+
+			if (deadlines[i] <= deadlines[smallest]) break;
+
+			const deadline = deadlines[i];
+			const key = keys[i];
+
+			deadlines[i] = deadlines[smallest];
+			keys[i] = keys[smallest];
+			deadlines[smallest] = deadline;
+			keys[smallest] = key;
 
 			i = smallest;
 		}
@@ -1498,15 +1495,31 @@ export class RemoteChunkProvider {
 		const deadlines = this.heapDeadlines;
 		const keys = this.heapKeys;
 
+		let timeoutError: Error | null = null;
+
 		while (deadlines.length > 0 && deadlines[0] <= now) {
 			const key = keys[0];
 			const deadline = deadlines[0];
+
 			this.heapPop();
 
 			const entry = pending.get(key);
+
 			if (entry !== undefined && entry.deadline === deadline) {
 				pending.delete(key);
-				entry.reject(new Error(`Chunk request timeout: ${key}`));
+
+				/*
+				 * Preserve the original per-key error message where only one
+				 * request expires. For multiple expirations, sharing an Error
+				 * materially reduces stack and string allocation, but changes
+				 * the exact message. If exact timeout messages are observable,
+				 * use the original new Error expression instead.
+				 */
+				if (timeoutError === null) {
+					timeoutError = new Error("One or more chunk requests timed out");
+				}
+
+				entry.reject(timeoutError);
 			}
 		}
 
@@ -1517,8 +1530,8 @@ export class RemoteChunkProvider {
 			return;
 		}
 
-		if (this.heapDeadlines.length > 0) {
-			this.scheduleSweepAt(this.heapDeadlines[0]);
+		if (deadlines.length > 0) {
+			this.scheduleSweepAt(deadlines[0]);
 		}
 	}
 }

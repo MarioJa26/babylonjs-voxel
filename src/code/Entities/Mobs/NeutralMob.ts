@@ -98,6 +98,7 @@ export abstract class NeutralMob {
 
 	#tmpProbe = vec3Zero();
 	#tmpGroundExtents = vec3Zero();
+	#tmpFallNudge = vec3Zero();
 
 	#path: PathWaypoint[] = [];
 	#pathIndex = 0;
@@ -399,6 +400,31 @@ export abstract class NeutralMob {
 		return this.#headSubmergedCached;
 	}
 
+	/**
+	 * Returns whether the block directly beneath the visual center of the mob is
+	 * collidable.
+	 *
+	 * Keeping this lookup in one helper prevents the grounded check, post-movement
+	 * failsafe, and absolute fall failsafe from independently rebuilding the same
+	 * coordinates.
+	 */
+	#hasCentralSupport(pos: Vec3, yOffset = 0.05): boolean {
+		return isCollidableBlock(
+			getBlockByWorldCoords(
+				Math.floor(pos.x),
+				Math.floor(pos.y - this.#feetHeight - yOffset),
+				Math.floor(pos.z),
+			),
+		);
+	}
+
+	/**
+	 * Executes one simulation step.
+	 *
+	 * This version avoids hot-path vector allocations, performs the central
+	 * support lookup once after movement, skips unnecessary trigonometry, and
+	 * consolidates several repeated path-state checks.
+	 */
 	tick(dt: number): void {
 		if (this.#isDisposed) {
 			NeutralMob.#allMobs.delete(this);
@@ -413,14 +439,14 @@ export abstract class NeutralMob {
 		let fleeing = false;
 
 		const playerPosition = this.#playerPosition;
-		if (playerPosition) {
-			const panicRadiusSq = this.getPanicRadiusSq();
+
+		if (playerPosition !== null) {
 			const dx = pos.x - playerPosition.x;
 			const dy = pos.y - playerPosition.y;
 			const dz = pos.z - playerPosition.z;
-			const distSq = dx * dx + dy * dy + dz * dz;
+			const panicRadiusSq = this.getPanicRadiusSq();
 
-			if (panicRadiusSq > 0 && distSq < panicRadiusSq) {
+			if (panicRadiusSq > 0 && dx * dx + dy * dy + dz * dz < panicRadiusSq) {
 				this.#fleeTimer = 2.5;
 			}
 
@@ -428,14 +454,18 @@ export abstract class NeutralMob {
 				fleeing = true;
 				currentSpeed = PANIC_SPEED;
 				this.#state = NeutralMobState.Wander;
-				this.#path.length = 0;
-				this.#pathIndex = 0;
-				this.#fleeTimer -= dt;
 
-				const awayX = pos.x - playerPosition.x;
-				const awayZ = pos.z - playerPosition.z;
-				if (awayX * awayX + awayZ * awayZ > 0.01) {
-					this.#facingAngle = Math.atan2(awayX, awayZ);
+				if (this.#path.length !== 0) {
+					this.#path.length = 0;
+					this.#pathIndex = 0;
+				}
+
+				this.#fleeTimer = Math.max(0, this.#fleeTimer - dt);
+
+				const horizontalDistSq = dx * dx + dz * dz;
+
+				if (horizontalDistSq > 0.01) {
+					this.#facingAngle = Math.atan2(dx, dz);
 				}
 			}
 		}
@@ -449,68 +479,91 @@ export abstract class NeutralMob {
 				if (this.#state === NeutralMobState.Wander) {
 					this.#state = NeutralMobState.Idle;
 					this.#stateTimer = 2 + Math.random() * 3;
+
 					velocity.x = 0;
 					velocity.z = 0;
-					this.#path.length = 0;
-					this.#pathIndex = 0;
+
+					if (this.#path.length !== 0) {
+						this.#path.length = 0;
+						this.#pathIndex = 0;
+					}
 				} else if (NeutralMob.tryClaimPathSlot()) {
 					this.#state = NeutralMobState.Wander;
 					this.#stateTimer = 1 + Math.random() * 4;
 					this.#pickWanderTarget(pos);
 				}
-				// Slot denied: timer stays <= 0, retry next frame.
+
+				/*
+				 * If no path slot was available, stateTimer intentionally remains
+				 * non-positive so the mob retries on the next simulation tick.
+				 */
 			}
 		}
 
 		let waterWandered = false;
+		let hasActivePath =
+			this.#path.length !== 0 && this.#pathIndex < this.#path.length;
 
 		if (inWater && !fleeing) {
 			this.#state = NeutralMobState.Wander;
-			this.#stateTimer = 1.0;
+			this.#stateTimer = 1;
 
-			if (this.#path.length === 0 || this.#pathIndex >= this.#path.length) {
-				this.#path.length = 0;
-				this.#pathIndex = 0;
+			if (!hasActivePath) {
+				if (this.#path.length !== 0 || this.#pathIndex !== 0) {
+					this.#path.length = 0;
+					this.#pathIndex = 0;
+				}
+
 				this.#shoreSearchTimer -= dt;
 
 				if (this.#shoreSearchTimer <= 0 && NeutralMob.tryClaimPathSlot()) {
 					this.#findNearestShore(pos);
 
-					if (this.#path.length === 0) {
-						// Jittered retry: a fixed 0.5s cadence re-synchronizes
-						// beached mobs into a herd that hammers the shared
-						// pathfinding budget every half second.
+					hasActivePath =
+						this.#path.length !== 0 && this.#pathIndex < this.#path.length;
+
+					if (!hasActivePath) {
+						/*
+						 * Randomization prevents multiple swimming mobs from
+						 * synchronizing their pathfinding retries.
+						 */
 						this.#shoreSearchTimer = 0.4 + Math.random() * 0.4;
 					}
 				}
 
-				if (this.#path.length === 0) {
+				if (!hasActivePath) {
 					this.#waterWander(dt);
 					waterWandered = true;
 				}
 			}
 		}
 
-		let sinFacing = 0;
-		let cosFacing = 0;
-
 		if (this.#state === NeutralMobState.Wander) {
-			if (this.#path.length > 0 && this.#pathIndex < this.#path.length) {
+			hasActivePath =
+				this.#path.length !== 0 && this.#pathIndex < this.#path.length;
+
+			if (hasActivePath) {
 				this.#advanceOnPath(currentSpeed, dt, pos, inWater);
 			} else if (inWater && !fleeing) {
 				if (!waterWandered) {
 					this.#waterWander(dt);
 				}
 			} else {
-				sinFacing = Math.sin(this.#facingAngle);
-				cosFacing = Math.cos(this.#facingAngle);
-				velocity.x = sinFacing * currentSpeed;
-				velocity.z = cosFacing * currentSpeed;
+				/*
+				 * Trigonometry is now evaluated only for direction-based movement.
+				 * The old temporary sinFacing and cosFacing variables were set on
+				 * every tick even though most branches never used them.
+				 */
+				velocity.x = Math.sin(this.#facingAngle) * currentSpeed;
+				velocity.z = Math.cos(this.#facingAngle) * currentSpeed;
 			}
 		}
 
+		hasActivePath =
+			this.#path.length !== 0 && this.#pathIndex < this.#path.length;
+
 		if (inWater) {
-			const escapingWater = this.#path.length > 0 && !fleeing;
+			const escapingWater = hasActivePath && !fleeing;
 			const headSubmerged = this.#headSubmergedCached;
 
 			velocity.y += WATER_GRAVITY * dt;
@@ -525,7 +578,7 @@ export abstract class NeutralMob {
 				velocity.y +=
 					Math.min(surfaceError * WATER_FLOAT_ACCEL, SWIM_BUOYANCY) * dt;
 			} else {
-				velocity.y += Math.max(surfaceError * 2.0, -1.0) * dt;
+				velocity.y += Math.max(surfaceError * 2, -1) * dt;
 			}
 
 			if (escapingWater) {
@@ -544,15 +597,16 @@ export abstract class NeutralMob {
 				velocity.y = WATER_MAX_DOWN_SPEED;
 			}
 
-			const swimPathCap =
-				this.#path.length > 0
-					? this.#wanderSpeed * 0.9
-					: this.#wanderSpeed * SWIM_SPEED_FACTOR;
-			const hLenSq = velocity.x * velocity.x + velocity.z * velocity.z;
-			const swimPathCapSq = swimPathCap * swimPathCap;
+			const swimSpeedCap = hasActivePath
+				? this.#wanderSpeed * 0.9
+				: this.#wanderSpeed * SWIM_SPEED_FACTOR;
+			const horizontalSpeedSq =
+				velocity.x * velocity.x + velocity.z * velocity.z;
+			const swimSpeedCapSq = swimSpeedCap * swimSpeedCap;
 
-			if (hLenSq > swimPathCapSq) {
-				const scale = swimPathCap / Math.sqrt(hLenSq);
+			if (horizontalSpeedSq > swimSpeedCapSq && horizontalSpeedSq > 0) {
+				const scale = swimSpeedCap / Math.sqrt(horizontalSpeedSq);
+
 				velocity.x *= scale;
 				velocity.z *= scale;
 			}
@@ -565,7 +619,10 @@ export abstract class NeutralMob {
 
 			if (this.#breathTimer <= 0) {
 				this.takeDamage(DROWN_DAMAGE);
-				if (this.#isDisposed) return;
+
+				if (this.#isDisposed) {
+					return;
+				}
 
 				this.#breathTimer = DROWN_INTERVAL;
 			}
@@ -573,111 +630,144 @@ export abstract class NeutralMob {
 			this.#breathTimer = BREATH_MAX;
 		}
 
+		/*
+		 * The pre-movement grounded result is needed only to determine whether a
+		 * step-up may be attempted. Water pathing also permits stepping onto shore.
+		 */
 		const wasGrounded = this.#isGrounded(pos);
-		const canStepUp = wasGrounded || (inWater && this.#path.length > 0);
+		const canStepUp = wasGrounded || (inWater && hasActivePath);
 
-		this.#moveAxis(pos, Axis.X, velocity.x * dt, canStepUp);
-		this.#moveAxis(pos, Axis.Y, velocity.y * dt, canStepUp);
-		this.#moveAxis(pos, Axis.Z, velocity.z * dt, canStepUp);
+		const moveX = velocity.x * dt;
+		const moveY = velocity.y * dt;
+		const moveZ = velocity.z * dt;
+
+		if (moveX !== 0) {
+			this.#moveAxis(pos, Axis.X, moveX, canStepUp);
+		}
+
+		if (moveY !== 0) {
+			this.#moveAxis(pos, Axis.Y, moveY, canStepUp);
+		}
+
+		if (moveZ !== 0) {
+			this.#moveAxis(pos, Axis.Z, moveZ, canStepUp);
+		}
 
 		let grounded = this.#isGrounded(pos);
-		// Failsafe: central support check — mining the block directly under the
-		// mob must make it fall even if the wide probe still hits a neighbour.
-		{
-			const cx = Math.floor(pos.x);
-			const cy = Math.floor(pos.y - this.#feetHeight - 0.05);
-			const cz = Math.floor(pos.z);
-			const supportId = getBlockByWorldCoords(cx, cy, cz);
-			if (!isCollidableBlock(supportId) && grounded) {
-				grounded = false;
-			}
-			// Also force falling if no central support and velocity is stuck at 0
-			if (
-				!isCollidableBlock(supportId) &&
-				grounded === false &&
-				Math.abs(velocity.y) < 0.01
-			) {
+
+		/*
+		 * Perform the post-movement central-support lookup once and reuse it for
+		 * both grounded correction and the final fall failsafe.
+		 */
+		const hasCentralSupport = inWater || this.#hasCentralSupport(pos);
+
+		if (!hasCentralSupport) {
+			grounded = false;
+
+			if (Math.abs(velocity.y) < 0.01) {
 				velocity.y = -0.5;
 			}
 		}
+
 		if (grounded && velocity.y < 0) {
 			velocity.y = 0;
 		}
 
-		// Fall damage: track falls and apply damage on landing
 		if (inWater) {
-			// Water breaks the fall — reset tracking
+			/*
+			 * Entering water breaks the fall and prevents delayed landing damage
+			 * after the mob exits.
+			 */
 			this.#fallStartY = Number.NaN;
 		} else if (grounded) {
-			// Landed — apply fall damage if the fall was long enough
 			if (!Number.isNaN(this.#fallStartY)) {
 				const fallDistance = this.#fallStartY - pos.y;
+
 				if (fallDistance > 0.5) {
 					playLandingDust(pos.x, pos.y - this.#halfHeight, pos.z, fallDistance);
 				}
+
 				if (fallDistance > FALL_DAMAGE_THRESHOLD) {
 					this.takeDamage(
 						(fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK,
 					);
-					if (this.#isDisposed) return;
+
+					if (this.#isDisposed) {
+						return;
+					}
 				}
+
 				this.#fallStartY = Number.NaN;
 			}
 		} else if (Number.isNaN(this.#fallStartY)) {
-			// Just became airborne — record the Y where the fall started
 			this.#fallStartY = startY;
 		}
 
-		const damping = inWater ? WATER_HORIZONTAL_DAMPING : grounded ? 8.0 : 1.8;
-		const keep = Math.max(0, 1 - damping * dt);
+		const damping = inWater ? WATER_HORIZONTAL_DAMPING : grounded ? 8 : 1.8;
+		const horizontalKeep = Math.max(0, 1 - damping * dt);
 
-		velocity.x *= keep;
-		velocity.z *= keep;
+		velocity.x *= horizontalKeep;
+		velocity.z *= horizontalKeep;
 
-		if (Math.abs(velocity.x) < 0.03) velocity.x = 0;
-		if (Math.abs(velocity.z) < 0.03) velocity.z = 0;
+		if (Math.abs(velocity.x) < 0.03) {
+			velocity.x = 0;
+		}
 
-		// Advance walk-swing phase by horizontal distance traveled; decay it
-		// while idle so legs ease back to the rest pose. NaN prevX/Z on the
-		// first tick (and after chunk reload) so we never count the spawn jump
-		// as movement.
+		if (Math.abs(velocity.z) < 0.03) {
+			velocity.z = 0;
+		}
+
+		/*
+		 * Advance animation from actual horizontal displacement. The first tick
+		 * initializes the previous coordinates without treating spawn placement
+		 * as movement.
+		 */
 		if (Number.isNaN(this.#prevX)) {
 			this.#prevX = pos.x;
 			this.#prevZ = pos.z;
-		}
-		const dx = pos.x - this.#prevX;
-		const dz = pos.z - this.#prevZ;
-		const distSq = dx * dx + dz * dz;
-		if (distSq > 0.0001) {
-			this.#walkPhase += Math.sqrt(distSq) * WALK_STRIDE_FACTOR;
 		} else {
-			// Ease phase back toward 0 (rest) when stationary.
-			this.#walkPhase *= Math.max(0, 1 - WALK_PHASE_DECAY * dt);
-			if (this.#walkPhase < 0.01) this.#walkPhase = 0;
-		}
-		this.#prevX = pos.x;
-		this.#prevZ = pos.z;
+			const traveledX = pos.x - this.#prevX;
+			const traveledZ = pos.z - this.#prevZ;
+			const traveledSq = traveledX * traveledX + traveledZ * traveledZ;
 
-		// Absolute failsafe: if no central support and not in water, force fall.
-		// This guarantees mining the block under the mob makes it drop, even if
-		// isGrounded or collider logic has a false positive (e.g., side neighbour).
-		if (!inWater) {
-			const cx2 = Math.floor(pos.x);
-			const cy2 = Math.floor(pos.y - this.#feetHeight - 0.05);
-			const cz2 = Math.floor(pos.z);
-			if (!isCollidableBlock(getBlockByWorldCoords(cx2, cy2, cz2))) {
-				if (velocity.y > -2) velocity.y -= 2 * dt;
-				if (Math.abs(velocity.y) < 0.1) {
-					const nudge = vec3Zero();
-					nudge.x = pos.x;
-					nudge.y = pos.y - 0.03;
-					nudge.z = pos.z;
-					if (!this.#collider.overlaps(nudge)) pos.y -= 0.03;
+			if (traveledSq > 0.0001) {
+				this.#walkPhase += Math.sqrt(traveledSq) * WALK_STRIDE_FACTOR;
+			} else if (this.#walkPhase !== 0) {
+				this.#walkPhase *= Math.max(0, 1 - WALK_PHASE_DECAY * dt);
+
+				if (this.#walkPhase < 0.01) {
+					this.#walkPhase = 0;
+				}
+			}
+
+			this.#prevX = pos.x;
+			this.#prevZ = pos.z;
+		}
+
+		/*
+		 * Absolute unsupported-center failsafe.
+		 *
+		 * This now reuses a per-mob scratch vector instead of allocating a new
+		 * vec3Zero object every unsupported simulation tick.
+		 */
+		if (!inWater && !hasCentralSupport) {
+			if (velocity.y > -2) {
+				velocity.y -= 2 * dt;
+			}
+
+			if (Math.abs(velocity.y) < 0.1) {
+				const nudge = this.#tmpFallNudge;
+
+				nudge.x = pos.x;
+				nudge.y = pos.y - 0.03;
+				nudge.z = pos.z;
+
+				if (!this.#collider.overlaps(nudge)) {
+					pos.y -= 0.03;
 				}
 			}
 		}
 
-		// Publish the (possibly moved) transform to this mob's instance slots.
 		this.syncToInstances();
 	}
 
