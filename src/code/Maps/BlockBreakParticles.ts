@@ -659,51 +659,70 @@ function flushDeferredRenderables(scene: SceneContext): Promise<void> {
 }
 
 function tick(deltaMs: number): void {
-	if (!billboard) return;
+	const system = billboard;
+	if (!system) return;
 
 	const dt = Math.min(MAX_DT, deltaMs * 0.001);
-	if (dt <= 0) return;
-	if (isUiOpen(UiFocus.pauseMenu)) return;
+	if (dt <= 0 || isUiOpen(UiFocus.pauseMenu)) return;
+
+	clearBillboardSprites(system);
 
 	const gravityDt = GRAVITY * dt;
+
 	for (let i = 0; i < aliveCount; i++) {
 		const flags = pflags[i];
+
 		if (flags & COLLIDE_BIT) {
-			if (!(flags & SETTLED_BIT)) collideParticle(i, dt);
+			if (!(flags & SETTLED_BIT)) {
+				collideParticle(i, dt);
+			}
 		} else {
 			pvy[i] += gravityDt * pgrav[i];
 			px[i] += pvx[i] * dt;
 			py[i] += pvy[i] * dt;
 			pz[i] += pvz[i] * dt;
 		}
-		page[i] += dt;
-		if (!(pflags[i] & SETTLED_BIT)) pangle[i] += pspin[i] * dt;
 
-		if (page[i] >= plife[i]) {
-			removeParticle(i);
-			i--; // re-visit whichever particle just got swapped into slot i
+		const age = page[i] + dt;
+		page[i] = age;
+
+		if (!(pflags[i] & SETTLED_BIT)) {
+			pangle[i] += pspin[i] * dt;
 		}
-	}
 
-	clearBillboardSprites(billboard);
-	for (let i = 0; i < aliveCount; i++) {
-		const lifeFrac = page[i] / plife[i];
-		const alpha =
-			lifeFrac > FADE_START
-				? 1 - (lifeFrac - FADE_START) / (1 - FADE_START)
-				: 1;
+		const life = plife[i];
+		if (age >= life) {
+			removeParticle(i);
+
+			// Do not increment i. removeParticle swapped the final live
+			// particle into this slot, so that particle must be processed.
+			continue;
+		}
+
+		let alpha = pa[i];
+		const fadeStartAge = life * FADE_START;
+
+		if (age > fadeStartAge) {
+			alpha *= (life - age) / (life - fadeStartAge);
+		}
+
 		scratchPos[0] = px[i];
 		scratchPos[1] = py[i];
 		scratchPos[2] = pz[i];
-		scratchSize[0] = psize[i];
-		scratchSize[1] = psize[i];
+
+		const size = psize[i];
+		scratchSize[0] = size;
+		scratchSize[1] = size;
+
 		scratchColor[0] = pr[i];
 		scratchColor[1] = pg[i];
 		scratchColor[2] = pb[i];
-		scratchColor[3] = alpha * pa[i];
+		scratchColor[3] = alpha;
+
 		scratchProps.rotation = pangle[i];
 		scratchProps.frame = pframe[i];
-		addBillboardSpriteIndex(billboard, scratchProps);
+
+		addBillboardSpriteIndex(system, scratchProps);
 	}
 }
 

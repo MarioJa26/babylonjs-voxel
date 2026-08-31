@@ -203,6 +203,7 @@ export function useBow(player: Player, drawProgress: number = 1.0): void {
 
 function useSpawnEgg(player: Player): void {
 	const inventory = player.playerInventory;
+	const isCreative = player.stats.gamemode === Gamemodes.Creative;
 	const hotbar = inventory.inventory[0];
 	const selectedSlot = hotbar?.[player.playerHud.selectedHotbarSlot];
 	const item = selectedSlot?.item;
@@ -309,7 +310,9 @@ function useSpawnEgg(player: Player): void {
 						mob.countsTowardMobCap = false;
 						registry.addMob(mob);
 					}
-					inventory.removeItems(item.itemId, 1);
+					if (!isCreative) {
+						inventory.removeItems(item.itemId, 1);
+					}
 					return;
 				}
 			}
@@ -352,7 +355,9 @@ function useSpawnEgg(player: Player): void {
 		registry.addMob(mob);
 	}
 
-	inventory.removeItems(item.itemId, 1);
+	if (!isCreative) {
+		inventory.removeItems(item.itemId, 1);
+	}
 }
 
 function placeBoat(player: Player): void {
