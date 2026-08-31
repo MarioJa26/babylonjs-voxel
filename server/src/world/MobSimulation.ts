@@ -18,7 +18,12 @@
  * blocks new spawns near players.
  */
 
-import { MOB_SPAWN_CONFIGS, MOB_STATS } from "@/code/Entities/MobConfig";
+import {
+	FALL_DAMAGE_PER_BLOCK,
+	FALL_DAMAGE_THRESHOLD,
+	MOB_SPAWN_CONFIGS,
+	MOB_STATS,
+} from "@/code/Entities/MobConfig";
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding";
 import {
@@ -40,6 +45,8 @@ export interface ServerMob {
 	yaw: number;
 	/** Current hit points; the mob dies (and despawns) at 0. */
 	hp: number;
+	/** Y position where the current fall started; NaN when not falling. */
+	fallStartY: number;
 	/** ms until the next random wander heading. */
 	headingTimer: number;
 	/** ms without forward progress — forces a new heading. */
@@ -65,8 +72,12 @@ interface ServerWaypoint {
 }
 
 export interface ServerMobEvent {
-	kind: "spawn" | "despawn";
+	kind: "spawn" | "despawn" | "impact";
 	mob: ServerMob;
+	/** Fall distance used to scale the landing particle burst. */
+	fallDistance?: number;
+	/** Fall damage accepted by the server, used for the remote blood effect. */
+	damage?: number;
 }
 
 const FLEE_SPEED = 5;
@@ -122,11 +133,20 @@ class TickBlockSampler {
 		number,
 		Uint8Array | Uint16Array | null
 	>();
+	private readonly pendingBlocks = new Map<string, number>();
 
 	constructor(private readonly storage: ServerWorldStorage) {}
 
 	begin(): void {
 		this.chunkCache.clear();
+	}
+
+	setPendingBlock(x: number, y: number, z: number, blockId: number): void {
+		this.pendingBlocks.set(`${x},${y},${z}`, blockId);
+	}
+
+	clearPending(): void {
+		this.pendingBlocks.clear();
 	}
 
 	sample(worldX: number, worldY: number, worldZ: number): number | null {
@@ -135,6 +155,8 @@ class TickBlockSampler {
 		const x = Math.floor(worldX);
 		const y = Math.floor(worldY);
 		const z = Math.floor(worldZ);
+		const pending = this.pendingBlocks.get(`${x},${y},${z}`);
+		if (pending !== undefined) return pending;
 		const cx = Math.floor(x / CHUNK_SIZE);
 		const cy = Math.floor(y / CHUNK_SIZE);
 		const cz = Math.floor(z / CHUNK_SIZE);
@@ -214,6 +236,16 @@ export class ServerMobSimulation {
 		// Populate on the first tick that has players instead of waiting out
 		// a full spawn interval.
 		this.spawnAccum = SPAWN_INTERVAL_MS;
+	}
+
+	/** Called by VoxelRoom when a player edits a block so the next tick sees it instantly. */
+	notifyBlockEdit(x: number, y: number, z: number, blockId: number): void {
+		this.sampler.setPendingBlock(x, y, z, blockId);
+	}
+
+	/** Clear the pending edit overlay after the edits have been flushed to storage. */
+	clearPendingEdits(): void {
+		this.sampler.clearPending();
 	}
 
 	get size(): number {
@@ -300,7 +332,10 @@ export class ServerMobSimulation {
 
 		for (const mob of this.mobs.values()) {
 			try {
-				this.updateMob(mob, deltaMs, players);
+				const died = this.updateMob(mob, deltaMs, players, events);
+				if (died) {
+					events.push({ kind: "despawn", mob });
+				}
 			} catch (err) {
 				this.logTickError("updateMob", mob, err);
 			}
@@ -375,13 +410,13 @@ export class ServerMobSimulation {
 		mob: ServerMob,
 		deltaMs: number,
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
-	): void {
+		events: ServerMobEvent[],
+	): boolean {
 		const stats = MOB_STATS[mob.typeId];
 
 		// Aquatic mobs use water swimming AI instead of land pathfinding.
 		if (stats.aquatic) {
-			this.updateAquaticMob(mob, deltaMs, players);
-			return;
+			return this.updateAquaticMob(mob, deltaMs, players, events);
 		}
 
 		// Damage-triggered panic: flee from the nearest player for fleeTimer ms,
@@ -446,7 +481,7 @@ export class ServerMobSimulation {
 					mob.stuckTimer = 0;
 					mob.headingTimer = 0;
 				}
-				return;
+				return false;
 			}
 
 			mob.x = nx;
@@ -463,7 +498,7 @@ export class ServerMobSimulation {
 			}
 		}
 
-		this.settleHeight(mob, stats.feetHeight, deltaMs);
+		return this.settleHeight(mob, stats.feetHeight, deltaMs, events);
 	}
 
 	/**
@@ -474,7 +509,8 @@ export class ServerMobSimulation {
 		mob: ServerMob,
 		deltaMs: number,
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
-	): void {
+		events: ServerMobEvent[],
+	): boolean {
 		const stats = MOB_STATS[mob.typeId];
 		const dt = deltaMs / 1000;
 
@@ -491,7 +527,7 @@ export class ServerMobSimulation {
 		// false `inWater=false` drops them with `mob.y -= 2*dt` into terrain.
 		// This mirrors the client AquaticMob freeze for chunk-loading.
 		if (feetBlock === null || centerBlock === null || headBlock === null) {
-			return;
+			return false;
 		}
 		const inWater =
 			feetBlock === BlockType.Water ||
@@ -518,7 +554,7 @@ export class ServerMobSimulation {
 			if (!surfaceFound && waterSurfaceY === centerY) {
 				// Column top not yet cached — hold vertical drift this tick
 				// instead of clamping to a truncated column.
-				return;
+				return false;
 			}
 			// Scan down to find water floor — null is skipped (unknown).
 			let floorFound = false;
@@ -533,7 +569,7 @@ export class ServerMobSimulation {
 			}
 			if (!floorFound) {
 				// Floor column not cached yet — hold.
-				return;
+				return false;
 			}
 		}
 
@@ -557,7 +593,7 @@ export class ServerMobSimulation {
 			if ((this.aquaticIdleTime.get(mob.id) ?? 0) <= 0) {
 				mob.headingTimer = 0;
 			}
-			if (!fleeing) return;
+			if (!fleeing) return false;
 		}
 
 		mob.headingTimer -= deltaMs;
@@ -595,7 +631,7 @@ export class ServerMobSimulation {
 				this.aquaticIdleTime.set(mob.id, dur);
 				this.aquaticTargets.delete(mob.id);
 				mob.headingTimer = dur * 1000 + Math.random() * 500;
-				return;
+				return false;
 			}
 			mob.headingTimer =
 				WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS);
@@ -676,10 +712,36 @@ export class ServerMobSimulation {
 				mob.y = Math.max(minY, Math.min(maxY, mob.y));
 			}
 		} else {
-			// Beached — gently sink (will despawn via lifecycle)
+			// Beached — gently sink (will despawn via lifecycle).
+			// Track falls so beached aquatics take damage from long drops.
+			if (Number.isNaN(mob.fallStartY)) {
+				mob.fallStartY = mob.y;
+			}
 			mob.y = Math.max(mob.y - 2 * dt, 0);
+			// Check for ground — if landed, apply fall damage.
+			const ground = this.scanDown(
+				mob.x,
+				mob.z,
+				Math.floor(mob.y - stats.feetHeight),
+			);
+			if (ground.kind === "ground") {
+				const fallDistance = mob.fallStartY - mob.y;
+				const damage =
+					fallDistance > FALL_DAMAGE_THRESHOLD
+						? (fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK
+						: 0;
+				if (fallDistance > 0.5) {
+					events.push({ kind: "impact", mob, fallDistance, damage });
+				}
+				if (damage > 0) {
+					const killed = this.damageMob(mob.id, damage);
+					if (killed) return true;
+				}
+				mob.fallStartY = Number.NaN;
+			}
 			this.aquaticTargets.delete(mob.id);
 		}
+		return false;
 	}
 
 	/** Follow a short land route using the same surface/headroom rules as NeutralMob. */
@@ -1002,7 +1064,7 @@ export class ServerMobSimulation {
 		if (support.kind !== "ground") return false;
 
 		const targetY = support.y + 1 + feetHeight;
-		if (targetY > mob.y + 1.01 || targetY < mob.y - 1.01) return false;
+		if (targetY > mob.y + 1.01) return false;
 
 		const feetY = Math.floor(mob.y - feetHeight);
 		const bodyY = Math.floor(mob.y);
@@ -1030,33 +1092,65 @@ export class ServerMobSimulation {
 		mob: ServerMob,
 		feetHeight: number,
 		deltaMs: number,
-	): void {
+		events: ServerMobEvent[],
+	): boolean {
 		const scan = this.scanDown(mob.x, mob.z, Math.floor(mob.y - feetHeight));
 
 		switch (scan.kind) {
 			case "ground": {
-				// Feet sit on top of the ground voxel; snap downward, and
-				// allow a small upward step (the climb path already moved y).
+				// Feet sit on top of the ground voxel. A small step-down
+				// (≤ 1 block) or upward step snaps to the surface. A larger
+				// drop free-falls smoothly (Minecraft-style) until the mob
+				// is within 1 block of the ground, then snaps and lands.
 				const targetY = scan.y + 1 + feetHeight;
-				if (targetY < mob.y || targetY - mob.y <= 1) {
+				if (targetY >= mob.y - 1) {
 					mob.y = targetY;
+					// Landed — apply fall damage if the fall was long enough.
+					if (!Number.isNaN(mob.fallStartY)) {
+						const fallDistance = mob.fallStartY - mob.y;
+						const damage =
+							fallDistance > FALL_DAMAGE_THRESHOLD
+								? (fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK
+								: 0;
+						if (fallDistance > 0.5) {
+							events.push({ kind: "impact", mob, fallDistance, damage });
+						}
+						if (damage > 0) {
+							const killed = this.damageMob(mob.id, damage);
+							if (killed) return true;
+						}
+						mob.fallStartY = Number.NaN;
+					}
+				} else {
+					// Ground is more than 1 block below: free-fall.
+					if (Number.isNaN(mob.fallStartY)) {
+						mob.fallStartY = mob.y;
+					}
+					mob.y = Math.max(mob.y - 16 * (deltaMs / 1000), 0);
 				}
-				break;
+				return false;
 			}
 			case "water":
 				// Standing at the shore: turn away from the water.
 				mob.yaw = (mob.yaw + 128) & 255;
 				mob.headingTimer = Math.min(mob.headingTimer, 800);
-				break;
-			case "air":
+				// Water breaks the fall — reset tracking.
+				mob.fallStartY = Number.NaN;
+				return false;
+			case "air": {
 				// Free fall (16 blocks/sec, matching gravity feel) until
 				// ground is found again or the fall limit removes the mob.
+				// Record the Y where the fall started.
+				if (Number.isNaN(mob.fallStartY)) {
+					mob.fallStartY = mob.y;
+				}
 				mob.y = Math.max(mob.y - 16 * (deltaMs / 1000), 0);
-				break;
+				return false;
+			}
 			case "unknown":
 				// Chunk not cached — hold height rather than fall through
 				// terrain that exists but isn't in memory.
-				break;
+				return false;
 		}
 	}
 
@@ -1115,6 +1209,7 @@ export class ServerMobSimulation {
 				z: pos.z,
 				yaw: Math.floor(Math.random() * 256),
 				hp: stats.hp,
+				fallStartY: Number.NaN,
 				headingTimer:
 					WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
 				stuckTimer: 0,
@@ -1174,6 +1269,7 @@ export class ServerMobSimulation {
 			z,
 			yaw: Math.floor(Math.random() * 256),
 			hp: stats.hp,
+			fallStartY: Number.NaN,
 			headingTimer:
 				WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
 			stuckTimer: 0,
@@ -1388,6 +1484,7 @@ export class ServerMobSimulation {
 			z: pm.z,
 			yaw: pm.yaw,
 			hp: pm.hp ?? MOB_STATS[pm.typeId].hp,
+			fallStartY: Number.NaN,
 			headingTimer: pm.headingTimer,
 			stuckTimer: pm.stuckTimer,
 			fleeing: pm.fleeing,

@@ -18,7 +18,7 @@ export interface Mob {
 	 */
 	countsTowardMobCap: boolean;
 
-	takeDamage(amount: number): void;
+	takeDamage(amount: number, impactPosition?: Vec3): void;
 	setPlayerPosition(pos: Vec3): void;
 	dispose(): void;
 	/** True once disposed — stuck projectiles stop following after this. */

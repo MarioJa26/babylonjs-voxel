@@ -36,11 +36,17 @@ import {
 	getSquidInstancePool,
 	SQUID_HIT_HALF,
 } from "@/code/Entities/Mobs/Squid";
+import {
+	playLandingDust,
+	playMobDamage,
+} from "@/code/Maps/BlockBreakParticles";
 import { MobTypeId } from "../Entities/MobConfig";
 import type { NetClient } from "./NetClient";
 import {
 	BinaryDecoder,
+	decodeMobDamage,
 	decodeMobDespawn,
+	decodeMobImpact,
 	decodeMobSpawn,
 } from "./protocol/encoder";
 import { MessageType } from "./protocol/messages";
@@ -274,6 +280,26 @@ export class RemoteMobManager {
 		const messageType = data[0];
 
 		switch (messageType) {
+			case MessageType.MobDamage: {
+				const damage = decodeMobDamage(data);
+				const mob = this.mobs.get(damage.mobId);
+				if (mob !== undefined) {
+					playMobDamage(
+						mob.currentX,
+						mob.currentY,
+						mob.currentZ,
+						damage.damage,
+					);
+				}
+				return;
+			}
+
+			case MessageType.MobImpact: {
+				const impact = decodeMobImpact(data);
+				playLandingDust(impact.x, impact.y, impact.z, impact.fallDistance);
+				return;
+			}
+
 			case MessageType.MobSpawn: {
 				/*
 				 * This decoder currently returns an object. Removing that
@@ -471,7 +497,6 @@ export class RemoteMobManager {
 			walkPhase: 0,
 			prevX: x,
 			prevZ: z,
-
 			writtenX: x,
 			writtenY: y,
 			writtenZ: z,

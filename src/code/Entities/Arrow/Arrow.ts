@@ -27,6 +27,7 @@ import type { Color3 } from "@/code/Lib/Math";
 import {
 	MOB_DRIP_INTERVAL_MS,
 	playArrowHit,
+	playMobDamage,
 	playMobDrip,
 } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
@@ -36,7 +37,7 @@ import { MessageType } from "@/code/Network/protocol/messages";
 import { dropWorldItem } from "@/code/Player/Inventory/dropWorldItem";
 import { Item } from "@/code/Player/Inventory/Item";
 import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
+import { isCollidableBlock } from "@/code/World/Texture/BlockType";
 import type { Player } from "../../Player/Player";
 
 const ARROW_LENGTH = 0.55;
@@ -478,7 +479,9 @@ export class Arrow {
 			const shooter = this.#shooter;
 
 			shooter?.playerHud.crossHair.showHitMarker();
-
+			// Show the hit immediately on the firing client. The server relays the
+			// same accepted hit to everyone else, avoiding visible network latency.
+			playMobDamage(hit.x, hit.y, hit.z, this.#arrowDef.damage);
 			shooter?.networkManager?.netClient?.sendMobDamage(
 				hit.id,
 				this.#arrowDef.damage,
@@ -535,7 +538,11 @@ export class Arrow {
 		const hitY = startY + (endY - startY) * bestT;
 		const hitZ = startZ + (endZ - startZ) * bestT;
 
-		bestMob.takeDamage(this.#arrowDef.damage);
+		bestMob.takeDamage(this.#arrowDef.damage, {
+			x: hitX,
+			y: hitY,
+			z: hitZ,
+		});
 
 		const hitMob = bestMob;
 
@@ -619,12 +626,13 @@ export class Arrow {
 	}
 
 	#beginStickInMob(follow: ArrowMobFollow): void {
-		this.emitMobHitParticles();
-
 		const mob = follow();
 
 		if (mob !== null) {
 			const tip = this.#tip;
+
+			playMobDamage(tip.x, tip.y, tip.z, this.#arrowDef.damage);
+
 			const relativeX = tip.x - mob.x;
 			const relativeZ = tip.z - mob.z;
 			const cosYaw = Math.cos(mob.yaw);
@@ -701,28 +709,6 @@ export class Arrow {
 			2,
 			(getPRNGUnit2() - 0.5) * 1.5,
 			Map1.mainPlayer ?? undefined,
-		);
-	}
-
-	private emitMobHitParticles(): void {
-		const vx = this.#vx;
-		const vy = this.#vy;
-		const vz = this.#vz;
-		const lengthSq = vx * vx + vy * vy + vz * vz;
-
-		if (lengthSq <= MIN_DIRECTION_LENGTH_SQ) return;
-
-		const invLength = 1 / Math.sqrt(lengthSq);
-		const tip = this.#tip;
-
-		playArrowHit(
-			tip.x,
-			tip.y,
-			tip.z,
-			-vx * invLength,
-			-vy * invLength,
-			-vz * invLength,
-			BlockType.CoralBlock,
 		);
 	}
 

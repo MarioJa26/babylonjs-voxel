@@ -151,7 +151,12 @@ export class Chicken extends NeutralMob {
 		scene: SceneContext,
 		hp?: number,
 	) {
-		super(hp ?? CHICKEN_DEFAULT_HP, scene, CHICKEN_BODY_HALF_SIZE);
+		super(
+			hp ?? CHICKEN_DEFAULT_HP,
+			scene,
+			CHICKEN_BODY_HALF_SIZE,
+			CHICKEN_STATS.feetHeight,
+		);
 
 		this.setPosition(x, y, z);
 

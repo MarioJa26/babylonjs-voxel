@@ -140,7 +140,13 @@ export class Cow extends NeutralMob {
 		scene: SceneContext,
 		hp?: number,
 	) {
-		super(hp ?? COW_DEFAULT_HP, scene, COW_BODY_HALF_SIZE);
+		super(
+			hp ?? COW_DEFAULT_HP,
+			scene,
+			COW_BODY_HALF_SIZE,
+			COW_STATS.feetHeight,
+		);
+
 		this.setPosition(x, y, z);
 		this.#bodySlot = getBodyPool().acquire(this);
 		getBodyPool().writeColor(this.#bodySlot, 1, 1, 1, 0);

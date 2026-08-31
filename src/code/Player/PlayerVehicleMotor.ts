@@ -21,6 +21,10 @@ import {
 	voxelStepUp,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { CustomBoat } from "../Entities/CustomBoat";
+import {
+	FALL_DAMAGE_PER_BLOCK,
+	FALL_DAMAGE_THRESHOLD,
+} from "../Entities/MobConfig";
 import type { Mount } from "../Entities/Mount";
 import type { BoatChunk } from "../World/Boat/BoatChunk";
 import { type Chunk, getChunk } from "../World/Chunk/Chunk";
@@ -216,6 +220,8 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	private voxelIsGrounded = false;
 	private prevJumpHeld = false;
 	#isClimbing = false;
+	/** Y where the current fall started; NaN when grounded, swimming, flying or climbing. */
+	#fallStartY = Number.NaN;
 	private lastStepUpTime = 0;
 	private now = 0;
 	// Cached per-frame environment queries (reused across substeps).
@@ -467,6 +473,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.voxelPosition.y = spawn.y;
 		this.voxelPosition.z = spawn.z;
 		setVec3(this.voxelVelocity, 0, 0, 0);
+		this.#fallStartY = Number.NaN;
 		this.#characterController.setPosition(this.voxelPosition);
 		this.#camera.snapToPlayer(this.voxelPosition);
 		this.#displayCapsule?.position.copyFrom(this.voxelPosition);
@@ -483,6 +490,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.voxelPosition.y = y;
 		this.voxelPosition.z = z;
 		setVec3(this.voxelVelocity, 0, 0, 0);
+		this.#fallStartY = Number.NaN;
 		this.#characterController.setPosition(this.voxelPosition);
 		this.#camera.snapToPlayer(this.voxelPosition);
 		this.#displayCapsule?.position.copyFrom(this.voxelPosition);
@@ -1070,6 +1078,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		const activeVel = nowOnBoat ? this.#boatLocalVel : this.voxelVelocity;
 		const activeCol = nowOnBoat ? this.boatVoxelCollider : this.voxelCollider;
 		const activeBoatYaw = nowOnBoat ? this.#collisionBoat!.boatYaw : null;
+		const stepStartY = activePos.y;
 
 		this.voxelIsGrounded = this.#checkGrounded(activePos, activeCol);
 
@@ -1232,6 +1241,36 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 		this.voxelIsGrounded = this.#checkGrounded(activePos, activeCol);
 
+		// ── Fall damage (singleplayer + multiplayer) ──────────────────────────
+		// Mirrors NeutralMob/AquaticMob fall tracking (MobConfig thresholds).
+		// Water, Creative, flying, climbing and boats all break the fall.
+		// Mounted movement is handled by the mount itself.
+		{
+			const isCreative = this.#playerStats.gamemode === Gamemodes.Creative;
+			const shouldResetFall =
+				isInWater ||
+				this.isFlying ||
+				isCreative ||
+				this.#isClimbing ||
+				nowOnBoat ||
+				this.mount !== null;
+			if (shouldResetFall) {
+				this.#fallStartY = Number.NaN;
+			} else if (this.voxelIsGrounded) {
+				if (!Number.isNaN(this.#fallStartY)) {
+					const fallDistance = this.#fallStartY - activePos.y;
+					if (fallDistance > FALL_DAMAGE_THRESHOLD) {
+						this.#playerStats.takeDamage(
+							(fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK,
+						);
+					}
+					this.#fallStartY = Number.NaN;
+				}
+			} else if (Number.isNaN(this.#fallStartY)) {
+				this.#fallStartY = stepStartY;
+			}
+		}
+
 		if (this.isOnBoat()) {
 			this.#flushToWorld();
 			this.#collisionBoat?.worldToBoatChunkLocalPoint(
@@ -1300,6 +1339,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			setVec3(this.voxelVelocity, 0, 0, 0);
 			this.#characterController.setVelocity(this.#zeroVelocity);
 			this.voxelCollider.syncDebugMesh(this.voxelPosition);
+			this.#fallStartY = Number.NaN;
 			return;
 		}
 
@@ -1354,6 +1394,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			mount.update();
 			copyVec3(this.voxelPosition, this.#characterController.getPosition());
 			setVec3(this.voxelVelocity, 0, 0, 0);
+			this.#fallStartY = Number.NaN;
 		} else {
 			if (this.isFlying) {
 				const dv = this.calculateFlyingVelocity(deltaTime);
@@ -1364,6 +1405,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 				this.#characterController.setPosition(this.voxelPosition);
 				this.#characterController.setVelocity(this.#zeroVelocity);
 				this.voxelCollider.syncDebugMesh(this.voxelPosition);
+				this.#fallStartY = Number.NaN;
 				return;
 			}
 			this.integrateMovement(deltaTime);
@@ -1387,6 +1429,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			this.#lockedPosition.z,
 		);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
+		this.#fallStartY = Number.NaN;
 	}
 
 	public unlockMovement(): void {
@@ -1394,6 +1437,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#lockedPosition = null;
 		setVec3(this.voxelVelocity, 0, 0, 0);
 		this.#characterController.setVelocity(this.#zeroVelocity);
+		this.#fallStartY = Number.NaN;
 	}
 
 	public getSavedPosition(): Vec3 {
@@ -1410,6 +1454,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		);
 		copyVec3(this.voxelPosition, p);
 		setVec3(this.voxelVelocity, 0, 0, 0);
+		this.#fallStartY = Number.NaN;
 		this.#characterController.setPosition(p);
 		if (this.#movementLocked) this.#lockedPosition = vec3(p.x, p.y, p.z);
 		this.#camera.snapToPlayer(p);

@@ -21,6 +21,7 @@
  *    track pending edits without GC pressure.
  */
 import { type Client, ClientState, CloseCode, Room } from "colyseus";
+import { MOB_STATS } from "@/code/Entities/MobConfig";
 import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
 import {
 	BinaryDecoder,
@@ -43,7 +44,9 @@ import {
 	encodeItemDespawn,
 	encodeItemPickupRejected,
 	encodeItemSpawn,
+	encodeMobDamage,
 	encodeMobDespawn,
+	encodeMobImpact,
 	encodeMobSpawn,
 	encodePitchByte,
 	encodePlayerJoin,
@@ -1067,6 +1070,29 @@ export class VoxelRoom extends Room {
 					),
 					{},
 				);
+			} else if (event.kind === "impact") {
+				const stats = MOB_STATS[event.mob.typeId];
+				this.broadcastBytes(
+					"binary",
+					encodeMobImpact({
+						mobId: event.mob.id,
+						x: event.mob.x,
+						y: event.mob.y - stats.feetHeight,
+						z: event.mob.z,
+						fallDistance: event.fallDistance ?? 0,
+					}),
+					{},
+				);
+				if (event.damage !== undefined && event.damage > 0) {
+					this.broadcastBytes(
+						"binary",
+						encodeMobDamage({
+							mobId: event.mob.id,
+							damage: event.damage,
+						}),
+						{},
+					);
+				}
 			} else {
 				this.broadcastBytes("binary", encodeMobDespawn(event.mob.id), {});
 			}
@@ -1819,6 +1845,18 @@ export class VoxelRoom extends Room {
 				editMap.set(voxelIndex, entry);
 				this.dirtyChunks.add(key);
 				this.scheduleChunkFlush();
+				// Make the edit visible to MobSimulation immediately — otherwise
+				// TickBlockSampler.getCachedChunkBlocks() keeps returning the old
+				// block for up to 500 ms (flush debounce), so mobs hover after
+				// their support is mined in multiplayer.
+				this.worldStorage.setCachedBlock(
+					edit.x,
+					edit.y,
+					edit.z,
+					blockId,
+					blockState,
+				);
+				this.mobSim.notifyBlockEdit(edit.x, edit.y, edit.z, blockId);
 
 				this.editBroadcastEncoder.reset();
 				this.editBroadcastEncoder.writeUint8(MessageType.BlockEditBroadcast);
@@ -2018,7 +2056,15 @@ export class VoxelRoom extends Room {
 					return;
 				}
 
-				if (this.mobSim.damageMob(damage.mobId, damage.damage)) {
+				const killed = this.mobSim.damageMob(damage.mobId, damage.damage);
+				// Relay accepted damage as a cosmetic event so every client sees the
+				// hit, including clients that do not own the projectile.
+				this.broadcastBytes(
+					"binary",
+					encodeMobDamage({ mobId: damage.mobId, damage: damage.damage }),
+					{ except: client },
+				);
+				if (killed) {
 					this.broadcastBytes("binary", encodeMobDespawn(damage.mobId), {});
 				}
 				break;

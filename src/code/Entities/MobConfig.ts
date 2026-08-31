@@ -17,6 +17,12 @@ export const MobTypeId = {
 /** Squared radius (meters) within which a nearby player triggers panic. */
 export const DEFAULT_FLEE_RADIUS_SQ = 25;
 
+/** Safe fall distance (blocks) — no damage for falls at or below this. */
+export const FALL_DAMAGE_THRESHOLD = 3;
+
+/** Damage dealt per block of fall distance beyond the threshold. */
+export const FALL_DAMAGE_PER_BLOCK = 1;
+
 /** Mob stats shared between client and server. */
 export interface MobStats {
 	/** Hit points a freshly spawned mob of this type gets. */

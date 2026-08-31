@@ -2,6 +2,10 @@ import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
+import {
+	playLandingDust,
+	playMobDamage,
+} from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
 import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
@@ -32,6 +36,7 @@ import {
 } from "@/code/World/Shape/FenceConnect";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import type { SavedChunkEntityData } from "@/code/World/WorldStorage";
+import { FALL_DAMAGE_PER_BLOCK, FALL_DAMAGE_THRESHOLD } from "../MobConfig";
 
 const GRAVITY = -18;
 const STEP_SIZE = 0.2;
@@ -89,8 +94,10 @@ export abstract class NeutralMob {
 	#breathTimer = BREATH_MAX;
 	#wanderSpeed: number;
 	#halfHeight: number;
+	#feetHeight: number;
 
 	#tmpProbe = vec3Zero();
+	#tmpGroundExtents = vec3Zero();
 
 	#path: PathWaypoint[] = [];
 	#pathIndex = 0;
@@ -107,6 +114,9 @@ export abstract class NeutralMob {
 	#walkPhase = 0;
 	#prevX = Number.NaN;
 	#prevZ = Number.NaN;
+
+	/** Y position where the current fall started; NaN when grounded or in water. */
+	#fallStartY = Number.NaN;
 
 	abstract configureChunkLoader(scene: SceneContext): void;
 	abstract getWanderSpeed(): number;
@@ -187,31 +197,32 @@ export abstract class NeutralMob {
 		}
 	}
 
-	protected constructor(hp: number, scene: SceneContext, halfSize: Vec3) {
+	protected constructor(
+		hp: number,
+		scene: SceneContext,
+		halfSize: Vec3,
+		feetHeight?: number,
+	) {
 		this.#hp = hp;
 		this.#maxHp = hp;
 		this.#scene = scene;
 		this.#hitHalfExtents = { x: halfSize.x, y: halfSize.y, z: halfSize.z };
 		this.#wanderSpeed = this.getWanderSpeed();
 		this.#halfHeight = halfSize.y;
+		this.#feetHeight = feetHeight ?? halfSize.y;
 		this.#requiredHeadroom = Math.max(1, Math.ceil(halfSize.y * 2));
 
 		this.#collider = new VoxelAabbCollider(
 			halfSize,
 			createVoxelColliderBlockSampler(
 				(wx, wy, wz) => {
-					// PERF: single chunk resolution per voxel (was two: a loaded
-					// check via getChunk + a block/state read). resolveBlockAtWorldCoords
-					// resolves once and reports unloaded so we can treat it as solid.
+					// Unloaded chunks are treated as air so mobs can fall
+					// continuously when the block under them is mined. Far
+					// mobs are already frozen by the lodLevel gate in
+					// #ensureObserver, so they won't fall through the void
+					// while the world streams in.
 					const r = resolveBlockAtWorldCoords(wx, wy, wz);
-					if (r.unloaded) {
-						// Chunk under this probe is not loaded: treat it as solid
-						// terrain so the mob collides with / rests on it instead
-						// of falling through into the void while chunks stream in.
-						_voxelResolveScratch.blockId = BlockType.Cobble;
-						_voxelResolveScratch.blockState = 0;
-						return _voxelResolveScratch;
-					}
+					if (r.unloaded) return null;
 					if (!isCollidableBlock(r.blockId)) return null;
 
 					// Shared scratch — consumed immediately by the sampler.
@@ -287,8 +298,13 @@ export abstract class NeutralMob {
 		this.#playerPosition = pos;
 	}
 
-	takeDamage(amount: number): void {
+	takeDamage(amount: number, impactPosition?: Vec3): void {
 		this.#hp -= amount;
+
+		// Blood particles at the hit point when available, otherwise at the mob's
+		// body center for fall/environmental damage.
+		const bloodPosition = impactPosition ?? this.#position;
+		playMobDamage(bloodPosition.x, bloodPosition.y, bloodPosition.z, amount);
 
 		if (this.#hp <= 0) {
 			this.onDeath();
@@ -391,6 +407,7 @@ export abstract class NeutralMob {
 
 		const pos = this.#position;
 		const velocity = this.#velocity;
+		const startY = pos.y;
 
 		let currentSpeed = this.#wanderSpeed;
 		let fleeing = false;
@@ -556,22 +573,6 @@ export abstract class NeutralMob {
 			this.#breathTimer = BREATH_MAX;
 		}
 
-		if (
-			this.#state === NeutralMobState.Wander &&
-			!inWater &&
-			this.#path.length === 0
-		) {
-			const aheadX = Math.floor(pos.x + sinFacing * 1.5);
-			const aheadZ = Math.floor(pos.z + cosFacing * 1.5);
-			const groundY = Math.floor(pos.y - 0.5);
-			const groundBlock = getBlockByWorldCoords(aheadX, groundY, aheadZ);
-
-			if (!isCollidableBlock(groundBlock)) {
-				this.#facingAngle += Math.PI;
-				this.#stateTimer = Math.min(this.#stateTimer, 0.5);
-			}
-		}
-
 		const wasGrounded = this.#isGrounded(pos);
 		const canStepUp = wasGrounded || (inWater && this.#path.length > 0);
 
@@ -579,9 +580,52 @@ export abstract class NeutralMob {
 		this.#moveAxis(pos, Axis.Y, velocity.y * dt, canStepUp);
 		this.#moveAxis(pos, Axis.Z, velocity.z * dt, canStepUp);
 
-		const grounded = this.#isGrounded(pos);
+		let grounded = this.#isGrounded(pos);
+		// Failsafe: central support check — mining the block directly under the
+		// mob must make it fall even if the wide probe still hits a neighbour.
+		{
+			const cx = Math.floor(pos.x);
+			const cy = Math.floor(pos.y - this.#feetHeight - 0.05);
+			const cz = Math.floor(pos.z);
+			const supportId = getBlockByWorldCoords(cx, cy, cz);
+			if (!isCollidableBlock(supportId) && grounded) {
+				grounded = false;
+			}
+			// Also force falling if no central support and velocity is stuck at 0
+			if (
+				!isCollidableBlock(supportId) &&
+				grounded === false &&
+				Math.abs(velocity.y) < 0.01
+			) {
+				velocity.y = -0.5;
+			}
+		}
 		if (grounded && velocity.y < 0) {
 			velocity.y = 0;
+		}
+
+		// Fall damage: track falls and apply damage on landing
+		if (inWater) {
+			// Water breaks the fall — reset tracking
+			this.#fallStartY = Number.NaN;
+		} else if (grounded) {
+			// Landed — apply fall damage if the fall was long enough
+			if (!Number.isNaN(this.#fallStartY)) {
+				const fallDistance = this.#fallStartY - pos.y;
+				if (fallDistance > 0.5) {
+					playLandingDust(pos.x, pos.y - this.#halfHeight, pos.z, fallDistance);
+				}
+				if (fallDistance > FALL_DAMAGE_THRESHOLD) {
+					this.takeDamage(
+						(fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK,
+					);
+					if (this.#isDisposed) return;
+				}
+				this.#fallStartY = Number.NaN;
+			}
+		} else if (Number.isNaN(this.#fallStartY)) {
+			// Just became airborne — record the Y where the fall started
+			this.#fallStartY = startY;
 		}
 
 		const damping = inWater ? WATER_HORIZONTAL_DAMPING : grounded ? 8.0 : 1.8;
@@ -613,6 +657,25 @@ export abstract class NeutralMob {
 		}
 		this.#prevX = pos.x;
 		this.#prevZ = pos.z;
+
+		// Absolute failsafe: if no central support and not in water, force fall.
+		// This guarantees mining the block under the mob makes it drop, even if
+		// isGrounded or collider logic has a false positive (e.g., side neighbour).
+		if (!inWater) {
+			const cx2 = Math.floor(pos.x);
+			const cy2 = Math.floor(pos.y - this.#feetHeight - 0.05);
+			const cz2 = Math.floor(pos.z);
+			if (!isCollidableBlock(getBlockByWorldCoords(cx2, cy2, cz2))) {
+				if (velocity.y > -2) velocity.y -= 2 * dt;
+				if (Math.abs(velocity.y) < 0.1) {
+					const nudge = vec3Zero();
+					nudge.x = pos.x;
+					nudge.y = pos.y - 0.03;
+					nudge.z = pos.z;
+					if (!this.#collider.overlaps(nudge)) pos.y -= 0.03;
+				}
+			}
+		}
 
 		// Publish the (possibly moved) transform to this mob's instance slots.
 		this.syncToInstances();
@@ -667,13 +730,33 @@ export abstract class NeutralMob {
 	}
 
 	#isGrounded(pos: Vec3): boolean {
+		// Central support check: mining the block directly under the mob must
+		// make it fall, even if neighboring blocks would still support the
+		// wide collider. This matches the server's single-column scanDown.
+		const cx = Math.floor(pos.x);
+		const cy = Math.floor(pos.y - this.#feetHeight - 0.02);
+		const cz = Math.floor(pos.z);
+		if (!isCollidableBlock(getBlockByWorldCoords(cx, cy, cz))) return false;
+		// Narrow foot probe so a single missing block under the center makes the
+		// mob fall, matching the server's single-column scanDown and the player's
+		// 0.7× footProbe. The old full-AABB overlap let wide mobs (Sheep z=0.52)
+		// stay grounded on neighboring blocks after the center was mined.
+		// Use feetHeight (visual bottom) — for Sheep feet is 0.23 below the
+		// collider, so probing at halfHeight misses the ground and makes the
+		// mob hover one block above it.
 		const probe = this.#tmpProbe;
-
+		const footY = pos.y - this.#feetHeight;
 		probe.x = pos.x;
-		probe.y = pos.y - 0.01;
+		probe.y = footY - 0.04;
 		probe.z = pos.z;
-
-		return this.#collider.overlaps(probe);
+		const ext = this.#tmpGroundExtents;
+		setVec3(
+			ext,
+			this.#hitHalfExtents.x * 0.7,
+			0.04,
+			this.#hitHalfExtents.z * 0.7,
+		);
+		return this.#collider.overlapsBox(probe, ext);
 	}
 
 	#findNearestShore(pos: Vec3): void {

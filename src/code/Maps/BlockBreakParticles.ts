@@ -73,6 +73,10 @@ const ARROW_PARTICLE_INTERVAL_MS = 75;
 // can drip simultaneously — see MOB_DRIP_INTERVAL_MS.
 export const MOB_DRIP_INTERVAL_MS = 240;
 const MOB_DRIPS_PER_EMIT = 24;
+const MOB_DAMAGE_PARTICLES_MIN = 4;
+const MOB_DAMAGE_PARTICLES_PER_POINT = 6;
+const MOB_DAMAGE_PARTICLES_MAX = 32;
+const MOB_BLOOD_BLOCK = BlockType.CoralBlock;
 
 const GRAVITY = -16;
 const MAX_DT = 0.1;
@@ -387,15 +391,18 @@ export function playMobDrip(
 ): void {
 	if (!billboard) return;
 
-	const frame = getBlockFrame(BlockType.CoralBlock);
+	const frame = getBlockFrame(MOB_BLOOD_BLOCK);
 	const light = computeLight(getLightByWorldCoords(x, y - 0.25, z));
+	const bloodR = light.r * 1.0;
+	const bloodG = light.g * 0.3;
+	const bloodB = light.b * 0.24;
 	// Scale particle count with damage, clamped to a sane range.
 	const count = Math.min(
 		MOB_DRIPS_PER_EMIT,
-		Math.round(MOB_DRIPS_PER_EMIT * damage),
+		Math.max(1, Math.round(MOB_DRIPS_PER_EMIT * Math.max(0, damage))),
 	);
 
-	let life = 0.33 + getPRNGUnit2();
+	let life = 10.33 + getPRNGUnit2();
 	for (let i = 0; i < count; i++) {
 		life += 0.1;
 		addParticle(
@@ -410,9 +417,58 @@ export function playMobDrip(
 			getPRNGUnit2() * Math.PI * 2,
 			(getPRNGUnit2() - 0.5) * 2,
 			frame,
-			light.r,
-			light.g,
-			light.b,
+			bloodR,
+			bloodG,
+			bloodB,
+			1,
+			1,
+			1,
+		);
+	}
+}
+
+/** Short blood burst when a mob takes direct damage. */
+export function playMobDamage(
+	x: number,
+	y: number,
+	z: number,
+	damage: number,
+): void {
+	if (!billboard || !Number.isFinite(damage) || damage <= 0) return;
+
+	const frame = getBlockFrame(MOB_BLOOD_BLOCK);
+	const light = computeLight(getLightByWorldCoords(x, y, z));
+	// Use a dedicated red atlas tile for the initial hit burst and reinforce it
+	// with a blood-red tint so it cannot look like the coral drip effect.
+	const bloodR = light.r * 1.0;
+	const bloodG = light.g * 0.3;
+	const bloodB = light.b * 0.24;
+	const count = Math.min(
+		MOB_DAMAGE_PARTICLES_MAX,
+		Math.max(
+			MOB_DAMAGE_PARTICLES_MIN,
+			Math.ceil(damage * MOB_DAMAGE_PARTICLES_PER_POINT),
+		),
+	);
+
+	for (let i = 0; i < count; i++) {
+		const angle = getPRNGUnit2() * Math.PI * 2;
+		const speed = 0.25 + getPRNGUnit2() * 0.65;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.18,
+			y + (getPRNGUnit2() - 0.5) * 0.22,
+			z + (getPRNGUnit2() - 0.5) * 0.18,
+			Math.cos(angle) * speed,
+			0.45 + getPRNGUnit2() * 1.1,
+			Math.sin(angle) * speed,
+			0.3 + getPRNGUnit2() * 0.45,
+			0.035 + getPRNGUnit2() * 0.025,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 3,
+			frame,
+			bloodR,
+			bloodG,
+			bloodB,
 			1,
 			1,
 			1,
@@ -480,6 +536,68 @@ export function playSprint(
 			lb * shade,
 			1.0,
 			0.08,
+		);
+	}
+}
+
+/**
+ * Landing dust kicked up when a mob hits the ground after a fall. `x/y/z` is
+ * the landing point (physical ground contact); particle count scales with fall
+ * distance so harder landings throw up more dust. The particles use the tile
+ * and lighting of the block that was actually hit.
+ */
+export function playLandingDust(
+	x: number,
+	y: number,
+	z: number,
+	fallDistance: number,
+): void {
+	if (!billboard || !Number.isFinite(fallDistance) || fallDistance <= 0) return;
+
+	// `y` is the physical contact height. Sample the voxel immediately below
+	// it so the puff uses the block that was actually hit, not a hard-coded
+	// atlas tile (and never accidentally samples air at the surface boundary).
+	const groundBlockId = getBlockByWorldCoords(
+		Math.floor(x),
+		Math.floor(y - 0.05),
+		Math.floor(z),
+	);
+	if (!isCollidableBlock(groundBlockId)) return;
+
+	const frame = getBlockFrame(groundBlockId);
+	const light = computeLight(getLightByWorldCoords(x, y + 0.05, z));
+	const shade = 0.85 + getPRNGUnit2() * 0.15;
+	const lr = light.r * shade;
+	const lg = light.g * shade;
+	const lb = light.b * shade;
+
+	// Scale particle count with fall distance: a 3-block fall makes a small
+	// puff, a 20-block drop kicks up a big cloud. Clamped to the pool.
+	const count = Math.min(
+		PARTICLES_PER_BREAK,
+		Math.max(8, Math.round(fallDistance * 12)),
+	);
+
+	for (let i = 0; i < count; i++) {
+		const angle = getPRNGUnit2() * Math.PI * 2;
+		const outSpeed = 0.3 + getPRNGUnit2() * (0.4 + fallDistance * 0.15);
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.6,
+			y + 0.025,
+			z + (getPRNGUnit2() - 0.5) * 0.6,
+			Math.cos(angle) * outSpeed,
+			0.4 + getPRNGUnit2() * (0.6 + fallDistance * 0.1),
+			Math.sin(angle) * outSpeed,
+			0.4 + getPRNGUnit2() * 0.4,
+			0.08 + getPRNGUnit2() * 0.06,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			lr,
+			lg,
+			lb,
+			1.0,
+			0.1,
 		);
 	}
 }

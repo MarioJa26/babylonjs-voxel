@@ -398,6 +398,22 @@ export class NetClient {
 						// Handled by RemoteMobManager via addBinaryHandler.
 						return;
 
+					case MessageType.MobDamage:
+						// Handled by RemoteMobManager via addBinaryHandler. Consume the
+						// fixed-size payload so relayed hit effects do not log as unknown.
+						dec.readUint16();
+						dec.readFloat32();
+						break;
+
+					case MessageType.MobImpact:
+						// Handled by RemoteMobManager via addBinaryHandler.
+						dec.readUint16();
+						dec.readFloat32();
+						dec.readFloat32();
+						dec.readFloat32();
+						dec.readFloat32();
+						break;
+
 					case MessageType.ItemSpawn:
 					case MessageType.ItemUpdateBatch:
 					case MessageType.ItemDespawn:

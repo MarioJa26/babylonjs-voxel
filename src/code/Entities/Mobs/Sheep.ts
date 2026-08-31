@@ -172,7 +172,12 @@ export class Sheep extends NeutralMob {
 		hp?: number,
 		color?: Color3,
 	) {
-		super(hp ?? SHEEP_DEFAULT_HP, scene, SHEEP_BODY_HALF_SIZE);
+		super(
+			hp ?? SHEEP_DEFAULT_HP,
+			scene,
+			SHEEP_BODY_HALF_SIZE,
+			SHEEP_STATS.feetHeight,
+		);
 
 		this.#color = color ?? randomSheepColor();
 

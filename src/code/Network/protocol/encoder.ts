@@ -22,6 +22,7 @@ import {
 	type ItemUpdateBatchEntry,
 	MessageType,
 	type MobDamageData,
+	type MobImpactData,
 	type MobSpawnRequestData,
 	type MobUpdateBatchEntry,
 	type PlayerJoinData,
@@ -1499,7 +1500,7 @@ export function decodeMobSpawnRequest(buffer: Uint8Array): MobSpawnRequestData {
 	};
 }
 
-// MobDamage (C→S): [type:1][mobId:u16][damage:f32]  (fractional, e.g. 0.4)
+// MobDamage (C↔S): [type:1][mobId:u16][damage:f32]  (fractional, e.g. 0.4)
 
 export function encodeMobDamage(data: MobDamageData): Uint8Array {
 	const enc = new BinaryEncoder(1 + 2 + 4);
@@ -1512,6 +1513,30 @@ export function encodeMobDamage(data: MobDamageData): Uint8Array {
 export function decodeMobDamage(buffer: Uint8Array): MobDamageData {
 	const dec = new BinaryDecoder(buffer, 1);
 	return { mobId: dec.readUint16(), damage: dec.readFloat32() };
+}
+
+// MobImpact (S→C): [type:1][mobId:u16][x:f32][y:f32][z:f32][fallDistance:f32]
+
+export function encodeMobImpact(data: MobImpactData): Uint8Array {
+	const enc = new BinaryEncoder(1 + 2 + 4 * 4);
+	enc.writeUint8(MessageType.MobImpact);
+	enc.writeUint16(data.mobId);
+	enc.writeFloat32(data.x);
+	enc.writeFloat32(data.y);
+	enc.writeFloat32(data.z);
+	enc.writeFloat32(data.fallDistance);
+	return enc.getBytes();
+}
+
+export function decodeMobImpact(buffer: Uint8Array): MobImpactData {
+	const dec = new BinaryDecoder(buffer, 1);
+	return {
+		mobId: dec.readUint16(),
+		x: dec.readFloat32(),
+		y: dec.readFloat32(),
+		z: dec.readFloat32(),
+		fallDistance: dec.readFloat32(),
+	};
 }
 
 // ArrowShoot (C→S) / ArrowSpawn (S→C):

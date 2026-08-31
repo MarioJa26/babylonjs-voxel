@@ -28,7 +28,8 @@ export const MessageType = {
 	ItemPickup: 0x06, // C→S: a player picked up a server item (by instance id)
 	SkinUpload: 0x07, // C→S: this client's avatar skin as PNG bytes
 	MobSpawnRequest: 0x2a, // C→S: a player used a spawn egg (cap-exempt mob)
-	MobDamage: 0x20, // C→S: a player's projectile hit a server mob
+	MobDamage: 0x20, // C→S request / S→C accepted hit effect for a server mob
+	MobImpact: 0x2d, // S→C: a mob landed after a fall
 	ArrowShoot: 0x2b, // C→S: a player fired an arrow (cosmetic sync)
 	ArrowSpawn: 0x2c, // S→C: relay an arrow's trajectory to the other clients
 
@@ -216,6 +217,18 @@ export interface MobDamageData {
 	mobId: number;
 	/** Damage amount (uint8), clamped server-side. */
 	damage: number;
+}
+
+/** S→C: cosmetic ground impact for a server-authoritative mob. */
+export interface MobImpactData {
+	/** Server-assigned mob id (uint16). */
+	mobId: number;
+	/** Physical ground-contact position, not the mob's model origin. */
+	x: number;
+	y: number;
+	z: number;
+	/** Fall distance used to scale the landing burst. */
+	fallDistance: number;
 }
 
 /**

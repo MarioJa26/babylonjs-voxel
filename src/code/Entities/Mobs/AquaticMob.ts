@@ -2,6 +2,10 @@ import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
+import {
+	playLandingDust,
+	playMobDamage,
+} from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
 import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
@@ -25,6 +29,7 @@ import {
 } from "@/code/World/Shape/FenceConnect";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import type { SavedChunkEntityData } from "@/code/World/WorldStorage";
+import { FALL_DAMAGE_PER_BLOCK, FALL_DAMAGE_THRESHOLD } from "../MobConfig";
 
 const GRAVITY = -18;
 const STEP_SIZE = 0.2;
@@ -82,6 +87,7 @@ export abstract class AquaticMob {
 	 * #isGrounded() and #findRandomWaterTarget().
 	 */
 	#groundProbe = vec3Zero();
+	#groundProbeExtents = vec3Zero();
 	#wanderTargetScratch = vec3Zero();
 
 	#collider: VoxelAabbCollider;
@@ -114,6 +120,9 @@ export abstract class AquaticMob {
 	#walkPhase = 0;
 	#prevX = Number.NaN;
 	#prevZ = Number.NaN;
+
+	/** Y position where the current fall started; NaN when grounded or in water. */
+	#fallStartY = Number.NaN;
 
 	abstract configureChunkLoader(scene: SceneContext): void;
 	abstract getWanderSpeed(): number;
@@ -235,15 +244,7 @@ export abstract class AquaticMob {
 				(wx, wy, wz) => {
 					const result = resolveBlockAtWorldCoords(wx, wy, wz);
 
-					if (result.unloaded) {
-						/*
-						 * Treat unloaded space as solid terrain so entities do
-						 * not fall through the world during chunk streaming.
-						 */
-						_voxelResolveScratch.blockId = BlockType.Cobble;
-						_voxelResolveScratch.blockState = 0;
-						return _voxelResolveScratch;
-					}
+					if (result.unloaded) return null;
 
 					if (!isCollidableBlock(result.blockId)) {
 						return null;
@@ -319,8 +320,13 @@ export abstract class AquaticMob {
 		this.#playerPosition = pos;
 	}
 
-	takeDamage(amount: number): void {
+	takeDamage(amount: number, impactPosition?: Vec3): void {
 		this.#hp -= amount;
+
+		// Blood particles at the hit point when available, otherwise at the mob's
+		// body center for fall/environmental damage.
+		const bloodPosition = impactPosition ?? this.#position;
+		playMobDamage(bloodPosition.x, bloodPosition.y, bloodPosition.z, amount);
 
 		if (this.#hp <= 0) {
 			this.#hp = 0;
@@ -499,20 +505,19 @@ export abstract class AquaticMob {
 		}
 
 		const pos = this.#position;
+		const startY = pos.y;
 		const waterState = this.#sampleWaterState(pos);
 
-		/*
-		 * Freeze physics while any relevant chunk is unavailable. Keep the
-		 * visual phase and instance state synchronized.
-		 */
-		if (waterState === WaterSampleResult.NotReady) {
-			this.#updateAnimationPhase(dt, pos);
-			this.syncToInstances();
-			return;
-		}
-
 		const velocity = this.#velocity;
+		// Don't freeze on NotReady — treat as dry so mobs keep falling
+		// when the block under them is mined and the chunk below is still
+		// streaming. Otherwise they hover 1 block above the hole.
 		const inWater = waterState === WaterSampleResult.InWater;
+		const wasNotReady = waterState === WaterSampleResult.NotReady;
+		if (wasNotReady) {
+			// Keep animation in sync even though we don't have a water reading
+			this.#inWaterCached = false;
+		}
 
 		if (inWater) {
 			this.#tickSwimming(dt, pos, velocity);
@@ -528,6 +533,65 @@ export abstract class AquaticMob {
 
 		if (!inWater) {
 			this.#applyLandDamping(dt, pos, velocity);
+
+			// Fall damage for stranded aquatic mobs
+			let grounded = this.#isGrounded(pos);
+			{
+				const cx = Math.floor(pos.x);
+				const cy = Math.floor(pos.y - this.#halfHeight - 0.05);
+				const cz = Math.floor(pos.z);
+				if (!isCollidableBlock(getBlockByWorldCoords(cx, cy, cz)) && grounded) {
+					grounded = false;
+				}
+				if (
+					!isCollidableBlock(getBlockByWorldCoords(cx, cy, cz)) &&
+					!grounded &&
+					Math.abs(velocity.y) < 0.01
+				) {
+					velocity.y = -0.5;
+				}
+			}
+			if (grounded) {
+				if (!Number.isNaN(this.#fallStartY)) {
+					const fallDistance = this.#fallStartY - pos.y;
+					if (fallDistance > 0.5) {
+						playLandingDust(
+							pos.x,
+							pos.y - this.#halfHeight,
+							pos.z,
+							fallDistance,
+						);
+					}
+					if (fallDistance > FALL_DAMAGE_THRESHOLD) {
+						this.takeDamage(
+							(fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK,
+						);
+						if (this.#isDisposed) return;
+					}
+					this.#fallStartY = Number.NaN;
+				}
+			} else if (Number.isNaN(this.#fallStartY)) {
+				this.#fallStartY = startY;
+			}
+		} else {
+			// Water breaks the fall — reset tracking
+			this.#fallStartY = Number.NaN;
+		}
+
+		if (!inWater) {
+			const cx2 = Math.floor(pos.x);
+			const cy2 = Math.floor(pos.y - this.#halfHeight - 0.05);
+			const cz2 = Math.floor(pos.z);
+			if (!isCollidableBlock(getBlockByWorldCoords(cx2, cy2, cz2))) {
+				if (velocity.y > -2) velocity.y -= 2 * dt;
+				if (Math.abs(velocity.y) < 0.1) {
+					const nudge = vec3Zero();
+					nudge.x = pos.x;
+					nudge.y = pos.y - 0.03;
+					nudge.z = pos.z;
+					if (!this.#collider.overlaps(nudge)) pos.y -= 0.03;
+				}
+			}
 		}
 
 		this.#updateAnimationPhase(dt, pos);
@@ -849,13 +913,23 @@ export abstract class AquaticMob {
 	}
 
 	#isGrounded(pos: Vec3): boolean {
+		const cx = Math.floor(pos.x);
+		const cy = Math.floor(pos.y - this.#halfHeight - 0.02);
+		const cz = Math.floor(pos.z);
+		if (!isCollidableBlock(getBlockByWorldCoords(cx, cy, cz))) return false;
 		const probe = this.#groundProbe;
-
+		const footY = pos.y - this.#halfHeight;
 		probe.x = pos.x;
-		probe.y = pos.y - 0.01;
+		probe.y = footY - 0.04;
 		probe.z = pos.z;
-
-		return this.#collider.overlaps(probe);
+		const ext = this.#groundProbeExtents;
+		setVec3(
+			ext,
+			this.#hitHalfExtents.x * 0.7,
+			0.04,
+			this.#hitHalfExtents.z * 0.7,
+		);
+		return this.#collider.overlapsBox(probe, ext);
 	}
 
 	#serializeForChunkReload(): SavedChunkEntityData | null {
