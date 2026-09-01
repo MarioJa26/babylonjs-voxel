@@ -44,10 +44,10 @@ import { MobTypeId } from "../Entities/MobConfig";
 import type { NetClient } from "./NetClient";
 import {
 	BinaryDecoder,
-	decodeMobDamage,
+	decodeMobDamageInto,
 	decodeMobDespawn,
-	decodeMobImpact,
-	decodeMobSpawn,
+	decodeMobImpactInto,
+	decodeMobSpawnInto,
 } from "./protocol/encoder";
 import { MessageType } from "./protocol/messages";
 
@@ -124,6 +124,22 @@ export class RemoteMobManager {
 	private readonly onDisconnected: () => void;
 
 	private readonly decoder = new BinaryDecoder(new Uint8Array(0));
+	private readonly mobSpawnScratch = {
+		mobId: 0,
+		mobType: 0,
+		x: 0,
+		y: 0,
+		z: 0,
+		yaw: 0,
+	};
+	private readonly mobDamageScratch = { mobId: 0, damage: 0 };
+	private readonly mobImpactScratch = {
+		mobId: 0,
+		x: 0,
+		y: 0,
+		z: 0,
+		fallDistance: 0,
+	};
 
 	constructor(private readonly client: NetClient) {
 		/*
@@ -281,7 +297,9 @@ export class RemoteMobManager {
 
 		switch (messageType) {
 			case MessageType.MobDamage: {
-				const damage = decodeMobDamage(data);
+				this.decoder.setBuffer(data);
+				this.decoder.readUint8();
+				const damage = decodeMobDamageInto(this.decoder, this.mobDamageScratch);
 				const mob = this.mobs.get(damage.mobId);
 				if (mob !== undefined) {
 					playMobDamage(
@@ -295,18 +313,17 @@ export class RemoteMobManager {
 			}
 
 			case MessageType.MobImpact: {
-				const impact = decodeMobImpact(data);
+				this.decoder.setBuffer(data);
+				this.decoder.readUint8();
+				const impact = decodeMobImpactInto(this.decoder, this.mobImpactScratch);
 				playLandingDust(impact.x, impact.y, impact.z, impact.fallDistance);
 				return;
 			}
 
 			case MessageType.MobSpawn: {
-				/*
-				 * This decoder currently returns an object. Removing that
-				 * allocation safely would require decodeMobSpawnFrom(decoder)
-				 * or decodeMobSpawnInto(scratch).
-				 */
-				const spawn = decodeMobSpawn(data);
+				this.decoder.setBuffer(data);
+				this.decoder.readUint8();
+				const spawn = decodeMobSpawnInto(this.decoder, this.mobSpawnScratch);
 
 				this.spawnMob(
 					spawn.mobId,

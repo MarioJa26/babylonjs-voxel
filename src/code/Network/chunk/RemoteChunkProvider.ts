@@ -49,13 +49,14 @@ import {
 import { mpLocalCacheName } from "../../World/WorldContext";
 import type { NetClient } from "../NetClient";
 import {
+	BinaryDecoder,
 	type DeflatedChunk,
 	decodeChunkData,
 	decodeChunkDataBatch,
-	decodeChunkDataDeflated,
-	decodeChunkDataDeflatedBatch,
-	decodeChunkUnchanged,
-	decodeChunkUnchangedBatch,
+	decodeChunkDataDeflatedBatchFrom,
+	decodeChunkDataDeflatedFrom,
+	decodeChunkUnchangedBatchInto,
+	decodeChunkUnchangedInto,
 } from "../protocol/encoder";
 import { ChunkResultKind, MessageType } from "../protocol/messages";
 
@@ -163,6 +164,17 @@ export class RemoteChunkProvider {
 	// pending deadline and rejects everything that has expired.
 	private sweepTimer: ReturnType<typeof setTimeout> | null = null;
 	private nextSweepDeadline = Number.POSITIVE_INFINITY;
+
+	// Reused decoder + scratch for chunk messages — avoids per-packet
+	// BinaryDecoder + per-entry {cx,cy,cz,version} allocations on the hot path.
+	private readonly chunkDecoder = new BinaryDecoder(new Uint8Array(0));
+	private readonly unchangedSingleScratch = { cx: 0, cy: 0, cz: 0, version: 0 };
+	private readonly unchangedBatchScratch: Array<{
+		cx: number;
+		cy: number;
+		cz: number;
+		version: number;
+	}> = [];
 	private static readonly DEFAULT_TIMEOUT_MS = 30000;
 	private static readonly HEAP_COMPACT_MIN_SIZE = 64;
 	private static readonly HEAP_COMPACT_GHOST_RATIO = 4;
@@ -197,6 +209,7 @@ export class RemoteChunkProvider {
 
 	private handleBinaryMessage(data: Uint8Array): void {
 		if (data.byteLength === 0) return;
+		const dec = this.chunkDecoder;
 		try {
 			switch (data[0]) {
 				case MessageType.ChunkData:
@@ -205,20 +218,34 @@ export class RemoteChunkProvider {
 				case MessageType.ChunkDataBatch:
 					this.handleChunkDataBatch(decodeChunkDataBatch(data, true));
 					break;
-				case MessageType.ChunkDataDeflated:
-					void this.handleChunkDataDeflated(decodeChunkDataDeflated(data));
+				case MessageType.ChunkDataDeflated: {
+					dec.setBuffer(data);
+					dec.readUint8();
+					void this.handleChunkDataDeflated(decodeChunkDataDeflatedFrom(dec));
 					break;
-				case MessageType.ChunkDataDeflatedBatch:
+				}
+				case MessageType.ChunkDataDeflatedBatch: {
+					dec.setBuffer(data);
+					dec.readUint8();
 					void this.handleChunkDataDeflatedBatch(
-						decodeChunkDataDeflatedBatch(data),
+						decodeChunkDataDeflatedBatchFrom(dec),
 					);
 					break;
-				case MessageType.ChunkUnchanged:
-					this.handleChunkUnchanged(decodeChunkUnchanged(data));
+				}
+				case MessageType.ChunkUnchanged: {
+					dec.setBuffer(data);
+					dec.readUint8();
+					decodeChunkUnchangedInto(dec, this.unchangedSingleScratch);
+					this.handleChunkUnchanged(this.unchangedSingleScratch);
 					break;
-				case MessageType.ChunkUnchangedBatch:
-					this.handleChunkUnchangedBatch(decodeChunkUnchangedBatch(data));
+				}
+				case MessageType.ChunkUnchangedBatch: {
+					dec.setBuffer(data);
+					dec.readUint8();
+					decodeChunkUnchangedBatchInto(dec, this.unchangedBatchScratch);
+					this.handleChunkUnchangedBatch(this.unchangedBatchScratch);
 					break;
+				}
 			}
 		} catch (error) {
 			console.warn("[RemoteChunkProvider] invalid chunk packet:", error);

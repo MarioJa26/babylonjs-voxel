@@ -352,17 +352,6 @@ export class BinaryDecoder {
 		return _textDecoder.decode(this.buffer.subarray(start, this.offset));
 	}
 
-	/** C→S: no sessionId field on the wire. */
-	readPlayerState(): PlayerStateData {
-		const x = this.readFloat32();
-		const y = this.readFloat32();
-		const z = this.readFloat32();
-		const yaw = this.readUint8();
-		const pitch = this.readUint8();
-		const animation = this.readUint8();
-		return { x, y, z, yaw, pitch, animation };
-	}
-
 	/**
 	 * C→S: decode into a caller-owned object instead of allocating a fresh
 	 * one per message. Returns the target for chaining. The previous values
@@ -376,17 +365,6 @@ export class BinaryDecoder {
 		target.pitch = this.readUint8();
 		target.animation = this.readUint8();
 		return target;
-	}
-
-	/** C→S: no sessionId field on the wire. */
-	readBlockEdit(): BlockEditData {
-		const x = this.readInt32();
-		const y = this.readInt32();
-		const z = this.readInt32();
-		const blockId = this.readUint16();
-		const blockState = this.readUint8();
-		const action = this.readUint8();
-		return { sessionId: "", x, y, z, blockId, blockState, action };
 	}
 
 	/**
@@ -403,27 +381,11 @@ export class BinaryDecoder {
 		return target;
 	}
 
-	readChatMessage(): ChatMessageData {
-		return {
-			sessionId: this.readString(),
-			name: this.readString(),
-			message: this.readString(),
-		};
-	}
-
-	readChunkRequest(): {
-		cx: number;
-		cy: number;
-		cz: number;
-		lod: number;
-		cachedVersion: number;
-	} {
-		const cx = this.readInt32();
-		const cy = this.readInt32();
-		const cz = this.readInt32();
-		const lod = this.readUint8();
-		const cachedVersion = this.readUint32();
-		return { cx, cy, cz, lod, cachedVersion };
+	readChatMessageInto(target: ChatMessageData): ChatMessageData {
+		target.sessionId = this.readString();
+		target.name = this.readString();
+		target.message = this.readString();
+		return target;
 	}
 
 	readChunkRequestInto(target: {
@@ -439,33 +401,6 @@ export class BinaryDecoder {
 		target.lod = this.readUint8();
 		target.cachedVersion = this.readUint32();
 		return target;
-	}
-
-	readChunkRequestBatch(): Array<{
-		cx: number;
-		cy: number;
-		cz: number;
-		lod: number;
-		cachedVersion: number;
-	}> {
-		const count = this.readUint16();
-		const requests: Array<{
-			cx: number;
-			cy: number;
-			cz: number;
-			lod: number;
-			cachedVersion: number;
-		}> = [];
-		for (let i = 0; i < count; i++) {
-			requests.push({
-				cx: this.readInt32(),
-				cy: this.readInt32(),
-				cz: this.readInt32(),
-				lod: this.readUint8(),
-				cachedVersion: this.readUint32(),
-			});
-		}
-		return requests;
 	}
 
 	/**
@@ -535,28 +470,6 @@ export function encodePlayerStateBatch(
 	const enc = new BinaryEncoder(2 + count * PLAYER_STATE_BATCH_ENTRY_BYTES);
 	writePlayerStateBatch(enc, states);
 	return enc.getBytes();
-}
-
-export function decodePlayerStateBatch(
-	buffer: Uint8Array,
-): PlayerStateBatchEntry[] {
-	const dec = new BinaryDecoder(buffer, 1);
-	const count = dec.readUint8();
-	const states = new Array<PlayerStateBatchEntry>(count);
-
-	for (let i = 0; i < count; i++) {
-		states[i] = {
-			index: dec.readUint8(),
-			x: dec.readFloat32(),
-			y: dec.readFloat32(),
-			z: dec.readFloat32(),
-			yaw: dec.readUint8(),
-			pitch: dec.readUint8(),
-			animation: dec.readUint8(),
-		};
-	}
-
-	return states;
 }
 
 /**
@@ -663,16 +576,14 @@ export function encodePlayerJoin(data: PlayerJoinData): Uint8Array {
 	return enc.getBytes();
 }
 
-export function decodePlayerJoin(buffer: Uint8Array): PlayerJoinData {
-	return decodePlayerJoinFrom(new BinaryDecoder(buffer, 1));
-}
-
-export function decodePlayerJoinFrom(dec: BinaryDecoder): PlayerJoinData {
-	return {
-		index: dec.readUint8(),
-		sessionId: dec.readString(),
-		name: dec.readString(),
-	};
+export function decodePlayerJoinInto(
+	dec: BinaryDecoder,
+	target: PlayerJoinData,
+): typeof target {
+	target.index = dec.readUint8();
+	target.sessionId = dec.readString();
+	target.name = dec.readString();
+	return target;
 }
 
 /**
@@ -717,11 +628,14 @@ export function encodePlayerSkin(data: PlayerSkinData): Uint8Array {
 	return enc.getBytes();
 }
 
-export function decodePlayerSkin(buffer: Uint8Array): PlayerSkinData {
-	const dec = new BinaryDecoder(buffer, 1);
-	const index = dec.readUint8();
+export function decodePlayerSkinInto(
+	dec: BinaryDecoder,
+	target: PlayerSkinData,
+): typeof target {
+	target.index = dec.readUint8();
 	const len = dec.readUint16();
-	return { index, png: dec.readBytes(len) };
+	target.png = dec.readBytes(len);
+	return target;
 }
 
 /**
@@ -742,22 +656,18 @@ export function encodeBlockEditBroadcast(data: BlockEditData): Uint8Array {
 	return enc.getBytes();
 }
 
-export function decodeBlockEditBroadcast(buffer: Uint8Array): BlockEditData {
-	return decodeBlockEditBroadcastFrom(new BinaryDecoder(buffer, 1));
-}
-
-export function decodeBlockEditBroadcastFrom(
+export function decodeBlockEditBroadcastInto(
 	dec: BinaryDecoder,
-): BlockEditData {
-	return {
-		sessionId: dec.readString(),
-		x: dec.readInt32(),
-		y: dec.readInt32(),
-		z: dec.readInt32(),
-		blockId: dec.readUint16(),
-		blockState: dec.readUint8(),
-		action: dec.readUint8(),
-	};
+	target: BlockEditData,
+): typeof target {
+	target.sessionId = dec.readString();
+	target.x = dec.readInt32();
+	target.y = dec.readInt32();
+	target.z = dec.readInt32();
+	target.blockId = dec.readUint16();
+	target.blockState = dec.readUint8();
+	target.action = dec.readUint8();
+	return target;
 }
 
 /**
@@ -782,24 +692,18 @@ export function encodeBlockEditRejected(
 	return enc.getBytes();
 }
 
-export function decodeBlockEditRejected(
-	buffer: Uint8Array,
-): BlockEditRejectedData {
-	return decodeBlockEditRejectedFrom(new BinaryDecoder(buffer, 1));
-}
-
-export function decodeBlockEditRejectedFrom(
+export function decodeBlockEditRejectedInto(
 	dec: BinaryDecoder,
-): BlockEditRejectedData {
-	return {
-		x: dec.readInt32(),
-		y: dec.readInt32(),
-		z: dec.readInt32(),
-		blockId: dec.readUint16(),
-		blockState: dec.readUint8(),
-		action: dec.readUint8(),
-		reason: dec.readUint8(),
-	};
+	target: BlockEditRejectedData,
+): typeof target {
+	target.x = dec.readInt32();
+	target.y = dec.readInt32();
+	target.z = dec.readInt32();
+	target.blockId = dec.readUint16();
+	target.blockState = dec.readUint8();
+	target.action = dec.readUint8();
+	target.reason = dec.readUint8();
+	return target;
 }
 
 export function encodeChatMessage(data: ChatMessageData): Uint8Array {
@@ -808,9 +712,11 @@ export function encodeChatMessage(data: ChatMessageData): Uint8Array {
 	return enc.getBytes();
 }
 
-export function decodeChatMessage(buffer: Uint8Array): ChatMessageData {
-	const dec = new BinaryDecoder(buffer, 1);
-	return dec.readChatMessage();
+export function decodeChatMessageInto(
+	dec: BinaryDecoder,
+	target: ChatMessageData,
+): typeof target {
+	return dec.readChatMessageInto(target);
 }
 
 /**
@@ -856,13 +762,14 @@ export interface WorldConfigData {
 	dayCycle: boolean;
 }
 
-export function decodeWorldConfig(buffer: Uint8Array): WorldConfigData {
-	const dec = new BinaryDecoder(buffer, 1);
-	return {
-		seed: dec.readString(),
-		dayDurationMs: dec.readFloat32(),
-		dayCycle: dec.readUint8() !== 0,
-	};
+export function decodeWorldConfigInto(
+	dec: BinaryDecoder,
+	target: WorldConfigData,
+): typeof target {
+	target.seed = dec.readString();
+	target.dayDurationMs = dec.readFloat32();
+	target.dayCycle = dec.readUint8() !== 0;
+	return target;
 }
 
 /**
@@ -1029,49 +936,39 @@ export function encodeChunkUnchanged(
 	return enc.getBytes();
 }
 
-export function decodeChunkUnchanged(buffer: Uint8Array): {
-	cx: number;
-	cy: number;
-	cz: number;
-	version: number;
-} {
-	const dec = new BinaryDecoder(buffer, 1);
-	return {
-		cx: dec.readInt32(),
-		cy: dec.readInt32(),
-		cz: dec.readInt32(),
-		version: dec.readUint32(),
-	};
+export function decodeChunkUnchangedInto(
+	dec: BinaryDecoder,
+	target: { cx: number; cy: number; cz: number; version: number },
+): typeof target {
+	target.cx = dec.readInt32();
+	target.cy = dec.readInt32();
+	target.cz = dec.readInt32();
+	target.version = dec.readUint32();
+	return target;
 }
 
 /**
- * Chunk unchanged batch — server → client.
- * Format: [type:1][count:u16][cx:i32][cy:i32][cz:i32][version:u32] × count
+ * Decode chunk unchanged batch into a reusable pre-allocated array.
+ * Avoids per-entry object allocation on the hot path.
  */
-export function decodeChunkUnchangedBatch(buffer: Uint8Array): Array<{
-	cx: number;
-	cy: number;
-	cz: number;
-	version: number;
-}> {
-	const dec = new BinaryDecoder(buffer, 1);
+export function decodeChunkUnchangedBatchInto(
+	dec: BinaryDecoder,
+	target: Array<{ cx: number; cy: number; cz: number; version: number }>,
+): number {
 	const count = dec.readUint16();
-	const results = new Array<{
-		cx: number;
-		cy: number;
-		cz: number;
-		version: number;
-	}>(count);
-
 	for (let i = 0; i < count; i++) {
-		results[i] = {
-			cx: dec.readInt32(),
-			cy: dec.readInt32(),
-			cz: dec.readInt32(),
-			version: dec.readUint32(),
-		};
+		let entry = target[i];
+		if (!entry) {
+			entry = { cx: 0, cy: 0, cz: 0, version: 0 };
+			target[i] = entry;
+		}
+		entry.cx = dec.readInt32();
+		entry.cy = dec.readInt32();
+		entry.cz = dec.readInt32();
+		entry.version = dec.readUint32();
 	}
-	return results;
+	target.length = count;
+	return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -1281,6 +1178,10 @@ export function encodeChunkDataDeflatedPayload(
 
 export function decodeChunkDataDeflated(buffer: Uint8Array): DeflatedChunk {
 	const dec = new BinaryDecoder(buffer, 1);
+	return decodeChunkDataDeflatedFrom(dec);
+}
+
+export function decodeChunkDataDeflatedFrom(dec: BinaryDecoder): DeflatedChunk {
 	const chunkX = dec.readInt32();
 	const chunkY = dec.readInt32();
 	const chunkZ = dec.readInt32();
@@ -1296,6 +1197,21 @@ export function decodeChunkDataDeflated(buffer: Uint8Array): DeflatedChunk {
 		deflated: dec.readBytes(len),
 	};
 }
+
+export function decodeChunkDataDeflatedInto(
+	dec: BinaryDecoder,
+	target: DeflatedChunk,
+): DeflatedChunk {
+	target.chunkX = dec.readInt32();
+	target.chunkY = dec.readInt32();
+	target.chunkZ = dec.readInt32();
+	target.version = dec.readUint32();
+	const len = dec.readUint32();
+	target.origLen = dec.readUint32();
+	target.deflated = dec.readBytes(len);
+	return target;
+}
+
 function decodeDeflatedChunkEntry(dec: BinaryDecoder): DeflatedChunk {
 	const chunkX = dec.readInt32();
 	const chunkY = dec.readInt32();
@@ -1314,11 +1230,37 @@ function decodeDeflatedChunkEntry(dec: BinaryDecoder): DeflatedChunk {
 	};
 }
 
+export function decodeDeflatedChunkEntryFrom(
+	dec: BinaryDecoder,
+): DeflatedChunk {
+	return decodeDeflatedChunkEntry(dec);
+}
+
+export function decodeDeflatedChunkEntryInto(
+	dec: BinaryDecoder,
+	target: DeflatedChunk,
+): DeflatedChunk {
+	target.chunkX = dec.readInt32();
+	target.chunkY = dec.readInt32();
+	target.chunkZ = dec.readInt32();
+	target.version = dec.readUint32();
+	const len = dec.readUint32();
+	target.origLen = dec.readUint32();
+	target.deflated = dec.readBytes(len);
+	return target;
+}
+
 /** Decode a batch of deflated chunks. */
 export function decodeChunkDataDeflatedBatch(
 	buffer: Uint8Array,
 ): DeflatedChunk[] {
 	const dec = new BinaryDecoder(buffer, 1);
+	return decodeChunkDataDeflatedBatchFrom(dec);
+}
+
+export function decodeChunkDataDeflatedBatchFrom(
+	dec: BinaryDecoder,
+): DeflatedChunk[] {
 	const count = dec.readUint16();
 	const chunks = new Array<DeflatedChunk>(count);
 
@@ -1327,6 +1269,34 @@ export function decodeChunkDataDeflatedBatch(
 	}
 
 	return chunks;
+}
+
+/**
+ * Decode a deflated chunk batch into a reusable pre-allocated array.
+ * Reuses entry objects to avoid per-chunk allocation on the hot path.
+ */
+export function decodeChunkDataDeflatedBatchInto(
+	dec: BinaryDecoder,
+	target: DeflatedChunk[],
+): number {
+	const count = dec.readUint16();
+	for (let i = 0; i < count; i++) {
+		let entry = target[i];
+		if (!entry) {
+			entry = {
+				chunkX: 0,
+				chunkY: 0,
+				chunkZ: 0,
+				version: 0,
+				origLen: 0,
+				deflated: new Uint8Array(0),
+			};
+			target[i] = entry;
+		}
+		decodeDeflatedChunkEntryInto(dec, entry);
+	}
+	target.length = count;
+	return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -1383,6 +1353,16 @@ export function decodeSpawnPosition(buffer: Uint8Array): {
 	pitch: number;
 } {
 	const dec = new BinaryDecoder(buffer, 1);
+	return decodeSpawnPositionFrom(dec);
+}
+
+export function decodeSpawnPositionFrom(dec: BinaryDecoder): {
+	x: number;
+	y: number;
+	z: number;
+	yaw: number;
+	pitch: number;
+} {
 	return {
 		x: dec.readFloat32(),
 		y: dec.readFloat32(),
@@ -1390,6 +1370,18 @@ export function decodeSpawnPosition(buffer: Uint8Array): {
 		yaw: dec.readFloat32(),
 		pitch: dec.readFloat32(),
 	};
+}
+
+export function decodeSpawnPositionInto(
+	dec: BinaryDecoder,
+	target: { x: number; y: number; z: number; yaw: number; pitch: number },
+): typeof target {
+	target.x = dec.readFloat32();
+	target.y = dec.readFloat32();
+	target.z = dec.readFloat32();
+	target.yaw = dec.readFloat32();
+	target.pitch = dec.readFloat32();
+	return target;
 }
 
 // ---------------------------------------------------------------------------
@@ -1430,6 +1422,17 @@ export function decodeMobSpawn(buffer: Uint8Array): {
 	yaw: number;
 } {
 	const dec = new BinaryDecoder(buffer, 1);
+	return decodeMobSpawnFrom(dec);
+}
+
+export function decodeMobSpawnFrom(dec: BinaryDecoder): {
+	mobId: number;
+	mobType: number;
+	x: number;
+	y: number;
+	z: number;
+	yaw: number;
+} {
 	return {
 		mobId: dec.readUint16(),
 		mobType: dec.readUint8(),
@@ -1438,6 +1441,26 @@ export function decodeMobSpawn(buffer: Uint8Array): {
 		z: dec.readFloat32(),
 		yaw: dec.readUint8(),
 	};
+}
+
+export function decodeMobSpawnInto(
+	dec: BinaryDecoder,
+	target: {
+		mobId: number;
+		mobType: number;
+		x: number;
+		y: number;
+		z: number;
+		yaw: number;
+	},
+): typeof target {
+	target.mobId = dec.readUint16();
+	target.mobType = dec.readUint8();
+	target.x = dec.readFloat32();
+	target.y = dec.readFloat32();
+	target.z = dec.readFloat32();
+	target.yaw = dec.readUint8();
+	return target;
 }
 
 /**
@@ -1490,14 +1513,15 @@ export function encodeMobSpawnRequest(data: MobSpawnRequestData): Uint8Array {
 	return enc.getBytes();
 }
 
-export function decodeMobSpawnRequest(buffer: Uint8Array): MobSpawnRequestData {
-	const dec = new BinaryDecoder(buffer, 1);
-	return {
-		typeId: dec.readUint8(),
-		x: dec.readFloat32(),
-		y: dec.readFloat32(),
-		z: dec.readFloat32(),
-	};
+export function decodeMobSpawnRequestInto(
+	dec: BinaryDecoder,
+	target: MobSpawnRequestData,
+): typeof target {
+	target.typeId = dec.readUint8();
+	target.x = dec.readFloat32();
+	target.y = dec.readFloat32();
+	target.z = dec.readFloat32();
+	return target;
 }
 
 // MobDamage (C↔S): [type:1][mobId:u16][damage:f32]  (fractional, e.g. 0.4)
@@ -1510,9 +1534,13 @@ export function encodeMobDamage(data: MobDamageData): Uint8Array {
 	return enc.getBytes();
 }
 
-export function decodeMobDamage(buffer: Uint8Array): MobDamageData {
-	const dec = new BinaryDecoder(buffer, 1);
-	return { mobId: dec.readUint16(), damage: dec.readFloat32() };
+export function decodeMobDamageInto(
+	dec: BinaryDecoder,
+	target: MobDamageData,
+): typeof target {
+	target.mobId = dec.readUint16();
+	target.damage = dec.readFloat32();
+	return target;
 }
 
 // MobImpact (S→C): [type:1][mobId:u16][x:f32][y:f32][z:f32][fallDistance:f32]
@@ -1528,15 +1556,16 @@ export function encodeMobImpact(data: MobImpactData): Uint8Array {
 	return enc.getBytes();
 }
 
-export function decodeMobImpact(buffer: Uint8Array): MobImpactData {
-	const dec = new BinaryDecoder(buffer, 1);
-	return {
-		mobId: dec.readUint16(),
-		x: dec.readFloat32(),
-		y: dec.readFloat32(),
-		z: dec.readFloat32(),
-		fallDistance: dec.readFloat32(),
-	};
+export function decodeMobImpactInto(
+	dec: BinaryDecoder,
+	target: MobImpactData,
+): typeof target {
+	target.mobId = dec.readUint16();
+	target.x = dec.readFloat32();
+	target.y = dec.readFloat32();
+	target.z = dec.readFloat32();
+	target.fallDistance = dec.readFloat32();
+	return target;
 }
 
 // ArrowShoot (C→S) / ArrowSpawn (S→C):
@@ -1546,16 +1575,22 @@ export function encodeArrowShoot(data: ArrowTrajectoryData): Uint8Array {
 	return encodeArrowTrajectory(MessageType.ArrowShoot, data);
 }
 
-export function decodeArrowShoot(buffer: Uint8Array): ArrowTrajectoryData {
-	return decodeArrowTrajectory(buffer);
+export function decodeArrowShootInto(
+	dec: BinaryDecoder,
+	target: ArrowTrajectoryData,
+): typeof target {
+	return decodeArrowTrajectoryInto(dec, target);
 }
 
 export function encodeArrowSpawn(data: ArrowTrajectoryData): Uint8Array {
 	return encodeArrowTrajectory(MessageType.ArrowSpawn, data);
 }
 
-export function decodeArrowSpawn(buffer: Uint8Array): ArrowTrajectoryData {
-	return decodeArrowTrajectory(buffer);
+export function decodeArrowSpawnInto(
+	dec: BinaryDecoder,
+	target: ArrowTrajectoryData,
+): typeof target {
+	return decodeArrowTrajectoryInto(dec, target);
 }
 
 function encodeArrowTrajectory(
@@ -1574,17 +1609,18 @@ function encodeArrowTrajectory(
 	return enc.getBytes();
 }
 
-function decodeArrowTrajectory(buffer: Uint8Array): ArrowTrajectoryData {
-	const dec = new BinaryDecoder(buffer, 1);
-	return {
-		x: dec.readFloat32(),
-		y: dec.readFloat32(),
-		z: dec.readFloat32(),
-		vx: dec.readFloat32(),
-		vy: dec.readFloat32(),
-		vz: dec.readFloat32(),
-		arrowType: dec.readUint8(),
-	};
+export function decodeArrowTrajectoryInto(
+	dec: BinaryDecoder,
+	target: ArrowTrajectoryData,
+): typeof target {
+	target.x = dec.readFloat32();
+	target.y = dec.readFloat32();
+	target.z = dec.readFloat32();
+	target.vx = dec.readFloat32();
+	target.vy = dec.readFloat32();
+	target.vz = dec.readFloat32();
+	target.arrowType = dec.readUint8();
+	return target;
 }
 
 // ---------------------------------------------------------------------------
@@ -1611,18 +1647,19 @@ export function encodeItemDrop(data: ItemDropData): Uint8Array {
 	return enc.getBytes();
 }
 
-export function decodeItemDrop(buffer: Uint8Array): ItemDropData {
-	const dec = new BinaryDecoder(buffer, 1);
-	return {
-		itemId: dec.readUint16(),
-		stackSize: dec.readUint16(),
-		x: dec.readFloat32(),
-		y: dec.readFloat32(),
-		z: dec.readFloat32(),
-		vx: dec.readFloat32(),
-		vy: dec.readFloat32(),
-		vz: dec.readFloat32(),
-	};
+export function decodeItemDropInto(
+	dec: BinaryDecoder,
+	target: ItemDropData,
+): typeof target {
+	target.itemId = dec.readUint16();
+	target.stackSize = dec.readUint16();
+	target.x = dec.readFloat32();
+	target.y = dec.readFloat32();
+	target.z = dec.readFloat32();
+	target.vx = dec.readFloat32();
+	target.vy = dec.readFloat32();
+	target.vz = dec.readFloat32();
+	return target;
 }
 
 export function encodeItemPickup(data: ItemPickupData): Uint8Array {
@@ -1632,9 +1669,12 @@ export function encodeItemPickup(data: ItemPickupData): Uint8Array {
 	return enc.getBytes();
 }
 
-export function decodeItemPickup(buffer: Uint8Array): ItemPickupData {
-	const dec = new BinaryDecoder(buffer, 1);
-	return { itemId: dec.readUint32() };
+export function decodeItemPickupInto(
+	dec: BinaryDecoder,
+	target: ItemPickupData,
+): typeof target {
+	target.itemId = dec.readUint32();
+	return target;
 }
 
 export function encodeItemSpawn(data: ItemSpawnData): Uint8Array {
@@ -1653,19 +1693,20 @@ export function encodeItemSpawn(data: ItemSpawnData): Uint8Array {
 	return enc.getBytes();
 }
 
-export function decodeItemSpawn(buffer: Uint8Array): ItemSpawnData {
-	const dec = new BinaryDecoder(buffer, 1);
-	return {
-		id: dec.readUint32(),
-		itemId: dec.readUint16(),
-		stackSize: dec.readUint16(),
-		x: dec.readFloat32(),
-		y: dec.readFloat32(),
-		z: dec.readFloat32(),
-		vx: dec.readFloat32(),
-		vy: dec.readFloat32(),
-		vz: dec.readFloat32(),
-	};
+export function decodeItemSpawnInto(
+	dec: BinaryDecoder,
+	target: ItemSpawnData,
+): typeof target {
+	target.id = dec.readUint32();
+	target.itemId = dec.readUint16();
+	target.stackSize = dec.readUint16();
+	target.x = dec.readFloat32();
+	target.y = dec.readFloat32();
+	target.z = dec.readFloat32();
+	target.vx = dec.readFloat32();
+	target.vy = dec.readFloat32();
+	target.vz = dec.readFloat32();
+	return target;
 }
 
 /** Batch encoding for server → client item position broadcasts (pooled). */
@@ -1712,9 +1753,11 @@ export function encodeItemPickupRejected(
 	return enc.getBytes();
 }
 
-export function decodeItemPickupRejected(
-	buffer: Uint8Array,
-): ItemPickupRejectedData {
-	const dec = new BinaryDecoder(buffer, 1);
-	return { id: dec.readUint32(), reason: dec.readUint8() };
+export function decodeItemPickupRejectedInto(
+	dec: BinaryDecoder,
+	target: ItemPickupRejectedData,
+): typeof target {
+	target.id = dec.readUint32();
+	target.reason = dec.readUint8();
+	return target;
 }

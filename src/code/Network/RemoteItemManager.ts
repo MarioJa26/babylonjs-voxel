@@ -15,8 +15,8 @@ import type { NetClient } from "./NetClient";
 import {
 	BinaryDecoder,
 	decodeItemDespawn,
-	decodeItemPickupRejected,
-	decodeItemSpawn,
+	decodeItemPickupRejectedInto,
+	decodeItemSpawnInto,
 } from "./protocol/encoder";
 import { ItemPickupRejectReason, MessageType } from "./protocol/messages";
 
@@ -42,6 +42,18 @@ interface RemoteItemInstance {
 export class RemoteItemManager {
 	private readonly items = new Map<number, RemoteItemInstance>();
 	private readonly decoder = new BinaryDecoder(new Uint8Array(0));
+	private readonly itemSpawnScratch = {
+		id: 0,
+		itemId: 0,
+		stackSize: 0,
+		x: 0,
+		y: 0,
+		z: 0,
+		vx: 0,
+		vy: 0,
+		vz: 0,
+	};
+	private readonly itemPickupRejectedScratch = { id: 0, reason: 0 };
 	private readonly handler: (data: Uint8Array) => void;
 	private readonly onDisconnected: () => void;
 
@@ -65,7 +77,9 @@ export class RemoteItemManager {
 
 		switch (data[0]) {
 			case MessageType.ItemSpawn: {
-				const spawn = decodeItemSpawn(data);
+				this.decoder.setBuffer(data);
+				this.decoder.readUint8();
+				const spawn = decodeItemSpawnInto(this.decoder, this.itemSpawnScratch);
 				this.spawnItem(
 					spawn.id,
 					spawn.itemId,
@@ -102,7 +116,12 @@ export class RemoteItemManager {
 			}
 
 			case MessageType.ItemPickupRejected: {
-				const rejection = decodeItemPickupRejected(data);
+				this.decoder.setBuffer(data);
+				this.decoder.readUint8();
+				const rejection = decodeItemPickupRejectedInto(
+					this.decoder,
+					this.itemPickupRejectedScratch,
+				);
 				if (
 					rejection.reason !== ItemPickupRejectReason.NotFound &&
 					rejection.reason !== ItemPickupRejectReason.TooFar

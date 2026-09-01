@@ -26,11 +26,11 @@ import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
-	decodeArrowShoot,
-	decodeItemDrop,
-	decodeItemPickup,
-	decodeMobDamage,
-	decodeMobSpawnRequest,
+	decodeArrowShootInto,
+	decodeItemDropInto,
+	decodeItemPickupInto,
+	decodeMobDamageInto,
+	decodeMobSpawnRequestInto,
 	decodePitchByte,
 	decodeYawByte,
 	encodeArrowSpawn,
@@ -60,6 +60,7 @@ import {
 	writePlayerStateBatch,
 } from "@/code/Network/protocol/encoder.ts";
 import {
+	type ArrowTrajectoryData,
 	BlockActionType,
 	type BlockEditData,
 	BlockEditRejectReason,
@@ -71,6 +72,8 @@ import {
 	type ItemUpdateBatchEntry,
 	MAX_SKIN_BYTES,
 	MessageType,
+	type MobDamageData,
+	type MobSpawnRequestData,
 	type MobUpdateBatchEntry,
 	type PlayerStateBatchEntry,
 	type PlayerStateData,
@@ -350,6 +353,38 @@ export class VoxelRoom extends Room {
 		cz: 0,
 		lod: 0,
 		cachedVersion: 0,
+	};
+	private readonly chatScratch: ChatMessageData = {
+		sessionId: "",
+		name: "",
+		message: "",
+	};
+	private readonly itemDropScratch: ItemDropData = {
+		itemId: 0,
+		stackSize: 0,
+		x: 0,
+		y: 0,
+		z: 0,
+		vx: 0,
+		vy: 0,
+		vz: 0,
+	};
+	private readonly itemPickupScratch: ItemPickupData = { itemId: 0 };
+	private readonly mobSpawnRequestScratch: MobSpawnRequestData = {
+		typeId: 0,
+		x: 0,
+		y: 0,
+		z: 0,
+	};
+	private readonly mobDamageScratch: MobDamageData = { mobId: 0, damage: 0 };
+	private readonly arrowShootScratch: ArrowTrajectoryData = {
+		x: 0,
+		y: 0,
+		z: 0,
+		vx: 0,
+		vy: 0,
+		vz: 0,
+		arrowType: 0,
 	};
 
 	private editEntryPool: Array<{
@@ -1901,7 +1936,7 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.ChatMessage: {
-				const chat: ChatMessageData = dec.readChatMessage();
+				const chat = dec.readChatMessageInto(this.chatScratch);
 				const player = this.players.get(client.sessionId);
 				if (!player) return;
 
@@ -1926,7 +1961,7 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.ItemDrop: {
-				const drop = decodeItemDrop(data);
+				const drop = decodeItemDropInto(dec, this.itemDropScratch);
 				const player = this.players.get(client.sessionId);
 				if (!player) return;
 				if (!this.isValidItemDrop(drop)) return;
@@ -1960,7 +1995,7 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.ItemPickup: {
-				const pickup = decodeItemPickup(data);
+				const pickup = decodeItemPickupInto(dec, this.itemPickupScratch);
 				const player = this.players.get(client.sessionId);
 				if (!player) return;
 
@@ -1998,7 +2033,7 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.MobSpawnRequest: {
-				const request = decodeMobSpawnRequest(data);
+				const request = decodeMobSpawnRequestInto(dec, this.mobSpawnRequestScratch);
 				const player = this.players.get(client.sessionId);
 				if (!player) return;
 
@@ -2039,7 +2074,7 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.MobDamage: {
-				const damage = decodeMobDamage(data);
+				const damage = decodeMobDamageInto(dec, this.mobDamageScratch);
 				const player = this.players.get(client.sessionId);
 				if (!player) return;
 
@@ -2071,7 +2106,7 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.ArrowShoot: {
-				const arrow = decodeArrowShoot(data);
+				const arrow = decodeArrowShootInto(dec, this.arrowShootScratch);
 				const player = this.players.get(client.sessionId);
 				if (!player) return;
 
@@ -2118,6 +2153,16 @@ export class VoxelRoom extends Room {
 				}
 		}
 	}
+	private readonly chunkRequestBatchScratchPool: Array<
+		Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+			lod: number;
+			cachedVersion: number;
+		}>
+	> = [];
+
 	private handleChunkRequestBatchMessage(
 		client: Client,
 		dec: BinaryDecoder,
@@ -2125,14 +2170,8 @@ export class VoxelRoom extends Room {
 		const encodedCount = dec.readUint16();
 		const count = Math.min(encodedCount, MAX_CHUNK_BATCH);
 
-		const requests: Array<{
-			cx: number;
-			cy: number;
-			cz: number;
-			lod: number;
-			cachedVersion: number;
-		}> = [];
-
+		let requests = this.chunkRequestBatchScratchPool.pop();
+		if (!requests) requests = [];
 		let write = 0;
 
 		for (let i = 0; i < count; i++) {
@@ -2146,18 +2185,33 @@ export class VoxelRoom extends Room {
 				continue;
 			}
 
-			requests[write++] = {
-				cx,
-				cy,
-				cz,
-				lod,
-				cachedVersion,
-			};
+			let entry = requests[write];
+			if (!entry) {
+				entry = { cx: 0, cy: 0, cz: 0, lod: 0, cachedVersion: 0 };
+				requests[write] = entry;
+			}
+			entry.cx = cx;
+			entry.cy = cy;
+			entry.cz = cz;
+			entry.lod = lod;
+			entry.cachedVersion = cachedVersion;
+			write++;
 		}
 
-		if (write !== 0) {
-			void this.handleBatchChunkRequest(client, requests);
+		if (write === 0) {
+			requests.length = 0;
+			if (this.chunkRequestBatchScratchPool.length < 8) {
+				this.chunkRequestBatchScratchPool.push(requests);
+			}
+			return;
 		}
+		requests.length = write;
+		void this.handleBatchChunkRequest(client, requests).finally(() => {
+			requests.length = 0;
+			if (this.chunkRequestBatchScratchPool.length < 8) {
+				this.chunkRequestBatchScratchPool.push(requests);
+			}
+		});
 	}
 	private async ensureEditsApplied(keys: readonly number[]): Promise<void> {
 		const keyCount = keys.length;

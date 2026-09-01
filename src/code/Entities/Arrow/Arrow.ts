@@ -20,7 +20,10 @@ import {
 } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import type { NetClient } from "@/code/Network/NetClient";
-import { decodeArrowSpawn } from "@/code/Network/protocol/encoder";
+import {
+	BinaryDecoder,
+	decodeArrowSpawnInto,
+} from "@/code/Network/protocol/encoder";
 import { MessageType } from "@/code/Network/protocol/messages";
 import { dropWorldItem } from "@/code/Player/Inventory/dropWorldItem";
 import { Item } from "@/code/Player/Inventory/Item";
@@ -130,6 +133,17 @@ export class Arrow {
 
 	static #frameMobs: Iterable<Mob> | null = null;
 
+	private static readonly _arrowSpawnScratch = {
+		x: 0,
+		y: 0,
+		z: 0,
+		vx: 0,
+		vy: 0,
+		vz: 0,
+		arrowType: 0,
+	};
+	private static readonly _arrowDecoder = new BinaryDecoder(new Uint8Array(0));
+
 	static ensureNetworkHandler(net: NetClient): void {
 		if (Arrow.#networkClients.has(net)) {
 			return;
@@ -142,7 +156,10 @@ export class Arrow {
 				return;
 			}
 
-			const spawn = decodeArrowSpawn(data);
+			const dec = Arrow._arrowDecoder;
+			dec.setBuffer(data);
+			dec.readUint8();
+			const spawn = decodeArrowSpawnInto(dec, Arrow._arrowSpawnScratch);
 
 			new Arrow(
 				null,

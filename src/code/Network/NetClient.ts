@@ -12,13 +12,12 @@ import { PLAYER_SKIN_PATH } from "../Player/PlayerModel";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
-	decodeBlockEditBatch,
-	decodeBlockEditBroadcastFrom,
-	decodeBlockEditRejectedFrom,
-	decodePlayerJoinFrom,
-	decodePlayerSkin,
+	decodeBlockEditBroadcastInto,
+	decodeBlockEditRejectedInto,
+	decodePlayerJoinInto,
 	decodePlayerStateBatchEntriesInto,
-	decodeWorldConfig,
+	decodeSpawnPositionInto,
+	decodeWorldConfigInto,
 	encodeSkinUpload,
 	type WorldConfigData,
 } from "./protocol/encoder";
@@ -28,6 +27,7 @@ import {
 	type ChatMessageData,
 	MAX_SKIN_BYTES,
 	MessageType,
+	type PlayerJoinData,
 	type PlayerStateBatchEntry,
 } from "./protocol/messages";
 
@@ -104,6 +104,46 @@ export class NetClient {
 
 	private readonly batchScratch: PlayerStateBatchEntry[] = [];
 	private readonly warnedUnknownIndices = new Set<number>();
+	private readonly playerJoinScratch: PlayerJoinData = {
+		index: 0,
+		sessionId: "",
+		name: "",
+	};
+	private readonly blockEditBroadcastScratch: BlockEditData = {
+		sessionId: "",
+		x: 0,
+		y: 0,
+		z: 0,
+		blockId: 0,
+		blockState: 0,
+		action: 0,
+	};
+	private readonly blockEditRejectedScratch: BlockEditRejectedData = {
+		x: 0,
+		y: 0,
+		z: 0,
+		blockId: 0,
+		blockState: 0,
+		action: 0,
+		reason: 0,
+	};
+	private readonly chatMessageScratch: ChatMessageData = {
+		sessionId: "",
+		name: "",
+		message: "",
+	};
+	private readonly worldConfigScratch: WorldConfigData = {
+		seed: "",
+		dayDurationMs: 0,
+		dayCycle: false,
+	};
+	private readonly spawnPositionScratch = {
+		x: 0,
+		y: 0,
+		z: 0,
+		yaw: 0,
+		pitch: 0,
+	};
 
 	/*
 	 * writeBlockEdit currently accepts an object. Reusing this object avoids
@@ -314,32 +354,47 @@ export class NetClient {
 						this.handlePlayerLeave(dec);
 						break;
 
-					case MessageType.BlockEditBroadcast:
-						callbacks.onBlockEdit?.(decodeBlockEditBroadcastFrom(dec));
+					case MessageType.BlockEditBroadcast: {
+						// Reused scratch — safe: NetworkManager.applyRemoteBlockEdit copies fields synchronously (no retain). See NetworkManager:165.
+						const edit = decodeBlockEditBroadcastInto(
+							dec,
+							this.blockEditBroadcastScratch,
+						);
+						callbacks.onBlockEdit?.(edit);
 						break;
+					}
 
-					case MessageType.BlockEditRejected:
-						callbacks.onBlockEditRejected?.(decodeBlockEditRejectedFrom(dec));
+					case MessageType.BlockEditRejected: {
+						const rej = decodeBlockEditRejectedInto(
+							dec,
+							this.blockEditRejectedScratch,
+						);
+						callbacks.onBlockEditRejected?.(rej);
 						break;
+					}
 
-					case MessageType.ChatMessage:
-						callbacks.onChatMessage?.(dec.readChatMessage());
+					case MessageType.ChatMessage: {
+						// Reused scratch — safe: NetworkManager.onChatMessage copies name/message strings synchronously. Caller must not retain object.
+						const chat = dec.readChatMessageInto(this.chatMessageScratch);
+						callbacks.onChatMessage?.(chat);
 						break;
+					}
 
 					case MessageType.BlockEditBatch: {
 						const count = dec.readUint16();
 						const callback = callbacks.onBlockEdit;
 						if (callback !== undefined) {
+							// Reused single scratch per iteration — safe: callback copies fields synchronously (NetworkManager.applyRemoteBlockEdit). No retain.
+							const scratch = this.blockEditBroadcastScratch;
 							for (let i = 0; i < count; i++) {
-								callback({
-									sessionId: "",
-									x: dec.readInt32(),
-									y: dec.readInt32(),
-									z: dec.readInt32(),
-									blockId: dec.readUint16(),
-									blockState: dec.readUint8(),
-									action: dec.readUint8(),
-								});
+								scratch.sessionId = "";
+								scratch.x = dec.readInt32();
+								scratch.y = dec.readInt32();
+								scratch.z = dec.readInt32();
+								scratch.blockId = dec.readUint16();
+								scratch.blockState = dec.readUint8();
+								scratch.action = dec.readUint8();
+								callback(scratch);
 							}
 						} else {
 							for (let i = 0; i < count; i++) {
@@ -359,26 +414,18 @@ export class NetClient {
 						break;
 
 					case MessageType.WorldConfig: {
-						const seed = dec.readString();
-						const dayDurationMs = dec.readFloat32();
-						const dayCycle = dec.readUint8() !== 0;
-						callbacks.onWorldConfig?.({ seed, dayDurationMs, dayCycle });
+						// Reused scratch — safe: NetworkManager.onWorldConfig copies seed string synchronously (NetworkManager:186). Caller must copy if retaining.
+						const cfg = decodeWorldConfigInto(dec, this.worldConfigScratch);
+						callbacks.onWorldConfig?.(cfg);
 						break;
 					}
 
-					case MessageType.SpawnPosition:
-						/*
-						 * This allocation is callback-visible. Reusing an object
-						 * would be unsafe because a callback may retain it.
-						 */
-						callbacks.onSpawnPosition?.({
-							x: dec.readFloat32(),
-							y: dec.readFloat32(),
-							z: dec.readFloat32(),
-							yaw: dec.readFloat32(),
-							pitch: dec.readFloat32(),
-						});
+					case MessageType.SpawnPosition: {
+						// Reused scratch — safe: NetworkManager.onSpawnPosition copies via setSpawnPosition/restoreSavedPosition (no retain). See NetClient:398.
+						const pos = decodeSpawnPositionInto(dec, this.spawnPositionScratch);
+						callbacks.onSpawnPosition?.(pos);
 						break;
+					}
 
 					case MessageType.ChunkData:
 					case MessageType.ChunkDataBatch:
@@ -475,7 +522,7 @@ export class NetClient {
 	}
 
 	private handlePlayerJoin(dec: BinaryDecoder): void {
-		const join = decodePlayerJoinFrom(dec);
+		const join = decodePlayerJoinInto(dec, this.playerJoinScratch);
 
 		if (join.sessionId === this.room?.sessionId) {
 			this.ownIndex = join.index;
