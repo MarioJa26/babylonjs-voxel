@@ -29,6 +29,7 @@ export type MeshBuilderLike = {
 		opaque: WorkerInternalMeshData;
 		transparent: WorkerInternalMeshData;
 	};
+
 	addQuad: (
 		x: number,
 		y: number,
@@ -45,6 +46,20 @@ export type MeshBuilderLike = {
 	) => void;
 };
 
+export type DistantTerrainGenerateOutput = {
+	centerChunkX: number;
+	centerChunkZ: number;
+};
+
+/*
+ * Safe to reuse in a worker because generate() and this handler are
+ * synchronous. Each invocation fully overwrites both fields.
+ */
+const distantTerrainOutput: DistantTerrainGenerateOutput = {
+	centerChunkX: 0,
+	centerChunkZ: 0,
+};
+
 export type CompressBlocksFn = (blocks: Uint8Array) => {
 	isUniform: boolean;
 	uniformBlockId: number;
@@ -52,11 +67,35 @@ export type CompressBlocksFn = (blocks: Uint8Array) => {
 	packedBlocks: Uint8Array | Uint16Array | null;
 };
 
+type TerrainHandlerDependencies = {
+	generator: WorldGenerator;
+	compressBlocks: CompressBlocksFn;
+};
+
+type InitDistantTerrainSharedRequest = {
+	positionsBuffer: SharedArrayBuffer;
+	normalsBuffer: SharedArrayBuffer;
+	surfaceTilesBuffer: SharedArrayBuffer;
+	radius: number;
+	gridStep: number;
+};
+
+/*
+ * Do not expose one shared mutable empty array. Although it would remove a
+ * small allocation, a caller could mutate it and affect later responses.
+ */
+function createEmptyTransferables(): Transferable[] {
+	return [];
+}
+
 export function handleGenerateTerrain(
 	request: GenerateTerrainRequest,
-	deps: { generator: WorldGenerator; compressBlocks: CompressBlocksFn },
-): { payload: TerrainGeneratedMessage; transferables: Transferable[] } {
-	const result = deps.generator.generateChunkData(
+	deps: TerrainHandlerDependencies,
+): {
+	payload: TerrainGeneratedMessage;
+	transferables: Transferable[];
+} {
+	const generated = deps.generator.generateChunkData(
 		request.chunkX,
 		request.chunkY,
 		request.chunkZ,
@@ -66,48 +105,79 @@ export function handleGenerateTerrain(
 		},
 	);
 
-	const compressed = deps.compressBlocks(result.blocks);
-	const lightSeedState = result.lightSeedState;
+	const compressed = deps.compressBlocks(generated.blocks);
+	const packedBlocks = compressed.packedBlocks;
+	const palette = compressed.palette;
+	const light = generated.light;
+	const lightSeedState = generated.lightSeedState;
 
 	const payload: TerrainGeneratedMessage = {
 		chunkId: request.chunkId,
 		type: WorkerTaskType.GenerateTerrain,
-		block_array: compressed.packedBlocks,
-		light_array: result.light,
+		block_array: packedBlocks,
+		light_array: light,
 		isUniform: compressed.isUniform,
 		uniformBlockId: compressed.uniformBlockId,
-		palette: compressed.palette,
+		palette,
 	};
+
+	/*
+	 * At most four buffers can be transferred:
+	 * packed blocks, lighting, palette, and the optional light seed queue.
+	 *
+	 * Pre-sizing avoids backing-store growth as items are appended. The final
+	 * length is trimmed before returning.
+	 */
+	const transferables = new Array<Transferable>(4);
+	let transferableCount = 0;
+
+	transferableCount = appendTransferable(
+		transferables,
+		transferableCount,
+		packedBlocks,
+		"packedBlocks",
+	);
+
+	transferableCount = appendTransferable(
+		transferables,
+		transferableCount,
+		light,
+		"light_array",
+	);
+
+	transferableCount = appendTransferable(
+		transferables,
+		transferableCount,
+		palette,
+		"palette",
+	);
 
 	if (lightSeedState) {
 		payload.lightSeedQueue = lightSeedState.queue;
 		payload.lightSeedLength = lightSeedState.length;
+
+		transferableCount = appendTransferable(
+			transferables,
+			transferableCount,
+			lightSeedState.queue,
+			"lightSeedQueue",
+		);
 	}
 
-	const transferables: Transferable[] = [];
+	transferables.length = transferableCount;
 
-	pushTransferable(
+	return {
+		payload,
 		transferables,
-		compressed.packedBlocks ?? undefined,
-		"packedBlocks",
-	);
-	pushTransferable(transferables, result.light, "light_array");
-	pushTransferable(transferables, compressed.palette ?? undefined, "palette");
-
-	if (lightSeedState) {
-		pushTransferable(transferables, lightSeedState.queue, "lightSeedQueue");
-	}
-
-	return { payload, transferables };
+	};
 }
 
-export function handleInitDistantTerrainShared(request: {
-	positionsBuffer: SharedArrayBuffer;
-	normalsBuffer: SharedArrayBuffer;
-	surfaceTilesBuffer: SharedArrayBuffer;
-	radius: number;
-	gridStep: number;
-}): { payload: { type: number }; transferables: Transferable[] } {
+export function handleInitDistantTerrainShared(
+	request: InitDistantTerrainSharedRequest,
+): {
+	payload: { type: number };
+	transferables: Transferable[];
+} {
 	initSharedBuffers(
 		request.positionsBuffer,
 		request.normalsBuffer,
@@ -117,8 +187,10 @@ export function handleInitDistantTerrainShared(request: {
 	);
 
 	return {
-		payload: { type: WorkerTaskType.InitDistantTerrainShared },
-		transferables: [],
+		payload: {
+			type: WorkerTaskType.InitDistantTerrainShared,
+		},
+		transferables: createEmptyTransferables(),
 	};
 }
 
@@ -128,24 +200,22 @@ export function handleGenerateDistantTerrain(
 	payload: DistantTerrainGeneratedMessage;
 	transferables: Transferable[];
 } {
-	const {
-		requestId,
-		centerChunkX,
-		centerChunkZ,
-		radius,
-		gridStep,
-		renderDistance,
-	} = request;
+	setRenderDistance(request.renderDistance);
 
-	setRenderDistance(renderDistance);
-	const data = generate(centerChunkX, centerChunkZ, radius, gridStep);
+	generate(
+		request.centerChunkX,
+		request.centerChunkZ,
+		request.radius,
+		request.gridStep,
+		distantTerrainOutput,
+	);
 
 	return {
 		payload: {
 			type: WorkerTaskType.GenerateDistantTerrain_Generated,
-			requestId,
-			centerChunkX: data.centerChunkX,
-			centerChunkZ: data.centerChunkZ,
+			requestId: request.requestId,
+			centerChunkX: distantTerrainOutput.centerChunkX,
+			centerChunkZ: distantTerrainOutput.centerChunkZ,
 		},
 		transferables: [],
 	};
@@ -155,38 +225,75 @@ export function handleGenerateFarTile(request: GenerateFarTileRequest): {
 	payload: FarTileGeneratedMessage;
 	transferables: Transferable[];
 } {
-	const result = generateFarTile({
+	const generated = generateFarTile({
 		requestId: request.requestId,
 		levelIndex: request.levelIndex,
 		tileX: request.tileX,
 		tileZ: request.tileZ,
 	});
 
+	const opaqueFaces = generated.opaqueFaces;
+	const waterFaces = generated.waterFaces;
+
+	const transferables = new Array<Transferable>(2);
+	let transferableCount = 0;
+
+	transferableCount = appendTransferable(
+		transferables,
+		transferableCount,
+		opaqueFaces,
+		"opaqueFaces",
+	);
+
+	transferableCount = appendTransferable(
+		transferables,
+		transferableCount,
+		waterFaces,
+		"waterFaces",
+	);
+
+	transferables.length = transferableCount;
+
 	return {
 		payload: {
 			type: WorkerTaskType.GenerateFarTile,
-			requestId: result.requestId,
-			levelIndex: result.levelIndex,
-			tileX: result.tileX,
-			tileZ: result.tileZ,
-			opaqueFaces: result.opaqueFaces,
-			waterFaces: result.waterFaces,
+			requestId: generated.requestId,
+			levelIndex: generated.levelIndex,
+			tileX: generated.tileX,
+			tileZ: generated.tileZ,
+			opaqueFaces,
+			waterFaces,
 		},
-		transferables: [result.opaqueFaces.buffer, result.waterFaces.buffer],
+		transferables,
 	};
 }
 
-function pushTransferable(
+/**
+ * Appends an ArrayBuffer-backed view without using Array.push().
+ *
+ * The returned index allows callers to fill a pre-sized transfer list without
+ * allocating callback functions or temporary entries.
+ */
+function appendTransferable(
 	transferables: Transferable[],
+	index: number,
 	view: ArrayBufferView | null | undefined,
 	label: string,
-): void {
-	if (view == null) return;
+): number {
+	if (view == null) return index;
 
 	const buffer = view.buffer;
 
-	// SharedArrayBuffer cannot be transferred.
-	if (buffer instanceof SharedArrayBuffer) return;
+	/*
+	 * SharedArrayBuffer is cloneable between compatible contexts but is not
+	 * transferable and must not be included in the transfer list.
+	 */
+	if (
+		typeof SharedArrayBuffer !== "undefined" &&
+		buffer instanceof SharedArrayBuffer
+	) {
+		return index;
+	}
 
 	if (!(buffer instanceof ArrayBuffer)) {
 		throw new Error(
@@ -194,5 +301,6 @@ function pushTransferable(
 		);
 	}
 
-	transferables.push(buffer);
+	transferables[index] = buffer;
+	return index + 1;
 }
