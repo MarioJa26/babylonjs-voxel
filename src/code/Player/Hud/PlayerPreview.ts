@@ -263,10 +263,6 @@ export class PlayerPreview {
 		this.#floor = floor;
 		this.#floorMat = floorMat;
 
-		// Render the player's name as a camera-facing billboard above the rig
-		// instead of an HTML string, matching the in-world name tag style. The
-		// tag is baked at 3x resolution so it stays crisp on the large preview
-		// panel; the bake is one-time and only one texture is ever uploaded.
 		const nameTag = rasteriseNameTag(getPlayerName(), 0.575);
 		const nameTagWidthWorld =
 			NAME_TAG_HEIGHT_WORLD * (nameTag.width / nameTag.height);

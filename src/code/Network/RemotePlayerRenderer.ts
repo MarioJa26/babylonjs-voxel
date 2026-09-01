@@ -290,7 +290,7 @@ function fitTextWithEllipsis(
 
 export function rasteriseNameTag(
 	name: string,
-	scale = 1,
+	scale = 0.575,
 ): {
 	canvas: OffscreenCanvas;
 	width: number;
@@ -454,8 +454,8 @@ export class RemotePlayerVisual {
 		const widthWorld = NAME_TAG_HEIGHT_WORLD * (nameTag.width / nameTag.height);
 
 		this.tex = createDynamicTexture(engine, nameTag.width, nameTag.height, {
-			magFilter: "linear",
-			minFilter: "linear",
+			magFilter: "nearest",
+			minFilter: "nearest",
 			srgb: true,
 		});
 
