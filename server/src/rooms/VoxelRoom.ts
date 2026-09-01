@@ -38,7 +38,6 @@ import {
 	encodeBlockEditRejected,
 	encodeChatMessage,
 	encodeChunkData,
-	encodeChunkDataDeflated,
 	encodeChunkDataDeflatedPayload,
 	encodeChunkUnchanged,
 	encodeItemDespawn,
@@ -273,6 +272,8 @@ export class VoxelRoom extends Room {
 	private statesScratch: PlayerStateBatchEntry[] = [];
 	private tickEncoder = new BinaryEncoder(2048);
 	private chunkBatchEncoder = new BinaryEncoder(65536);
+
+	private readonly singleChunkKeyScratch: number[] = [0];
 
 	private static readonly WIRE_CACHE_CAP = 2048;
 	private readonly wireCache = new Map<
@@ -846,17 +847,10 @@ export class VoxelRoom extends Room {
 		edits: Map<number, Map<number, PendingBlockEdit>>,
 	): Promise<void> {
 		try {
-			await runWithConcurrency(
-				Array.from(dirty),
+			await this.applyDirtyEditMapsWithConcurrency(
+				dirty,
+				edits,
 				FLUSH_CONCURRENCY,
-				async (key) => {
-					const editMap = edits.get(key);
-					if (!editMap || editMap.size === 0) return;
-
-					const [cx, cy, cz] = unpackChunkKeyFast(key);
-
-					await this.worldStorage.applyBlockEdits(cx, cy, cz, editMap.values());
-				},
 			);
 
 			await this.worldStorage.flush();
@@ -868,6 +862,42 @@ export class VoxelRoom extends Room {
 			this.mergeFailedChunkEdits(dirty, edits);
 			throw error;
 		}
+	}
+	private async applyDirtyEditMapsWithConcurrency(
+		dirty: Set<number>,
+		edits: Map<number, Map<number, PendingBlockEdit>>,
+		limit: number,
+	): Promise<void> {
+		if (dirty.size === 0) return;
+
+		const iterator = dirty.values();
+		const workerCount = Math.min(Math.max(1, limit | 0), dirty.size);
+		const workers = new Array<Promise<void>>(workerCount);
+
+		const worker = async (): Promise<void> => {
+			for (;;) {
+				const next = iterator.next();
+				if (next.done) return;
+
+				const key = next.value;
+				const editMap = edits.get(key);
+				if (editMap === undefined || editMap.size === 0) continue;
+
+				const coordinates = unpackChunkKeyFast(key);
+				await this.worldStorage.applyBlockEdits(
+					coordinates[0],
+					coordinates[1],
+					coordinates[2],
+					editMap.values(),
+				);
+			}
+		};
+
+		for (let i = 0; i < workerCount; i++) {
+			workers[i] = worker();
+		}
+
+		await Promise.all(workers);
 	}
 
 	private async waitForOverlappingFlush(
@@ -2033,7 +2063,10 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.MobSpawnRequest: {
-				const request = decodeMobSpawnRequestInto(dec, this.mobSpawnRequestScratch);
+				const request = decodeMobSpawnRequestInto(
+					dec,
+					this.mobSpawnRequestScratch,
+				);
 				const player = this.players.get(client.sessionId);
 				if (!player) return;
 
@@ -2300,75 +2333,75 @@ export class VoxelRoom extends Room {
 		cachedVersion: number,
 	): Promise<void> {
 		try {
-			await this.ensureEditsApplied([packChunkKeyFast(cx, cy, cz)]);
+			const key = packChunkKeyFast(cx, cy, cz);
+			const keyScratch = this.singleChunkKeyScratch;
+			keyScratch[0] = key;
+
+			await this.ensureEditsApplied(keyScratch);
+
 			const stored = await this.worldStorage.readChunk(cx, cy, cz);
-			if (stored) {
-				if (stored.version === cachedVersion) {
-					if (DEBUG_ENABLED)
-						debugLog(
-							`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} unchanged`,
-						);
-					client.sendBytes(
-						"binary",
-						encodeChunkUnchanged(cx, cy, cz, stored.version),
-					);
-					return;
-				}
-				if (DEBUG_ENABLED)
+			const chunk = stored ?? (await this.chunkGen.generateChunk(cx, cy, cz));
+
+			if (stored?.version === cachedVersion) {
+				if (DEBUG_ENABLED) {
 					debugLog(
-						`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} sendingFullData`,
+						`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} unchanged`,
 					);
-				if (deflateSupported()) {
-					const key = packChunkKeyFast(
-						stored.chunkX,
-						stored.chunkY,
-						stored.chunkZ,
-					);
-					let entry = this.getWireEntry(key, stored.version);
-					if (!entry) {
-						const blob = this.serializeStored(stored);
-						const deflated = await deflate(blob);
-						entry = {
-							version: stored.version,
-							origLen: blob.byteLength,
-							payload: deflated,
-						};
-						this.setWireEntry(key, entry);
-					}
-					client.sendBytes(
-						"binary",
-						encodeChunkDataDeflatedPayload({
-							chunkX: stored.chunkX,
-							chunkY: stored.chunkY,
-							chunkZ: stored.chunkZ,
-							version: stored.version,
-							origLen: entry.origLen,
-							deflated: entry.payload,
-						}),
-					);
-				} else {
-					client.sendBytes("binary", encodeChunkData(stored));
 				}
+
+				client.sendBytes(
+					"binary",
+					encodeChunkUnchanged(cx, cy, cz, stored.version),
+				);
 				return;
 			}
 
-			const chunkData = await this.chunkGen.generateChunk(cx, cy, cz);
-			if (deflateSupported()) {
-				client.sendBytes(
-					"binary",
-					await encodeChunkDataDeflated({
-						chunkX: chunkData.chunkX,
-						chunkY: chunkData.chunkY,
-						chunkZ: chunkData.chunkZ,
-						version: chunkData.version,
-						blob: this.serializeStored(chunkData),
-					}),
+			if (DEBUG_ENABLED && stored !== undefined) {
+				debugLog(
+					`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored?.version} sendingFullData`,
 				);
-			} else {
-				client.sendBytes("binary", encodeChunkData(chunkData));
 			}
-		} catch (err) {
-			console.error(`[VoxelRoom] Chunk gen failed for ${cx},${cy},${cz}:`, err);
+
+			if (!deflateSupported()) {
+				client.sendBytes("binary", encodeChunkData(chunk));
+				return;
+			}
+
+			const chunkKey = packChunkKeyFast(
+				chunk.chunkX,
+				chunk.chunkY,
+				chunk.chunkZ,
+			);
+
+			let entry = this.getWireEntry(chunkKey, chunk.version);
+			if (entry === undefined) {
+				const blob = this.serializeStored(chunk);
+				const payload = await deflate(blob);
+
+				entry = {
+					version: chunk.version,
+					origLen: blob.byteLength,
+					payload,
+				};
+				this.setWireEntry(chunkKey, entry);
+			}
+
+			client.sendBytes(
+				"binary",
+				encodeChunkDataDeflatedPayload({
+					chunkX: chunk.chunkX,
+					chunkY: chunk.chunkY,
+					chunkZ: chunk.chunkZ,
+					version: chunk.version,
+					origLen: entry.origLen,
+					deflated: entry.payload,
+				}),
+			);
+		} catch (error) {
+			console.error(
+				`[VoxelRoom] Chunk gen failed for ${cx},${cy},${cz}:`,
+				error,
+			);
 		}
 	}
 
