@@ -5,7 +5,7 @@ import {
 	getBiome,
 	getFinalTerrainHeight,
 } from "@/code/Generation/TerrainHeightMap";
-import { BlockTextures } from "../Texture/BlockTextures";
+import { BlockFaceTileX, BlockFaceTileY } from "../Texture/BlockTextures";
 import { FaceName } from "../Texture/FaceName";
 import {
 	FAR_TILE_Y_OFFSET,
@@ -107,17 +107,21 @@ class FaceWriter {
 }
 
 function topTileFor(biome: Biome): [number, number] {
-	const tex = BlockTextures[biome.topBlock];
-	if (!tex) return [14, 0];
-	const tile = tex[FaceName.Top] ?? tex[FaceName.All];
-	return tile ? [tile[0], tile[1]] : [14, 0];
+	const id = biome.topBlock;
+	if (id < 0 || id * FaceName.Count + FaceName.Top >= BlockFaceTileX.length)
+		return [14, 0];
+	const base = id * FaceName.Count;
+	return [
+		BlockFaceTileX[base + FaceName.Top],
+		BlockFaceTileY[base + FaceName.Top],
+	];
 }
 
 function tilesForBlock(blockId: number): [number, number] | null {
-	const tex = BlockTextures[blockId];
-	if (!tex) return null;
-	const tile = tex[FaceName.All];
-	return tile ? [tile[0], tile[1]] : null;
+	if (blockId < 0 || blockId * FaceName.Count >= BlockFaceTileX.length)
+		return null;
+	const base = blockId * FaceName.Count + FaceName.All;
+	return [BlockFaceTileX[base], BlockFaceTileY[base]];
 }
 
 interface HeightLattice {

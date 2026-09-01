@@ -1,5 +1,8 @@
 import { isFarTilesEnabled } from "@/code/World/FarTiles/FarTileLadder";
-import { BlockTextures } from "@/code/World/Texture/BlockTextures";
+import {
+	BlockFaceTileX,
+	BlockFaceTileY,
+} from "@/code/World/Texture/BlockTextures";
 import { FaceName } from "@/code/World/Texture/FaceName";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
@@ -60,7 +63,8 @@ export function initSharedBuffers(
 	configureGrid(r, gStep);
 
 	const vertexCount = rowSize ** 2;
-	const expectedPositionsBytes = vertexCount * 3 * Float32Array.BYTES_PER_ELEMENT;
+	const expectedPositionsBytes =
+		vertexCount * 3 * Float32Array.BYTES_PER_ELEMENT;
 	const expectedNormalsBytes = vertexCount * 3 * Float32Array.BYTES_PER_ELEMENT;
 	const expectedSurfaceTilesBytes =
 		vertexCount * 4 * Uint8Array.BYTES_PER_ELEMENT;
@@ -436,12 +440,13 @@ function generateVertex(
 	nrm[i3 + 2] = -dy2 * invLen;
 
 	const topBlockId = getBiome(worldX, worldZ).topBlock;
-	const tex = BlockTextures[topBlockId];
-	const tile = tex?.[FaceName.Top] ?? tex?.[FaceName.All];
-
-	if (tile) {
-		tiles[i4] = tile[0];
-		tiles[i4 + 1] = tile[1];
+	if (
+		topBlockId >= 0 &&
+		topBlockId * FaceName.Count + FaceName.Top < BlockFaceTileX.length
+	) {
+		const base = topBlockId * FaceName.Count + FaceName.Top;
+		tiles[i4] = BlockFaceTileX[base];
+		tiles[i4 + 1] = BlockFaceTileY[base];
 	} else {
 		tiles[i4] = DEFAULT_TILE_X;
 		tiles[i4 + 1] = DEFAULT_TILE_Y;

@@ -1,5 +1,4 @@
 import { unpackBlockId } from "../../Chunk/DataStructures/BlockEncoding";
-import { BlockTextures } from "../../Texture/BlockTextures";
 import { type FaceName, getFaceName } from "../../Texture/FaceName";
 import { FLAG_SOLID, getCachedFlagsAndId } from "./BlockInfoCache";
 import { quantizeLightForLOD } from "./LightPipeline";
@@ -97,7 +96,7 @@ function emitSkirt(
 	faceName: FaceName,
 ): void {
 	const blockId = unpackBlockId(top.packed & 0xffff);
-	if (!BlockTextures[blockId]) return;
+	if (blockId <= 0) return;
 
 	// Positions are unsigned bytes; clamp so deep skirts never wrap.
 	const yBottom = Math.max(0, yBottomUnclamped);

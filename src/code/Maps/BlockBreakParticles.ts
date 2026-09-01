@@ -31,7 +31,7 @@ import {
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { getPRNGUnit2 } from "../Generation/NoiseAndParameters/Squirrel13";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
-import { BlockTextures } from "../World/Texture/BlockTextures";
+import { BlockFaceTileX, BlockFaceTileY } from "../World/Texture/BlockTextures";
 import { FaceName } from "../World/Texture/FaceName";
 import { atlasSize, tileSize } from "../World/Texture/TextureAtlasFactory";
 
@@ -173,24 +173,19 @@ const debrisCollider = new VoxelAabbCollider(
 	0.001,
 );
 
-// Block id -> atlas frame index, precomputed once. `BlockTextures` is static
-// for the lifetime of the process, so there's no reason to re-walk the
-// per-block face fallback chain (and allocate a closure for `Array.find`) on
-// every emit.
+// Block id -> atlas frame index, precomputed once. Reads typed arrays directly.
 const blockFrameLUT = buildBlockFrameLUT();
 
 function buildBlockFrameLUT(): Uint16Array {
-	const lut = new Uint16Array(BlockTextures.length);
-	for (let id = 0; id < BlockTextures.length; id++) {
-		const blockTex = BlockTextures[id];
-		if (!blockTex) continue;
-		const uv =
-			blockTex[FaceName.All] ??
-			blockTex[FaceName.Side] ??
-			blockTex[FaceName.Top] ??
-			blockTex[FaceName.Bottom] ??
-			blockTex.find((tile) => tile !== undefined);
-		lut[id] = uv ? uv[1] * atlasSize + uv[0] : 0;
+	const count = BlockFaceTileX.length / FaceName.Count;
+	const lut = new Uint16Array(count);
+	for (let id = 0; id < count; id++) {
+		const base = id * FaceName.Count + FaceName.All;
+		const tx = BlockFaceTileX[base];
+		const ty = BlockFaceTileY[base];
+		// atlasSize may still be 0 at module init; fallback to 16 (matches atlasSize default)
+		const size = atlasSize || 16;
+		lut[id] = ty * size + tx;
 	}
 	return lut;
 }

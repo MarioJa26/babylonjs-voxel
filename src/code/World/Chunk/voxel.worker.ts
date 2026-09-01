@@ -843,10 +843,7 @@ function copyMeshBytes(
 	target: Uint8Array,
 	byteLength: number,
 ): void {
-	// A manual copy avoids allocating source.subarray(0, byteLength).
-	for (let i = 0; i < byteLength; i++) {
-		target[i] = source[i];
-	}
+	target.set(source.subarray(0, byteLength), 0);
 }
 
 function fillMeshBuffer(

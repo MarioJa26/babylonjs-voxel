@@ -95,7 +95,7 @@ export class PlayerLoopController {
 	// ---- debug HUD throttle ----
 	#lastDebugHudUpdateMs = 0;
 	#mainThreadMs = 0;
-	static readonly DEBUG_HUD_INTERVAL_MS = 250;
+	static readonly DEBUG_HUD_INTERVAL_MS = 1250;
 
 	// ---- captured static callback for restore-on-dispose ----
 	#previousOnChunkLoaded: typeof Chunk.onChunkLoaded | null = null;

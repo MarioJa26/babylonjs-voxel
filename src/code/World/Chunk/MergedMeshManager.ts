@@ -392,15 +392,7 @@ function copyFaceBytes(
 	byteCount: number,
 	destinationByteOffset: number,
 ): void {
-	if (source.byteLength === byteCount) {
-		destination.set(source, destinationByteOffset);
-		return;
-	}
-
-	// This malformed-data fallback avoids allocating source.subarray().
-	for (let i = 0; i < byteCount; i++) {
-		destination[destinationByteOffset + i] = source[i];
-	}
+	destination.set(source.subarray(0, byteCount), destinationByteOffset);
 }
 
 function copyPrefix(
@@ -408,14 +400,7 @@ function copyPrefix(
 	source: Uint8Array,
 	byteCount: number,
 ): void {
-	if (source.byteLength === byteCount) {
-		destination.set(source);
-		return;
-	}
-
-	for (let i = 0; i < byteCount; i++) {
-		destination[i] = source[i];
-	}
+	destination.set(source.subarray(0, byteCount), 0);
 }
 
 // ---------------------------------------------------------------------------
