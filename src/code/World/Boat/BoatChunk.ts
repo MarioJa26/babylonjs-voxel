@@ -48,6 +48,15 @@ type BoatChunkBlockChangeListener = (
 	blockState: number,
 ) => void;
 
+export type BoatChunkBounds = {
+	minX: number;
+	minY: number;
+	minZ: number;
+	maxX: number;
+	maxY: number;
+	maxZ: number;
+};
+
 export class BoatChunk {
 	private static activeChunks = new Set<BoatChunk>();
 	private static readonly CHUNK_Y_BASE = 670_000;
@@ -64,6 +73,14 @@ export class BoatChunk {
 	// PERF: reusable input for localToWorldCenterToRef — it used to allocate a
 	// fresh vec3 per call despite being the ToRef (allocation-free) variant.
 	#scratchLocalInput = vec3Zero();
+	#scratchBounds: BoatChunkBounds = {
+		minX: 0,
+		minY: 0,
+		minZ: 0,
+		maxX: 0,
+		maxY: 0,
+		maxZ: 0,
+	};
 	#neighborChunks: Chunk[] = [];
 	#attachedOpaqueMesh: Mesh | null = null;
 	#attachedTransparentMesh: Mesh | null = null;
@@ -450,14 +467,7 @@ export class BoatChunk {
 		);
 	}
 
-	public getOccupiedBoundsLocal(): {
-		minX: number;
-		minY: number;
-		minZ: number;
-		maxX: number;
-		maxY: number;
-		maxZ: number;
-	} | null {
+	public getOccupiedBoundsLocal(): BoatChunkBounds | null {
 		let minX = Infinity;
 		let minY = Infinity;
 		let minZ = Infinity;
@@ -483,6 +493,43 @@ export class BoatChunk {
 
 		if (!found) return null;
 		return { minX, minY, minZ, maxX, maxY, maxZ };
+	}
+
+	/** Zero-alloc variant — writes into `out` (or internal scratch if omitted). */
+	public getOccupiedBoundsLocalToRef(
+		out: BoatChunkBounds = this.#scratchBounds,
+	): BoatChunkBounds | null {
+		let minX = Infinity;
+		let minY = Infinity;
+		let minZ = Infinity;
+		let maxX = -Infinity;
+		let maxY = -Infinity;
+		let maxZ = -Infinity;
+		let found = false;
+
+		for (let y = 0; y < Chunk.SIZE; y++) {
+			for (let z = 0; z < Chunk.SIZE; z++) {
+				for (let x = 0; x < Chunk.SIZE; x++) {
+					if (this.#centerChunk.getBlock(x, y, z) === 0) continue;
+					found = true;
+					if (x < minX) minX = x;
+					if (y < minY) minY = y;
+					if (z < minZ) minZ = z;
+					if (x > maxX) maxX = x;
+					if (y > maxY) maxY = y;
+					if (z > maxZ) maxZ = z;
+				}
+			}
+		}
+
+		if (!found) return null;
+		out.minX = minX;
+		out.minY = minY;
+		out.minZ = minZ;
+		out.maxX = maxX;
+		out.maxY = maxY;
+		out.maxZ = maxZ;
+		return out;
 	}
 
 	public onBlockChanged(listener: BoatChunkBlockChangeListener): () => void {

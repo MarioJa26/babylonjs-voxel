@@ -181,9 +181,10 @@ export class CustomBoat implements IUsable {
 			let restoredCustomVisualRoot: Mesh | undefined;
 
 			if (data.boatChunk) {
-				const snapshotBlocks = data.boatChunk.blocks.map((block) => ({
-					...block,
-				}));
+				// PERF: BoatChunk constructor does not retain the input array
+				// reference — it copies into a Uint16Array blockArray. Shallow
+				// slice isolates from the persisted payload without per-block spread.
+				const snapshotBlocks = data.boatChunk.blocks.slice();
 				restoredBoatChunk = new BoatChunk(
 					snapshotBlocks,
 					vec3(
@@ -277,6 +278,14 @@ export class CustomBoat implements IUsable {
 	#tmpBoatSampleWorld = vec3Zero();
 	#scratchRootLocal = vec3Zero();
 	#scratchQuat = Quaternion.Identity();
+	#scratchBounds: import("@/code/World/Boat/BoatChunk").BoatChunkBounds = {
+		minX: 0,
+		minY: 0,
+		minZ: 0,
+		maxX: 0,
+		maxY: 0,
+		maxZ: 0,
+	};
 
 	constructor(
 		player: Player,
@@ -700,7 +709,10 @@ export class CustomBoat implements IUsable {
 			blockCount: boatChunkSnapshot?.blocks.length,
 			boatChunk: boatChunkSnapshot
 				? {
-						blocks: boatChunkSnapshot.blocks.map((block) => ({ ...block })),
+						// PERF: toSnapshot() already returns a fresh array with fresh
+						// block objects. Shallow copy of the array isolates the
+						// snapshot from the live blocks without per-block spread.
+						blocks: boatChunkSnapshot.blocks.slice(),
 						center: {
 							x: boatChunkSnapshot.center.x,
 							y: boatChunkSnapshot.center.y,
@@ -757,7 +769,9 @@ export class CustomBoat implements IUsable {
 
 	#syncCollisionFromBoatChunk(): void {
 		if (!this.#boatChunk) return;
-		const occupied = this.#boatChunk.getOccupiedBoundsLocal();
+		const occupied = this.#boatChunk.getOccupiedBoundsLocalToRef(
+			this.#scratchBounds,
+		);
 		if (!occupied) return;
 
 		const center = this.#boatChunk.center;

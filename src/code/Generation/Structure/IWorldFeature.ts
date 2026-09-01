@@ -1,8 +1,5 @@
 import type { Biome } from "../Biome/BiomeTypes";
-import type {
-	ColumnPrepassCacheEntry,
-	PlaceBlockFn,
-} from "../SurfaceGenerator";
+import type { ColumnPrepassQuery, PlaceBlockFn } from "../SurfaceGenerator";
 
 /**
  * Optional absolute vertical bounds for an IWorldFeature, expressed in world
@@ -24,14 +21,16 @@ export type FeatureVerticalBounds = {
 	maxWorldY: number;
 };
 
+/**
+ * Resolver may return a shared scratch object — callers must consume
+ * {entry,localX,localZ} synchronously and not retain the reference across
+ * another resolver call. This avoids allocating a fresh wrapper per ground
+ * sample (footprintGround calls it ~25× per house).
+ */
 export type ColumnPrepassResolver = (
 	worldX: number,
 	worldZ: number,
-) => {
-	entry: ColumnPrepassCacheEntry;
-	localX: number;
-	localZ: number;
-};
+) => ColumnPrepassQuery;
 
 export interface IWorldFeature {
 	/**

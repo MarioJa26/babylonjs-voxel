@@ -17,6 +17,7 @@ import {
 	transformCoordinatesVec3ToRef,
 } from "@/code/Lib/Math";
 import {
+	_voxelResolveScratch,
 	Axis,
 	createVoxelColliderBlockSampler,
 	VoxelAabbCollider,
@@ -132,13 +133,14 @@ export class AdvancedBoat implements IUsable {
 					// boat falls through the world while chunks stream in.
 					const r = resolveBlockAtWorldCoords(x, y, z);
 					if (r.unloaded) {
-						return { blockId: BlockType.Cobble, blockState: 0 };
+						_voxelResolveScratch.blockId = BlockType.Cobble;
+						_voxelResolveScratch.blockState = 0;
+						return _voxelResolveScratch;
 					}
 					if (!isCollidableBlock(r.blockId)) return null;
-					return {
-						blockId: r.blockId,
-						blockState: getBlockStateByWorldCoords(x, y, z),
-					};
+					_voxelResolveScratch.blockId = r.blockId;
+					_voxelResolveScratch.blockState = getBlockStateByWorldCoords(x, y, z);
+					return _voxelResolveScratch;
 				},
 				{
 					getFenceDynamicShape,

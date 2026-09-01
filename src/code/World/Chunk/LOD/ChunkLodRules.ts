@@ -210,12 +210,22 @@ export class ChunkLodRuleSet {
 
 	/** Widest chunk-creating horizontal band of this rule set. */
 	public maxHorizontalRadius(): number {
-		return Math.max(...this.horizontalRadiiArr);
+		let m = this.horizontalRadiiArr[0] ?? 0;
+		for (let i = 1; i < this.horizontalRadiiArr.length; i++) {
+			const v = this.horizontalRadiiArr[i];
+			if (v > m) m = v;
+		}
+		return m;
 	}
 
 	/** Widest chunk-creating vertical band of this rule set. */
 	public maxVerticalRadius(): number {
-		return Math.max(...this.verticalRadiiArr);
+		let m = this.verticalRadiiArr[0] ?? 0;
+		for (let i = 1; i < this.verticalRadiiArr.length; i++) {
+			const v = this.verticalRadiiArr[i];
+			if (v > m) m = v;
+		}
+		return m;
 	}
 
 	public horizontalRadiusFor(lod: number): number {

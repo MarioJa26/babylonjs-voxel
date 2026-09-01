@@ -129,12 +129,16 @@ export abstract class AquaticMob {
 	abstract onDeath(): void;
 	protected abstract syncToInstances(): void;
 
+	private static readonly DEFAULT_DEPTH_RANGE: Readonly<{
+		min: number;
+		max: number;
+	}> = Object.freeze({ min: 1, max: 3 });
 	/**
 	 * Preferred depth below the detected water surface, in blocks.
 	 * Kept as a fallback when no suitable water target is found.
 	 */
 	protected getDepthRange(): { min: number; max: number } {
-		return { min: 1, max: 3 };
+		return AquaticMob.DEFAULT_DEPTH_RANGE as { min: number; max: number };
 	}
 
 	/**
@@ -152,8 +156,12 @@ export abstract class AquaticMob {
 		return 0.3;
 	}
 
+	private static readonly DEFAULT_IDLE_DURATION: Readonly<{
+		min: number;
+		max: number;
+	}> = Object.freeze({ min: 1.2, max: 3.0 });
 	protected getIdleDuration(): { min: number; max: number } {
-		return { min: 1.2, max: 3.0 };
+		return AquaticMob.DEFAULT_IDLE_DURATION as { min: number; max: number };
 	}
 
 	protected getPanicRadiusSq(): number {

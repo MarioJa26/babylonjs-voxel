@@ -150,6 +150,20 @@ const _scratchSunlightMask = new Uint8Array(_scratchArea);
 const _scratchTopSurfaceYMap = new Int16Array(_scratchArea);
 _scratchTopSurfaceYMap.fill(CAVE_NO_SURFACE_Y);
 
+export type ColumnPrepassQuery = {
+	entry: ColumnPrepassCacheEntry;
+	localX: number;
+	localZ: number;
+};
+// Reused by ColumnPrepassResolver (structure ground sampling) — every
+// ground() call would otherwise allocate {entry,localX,localZ}. Safe because
+// SurfaceGenerator is single-threaded and callers consume synchronously.
+const _columnQueryScratch: ColumnPrepassQuery = {
+	entry: null as unknown as ColumnPrepassCacheEntry,
+	localX: 0,
+	localZ: 0,
+};
+
 export class SurfaceGenerator {
 	private params: GenerationParamsType;
 
@@ -446,30 +460,18 @@ export class SurfaceGenerator {
 		return this.packXZKey(chunkX, chunkZ);
 	}
 
-	/**
-	 * Resolve the column prepass that contains the given world column, returning
-	 * the prepass entry plus the column's local indices within it. The prepass
-	 * is built on demand (it is also built by the terrain path), so the first
-	 * caller pays the build cost and every subsequent caller hits the cache.
-	 *
-	 * Used by the flora loop to look up border-column data without recomputing
-	 * `findTopSurfaceY` (which would otherwise duplicate the ~130 noise calls
-	 * that the prepass already does once per (chunkX, chunkZ) globally).
-	 */
-	private resolveColumnPrepassForWorld(
+	/** Zero-alloc variant — writes into `out` instead of allocating. */
+	private resolveColumnPrepassForWorldToRef(
 		worldX: number,
 		worldZ: number,
-	): {
-		entry: ColumnPrepassCacheEntry;
-		localX: number;
-		localZ: number;
-	} {
+		out: ColumnPrepassQuery,
+	): ColumnPrepassQuery {
 		const chunkX = Math.floor(worldX / CHUNK_SIZE);
 		const chunkZ = Math.floor(worldZ / CHUNK_SIZE);
-		const entry = this.getOrBuildColumnPrepass(chunkX, chunkZ);
-		const localX = worldX - chunkX * CHUNK_SIZE;
-		const localZ = worldZ - chunkZ * CHUNK_SIZE;
-		return { entry, localX, localZ };
+		out.entry = this.getOrBuildColumnPrepass(chunkX, chunkZ);
+		out.localX = worldX - chunkX * CHUNK_SIZE;
+		out.localZ = worldZ - chunkZ * CHUNK_SIZE;
+		return out;
 	}
 
 	/**
@@ -1666,7 +1668,11 @@ export class SurfaceGenerator {
 			SurfaceGenerator.seedAsInt,
 			placeBlock,
 			(worldX: number, worldZ: number) =>
-				this.resolveColumnPrepassForWorld(worldX, worldZ),
+				this.resolveColumnPrepassForWorldToRef(
+					worldX,
+					worldZ,
+					_columnQueryScratch,
+				),
 		);
 	}
 
