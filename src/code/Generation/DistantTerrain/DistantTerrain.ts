@@ -33,8 +33,6 @@ import {
 } from "@/code/World/Texture/TextureAtlasFactory";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 
-const USE_LA_TILE_TEXTURE = false;
-
 let mesh: Mesh;
 let waterMesh: Mesh;
 let material: ReturnType<typeof createDistantTerrainMaterial>;
@@ -48,12 +46,9 @@ const gridStep = 1;
 let gridResolution: number;
 let vertexCount: number;
 
-let sharedPositions: Int16Array;
-let sharedNormals: Int8Array;
+let sharedPositions: Float32Array;
+let sharedNormals: Float32Array;
 let sharedSurfaceTiles: Uint8Array;
-
-let floatPositions: Float32Array;
-let floatNormals: Float32Array;
 
 const gridOrigin: [number, number] = [0, 0];
 
@@ -119,13 +114,6 @@ function createEmptyGridMesh(engine: EngineContext, name: string): Mesh {
 	const m = createMeshFromData(engine, name, positions, normals, indices);
 	m.pickable = false;
 	return m;
-}
-
-function ensureFloatBuffers() {
-	if (!floatPositions || floatPositions.length !== vertexCount * 3) {
-		floatPositions = new Float32Array(vertexCount * 3);
-		floatNormals = new Float32Array(vertexCount * 3);
-	}
 }
 
 // =====================================================================
@@ -249,21 +237,15 @@ function updateUniforms() {
 // =====================================================================
 
 function applyTerrainData(
-	pos: Int16Array,
-	nrm: Int8Array,
+	pos: Float32Array,
+	nrm: Float32Array,
 	tiles: Uint8Array,
 	worldX: number,
 	worldZ: number,
 ) {
-	const len3 = vertexCount * 3;
-
-	for (let i = 0; i < len3; i++) {
-		floatPositions[i] = pos[i];
-		floatNormals[i] = nrm[i] * (1 / 127);
-	}
-
-	updateMeshPositions(engine, mesh, floatPositions);
-	updateMeshNormals(engine, mesh, floatNormals);
+	// Positions/normals are Float32 SABs — direct upload, no Int→Float mirror.
+	updateMeshPositions(engine, mesh, pos);
+	updateMeshNormals(engine, mesh, nrm);
 
 	mesh.position.set(worldX, -2, worldZ);
 	// Sit the flat clip-map water a few blocks below sea level so it can
@@ -279,17 +261,8 @@ function applyTerrainData(
 	gridOriginScratch[1] = originZ;
 	setShaderUniform(material, "gridOriginWorld", gridOriginScratch);
 
-	if (USE_LA_TILE_TEXTURE) {
-		surfaceTileLookupData.set(tiles.subarray(0, surfaceTileLookupData.length));
-	} else {
-		const max = tiles.length;
-		for (let s = 0, d = 0; s < max; s += 2, d += 4) {
-			surfaceTileLookupData[d] = tiles[s];
-			surfaceTileLookupData[d + 1] = tiles[s + 1];
-			surfaceTileLookupData[d + 2] = 0;
-			surfaceTileLookupData[d + 3] = 255;
-		}
-	}
+	// Tiles are now RGBA (4 bytes/vert) — direct upload, no LA→RGBA expand.
+	surfaceTileLookupData.set(tiles.subarray(0, surfaceTileLookupData.length));
 
 	updateTexture2DFromPixels(
 		engine,
@@ -316,7 +289,6 @@ export async function initDistantTerrain(): Promise<void> {
 	const segments = Math.floor((radius * 2) / gridStep);
 	gridResolution = segments + 1;
 	vertexCount = gridResolution * gridResolution;
-	ensureFloatBuffers();
 
 	if (
 		typeof SharedArrayBuffer === "undefined" ||
@@ -334,17 +306,17 @@ export async function initDistantTerrain(): Promise<void> {
 	}
 
 	const positionsBuffer = new SharedArrayBuffer(
-		vertexCount * 3 * Int16Array.BYTES_PER_ELEMENT,
+		vertexCount * 3 * Float32Array.BYTES_PER_ELEMENT,
 	);
 	const normalsBuffer = new SharedArrayBuffer(
-		vertexCount * 3 * Int8Array.BYTES_PER_ELEMENT,
+		vertexCount * 3 * Float32Array.BYTES_PER_ELEMENT,
 	);
 	const surfaceTilesBuffer = new SharedArrayBuffer(
-		vertexCount * 2 * Uint8Array.BYTES_PER_ELEMENT,
+		vertexCount * 4 * Uint8Array.BYTES_PER_ELEMENT,
 	);
 
-	sharedPositions = new Int16Array(positionsBuffer);
-	sharedNormals = new Int8Array(normalsBuffer);
+	sharedPositions = new Float32Array(positionsBuffer);
+	sharedNormals = new Float32Array(normalsBuffer);
 	sharedSurfaceTiles = new Uint8Array(surfaceTilesBuffer);
 
 	ChunkWorkerPool.getInstance().initDistantTerrainShared(
@@ -372,11 +344,7 @@ export async function initDistantTerrain(): Promise<void> {
 	});
 	waterMesh.pickable = false;
 
-	if (USE_LA_TILE_TEXTURE) {
-		surfaceTileLookupData = new Uint8Array(vertexCount * 2);
-	} else {
-		surfaceTileLookupData = new Uint8Array(vertexCount * 4);
-	}
+	surfaceTileLookupData = new Uint8Array(vertexCount * 4);
 
 	surfaceTileLookupTexture = createTexture2DFromPixels(
 		engine,

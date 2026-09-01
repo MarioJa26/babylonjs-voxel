@@ -67,6 +67,7 @@ function makeSharedUint8(length: number): Uint8Array {
 	return new Uint8Array(new SharedArrayBuffer(length));
 }
 
+import { BIAS_XZ, BIAS_Y, RANGE_XZ, RANGE_Y } from "../Storage/ChunkKey.js";
 import {
 	connectFacesMask,
 	FACE_CONNECT_THRESHOLD,
@@ -119,6 +120,20 @@ const _ccVisited = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccFaceCounts = new Uint16Array(6);
 
+function _packNumericKey(cx: number, cy: number, cz: number): number {
+	return ((cx + BIAS_XZ) * RANGE_Y + (cy + BIAS_Y)) * RANGE_XZ + (cz + BIAS_XZ);
+}
+function _inNumericRange(cx: number, cy: number, cz: number): boolean {
+	return (
+		cx >= -1048576 &&
+		cx < 1048576 &&
+		cz >= -1048576 &&
+		cz < 1048576 &&
+		cy >= -1024 &&
+		cy < 1024
+	);
+}
+
 // Reusable seed queue for initializeSunlight().  Sized once from the
 // build-time CHUNK_SIZE constant; shared across all chunk loads because
 // the function is synchronous and never re-enters itself.
@@ -164,10 +179,11 @@ export class Chunk {
 	public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
 	public static readonly SM1 = Chunk.SIZE - 1;
 	public static readonly chunkInstances = new Map<bigint, Chunk>();
+	/** Numeric-key mirror of chunkInstances for hot lookups without BigInt. */
+	public static readonly chunkByNumericKey = new Map<number, Chunk>();
 
 	// Pooled shells to avoid `new Chunk` churn in streaming (≈344 kB / frame).
 	private static _pool: Chunk[] = [];
-	private static _poolSize = 0;
 
 	private static allocPooledChunk(x: number, y: number, z: number): Chunk {
 		const pool = Chunk._pool;
@@ -190,7 +206,6 @@ export class Chunk {
 			(c as any)._uniformBlockId = 0;
 			(c as any)._palette = null;
 			(c as any)._paletteOpacity = null;
-			(c as any)._denseOpacity = null;
 			(c as any)._hasVoxelData = false;
 			(c as any)._cachedLODMeshes = null;
 			c.isLoaded = false;
@@ -220,6 +235,9 @@ export class Chunk {
 			c.waterMeshData = null;
 			c.cutoutMeshData = null;
 			Chunk.chunkInstances.set(c.id, c);
+			if (_inNumericRange(x, y, z)) {
+				Chunk.chunkByNumericKey.set(_packNumericKey(x, y, z), c);
+			}
 			c.linkNeighbors();
 			return c;
 		}
@@ -227,8 +245,9 @@ export class Chunk {
 	}
 
 	public static obtain(x: number, y: number, z: number): Chunk {
-		// Fast-path: existing live instance
-		const existing = Chunk.chunkInstances.get(packCoords(x, y, z));
+		// Fast-path via 8-slot MRU cache (getChunkFast) — avoids BigInt alloc
+		// on cache hit. Streaming creates many chunks per frame.
+		const existing = getChunkFast(x, y, z);
 		if (existing) return existing;
 		return Chunk.allocPooledChunk(x, y, z);
 	}
@@ -382,10 +401,11 @@ export class Chunk {
 	// Cached Uint32Array view over light_array — avoids re-allocation on every recomputeDarkCache call.
 	private _la32: Uint32Array | null = null;
 
-	// PERF: precomputed opacity lookups — one bool per palette index or dense
-	// voxel, eliminating the per-voxel unpackBlockId + BLOCK_TYPE indirection.
+	// PERF: precomputed opacity lookups — one bool per palette index, eliminating
+	// the per-voxel unpackBlockId + BLOCK_TYPE indirection for palette chunks.
+	// Dense chunks read BLOCK_TYPE directly (see isOpaqueAtIndex /
+	// computeFaceConnectivity) — no 32KB dense mirror.
 	private _paletteOpacity: Uint8Array | null = null;
-	private _denseOpacity: Uint8Array | null = null;
 
 	public chunkY: number;
 	public chunkX: number;
@@ -513,9 +533,12 @@ export class Chunk {
 			? new Uint8Array(new SharedArrayBuffer(0))
 			: new Uint8Array(0);
 
-	// PERF: lazily allocated — most chunks never cache an LOD mesh, so the
-	// Map is only created on first set instead of once per chunk constructor.
-	private _cachedLODMeshes: Map<number, CachedLODMesh> | null = null;
+	// PERF: fixed Array[7] (lod 0..6) instead of Map — saves ~2KiB Map bucket
+	// + buckets per chunk (600×2KiB=1.2MiB) and avoids BigInt-like hashing.
+	// 0..5 = MAX_CHUNK_LOD (ChunkLodRules.ts), 6 = DISTANT_LOD_LEVEL.
+	private static readonly MAX_CACHED_LOD = 6;
+	private static readonly LOD_CACHE_SIZE = Chunk.MAX_CACHED_LOD + 1;
+	private _cachedLODMeshes: (CachedLODMesh | null)[] | null = null;
 
 	private static readonly _lightEmissionLUT = (() => {
 		const lut = new Uint8Array(256);
@@ -545,6 +568,12 @@ export class Chunk {
 		this.lightHeaderSlot = Chunk.allocLightHeaderSlot();
 		this._isDarkCached = false;
 		Chunk.chunkInstances.set(this.id, this);
+		if (_inNumericRange(chunkX, chunkY, chunkZ)) {
+			Chunk.chunkByNumericKey.set(
+				_packNumericKey(chunkX, chunkY, chunkZ),
+				this,
+			);
+		}
 		this.linkNeighbors();
 	}
 
@@ -627,11 +656,8 @@ export class Chunk {
 
 		if (this._palette) {
 			this._rebuildPaletteOpacity();
-		} else if (this._block_array instanceof Uint16Array) {
-			this._rebuildDenseOpacity();
 		} else {
 			this._paletteOpacity = null;
-			this._denseOpacity = null;
 		}
 
 		if (light_array) {
@@ -732,7 +758,6 @@ export class Chunk {
 		this._block_array = null;
 		this._palette = null;
 		this._paletteOpacity = null;
-		this._denseOpacity = null;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this.updateLightView();
 		this._isDarkCached = false;
@@ -751,29 +776,32 @@ export class Chunk {
 	// =========================================================================
 
 	public getCachedLODMesh(lod: number): CachedLODMesh | null {
-		return this._cachedLODMeshes?.get(lod) ?? null;
+		if (lod < 0 || lod > Chunk.MAX_CACHED_LOD) return null;
+		return this._cachedLODMeshes?.[lod] ?? null;
 	}
 	public hasCachedLODMesh(lod: number): boolean {
-		const c = this._cachedLODMeshes?.get(lod);
+		if (lod < 0 || lod > Chunk.MAX_CACHED_LOD) return false;
+		const c = this._cachedLODMeshes?.[lod];
 		return !!c && (!!c.opaque || !!c.water || !!c.cutout);
 	}
 	public setCachedLODMesh(lod: number, mesh: CachedLODMesh): void {
+		if (lod < 0 || lod > Chunk.MAX_CACHED_LOD) return;
 		let cache = this._cachedLODMeshes;
 		if (cache === null) {
-			cache = new Map<number, CachedLODMesh>();
+			cache = new Array<CachedLODMesh | null>(Chunk.LOD_CACHE_SIZE).fill(null);
 			this._cachedLODMeshes = cache;
 		}
-		const entry = cache.get(lod);
+		const entry = cache[lod];
 		if (entry) {
 			entry.opaque = mesh.opaque ?? null;
 			entry.water = mesh.water ?? null;
 			entry.cutout = mesh.cutout ?? null;
 		} else {
-			cache.set(lod, {
+			cache[lod] = {
 				opaque: mesh.opaque ?? null,
 				water: mesh.water ?? null,
 				cutout: mesh.cutout ?? null,
-			});
+			};
 		}
 		this.pruneDistantLODCaches(lod);
 	}
@@ -787,16 +815,24 @@ export class Chunk {
 	// bands re-mesh from voxel data on the rare switch-back.
 	private pruneDistantLODCaches(justStoredLod: number): void {
 		const cache = this._cachedLODMeshes;
-		if (!cache || cache.size <= 3) return;
+		if (!cache) return;
+		// Count live entries — skip if ≤3 to avoid scanning.
+		let live = 0;
+		for (let i = 0; i < cache.length; i++) if (cache[i] !== null) live++;
+		if (live <= 3) return;
 		const cur = this.lodLevel ?? 0;
 		const keepLo = Math.min(cur, justStoredLod) - 1;
 		const keepHi = Math.max(cur, justStoredLod) + 1;
-		for (const key of cache.keys()) {
-			if (key < keepLo || key > keepHi) cache.delete(key);
+		for (let lod = 0; lod < cache.length; lod++) {
+			if ((lod < keepLo || lod > keepHi) && cache[lod] !== null) {
+				cache[lod] = null;
+			}
 		}
 	}
 	public clearCachedLODMeshes(): void {
-		this._cachedLODMeshes?.clear();
+		const cache = this._cachedLODMeshes;
+		if (!cache) return;
+		for (let i = 0; i < cache.length; i++) cache[i] = null;
 	}
 
 	// Diagnostics: live-chunk census for the memory HUD. A heap snapshot
@@ -842,9 +878,10 @@ export class Chunk {
 				continue;
 			}
 
-			cachedMeshEntries += cache.size;
-
-			for (const entry of cache.values()) {
+			for (let lod = 0; lod < cache.length; lod++) {
+				const entry = cache[lod];
+				if (entry === null) continue;
+				cachedMeshEntries++;
 				// The previous [opaque, water, cutout] expression allocated
 				// one temporary JavaScript array for every cached LOD entry.
 				const opaque = entry.opaque;
@@ -876,21 +913,32 @@ export class Chunk {
 	}
 
 	/** Internal: read-only view of the LOD cache for diagnostics. */
-	private getCensusCacheView(): Map<number, CachedLODMesh> | null {
+	private getCensusCacheView(): (CachedLODMesh | null)[] | null {
 		return this._cachedLODMeshes;
 	}
 
 	public getSerializableLODMeshCache(): SerializedLODMeshCache | undefined {
 		const cache = this._cachedLODMeshes;
 
-		if (cache === null || cache.size === 0) {
+		if (cache === null) {
 			return undefined;
 		}
+
+		let empty = true;
+		for (let lod = 0; lod < cache.length; lod++) {
+			if (cache[lod] !== null) {
+				empty = false;
+				break;
+			}
+		}
+		if (empty) return undefined;
 
 		const output: SerializedLODMeshCache = {};
 		let hasEntries = false;
 
-		for (const [lod, mesh] of cache) {
+		for (let lod = 0; lod < cache.length; lod++) {
+			const mesh = cache[lod];
+			if (mesh === null) continue;
 			if (mesh.opaque === null && mesh.water === null && mesh.cutout === null) {
 				continue;
 			}
@@ -1273,31 +1321,9 @@ export class Chunk {
 	}
 
 	/**
-	 * Precompute opacity flag for every voxel in a dense (Uint16Array) block
-	 * storage layout. Called once after loadFromStorage or layout transition.
-	 */
-	private _rebuildDenseOpacity(): void {
-		const arr = this._block_array;
-		if (!(arr instanceof Uint16Array)) {
-			this._denseOpacity = null;
-			return;
-		}
-		const S3 = Chunk.SIZE3;
-		let opa = this._denseOpacity;
-		if (!opa || opa.length < S3) {
-			opa = new Uint8Array(S3);
-			this._denseOpacity = opa;
-		}
-		for (let i = 0; i < S3; i++) {
-			const packed = arr[i];
-			opa[i] = packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
-		}
-	}
-
-	/**
 	 * Read the packed block value at a flat index and return 1 if opaque, 0 if not.
-	 * Avoids expanding blocks to a dense array — reads directly from palette/nibble
-	 * or dense storage, keeping the result in cache.
+	 * Palette path uses the cached _paletteOpacity table (≤16 bytes). Dense path
+	 * reads BLOCK_TYPE directly — no 32KB per-chunk mirror.
 	 */
 	private isOpaqueAtIndex(i: number): number {
 		if (this._isUniform) {
@@ -1312,8 +1338,14 @@ export class Chunk {
 			const nibble = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
 			return this._paletteOpacity[nibble];
 		}
-		if (this._denseOpacity) {
-			return this._denseOpacity[i];
+		const arr = this._block_array;
+		if (arr instanceof Uint16Array) {
+			const packed = arr[i];
+			return packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
+		}
+		if (arr instanceof Uint8Array) {
+			const packed = arr[i];
+			return packed !== 0 && BLOCK_TYPE[packed] === 0 ? 1 : 0;
 		}
 		return 0;
 	}
@@ -1435,26 +1467,11 @@ export class Chunk {
 				}
 
 				blockArray[index] = packedBlock;
-
-				const denseOpacity = this._denseOpacity;
-				if (denseOpacity !== null) {
-					denseOpacity[index] =
-						packedBlock !== 0 && BLOCK_TYPE[unpackBlockId(packedBlock)] === 0
-							? 1
-							: 0;
-				}
 			}
 		}
 
 		if (paletteChanged) {
 			this._rebuildPaletteOpacity();
-		} else if (
-			storageLayoutChanged &&
-			this._block_array instanceof Uint16Array
-		) {
-			this._rebuildDenseOpacity();
-		} else if (storageLayoutChanged) {
-			this._denseOpacity = null;
 		}
 
 		if (storageLayoutChanged) {
@@ -1603,36 +1620,33 @@ export class Chunk {
 	 */
 	private linkNeighbors(): void {
 		const refs = this.neighborRefs;
-		const instances = Chunk.chunkInstances;
 
-		let nbr = instances.get(
-			packCoords(this.chunkX + 1, this.chunkY, this.chunkZ),
-		);
+		let nbr = getChunkFast(this.chunkX + 1, this.chunkY, this.chunkZ);
 		if (nbr) {
 			refs[0] = nbr;
 			nbr.neighborRefs[1] = this;
 		}
-		nbr = instances.get(packCoords(this.chunkX - 1, this.chunkY, this.chunkZ));
+		nbr = getChunkFast(this.chunkX - 1, this.chunkY, this.chunkZ);
 		if (nbr) {
 			refs[1] = nbr;
 			nbr.neighborRefs[0] = this;
 		}
-		nbr = instances.get(packCoords(this.chunkX, this.chunkY + 1, this.chunkZ));
+		nbr = getChunkFast(this.chunkX, this.chunkY + 1, this.chunkZ);
 		if (nbr) {
 			refs[2] = nbr;
 			nbr.neighborRefs[3] = this;
 		}
-		nbr = instances.get(packCoords(this.chunkX, this.chunkY - 1, this.chunkZ));
+		nbr = getChunkFast(this.chunkX, this.chunkY - 1, this.chunkZ);
 		if (nbr) {
 			refs[3] = nbr;
 			nbr.neighborRefs[2] = this;
 		}
-		nbr = instances.get(packCoords(this.chunkX, this.chunkY, this.chunkZ + 1));
+		nbr = getChunkFast(this.chunkX, this.chunkY, this.chunkZ + 1);
 		if (nbr) {
 			refs[4] = nbr;
 			nbr.neighborRefs[5] = this;
 		}
-		nbr = instances.get(packCoords(this.chunkX, this.chunkY, this.chunkZ - 1));
+		nbr = getChunkFast(this.chunkX, this.chunkY, this.chunkZ - 1);
 		if (nbr) {
 			refs[5] = nbr;
 			nbr.neighborRefs[4] = this;
@@ -1677,7 +1691,8 @@ export class Chunk {
 		visited.fill(0, 0, S3);
 
 		// Pre-mark opaque cells as visited. Transparent cells remain 0 and are
-		// traversed by BFS.
+		// traversed by BFS. Palette path uses cached nibble table; dense path
+		// reads BLOCK_TYPE directly — no 32KB per-chunk mirror.
 		if (this._paletteOpacity) {
 			const blockArr = this._block_array as Uint8Array;
 			const palOp = this._paletteOpacity;
@@ -1687,12 +1702,23 @@ export class Chunk {
 				const nibble = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
 				visited[i] = palOp[nibble];
 			}
-		} else if (this._denseOpacity) {
-			visited.set(this._denseOpacity.subarray(0, S3));
 		} else {
-			// Defensive fallback for unusual non-uniform layouts.
-			for (let i = 0; i < S3; i++) {
-				visited[i] = this.isOpaqueAtIndex(i);
+			const arr = this._block_array;
+			if (arr instanceof Uint16Array) {
+				for (let i = 0; i < S3; i++) {
+					const packed = arr[i];
+					visited[i] =
+						packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
+				}
+			} else if (arr instanceof Uint8Array) {
+				for (let i = 0; i < S3; i++) {
+					const packed = arr[i];
+					visited[i] = packed !== 0 && BLOCK_TYPE[packed] === 0 ? 1 : 0;
+				}
+			} else {
+				for (let i = 0; i < S3; i++) {
+					visited[i] = this.isOpaqueAtIndex(i);
+				}
 			}
 		}
 
@@ -1896,7 +1922,6 @@ export class Chunk {
 		this._block_array = null;
 		this._palette = null;
 		this._paletteOpacity = null;
-		this._denseOpacity = null;
 
 		this._isUniform = true;
 		this._uniformBlockId = 0;
@@ -1926,6 +1951,11 @@ export class Chunk {
 		Chunk.loadedChunks.delete(this);
 		Chunk.loadedChunkIndex.unregister(this);
 		Chunk.chunkInstances.delete(this.id);
+		if (_inNumericRange(this.chunkX, this.chunkY, this.chunkZ)) {
+			Chunk.chunkByNumericKey.delete(
+				_packNumericKey(this.chunkX, this.chunkY, this.chunkZ),
+			);
+		}
 
 		this.isTerrainScheduled = false;
 		this.remeshQueued = false;
@@ -1943,15 +1973,16 @@ export class Chunk {
 	}
 }
 
-// Resolve a loaded/constructed chunk by chunk coordinates.  Single registry
-// (chunkInstances) — the old number-keyed _chunkByCoords mirror is gone;
-// hot paths use eagerly-linked neighborRefs instead of this function.
+// Resolve a loaded/constructed chunk by chunk coordinates.  Delegates to
+// getChunkFast's 8-slot MRU cache — avoids BigInt alloc on hot hits (AABB
+// sweeps, raycasts). Single registry (chunkInstances) remains the source of
+// truth; neighborRefs is the primary hot-path bypass.
 export function getChunk(
 	cx: number,
 	cy: number,
 	cz: number,
 ): Chunk | undefined {
-	return Chunk.chunkInstances.get(packCoords(cx, cy, cz));
+	return getChunkFast(cx, cy, cz);
 }
 
 // PERF: multi-slot chunk cache.  getChunk() builds three BigInts via packCoords
@@ -1981,7 +2012,12 @@ export function getChunkFast(
 			return _fastChunk[i];
 		}
 	}
-	const chunk = Chunk.chunkInstances.get(packCoords(cx, cy, cz));
+	let chunk: Chunk | undefined;
+	if (_inNumericRange(cx, cy, cz)) {
+		chunk = Chunk.chunkByNumericKey.get(_packNumericKey(cx, cy, cz));
+	} else {
+		chunk = Chunk.chunkInstances.get(packCoords(cx, cy, cz));
+	}
 	_fastCx[_fastCursor] = cx;
 	_fastCy[_fastCursor] = cy;
 	_fastCz[_fastCursor] = cz;

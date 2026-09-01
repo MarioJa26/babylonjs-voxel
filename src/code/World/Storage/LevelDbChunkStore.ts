@@ -1,12 +1,8 @@
 import { mapInWaves } from "../../Lib/yieldToEventLoop";
 import { compressBlob, decompressBlob } from "./BlobCompression";
+import { BIAS_XZ, BIAS_Y, RANGE_XZ, RANGE_Y } from "./ChunkKey";
 
 const CODEC_WAVE_SIZE = 64;
-
-const PACK_BIAS_XZ = 1 << 20;
-const PACK_BIAS_Y = 1 << 10;
-const PACK_RANGE_XZ = 1 << 21;
-const PACK_RANGE_Y = 1 << 11;
 
 const META_PREFIX_CODE = 0x01;
 const META_PREFIX = "\x01";
@@ -20,26 +16,16 @@ export function packChunkKeyNumeric(
 	cy: number,
 	cz: number,
 ): number {
-	return (
-		((cx + PACK_BIAS_XZ) * PACK_RANGE_Y + (cy + PACK_BIAS_Y)) * PACK_RANGE_XZ +
-		(cz + PACK_BIAS_XZ)
-	);
+	return ((cx + BIAS_XZ) * RANGE_Y + (cy + BIAS_Y)) * RANGE_XZ + (cz + BIAS_XZ);
 }
 
 export function numericKeyToChunkKey(key: number): string {
-	const biasedCz = key % PACK_RANGE_XZ;
-	const tmp = (key - biasedCz) / PACK_RANGE_XZ;
-	const biasedCy = tmp % PACK_RANGE_Y;
-	const biasedCx = (tmp - biasedCy) / PACK_RANGE_Y;
+	const biasedCz = key % RANGE_XZ;
+	const tmp = (key - biasedCz) / RANGE_XZ;
+	const biasedCy = tmp % RANGE_Y;
+	const biasedCx = (tmp - biasedCy) / RANGE_Y;
 
-	return (
-		biasedCx -
-		PACK_BIAS_XZ +
-		"," +
-		(biasedCy - PACK_BIAS_Y) +
-		"," +
-		(biasedCz - PACK_BIAS_XZ)
-	);
+	return `${biasedCx - BIAS_XZ},${biasedCy - BIAS_Y},${biasedCz - BIAS_XZ}`;
 }
 
 /**

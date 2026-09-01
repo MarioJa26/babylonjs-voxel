@@ -47,10 +47,10 @@ export function unpackChunkKey(key: bigint): {
 	const { x, y, z } = unpackChunkCoords(key);
 	return { chunkX: x, chunkY: y, chunkZ: z };
 }
-const BIAS_XZ = 1 << 20; // 1,048,576
-const RANGE_XZ = 1 << 21; // 2,097,152
-const BIAS_Y = 1 << 10; // 1,024
-const RANGE_Y = 1 << 11; // 2,048
+export const BIAS_XZ = 1 << 20; // 1,048,576
+export const RANGE_XZ = 1 << 21; // 2,097,152
+export const BIAS_Y = 1 << 10; // 1,024
+export const RANGE_Y = 1 << 11; // 2,048
 
 export function packChunkKeyFast(cx: number, cy: number, cz: number): number {
 	return ((cx + BIAS_XZ) * RANGE_Y + (cy + BIAS_Y)) * RANGE_XZ + (cz + BIAS_XZ);

@@ -11,8 +11,8 @@ const INSIDE_CLIP_Y = -200;
 // surfaces in the overlap zone.
 const FAR_TILE_UNDERLAY_DROP = 16;
 
-let positions: Int16Array | undefined;
-let normals: Int8Array | undefined;
+let positions: Float32Array | undefined;
+let normals: Float32Array | undefined;
 let surfaceTiles: Uint8Array | undefined;
 
 let lastGridCenterChunkX = Number.NaN;
@@ -60,10 +60,10 @@ export function initSharedBuffers(
 	configureGrid(r, gStep);
 
 	const vertexCount = rowSize ** 2;
-	const expectedPositionsBytes = vertexCount * 3 * Int16Array.BYTES_PER_ELEMENT;
-	const expectedNormalsBytes = vertexCount * 3 * Int8Array.BYTES_PER_ELEMENT;
+	const expectedPositionsBytes = vertexCount * 3 * Float32Array.BYTES_PER_ELEMENT;
+	const expectedNormalsBytes = vertexCount * 3 * Float32Array.BYTES_PER_ELEMENT;
 	const expectedSurfaceTilesBytes =
-		vertexCount * 2 * Uint8Array.BYTES_PER_ELEMENT;
+		vertexCount * 4 * Uint8Array.BYTES_PER_ELEMENT;
 
 	if (positionsBuffer.byteLength !== expectedPositionsBytes)
 		throw new Error(
@@ -78,8 +78,8 @@ export function initSharedBuffers(
 			`Shared surfaceTiles buffer size mismatch. Expected ${expectedSurfaceTilesBytes}, got ${surfaceTilesBuffer.byteLength}.`,
 		);
 
-	positions = new Int16Array(positionsBuffer);
-	normals = new Int8Array(normalsBuffer);
+	positions = new Float32Array(positionsBuffer);
+	normals = new Float32Array(normalsBuffer);
 	surfaceTiles = new Uint8Array(surfaceTilesBuffer);
 	usingSharedBuffers = true;
 	resetTracking();
@@ -233,9 +233,9 @@ function configureGrid(r: number, gStep: number) {
 
 function allocateLocalBuffers() {
 	const vertexCount = rowSize ** 2;
-	positions = new Int16Array(vertexCount * 3);
-	normals = new Int8Array(vertexCount * 3);
-	surfaceTiles = new Uint8Array(vertexCount * 2);
+	positions = new Float32Array(vertexCount * 3);
+	normals = new Float32Array(vertexCount * 3);
+	surfaceTiles = new Uint8Array(vertexCount * 4);
 	usingSharedBuffers = false;
 }
 
@@ -290,9 +290,9 @@ function slideArrays(shiftX: number, shiftZ: number) {
 			(srcRow + rowsToCopy) * r * 3,
 		);
 		tiles.copyWithin(
-			dstRow * r * 2,
-			srcRow * r * 2,
-			(srcRow + rowsToCopy) * r * 2,
+			dstRow * r * 4,
+			srcRow * r * 4,
+			(srcRow + rowsToCopy) * r * 4,
 		);
 	}
 
@@ -302,7 +302,7 @@ function slideArrays(shiftX: number, shiftZ: number) {
 		const dstCol = shiftX > 0 ? 0 : -shiftX;
 		for (let z = 0; z < r; z++) {
 			const base3 = z * r * 3;
-			const base2 = z * r * 2;
+			const base4 = z * r * 4;
 			pos.copyWithin(
 				base3 + dstCol * 3,
 				base3 + srcCol * 3,
@@ -314,9 +314,9 @@ function slideArrays(shiftX: number, shiftZ: number) {
 				base3 + (srcCol + colsToCopy) * 3,
 			);
 			tiles.copyWithin(
-				base2 + dstCol * 2,
-				base2 + srcCol * 2,
-				base2 + (srcCol + colsToCopy) * 2,
+				base4 + dstCol * 4,
+				base4 + srcCol * 4,
+				base4 + (srcCol + colsToCopy) * 4,
 			);
 		}
 	}
@@ -390,7 +390,7 @@ function generateVertex(
 	const r = rowSize;
 	const vertexIndex = z * r + x;
 	const i3 = vertexIndex * 3;
-	const i2 = vertexIndex * 2;
+	const i4 = vertexIndex * 4;
 
 	const chunkX = gcx - radius + x * gridStep;
 	const chunkZ = gcz - radius + z * gridStep;
@@ -430,19 +430,22 @@ function generateVertex(
 	pos[i3 + 1] = y;
 	pos[i3 + 2] = localChunkZ * chunkSize;
 
-	nrm[i3] = -dy1 * invLen * 127;
-	nrm[i3 + 1] = invLen * 127;
-	nrm[i3 + 2] = -dy2 * invLen * 127;
+	// Store as normalized Float32 — no Int8 quant + main-thread /127 decode.
+	nrm[i3] = -dy1 * invLen;
+	nrm[i3 + 1] = invLen;
+	nrm[i3 + 2] = -dy2 * invLen;
 
 	const topBlockId = getBiome(worldX, worldZ).topBlock;
 	const tex = BlockTextures[topBlockId];
 	const tile = tex?.[FaceName.Top] ?? tex?.[FaceName.All];
 
 	if (tile) {
-		tiles[i2] = tile[0];
-		tiles[i2 + 1] = tile[1];
+		tiles[i4] = tile[0];
+		tiles[i4 + 1] = tile[1];
 	} else {
-		tiles[i2] = DEFAULT_TILE_X;
-		tiles[i2 + 1] = DEFAULT_TILE_Y;
+		tiles[i4] = DEFAULT_TILE_X;
+		tiles[i4 + 1] = DEFAULT_TILE_Y;
 	}
+	tiles[i4 + 2] = 0;
+	tiles[i4 + 3] = 255;
 }
