@@ -5,6 +5,7 @@ import {
 import { SURFACE_DENSITY_INFLUENCE_RANGE } from "@/code/Generation/SurfaceGenerator";
 import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
 import { isInCave } from "@/code/Lib/GameRuntimeState";
+import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
 import { FarTileManager } from "../../FarTiles/FarTileManager";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import { Chunk, getChunk } from "../Chunk";
@@ -435,18 +436,14 @@ export class ChunkStreamingController {
 		playerWorldX?: number,
 		playerWorldZ?: number,
 	): Promise<void> {
-		this.streamRevision++;
+		const revision = ++this.streamRevision;
 
-		// MEMORY: the relative-offset decision cache is semantically valid
-		// forever (keys encode distance + previous LOD, both player-relative),
-		// but its entry count scales with the refresh window. Swap it
-		// periodically so the map stays small; the cold re-resolve burst is a
-		// few thousand cheap rule checks, amortized over hundreds of moves.
-		if (this.streamRevision % 512 === 0) {
-			this._refreshCache = new Map<number, number>();
+		// Reuse the existing map and its internal capacity instead of allocating
+		// a replacement map and leaving the old one for garbage collection.
+		if (revision % 512 === 0) {
+			this._refreshCache.clear();
 		}
 
-		const revision = this.streamRevision;
 		const caveState = isInCave();
 
 		// Activate per-frame memoization for height queries.
@@ -455,10 +452,8 @@ export class ChunkStreamingController {
 		frameInCaveCache = caveState;
 		frameCacheActive = true;
 
-		const distantTerrainX =
-			playerWorldX !== undefined ? playerWorldX : chunkX * Chunk.SIZE;
-		const distantTerrainZ =
-			playerWorldZ !== undefined ? playerWorldZ : chunkZ * Chunk.SIZE;
+		const distantTerrainX = playerWorldX ?? chunkX << CHUNK_SHIFT;
+		const distantTerrainZ = playerWorldZ ?? chunkZ << CHUNK_SHIFT;
 
 		try {
 			if (isDistantTerrainReady()) {
@@ -473,7 +468,7 @@ export class ChunkStreamingController {
 				verticalRadius,
 			);
 
-			// Operational bounds span every chunk-creating band (LOD0..LOD5).
+			// Cache values used repeatedly in the loops below.
 			const operationalRadius = lodRuleSet.maxHorizontalRadius();
 			const operationalVerticalRadius = lodRuleSet.maxVerticalRadius();
 
@@ -482,6 +477,7 @@ export class ChunkStreamingController {
 					lodRuleSet.horizontalRadiusFor(0),
 					lodRuleSet.horizontalRadiusFor(1),
 				) + 2;
+
 			const nearZoneVertical =
 				Math.max(
 					lodRuleSet.verticalRadiusFor(0),
@@ -495,7 +491,12 @@ export class ChunkStreamingController {
 
 			let writeIndex = 0;
 
-			for (let readIndex = 0; readIndex < loadQueue.length; readIndex++) {
+			// Capture the initial length because this loop compacts the same array.
+			for (
+				let readIndex = 0, readLength = loadQueue.length;
+				readIndex < readLength;
+				readIndex++
+			) {
 				const request = loadQueue[readIndex];
 				const chunk = request.chunk;
 
@@ -525,6 +526,7 @@ export class ChunkStreamingController {
 					(hDist <= nearZoneRadius && vDist <= nearZoneVertical)
 				) {
 					const previousLod = chunk.lodLevel ?? request.desiredLod;
+
 					const key = packOffsetKey(
 						relX,
 						relY,
@@ -534,6 +536,7 @@ export class ChunkStreamingController {
 					);
 
 					desiredLod = this.getCachedDecisionLod(key, chunk.isDirty);
+
 					if (desiredLod < 0) {
 						desiredLod = lodRuleSet.resolveWithHysteresisFromDistance(
 							hDist,
@@ -541,12 +544,7 @@ export class ChunkStreamingController {
 							previousLod,
 						).lodLevel;
 
-						this.setCachedDecisionLod(
-							key,
-							desiredLod,
-
-							chunk.isDirty,
-						);
+						this.setCachedDecisionLod(key, desiredLod, chunk.isDirty);
 					}
 				}
 
@@ -566,6 +564,7 @@ export class ChunkStreamingController {
 								chunk.chunkZ,
 								hDist,
 							);
+
 				if (loadUndesired) {
 					chunk.isTerrainScheduled = false;
 					continue;
@@ -591,19 +590,20 @@ export class ChunkStreamingController {
 				);
 
 				this.loadQueueRequestMap.set(chunk.numericId, request);
+
 				loadQueue[writeIndex++] = request;
 			}
 
 			loadQueue.length = writeIndex;
 
 			for (const chunk of unloadQueueSet) {
-				const dx = chunk.chunkX - chunkX;
-				const dy = chunk.chunkY - chunkY;
-				const dz = chunk.chunkZ - chunkZ;
+				const relX = chunk.chunkX - chunkX;
+				const relY = chunk.chunkY - chunkY;
+				const relZ = chunk.chunkZ - chunkZ;
 
-				const absX = dx < 0 ? -dx : dx;
-				const absY = dy < 0 ? -dy : dy;
-				const absZ = dz < 0 ? -dz : dz;
+				const absX = relX < 0 ? -relX : relX;
+				const absY = relY < 0 ? -relY : relY;
+				const absZ = relZ < 0 ? -relZ : relZ;
 
 				const hDist = absX > absZ ? absX : absZ;
 				const vDist = absY;
@@ -624,8 +624,8 @@ export class ChunkStreamingController {
 								chunk.chunkZ,
 								hDist,
 							) &&
-							hDist <= lodRuleSet.maxHorizontalRadius() &&
-							vDist <= lodRuleSet.maxVerticalRadius();
+							hDist <= operationalRadius &&
+							vDist <= operationalVerticalRadius;
 
 				if (keep) {
 					unloadQueueSet.delete(chunk);
@@ -633,9 +633,9 @@ export class ChunkStreamingController {
 			}
 
 			const canUseDelta =
-				typeof prevChunkX === "number" &&
-				typeof prevChunkY === "number" &&
-				typeof prevChunkZ === "number" &&
+				prevChunkX !== undefined &&
+				prevChunkY !== undefined &&
+				prevChunkZ !== undefined &&
 				Math.abs(chunkX - prevChunkX) <= 1 &&
 				Math.abs(chunkY - prevChunkY) <= 1 &&
 				Math.abs(chunkZ - prevChunkZ) <= 1;
@@ -664,6 +664,7 @@ export class ChunkStreamingController {
 			);
 
 			_queryScratch.length = 0;
+
 			Chunk.loadedChunkIndex.queryCollect(
 				chunkX,
 				chunkY,
@@ -673,13 +674,6 @@ export class ChunkStreamingController {
 				_queryScratch,
 			);
 
-			// PERF: staged refresh cadence. The near window (LOD0-2, where band
-			// transitions actually happen during play) is rescanned every chunk
-			// move; the far LOD3-5 bands only every OUTER_SCAN_INTERVAL-th move.
-			// A full-window scan over thousands of loaded chunks measured up to
-			// 32ms in one frame; outer-band transitions are rare and tolerate a
-			// few moves of latency, so this keeps the LOD-freeze fix while
-			// amortizing its cost.
 			const outerScan =
 				revision % ChunkStreamingController.OUTER_SCAN_INTERVAL === 0;
 

@@ -218,7 +218,7 @@ export class PlayerLoopController {
 		const playerPos = this.getPlayerPosition();
 
 		frameProfiler.begin("pick");
-		const pickHit = uiOpen ? null : this.#pickTargetGated(playerPos);
+		const pickHit = uiOpen ? null : this.pickTargetGated(playerPos);
 		frameProfiler.end("pick");
 
 		this.playerHud.crossHair.setTargetHit(pickHit);
@@ -230,7 +230,7 @@ export class PlayerLoopController {
 		frameProfiler.begin("physics");
 		vehicle.update(deltaMs);
 
-		this.#updateSprintParticles(uiOpen, playerPos);
+		this.updateSprintParticles(uiOpen, playerPos);
 
 		stats.update(
 			dtSec,
@@ -246,10 +246,10 @@ export class PlayerLoopController {
 		frameProfiler.end("physics");
 
 		frameProfiler.begin("controls");
-		this.#updateControls(uiOpen, pickHit);
+		this.updateControls(uiOpen, pickHit);
 		frameProfiler.end("controls");
 
-		if (this.#updateCaveState(playerPos.y)) {
+		if (this.updateCaveState(playerPos.y)) {
 			this.#loadLastCx = -99999;
 		}
 
@@ -282,7 +282,7 @@ export class PlayerLoopController {
 		this.#mainThreadMs = this.#mainThreadMs * 0.9 + frameMs * 0.1;
 
 		frameProfiler.begin("hud");
-		this.#updateDebugHud(deltaMs, cx, cy, cz);
+		this.updateDebugHud(deltaMs, cx, cy, cz);
 		frameProfiler.end("hud");
 
 		this.#freezeActiveMeshes();
@@ -307,7 +307,7 @@ export class PlayerLoopController {
 		}
 	}
 
-	#pickTargetGated(playerPos: {
+	pickTargetGated(playerPos: {
 		x: number;
 		y: number;
 		z: number;
@@ -341,7 +341,7 @@ export class PlayerLoopController {
 		return this.#pickCachedHit;
 	}
 
-	#updateControls(uiOpen: boolean, hit?: BlockRaycastHit | null): void {
+	updateControls(uiOpen: boolean, hit?: BlockRaycastHit | null): void {
 		const controls = this.getKeyboardControls();
 		const type = controls.controlType;
 
@@ -364,7 +364,7 @@ export class PlayerLoopController {
 		).update(hit);
 	}
 
-	#updateSprintParticles(
+	updateSprintParticles(
 		uiOpen: boolean,
 		playerPos: { x: number; y: number; z: number },
 	): void {
@@ -389,7 +389,7 @@ export class PlayerLoopController {
 		);
 	}
 
-	#updateCaveState(playerY: number): boolean {
+	updateCaveState(playerY: number): boolean {
 		const inCave = playerY <= -16;
 
 		if (inCave === this.#lastCaveState) {
@@ -401,7 +401,7 @@ export class PlayerLoopController {
 		return true;
 	}
 
-	#updateChunksAroundPlayer(
+	updateChunksAroundPlayer(
 		cx: number,
 		cy: number,
 		cz: number,
@@ -452,18 +452,18 @@ export class PlayerLoopController {
 		this.#loadLastCy = worldToChunkCoord(pos.y);
 		this.#loadLastCz = worldToChunkCoord(pos.z);
 		onBeforeRender(this.scene, () => {
-			this.#streamTick();
+			this.streamTick();
 		});
 	}
 
-	#streamTick(): void {
+	streamTick(): void {
 		frameProfiler.begin("streaming");
 		const pos = this.getPlayerPosition();
 		updateDistantTerrain(pos.x, pos.z);
 		const cx = worldToChunkCoord(pos.x);
 		const cy = worldToChunkCoord(pos.y);
 		const cz = worldToChunkCoord(pos.z);
-		this.#updateChunksAroundPlayer(cx, cy, cz, pos);
+		this.updateChunksAroundPlayer(cx, cy, cz, pos);
 		try {
 			void processFrameBudgetedStreamingWork(cx, cy, cz);
 		} catch (err) {
@@ -522,7 +522,7 @@ export class PlayerLoopController {
 		this.#rebuildActiveMeshes = false;
 	}
 
-	#updateDebugHud(
+	updateDebugHud(
 		deltaMs: number,
 		chunkX: number,
 		chunkY: number,
