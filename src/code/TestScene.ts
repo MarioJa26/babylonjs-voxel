@@ -29,6 +29,7 @@ import { PlayerStatePersistence } from "./Player/PlayerStatePersistence";
 import { applyGameSettingsToEngine, loadGameSettings } from "./UI/GameSettings";
 import { updateGlobalUniforms } from "./World/Chunk/ChunkMesher";
 import { installLightDebugTool } from "./World/Chunk/LightDebugTool";
+import { ensureDefaultInstance } from "./World/Chunk/Worker/WaterSimulation";
 import { createFallbackSpawn } from "./World/SpawnPoint";
 import { getServerNameFromUrl, worldSeedFor } from "./World/WorldContext";
 import { WorldStorage } from "./World/WorldStorage";
@@ -263,9 +264,11 @@ export class TestScene {
 		const map = new Map1(engine, scene, player);
 		await map.initPromise;
 
-		createFallbackSpawn(0, 0);
+		await ensureDefaultInstance();
 
 		this.initSharedPlayerSystems(scene, player);
+
+		createFallbackSpawn(0, 0);
 		player.respawn();
 
 		const persistence = new PlayerStatePersistence(
