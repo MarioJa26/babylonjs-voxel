@@ -6,6 +6,7 @@ import {
 	type ChunkWrite,
 	isCacheResetError,
 	LevelDbChunkStore,
+	packChunkKeyNumeric,
 } from "./Storage/LevelDbChunkStore";
 import {
 	deserializeEntities,
@@ -269,33 +270,58 @@ class WorldStorageImpl {
 		for (let i = 0; i < n; i++) {
 			const id = chunkIds[i];
 			chunkIdToCoordsOut(id, out);
-
-			const cx = out.cx;
-			const cy = out.cy;
-			const cz = out.cz;
-			const key = `${cx},${cy},${cz}`;
-
-			coords[i] = { id, cx, cy, cz, key };
+			coords[i] = { id, cx: out.cx, cy: out.cy, cz: out.cz };
 		}
 
 		if (!includeVoxelData) {
-			const existing = await store.hasChunks(coords);
-			for (let i = 0; i < n; i++) {
-				const c = coords[i];
-				if (existing.has(c.key!)) {
-					result.set(c.id!, CHUNK_EXISTS_WITHOUT_BLOCKS);
+			// Use numeric hasChunks to avoid string alloc per entry
+			const hasNumeric = await (
+				store as unknown as {
+					hasChunksNumeric?: (
+						c: readonly ChunkReadCoord[],
+					) => Promise<Set<number>>;
 				}
+			).hasChunksNumeric?.(coords);
+			if (hasNumeric) {
+				for (let i = 0; i < n; i++) {
+					const c = coords[i];
+					const nk = packChunkKeyNumeric(c.cx, c.cy, c.cz);
+					if (hasNumeric.has(nk))
+						result.set(c.id!, CHUNK_EXISTS_WITHOUT_BLOCKS);
+				}
+			} else {
+				// fallback string path
+				for (let i = 0; i < n; i++)
+					coords[i].key = `${coords[i].cx},${coords[i].cy},${coords[i].cz}`;
+				const existing = await store.hasChunks(coords);
+				for (let i = 0; i < n; i++)
+					if (existing.has(coords[i].key!))
+						result.set(coords[i].id!, CHUNK_EXISTS_WITHOUT_BLOCKS);
 			}
 			return result;
 		}
 
-		const readResults = await store.readChunks(coords);
-
-		for (let i = 0; i < n; i++) {
-			const c = coords[i];
-			const blob = readResults.get(c.key!);
-			if (blob) {
-				result.set(c.id!, deserializeVoxelDataShared(blob));
+		// Prefer numeric read to avoid per-entry string keys
+		const storeAny = store as unknown as {
+			readChunksNumeric?: (
+				c: readonly ChunkReadCoord[],
+			) => Promise<Map<number, Uint8Array>>;
+		};
+		if (storeAny.readChunksNumeric) {
+			const readResults = await storeAny.readChunksNumeric(coords);
+			for (let i = 0; i < n; i++) {
+				const c = coords[i];
+				const nk = packChunkKeyNumeric(c.cx, c.cy, c.cz);
+				const blob = readResults.get(nk);
+				if (blob) result.set(c.id!, deserializeVoxelDataShared(blob));
+			}
+		} else {
+			for (let i = 0; i < n; i++)
+				coords[i].key = `${coords[i].cx},${coords[i].cy},${coords[i].cz}`;
+			const readResults = await store.readChunks(coords);
+			for (let i = 0; i < n; i++) {
+				const blob = readResults.get(coords[i].key!);
+				if (blob) result.set(coords[i].id!, deserializeVoxelDataShared(blob));
 			}
 		}
 

@@ -17,6 +17,7 @@ type LoadedChunkCell = {
 	cy: number;
 	cz: number;
 	chunks: Set<Chunk>;
+	chunkList: Chunk[];
 };
 
 function chunkCoordToCell(coord: number): number {
@@ -50,6 +51,35 @@ export class LoadedChunkIndex {
 	// Storing the cell object makes unregister O(1) and avoids the old key=0 bug.
 	private readonly chunkCells = new Map<number, LoadedChunkCell>();
 
+	// P0-3: pooled empty cells to avoid `new Set` + object churn per streaming burst.
+	// Cells are recycled when their chunk count drops to zero.
+	private readonly _freeCells: LoadedChunkCell[] = [];
+
+	private _allocCell(
+		hash: number,
+		cx: number,
+		cy: number,
+		cz: number,
+	): LoadedChunkCell {
+		const pooled = this._freeCells.pop();
+		if (pooled !== undefined) {
+			pooled.hash = hash;
+			pooled.cx = cx;
+			pooled.cy = cy;
+			pooled.cz = cz;
+			// Set and list are already cleared on recycle.
+			return pooled;
+		}
+		return {
+			hash,
+			cx,
+			cy,
+			cz,
+			chunks: new Set<Chunk>(),
+			chunkList: [],
+		};
+	}
+
 	register(chunk: Chunk): void {
 		const numericId = chunk.numericId;
 
@@ -66,7 +96,10 @@ export class LoadedChunkIndex {
 			previousCell.cy === cy &&
 			previousCell.cz === cz
 		) {
-			previousCell.chunks.add(chunk);
+			if (!previousCell.chunks.has(chunk)) {
+				previousCell.chunks.add(chunk);
+				previousCell.chunkList.push(chunk);
+			}
 			return;
 		}
 
@@ -78,14 +111,7 @@ export class LoadedChunkIndex {
 		let cell: LoadedChunkCell | undefined;
 
 		if (bucket === undefined) {
-			cell = {
-				hash,
-				cx,
-				cy,
-				cz,
-				chunks: new Set<Chunk>(),
-			};
-
+			cell = this._allocCell(hash, cx, cy, cz);
 			this.cells.set(hash, [cell]);
 		} else {
 			for (let i = 0; i < bucket.length; i++) {
@@ -98,19 +124,13 @@ export class LoadedChunkIndex {
 			}
 
 			if (cell === undefined) {
-				cell = {
-					hash,
-					cx,
-					cy,
-					cz,
-					chunks: new Set<Chunk>(),
-				};
-
+				cell = this._allocCell(hash, cx, cy, cz);
 				bucket.push(cell);
 			}
 		}
 
 		cell.chunks.add(chunk);
+		cell.chunkList.push(chunk);
 		this.chunkCells.set(numericId, cell);
 	}
 
@@ -159,8 +179,9 @@ export class LoadedChunkIndex {
 							continue;
 						}
 
-						for (const chunk of cell.chunks) {
-							yield chunk;
+						const list = cell.chunkList;
+						for (let j = 0; j < list.length; j++) {
+							yield list[j];
 						}
 
 						break;
@@ -205,8 +226,9 @@ export class LoadedChunkIndex {
 							continue;
 						}
 
-						for (const chunk of cell.chunks) {
-							out.push(chunk);
+						const list = cell.chunkList;
+						for (let j = 0; j < list.length; j++) {
+							out.push(list[j]);
 						}
 
 						break;
@@ -219,8 +241,9 @@ export class LoadedChunkIndex {
 	*all(): IterableIterator<Chunk> {
 		for (const bucket of this.cells.values()) {
 			for (let i = 0; i < bucket.length; i++) {
-				for (const chunk of bucket[i].chunks) {
-					yield chunk;
+				const list = bucket[i].chunkList;
+				for (let j = 0; j < list.length; j++) {
+					yield list[j];
 				}
 			}
 		}
@@ -228,6 +251,13 @@ export class LoadedChunkIndex {
 
 	private removeFromCell(chunk: Chunk, cell: LoadedChunkCell): void {
 		cell.chunks.delete(chunk);
+		// P1-5: keep array in sync via swap-remove (O(n) but cell avg < 16).
+		const list = cell.chunkList;
+		const idx = list.indexOf(chunk);
+		if (idx >= 0) {
+			list[idx] = list[list.length - 1];
+			list.pop();
+		}
 
 		if (cell.chunks.size !== 0) {
 			return;
@@ -241,14 +271,15 @@ export class LoadedChunkIndex {
 
 		if (bucket.length === 1) {
 			this.cells.delete(cell.hash);
-			return;
+		} else {
+			const index = bucket.indexOf(cell);
+			if (index >= 0) {
+				bucket[index] = bucket[bucket.length - 1];
+				bucket.pop();
+			}
 		}
-
-		const index = bucket.indexOf(cell);
-
-		if (index >= 0) {
-			bucket[index] = bucket[bucket.length - 1];
-			bucket.pop();
-		}
+		// P0-3: recycle empty cell (Set + list cleared) to avoid GC.
+		// Chunks already removed, set is empty, list is empty.
+		this._freeCells.push(cell);
 	}
 }

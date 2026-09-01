@@ -68,6 +68,30 @@ function copyBytes(
 	);
 }
 
+// P0-2: DataView-free LE readers to avoid per-chunk DataView allocation (GC).
+function readU16LE(data: Uint8Array, offset: number): number {
+	return data[offset] | (data[offset + 1] << 8);
+}
+function readU32LE(data: Uint8Array, offset: number): number {
+	return (
+		(data[offset] |
+			(data[offset + 1] << 8) |
+			(data[offset + 2] << 16) |
+			(data[offset + 3] << 24)) >>>
+		0
+	);
+}
+function writeU16LE(data: Uint8Array, offset: number, value: number): void {
+	data[offset] = value & 0xff;
+	data[offset + 1] = (value >>> 8) & 0xff;
+}
+function writeU32LE(data: Uint8Array, offset: number, value: number): void {
+	data[offset] = value & 0xff;
+	data[offset + 1] = (value >>> 8) & 0xff;
+	data[offset + 2] = (value >>> 16) & 0xff;
+	data[offset + 3] = (value >>> 24) & 0xff;
+}
+
 /** Serialize voxel data to a compact binary blob for OPFS storage. */
 export function serializeVoxelData(
 	blocks: Uint8Array | Uint16Array | null,
@@ -109,27 +133,22 @@ export function serializeVoxelData(
 	}
 
 	const result = new Uint8Array(totalLength);
-	const view = new DataView(
-		result.buffer,
-		result.byteOffset,
-		result.byteLength,
-	);
 
 	result[0] = flags;
 	result[1] = 1;
-	view.setUint32(2, version ?? 0, true);
+	writeU32LE(result, 2, version ?? 0);
 
 	let offset = HEADER_SIZE;
 
 	if (isUniform) {
-		view.setUint16(offset, uniformBlockId ?? 0, true);
+		writeU16LE(result, offset, uniformBlockId ?? 0);
 		offset += 2;
 	}
 
 	if (blocks) {
 		const byteLength = blocks.byteLength;
 
-		view.setUint32(offset, byteLength, true);
+		writeU32LE(result, offset, byteLength);
 		offset += 4;
 
 		result.set(asBytes(blocks), offset);
@@ -140,7 +159,7 @@ export function serializeVoxelData(
 		const byteLength = palette.byteLength;
 
 		// Palette stores its element count, not its byte length.
-		view.setUint32(offset, palette.length, true);
+		writeU32LE(result, offset, palette.length);
 		offset += 4;
 
 		result.set(asBytes(palette), offset);
@@ -150,7 +169,7 @@ export function serializeVoxelData(
 	if (lightArray) {
 		const byteLength = lightArray.byteLength;
 
-		view.setUint32(offset, byteLength, true);
+		writeU32LE(result, offset, byteLength);
 		offset += 4;
 
 		result.set(lightArray, offset);
@@ -172,22 +191,21 @@ export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
 	const isUniform = (flags & FLAG_IS_UNIFORM) !== 0;
 	const compressed = (flags & FLAG_COMPRESSED) !== 0;
 
-	const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-	const version = view.getUint32(2, true);
+	const version = readU32LE(data, 2);
 
 	let offset = HEADER_SIZE;
 
 	let uniformBlockId: number | undefined;
 
 	if (isUniform) {
-		uniformBlockId = view.getUint16(offset, true);
+		uniformBlockId = readU16LE(data, offset);
 		offset += 2;
 	}
 
 	let blocks: Uint8Array | Uint16Array | null = null;
 
 	if ((flags & FLAG_HAS_BLOCKS) !== 0) {
-		const byteLength = view.getUint32(offset, true);
+		const byteLength = readU32LE(data, offset);
 		offset += 4;
 
 		const absoluteOffset = data.byteOffset + offset;
@@ -231,7 +249,7 @@ export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
 	let palette: Uint16Array | null = null;
 
 	if ((flags & FLAG_HAS_PALETTE) !== 0) {
-		const count = view.getUint32(offset, true);
+		const count = readU32LE(data, offset);
 		offset += 4;
 
 		const byteLength = count * Uint16Array.BYTES_PER_ELEMENT;
@@ -263,7 +281,7 @@ export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
 	let lightArray: Uint8Array | null = null;
 
 	if ((flags & FLAG_HAS_LIGHT) !== 0) {
-		const byteLength = view.getUint32(offset, true);
+		const byteLength = readU32LE(data, offset);
 		offset += 4;
 
 		// Preserve the original zero-copy view into the serialized blob.
@@ -301,22 +319,21 @@ export function deserializeVoxelDataShared(data: Uint8Array): SavedChunkData {
 	const isUniform = (flags & FLAG_IS_UNIFORM) !== 0;
 	const compressed = (flags & FLAG_COMPRESSED) !== 0;
 
-	const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-	const version = view.getUint32(2, true);
+	const version = readU32LE(data, 2);
 
 	let offset = HEADER_SIZE;
 
 	let uniformBlockId: number | undefined;
 
 	if (isUniform) {
-		uniformBlockId = view.getUint16(offset, true);
+		uniformBlockId = readU16LE(data, offset);
 		offset += 2;
 	}
 
 	let blocks: Uint8Array | Uint16Array | null = null;
 
 	if ((flags & FLAG_HAS_BLOCKS) !== 0) {
-		const byteLength = view.getUint32(offset, true);
+		const byteLength = readU32LE(data, offset);
 		offset += 4;
 
 		const sharedBuffer = new SharedArrayBuffer(byteLength);
@@ -337,7 +354,7 @@ export function deserializeVoxelDataShared(data: Uint8Array): SavedChunkData {
 	let palette: Uint16Array | null = null;
 
 	if ((flags & FLAG_HAS_PALETTE) !== 0) {
-		const count = view.getUint32(offset, true);
+		const count = readU32LE(data, offset);
 		offset += 4;
 
 		const byteLength = count * Uint16Array.BYTES_PER_ELEMENT;
@@ -352,7 +369,7 @@ export function deserializeVoxelDataShared(data: Uint8Array): SavedChunkData {
 	let lightArray: Uint8Array | null = null;
 
 	if ((flags & FLAG_HAS_LIGHT) !== 0) {
-		const byteLength = view.getUint32(offset, true);
+		const byteLength = readU32LE(data, offset);
 		offset += 4;
 
 		const sharedBuffer = new SharedArrayBuffer(byteLength);

@@ -202,6 +202,8 @@ const processScheduler = new ChunkProcessScheduler({
 
 	onLoadRequestsDequeued: (requests) =>
 		streamingController.onLoadRequestsDequeued(requests),
+	recycleQueuedRequests: (requests) =>
+		streamingController.recycleQueuedRequests(requests),
 });
 
 // After each processQueues continuation slice, pump remote generation.

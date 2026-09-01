@@ -274,8 +274,10 @@ export class ChunkStreamingController {
 	private desiredStates = new Map<number, number>();
 	// Bucketed by revision to avoid O(n) prune iteration (previously 3.8 MB Set churn).
 	private desiredStateBuckets = new Map<number, Set<number>>();
+	private readonly _freeDesiredSets: Set<number>[] = [];
 
 	private loadQueueRequestMap = new Map<number, QueuedChunkRequest>();
+	private readonly _freeRequests: QueuedChunkRequest[] = [];
 
 	private loadedRefreshQueue: Chunk[] = [];
 	private loadedRefreshQueueSet = new Set<number>();
@@ -307,7 +309,13 @@ export class ChunkStreamingController {
 		this.desiredStates.set(numericId, packed);
 		let bucket = this.desiredStateBuckets.get(revision);
 		if (!bucket) {
-			bucket = new Set<number>();
+			const pooled = this._freeDesiredSets.pop();
+			if (pooled !== undefined) {
+				pooled.clear();
+				bucket = pooled;
+			} else {
+				bucket = new Set<number>();
+			}
 			this.desiredStateBuckets.set(revision, bucket);
 		}
 		bucket.add(numericId);
@@ -330,6 +338,8 @@ export class ChunkStreamingController {
 					}
 				}
 				this.desiredStateBuckets.delete(rev);
+				bucket.clear();
+				this._freeDesiredSets.push(bucket);
 			}
 		}
 	}
@@ -1415,13 +1425,23 @@ export class ChunkStreamingController {
 			request.includeVoxelData = includeVoxelData;
 			request.priority = Number.POSITIVE_INFINITY;
 		} else {
-			request = {
-				chunk,
-				desiredLod,
-				revision,
-				includeVoxelData,
-				priority: chunk.lodLevel << 4,
-			};
+			const pooled = this._freeRequests.pop();
+			if (pooled !== undefined) {
+				pooled.chunk = chunk;
+				pooled.desiredLod = desiredLod;
+				pooled.revision = revision;
+				pooled.includeVoxelData = includeVoxelData;
+				pooled.priority = chunk.lodLevel << 4;
+				request = pooled;
+			} else {
+				request = {
+					chunk,
+					desiredLod,
+					revision,
+					includeVoxelData,
+					priority: chunk.lodLevel << 4,
+				};
+			}
 
 			loadQueue.push(request);
 			this.loadQueueRequestMap.set(numericId, request);
@@ -1440,6 +1460,18 @@ export class ChunkStreamingController {
 	): void {
 		for (let i = 0; i < requests.length; i++) {
 			this.loadQueueRequestMap.delete(requests[i].chunk.numericId);
+		}
+	}
+
+	public recycleQueuedRequests(
+		requests: ReadonlyArray<QueuedChunkRequest>,
+	): void {
+		for (let i = 0; i < requests.length; i++) {
+			const r = requests[i] as QueuedChunkRequest;
+			// Clear chunk reference to avoid retaining disposed chunks; will be reassigned on reuse.
+			(r as unknown as { chunk: Chunk | null }).chunk =
+				null as unknown as Chunk;
+			this._freeRequests.push(r);
 		}
 	}
 

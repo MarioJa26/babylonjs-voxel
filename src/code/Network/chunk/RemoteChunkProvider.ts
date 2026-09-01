@@ -40,6 +40,7 @@ import {
 	chunkKey,
 	isCacheResetError,
 	LevelDbChunkStore,
+	packChunkKeyNumeric,
 } from "../../World/Storage/LevelDbChunkStore";
 import {
 	deserializeVoxelDataShared,
@@ -882,31 +883,33 @@ export class RemoteChunkProvider {
 			};
 		}
 
-		let blobs: Map<string, Uint8Array>;
-
+		// Prefer numeric batch to avoid per-chunk string keys
+		let blobsNumeric: Map<number, Uint8Array> | null = null;
+		let blobs: Map<string, Uint8Array> | null = null;
 		try {
-			blobs = await this.store.readChunks(coords);
+			const anyStore = this.store as unknown as {
+				readChunksNumeric?: (
+					c: readonly { cx: number; cy: number; cz: number }[],
+				) => Promise<Map<number, Uint8Array>>;
+			};
+			if (anyStore.readChunksNumeric) {
+				blobsNumeric = await anyStore.readChunksNumeric(coords);
+			} else {
+				blobs = await this.store.readChunks(coords);
+			}
 		} catch (error) {
 			console.warn("[RemoteChunkProvider] batch cache read failed:", error);
-
-			for (let i = 0; i < len; i++) {
-				result.set(chunks[i], null);
-			}
-
+			for (let i = 0; i < len; i++) result.set(chunks[i], null);
 			return result;
 		}
-
-		/*
-		 * Store source indices. If corruption is rare, this normally remains
-		 * null and allocates nothing.
-		 */
 		let corruptIndices: number[] | null = null;
 		const versions = this.chunkVersions;
-
 		for (let i = 0; i < len; i++) {
 			const chunk = chunks[i];
 			const coord = coords[i];
-			const blob = blobs.get(chunkKey(coord.cx, coord.cy, coord.cz));
+			const blob = blobsNumeric
+				? blobsNumeric.get(packChunkKeyNumeric(coord.cx, coord.cy, coord.cz))
+				: blobs!.get(chunkKey(coord.cx, coord.cy, coord.cz));
 
 			if (blob === undefined) {
 				result.set(chunk, null);

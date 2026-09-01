@@ -32,6 +32,39 @@ export function chunkKey(cx: number, cy: number, cz: number): string {
 	return cx + "," + cy + "," + cz;
 }
 
+// Architectural: numeric packed key to avoid per-lookup string allocation (GC).
+// Packs into safe integer < 2^53: ((cx+B_XZ)*R_Y + (cy+B_Y))*R_XZ + (cz+B_XZ)
+// B_XZ=1<<20 (1048576) covers ±1M chunks, B_Y=1<<10 (1024) covers ±1k vertical chunks (world -32..32).
+const PACK_BIAS_XZ = 1 << 20;
+const PACK_BIAS_Y = 1 << 10;
+const PACK_RANGE_XZ = 1 << 21;
+const PACK_RANGE_Y = 1 << 11;
+export function packChunkKeyNumeric(
+	cx: number,
+	cy: number,
+	cz: number,
+): number {
+	return (
+		((cx + PACK_BIAS_XZ) * PACK_RANGE_Y + (cy + PACK_BIAS_Y)) * PACK_RANGE_XZ +
+		(cz + PACK_BIAS_XZ)
+	);
+}
+export function numericKeyToChunkKey(key: number): string {
+	const cz = (key % PACK_RANGE_XZ) - PACK_BIAS_XZ;
+	const tmp = (key - (cz + PACK_BIAS_XZ)) / PACK_RANGE_XZ;
+	const cy = (tmp % PACK_RANGE_Y) - PACK_BIAS_Y;
+	const cx = (tmp - (cy + PACK_BIAS_Y)) / PACK_RANGE_Y - PACK_BIAS_XZ;
+	return cx + "," + cy + "," + cz;
+}
+export function chunkKeyToNumeric(key: string): number {
+	const c1 = key.indexOf(",");
+	const c2 = key.indexOf(",", c1 + 1);
+	const cx = Number(key.slice(0, c1));
+	const cy = Number(key.slice(c1 + 1, c2));
+	const cz = Number(key.slice(c2 + 1));
+	return packChunkKeyNumeric(cx, cy, cz);
+}
+
 export interface ChunkCoord {
 	cx: number;
 	cy: number;
@@ -171,15 +204,15 @@ export class LevelDbChunkStore implements ChunkStorage {
 	private pendingBarrierError: Error | null = null;
 	private visibilityHandler: (() => void) | null = null;
 
-	private readonly cache = new Map<string, Uint8Array>();
-	private readonly touched = new Set<string>();
-	private readonly order: string[] = [];
-	private readonly orderIndex = new Map<string, number>();
+	private readonly cache = new Map<number, Uint8Array>();
+	private readonly touched = new Set<number>();
+	private readonly order: number[] = [];
+	private readonly orderIndex = new Map<number, number>();
 	private hand = 0;
 	private readonly maxCacheSize: number;
 
-	private readonly pendingDeletes = new Set<string>();
-	private readonly pendingWrites = new Map<string, Promise<void>>();
+	private readonly pendingDeletes = new Set<number>();
+	private readonly pendingWrites = new Map<number, Promise<void>>();
 	private readonly pendingMeta = new Map<string, PendingMeta>();
 	private metaGeneration = 0;
 
@@ -307,24 +340,25 @@ export class LevelDbChunkStore implements ChunkStorage {
 		cz: number,
 		key?: string,
 	): Promise<Uint8Array | undefined> {
+		const nk = packChunkKeyNumeric(cx, cy, cz);
 		const k = key ?? chunkKey(cx, cy, cz);
 		const pendingDeletes = this.pendingDeletes;
 
-		if (pendingDeletes.has(k)) return undefined;
+		if (pendingDeletes.has(nk)) return undefined;
 
-		const cached = this.cache.get(k);
+		const cached = this.cache.get(nk);
 		if (cached !== undefined) {
-			this.touched.add(k);
+			this.touched.add(nk);
 			return cached;
 		}
 
-		const pending = this.pendingWrites.get(k);
+		const pending = this.pendingWrites.get(nk);
 		if (pending !== undefined) {
 			await pending.catch(() => {});
-			if (pendingDeletes.has(k)) return undefined;
-			const fresh = this.cache.get(k);
+			if (pendingDeletes.has(nk)) return undefined;
+			const fresh = this.cache.get(nk);
 			if (fresh !== undefined) {
-				this.touched.add(k);
+				this.touched.add(nk);
 				return fresh;
 			}
 		}
@@ -333,10 +367,10 @@ export class LevelDbChunkStore implements ChunkStorage {
 		if (!db) return undefined;
 
 		const value = await db.get(k);
-		if (value == null || pendingDeletes.has(k)) return undefined;
+		if (value == null || pendingDeletes.has(nk)) return undefined;
 
 		const data = value instanceof Uint8Array ? value : new Uint8Array(value);
-		this.addToCache(k, data);
+		this.addToCache(nk, data);
 		return data;
 	}
 
@@ -345,39 +379,42 @@ export class LevelDbChunkStore implements ChunkStorage {
 	): Promise<Map<string, Uint8Array>> {
 		const results = new Map<string, Uint8Array>();
 		const misses: string[] = [];
+		const missesNumeric: number[] = [];
 
 		const pendingDeletes = this.pendingDeletes;
 		const cache = this.cache;
 		const touched = this.touched;
 
-		let missSeen: Set<string> | null = null;
+		let missSeen: Set<number> | null = null;
 
 		for (let i = 0, len = coords.length; i < len; i++) {
 			const coord = coords[i];
-			const k = coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz);
-
-			if (pendingDeletes.has(k)) continue;
-
-			const cached = cache.get(k);
+			const nk = packChunkKeyNumeric(coord.cx, coord.cy, coord.cz);
+			if (pendingDeletes.has(nk)) continue;
+			const cached = cache.get(nk);
 			if (cached !== undefined) {
-				touched.add(k);
+				touched.add(nk);
+				const k = coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz);
 				results.set(k, cached);
 				continue;
 			}
-
 			if (misses.length !== 0) {
-				if (missSeen === null) missSeen = new Set(misses);
-				if (missSeen.has(k)) continue;
-				missSeen.add(k);
+				if (missSeen === null) missSeen = new Set(missesNumeric);
+				if (missSeen.has(nk)) continue;
+				missSeen.add(nk);
+			} else if (missSeen === null) {
+				// lazy init on second miss
 			}
+			const k = coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz);
 			misses.push(k);
+			missesNumeric.push(nk);
 		}
 
 		if (misses.length === 0 || !this.db) return results;
 
 		let awaited: Promise<void>[] | null = null;
-		for (let i = 0; i < misses.length; i++) {
-			const p = this.pendingWrites.get(misses[i]);
+		for (let i = 0; i < missesNumeric.length; i++) {
+			const p = this.pendingWrites.get(missesNumeric[i]);
 			if (p !== undefined) (awaited ??= []).push(p.catch(() => {}));
 		}
 
@@ -385,27 +422,114 @@ export class LevelDbChunkStore implements ChunkStorage {
 			await Promise.all(awaited);
 			let toFetchCount = 0;
 			for (let i = 0; i < misses.length; i++) {
+				const nk = missesNumeric[i];
 				const k = misses[i];
-				if (pendingDeletes.has(k)) continue;
-				const cachedNow = cache.get(k);
+				if (pendingDeletes.has(nk)) continue;
+				const cachedNow = cache.get(nk);
 				if (cachedNow !== undefined) {
-					touched.add(k);
+					touched.add(nk);
 					results.set(k, cachedNow);
 					continue;
 				}
-				misses[toFetchCount++] = k;
+				misses[toFetchCount] = k;
+				missesNumeric[toFetchCount] = nk;
+				toFetchCount++;
 			}
 			misses.length = toFetchCount;
+			missesNumeric.length = toFetchCount;
 			if (misses.length === 0) return results;
 		}
 
 		const found = await this._getMany(misses);
 		for (const [k, data] of found) {
-			if (pendingDeletes.has(k)) continue;
-			this.addToCache(k, data);
+			let nk: number | undefined;
+			for (let i = 0; i < misses.length; i++)
+				if (misses[i] === k) {
+					nk = missesNumeric[i];
+					break;
+				}
+			if (nk === undefined) {
+				const parts = k.split(",");
+				nk = packChunkKeyNumeric(
+					Number(parts[0]),
+					Number(parts[1]),
+					Number(parts[2]),
+				);
+			}
+			if (pendingDeletes.has(nk)) continue;
+			this.addToCache(nk, data);
 			results.set(k, data);
 		}
 
+		return results;
+	}
+
+	// Numeric fast path – zero string alloc on cache hit.
+	async readChunksNumeric(
+		coords: readonly ChunkCoord[],
+	): Promise<Map<number, Uint8Array>> {
+		const results = new Map<number, Uint8Array>();
+		const missesNumeric: number[] = [];
+		const missesStrings: string[] = [];
+		let missSeen: Set<number> | null = null;
+		const pendingDeletes = this.pendingDeletes;
+		const cache = this.cache;
+		const touched = this.touched;
+		for (let i = 0, len = coords.length; i < len; i++) {
+			const c = coords[i];
+			const nk = packChunkKeyNumeric(c.cx, c.cy, c.cz);
+			if (pendingDeletes.has(nk)) continue;
+			const cached = cache.get(nk);
+			if (cached !== undefined) {
+				touched.add(nk);
+				results.set(nk, cached);
+				continue;
+			}
+			if (missesNumeric.length !== 0) {
+				if (missSeen === null) missSeen = new Set(missesNumeric);
+				if (missSeen.has(nk)) continue;
+				missSeen.add(nk);
+			}
+			missesNumeric.push(nk);
+			missesStrings.push(chunkKey(c.cx, c.cy, c.cz));
+		}
+		if (missesNumeric.length === 0 || !this.db) return results;
+		let awaited: Promise<void>[] | null = null;
+		for (let i = 0; i < missesNumeric.length; i++) {
+			const p = this.pendingWrites.get(missesNumeric[i]);
+			if (p !== undefined) (awaited ??= []).push(p.catch(() => {}));
+		}
+		if (awaited !== null) {
+			await Promise.all(awaited);
+			let toFetch = 0;
+			for (let i = 0; i < missesNumeric.length; i++) {
+				const nk = missesNumeric[i];
+				if (pendingDeletes.has(nk)) continue;
+				const cachedNow = cache.get(nk);
+				if (cachedNow !== undefined) {
+					touched.add(nk);
+					results.set(nk, cachedNow);
+					continue;
+				}
+				missesNumeric[toFetch] = nk;
+				missesStrings[toFetch] = missesStrings[i];
+				toFetch++;
+			}
+			missesNumeric.length = toFetch;
+			missesStrings.length = toFetch;
+			if (toFetch === 0) return results;
+		}
+		const found = await this._getMany(missesStrings);
+		// found is Map<string,Uint8Array> – map back to numeric
+		for (let i = 0; i < missesNumeric.length; i++) {
+			const nk = missesNumeric[i];
+			const sk = missesStrings[i];
+			const data = found.get(sk);
+			if (data === undefined) continue;
+			if (pendingDeletes.has(nk)) continue;
+			this.addToCache(nk, data);
+			results.set(nk, data);
+		}
 		return results;
 	}
 
@@ -415,66 +539,67 @@ export class LevelDbChunkStore implements ChunkStorage {
 		cz: number,
 		key?: string,
 	): Promise<boolean> {
+		const nk = packChunkKeyNumeric(cx, cy, cz);
 		const k = key ?? chunkKey(cx, cy, cz);
 		const pendingDeletes = this.pendingDeletes;
 
-		if (pendingDeletes.has(k)) return false;
+		if (pendingDeletes.has(nk)) return false;
 
-		if (this.cache.has(k)) {
-			this.touched.add(k);
+		if (this.cache.has(nk)) {
+			this.touched.add(nk);
 			return true;
 		}
 
-		const pending = this.pendingWrites.get(k);
+		const pending = this.pendingWrites.get(nk);
 		if (pending !== undefined) {
 			await pending.catch(() => {});
-			if (pendingDeletes.has(k)) return false;
-			if (this.cache.has(k)) {
-				this.touched.add(k);
+			if (pendingDeletes.has(nk)) return false;
+			if (this.cache.has(nk)) {
+				this.touched.add(nk);
 				return true;
 			}
 		}
 
 		if (!this.db) return false;
 		const value = await this.db.get(k);
-		return value != null && !pendingDeletes.has(k);
+		return value != null && !pendingDeletes.has(nk);
 	}
 
 	async hasChunks(coords: readonly ChunkCoord[]): Promise<Set<string>> {
 		const result = new Set<string>();
 		const misses: string[] = [];
+		const missesNumeric: number[] = [];
 
 		const pendingDeletes = this.pendingDeletes;
 		const cache = this.cache;
 		const touched = this.touched;
 
-		let missSeen: Set<string> | null = null;
+		let missSeen: Set<number> | null = null;
 
 		for (let i = 0, len = coords.length; i < len; i++) {
 			const coord = coords[i];
-			const k = coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz);
-
-			if (pendingDeletes.has(k)) continue;
-
-			if (cache.has(k)) {
-				touched.add(k);
-				result.add(k);
+			const nk = packChunkKeyNumeric(coord.cx, coord.cy, coord.cz);
+			if (pendingDeletes.has(nk)) continue;
+			if (cache.has(nk)) {
+				touched.add(nk);
+				result.add(coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz));
 				continue;
 			}
-
 			if (misses.length !== 0) {
-				if (missSeen === null) missSeen = new Set(misses);
-				if (missSeen.has(k)) continue;
-				missSeen.add(k);
+				if (missSeen === null) missSeen = new Set(missesNumeric);
+				if (missSeen.has(nk)) continue;
+				missSeen.add(nk);
 			}
+			const k = coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz);
 			misses.push(k);
+			missesNumeric.push(nk);
 		}
 
 		if (misses.length === 0 || !this.db) return result;
 
 		let awaited: Promise<void>[] | null = null;
-		for (let i = 0; i < misses.length; i++) {
-			const p = this.pendingWrites.get(misses[i]);
+		for (let i = 0; i < missesNumeric.length; i++) {
+			const p = this.pendingWrites.get(missesNumeric[i]);
 			if (p !== undefined) (awaited ??= []).push(p.catch(() => {}));
 		}
 
@@ -482,24 +607,87 @@ export class LevelDbChunkStore implements ChunkStorage {
 			await Promise.all(awaited);
 			let toFetchCount = 0;
 			for (let i = 0; i < misses.length; i++) {
+				const nk = missesNumeric[i];
 				const k = misses[i];
-				if (pendingDeletes.has(k)) continue;
-				if (cache.has(k)) {
-					touched.add(k);
+				if (pendingDeletes.has(nk)) continue;
+				if (cache.has(nk)) {
+					touched.add(nk);
 					result.add(k);
 					continue;
 				}
-				misses[toFetchCount++] = k;
+				misses[toFetchCount] = k;
+				missesNumeric[toFetchCount] = nk;
+				toFetchCount++;
 			}
 			misses.length = toFetchCount;
+			missesNumeric.length = toFetchCount;
 			if (misses.length === 0) return result;
 		}
 
 		const found = await this._hasMany(misses);
 		for (const k of found) {
-			if (!pendingDeletes.has(k)) result.add(k);
+			result.add(k);
 		}
 
+		return result;
+	}
+
+	async hasChunksNumeric(coords: readonly ChunkCoord[]): Promise<Set<number>> {
+		const result = new Set<number>();
+		const missesNumeric: number[] = [];
+		const missesStrings: string[] = [];
+		let missSeen: Set<number> | null = null;
+		const pendingDeletes = this.pendingDeletes;
+		const cache = this.cache;
+		const touched = this.touched;
+		for (let i = 0; i < coords.length; i++) {
+			const c = coords[i];
+			const nk = packChunkKeyNumeric(c.cx, c.cy, c.cz);
+			if (pendingDeletes.has(nk)) continue;
+			if (cache.has(nk)) {
+				touched.add(nk);
+				result.add(nk);
+				continue;
+			}
+			if (missesNumeric.length !== 0) {
+				if (missSeen === null) missSeen = new Set(missesNumeric);
+				if (missSeen.has(nk)) continue;
+				missSeen.add(nk);
+			}
+			missesNumeric.push(nk);
+			missesStrings.push(chunkKey(c.cx, c.cy, c.cz));
+		}
+		if (missesNumeric.length === 0 || !this.db) return result;
+		let awaited: Promise<void>[] | null = null;
+		for (let i = 0; i < missesNumeric.length; i++) {
+			const p = this.pendingWrites.get(missesNumeric[i]);
+			if (p !== undefined) (awaited ??= []).push(p.catch(() => {}));
+		}
+		if (awaited !== null) {
+			await Promise.all(awaited);
+			let toFetch = 0;
+			for (let i = 0; i < missesNumeric.length; i++) {
+				const nk = missesNumeric[i];
+				if (pendingDeletes.has(nk)) continue;
+				if (cache.has(nk)) {
+					touched.add(nk);
+					result.add(nk);
+					continue;
+				}
+				missesNumeric[toFetch] = nk;
+				missesStrings[toFetch] = missesStrings[i];
+				toFetch++;
+			}
+			missesNumeric.length = toFetch;
+			missesStrings.length = toFetch;
+			if (toFetch === 0) return result;
+		}
+		const found = await this._hasMany(missesStrings);
+		for (let i = 0; i < missesNumeric.length; i++) {
+			const nk = missesNumeric[i];
+			const sk = missesStrings[i];
+			if (found.has(sk)) result.add(nk);
+		}
 		return result;
 	}
 
@@ -566,15 +754,16 @@ export class LevelDbChunkStore implements ChunkStorage {
 
 	deleteChunk(cx: number, cy: number, cz: number, key?: string): Promise<void> {
 		const k = key ?? chunkKey(cx, cy, cz);
+		const nk = packChunkKeyNumeric(cx, cy, cz);
 		if (!this.db || !this.opened)
 			return Promise.reject(new Error("LevelDbChunkStore is not open"));
 		if (this.closing)
 			return Promise.reject(new Error("LevelDbChunkStore is closing"));
 
-		this.pendingDeletes.add(k);
-		this.cache.delete(k);
-		this.touched.delete(k);
-		this.removeFromOrder(k);
+		this.pendingDeletes.add(nk);
+		this.cache.delete(nk);
+		this.touched.delete(nk);
+		this.removeFromOrder(nk);
 
 		return this.enqueueWriteJob([{ kind: WriteOperationKind.Delete, key: k }]);
 	}
@@ -596,11 +785,16 @@ export class LevelDbChunkStore implements ChunkStorage {
 			const coordinate = coords[i];
 			const key =
 				coordinate.key ?? chunkKey(coordinate.cx, coordinate.cy, coordinate.cz);
+			const nk = packChunkKeyNumeric(
+				coordinate.cx,
+				coordinate.cy,
+				coordinate.cz,
+			);
 
-			pendingDeletes.add(key);
-			cache.delete(key);
-			touched.delete(key);
-			this.removeFromOrder(key);
+			pendingDeletes.add(nk);
+			cache.delete(nk);
+			touched.delete(nk);
+			this.removeFromOrder(nk);
 
 			operations[i] = { kind: WriteOperationKind.Delete, key };
 		}
@@ -744,19 +938,23 @@ export class LevelDbChunkStore implements ChunkStorage {
 		for (let i = 0; i < operations.length; i++) {
 			const op = operations[i];
 			if (op.kind === WriteOperationKind.Put) {
-				pendingWrites.set(op.key, promise);
-				tracked = true;
+				// Only chunk keys are tracked for read coalescing; meta keys (\x01) use pendingMeta
+				if (op.key.charCodeAt(0) !== 0x01) {
+					const nk = chunkKeyToNumeric(op.key);
+					pendingWrites.set(nk, promise);
+					tracked = true;
+				}
 			}
 		}
 		if (tracked) {
 			const cleanup = () => {
 				for (let i = 0; i < operations.length; i++) {
 					const op = operations[i];
-					if (
-						op.kind === WriteOperationKind.Put &&
-						pendingWrites.get(op.key) === promise
-					) {
-						pendingWrites.delete(op.key);
+					if (op.kind !== WriteOperationKind.Put) continue;
+					if (op.key.charCodeAt(0) === 0x01) continue;
+					const nk = chunkKeyToNumeric(op.key);
+					if (pendingWrites.get(nk) === promise) {
+						pendingWrites.delete(nk);
 					}
 				}
 			};
@@ -1027,23 +1225,26 @@ export class LevelDbChunkStore implements ChunkStorage {
 
 			const operation = preparedOps[i];
 			const key = operation.key;
+			// Meta keys (\x01) are not chunk cache entries.
+			if (key.charCodeAt(0) === 0x01) continue;
+			const nk = chunkKeyToNumeric(key);
 
 			if (operation.kind === WriteOperationKind.Put) {
 				if (operation.value instanceof Uint8Array) {
-					pendingDeletes.delete(key);
+					pendingDeletes.delete(nk);
 					if (operation.preCompressed) {
 						try {
-							this.addToCache(key, await decompressBlob(operation.value));
+							this.addToCache(nk, await decompressBlob(operation.value));
 						} catch {}
 					} else {
-						this.addToCache(key, operation.value);
+						this.addToCache(nk, operation.value);
 					}
 				}
 			} else {
-				pendingDeletes.delete(key);
-				cache.delete(key);
-				touched.delete(key);
-				this.removeFromOrder(key);
+				pendingDeletes.delete(nk);
+				cache.delete(nk);
+				touched.delete(nk);
+				this.removeFromOrder(nk);
 			}
 		}
 	}
@@ -1162,13 +1363,12 @@ export class LevelDbChunkStore implements ChunkStorage {
 		return results;
 	}
 
-	private addToCache(key: string, data: Uint8Array): void {
+	private addToCache(key: number, data: Uint8Array): void {
 		const maxCacheSize = this.maxCacheSize;
 		if (maxCacheSize === 0) return;
 
 		const cache = this.cache;
 
-		// Engine optimization: Single Map probe instead of .has() + .set()
 		if (cache.get(key) !== undefined) {
 			cache.set(key, data);
 			this.touched.add(key);
@@ -1226,7 +1426,7 @@ export class LevelDbChunkStore implements ChunkStorage {
 		}
 	}
 
-	private removeFromOrder(key: string): void {
+	private removeFromOrder(key: number): void {
 		const idx = this.orderIndex.get(key);
 		if (idx === undefined) return;
 

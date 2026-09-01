@@ -33,6 +33,7 @@ export interface ChunkProcessSchedulerAdapter {
 
 	onQueueSnapshotChanged?(): void;
 	onLoadRequestsDequeued?(requests: ReadonlyArray<QueuedChunkRequest>): void;
+	recycleQueuedRequests?(requests: ReadonlyArray<QueuedChunkRequest>): void;
 	onProcessError?(error: unknown): void;
 }
 
@@ -116,6 +117,12 @@ export class ChunkProcessScheduler {
 	}
 
 	private clearLoadState(state: InFlightProcessState): void {
+		// P1-6: recycle QueuedChunkRequest objects to pool to avoid per-batch GC.
+		if (state.loadBatch.length > 0) {
+			const toRecycle = state.loadBatch.slice();
+			// Clear references before offloading to pool; state arrays will be cleared below.
+			this.adapter.recycleQueuedRequests?.(toRecycle);
+		}
 		state.loadBatch.length = 0;
 		state.validLoadBatch.length = 0;
 		state.nearRequests.length = 0;
