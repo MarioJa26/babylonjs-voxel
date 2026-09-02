@@ -163,6 +163,18 @@ export function getToolKind(toolItemId: number): ToolKindId | undefined {
 	return undefined;
 }
 
+/** Multi-line stat block for a tool's item tooltip, or null if not a tool. */
+export function getToolTooltipStats(itemId: number): string | null {
+	const kind = getToolKind(itemId);
+	if (kind === undefined) return null;
+
+	const kindName = TOOL_KINDS[kind]!.name;
+	const speed = getToolSpeedMultiplier(itemId);
+	const speedText = speed !== undefined ? `${speed}x` : "—";
+
+	return [`Kind: ${kindName}`, `Mining speed: ${speedText}`].join("\n");
+}
+
 /** Parse a case-insensitive tool kind name or numeric id to enum. */
 export function parseToolKind(value: unknown): ToolKindId | undefined {
 	if (typeof value === "number" && Number.isInteger(value)) {

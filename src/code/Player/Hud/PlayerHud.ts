@@ -8,6 +8,7 @@ import {
 	UiFocus,
 } from "@/code/Lib/GameRuntimeState";
 import { Map1 } from "@/code/Maps/Map1";
+import { getToolTooltipStats } from "@/code/Player/Inventory/ProceduralTools";
 import {
 	buildBlockInventorySlots,
 	getBlockInventory,
@@ -1360,9 +1361,9 @@ export class PlayerHud {
 				nameDiv.textContent = item.name;
 
 				const arrowStats = getArrowTooltipStats(item.itemId);
-				const desc = arrowStats
-					? `${item.description}\n${arrowStats}`
-					: item.description;
+				const toolStats = getToolTooltipStats(item.itemId);
+				const stats = [arrowStats, toolStats].filter(Boolean).join("\n");
+				const desc = stats ? `${item.description}\n${stats}` : item.description;
 				let descDiv = nameDiv.nextElementSibling as HTMLDivElement | null;
 
 				if (desc) {
