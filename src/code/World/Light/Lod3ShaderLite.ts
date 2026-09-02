@@ -60,7 +60,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     diffuseTextureSampler,
     singleTileUV,
     in.vTileLayer,
-    3.0
+    4.0
   );
 
   if (diffuseColor.a < 0.01) {
@@ -129,7 +129,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     diffuseTextureSampler,
     singleTileUV,
     in.vTileLayer,
-    3.0
+    4.0
   );
 
   if (diffuseColor.a < 0.02) {

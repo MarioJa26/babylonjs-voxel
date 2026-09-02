@@ -66,7 +66,7 @@ diffuseTexture,
 diffuseTextureSampler,
 fract(in.vUV),
 in.vTileLayer,
-3.0
+4.0
 );
 if (diffuseColor.a < 0.01) {
 discard;
@@ -106,7 +106,7 @@ diffuseTexture,
 diffuseTextureSampler,
 fract(in.vUV),
 in.vTileLayer,
-3.0
+4.0
 );
 
 if (diffuseColor.a < 0.01) {
