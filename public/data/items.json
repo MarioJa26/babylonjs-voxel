@@ -91,7 +91,7 @@
 		"id": 1010,
 		"name": "Iron Pickaxe",
 		"description": "A pickaxe made of iron.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/iron/pickaxe.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -99,7 +99,7 @@
 		"id": 1011,
 		"name": "Iron Sword",
 		"description": "A sword made of iron.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/iron/sword.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -107,7 +107,7 @@
 		"id": 1012,
 		"name": "Iron Axe",
 		"description": "A axe made of iron.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/iron/axe.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -115,7 +115,7 @@
 		"id": 1013,
 		"name": "Iron Shovel",
 		"description": "A shovel made of iron.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/iron/shovel.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -123,7 +123,7 @@
 		"id": 1014,
 		"name": "Iron Hoe",
 		"description": "A hoe made of iron.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/iron/hoe.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -155,7 +155,7 @@
 		"id": 1018,
 		"name": "Bucket",
 		"description": "Holds water or lava.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/item/bucket/bucket.png",
 		"maxStack": 16
 	},
 	{
@@ -242,14 +242,6 @@
 		"description": "Ammunition for bows.\nHighest damage, shatters fast.",
 		"icon": "/texture/items/item/arrow/glassarrow.png",
 		"maxStack": 64
-	},
-	{
-		"id": 1024,
-		"name": "Crafting Table",
-		"description": "Opens a 3x3 crafting grid.",
-		"icon": "/texture/placeholder.png",
-		"maxStack": 64,
-		"useAction": "open_crafting"
 	},
 	{
 		"id": 1037,

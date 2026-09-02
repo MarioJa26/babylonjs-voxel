@@ -102,7 +102,7 @@ export function registerProceduralTools(
 				id: itemId,
 				name: `${material.name} ${kind.name}`,
 				description: `A ${kind.name.toLowerCase()} made of ${material.name}.\n${kind.description}`,
-				icon: "/texture/placeholder.png",
+				icon: `/texture/items/${material.name.toLowerCase()}/${kind.name.toLowerCase()}.png`,
 				maxStack: 1,
 				useAction: "use_tool",
 			});
