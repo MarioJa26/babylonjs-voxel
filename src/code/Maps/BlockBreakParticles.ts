@@ -598,19 +598,21 @@ export function playLandingDust(
 	// 198, so unbounded speeds would spread very high falls over a huge disc
 	// that disperses in under a second and reads as no particles. Capped
 	// falls still render as a big dense lingering cloud.
-	const speedFall = Math.min(fallDistance, 12);
+	const speedFall = Math.min(fallDistance, 64);
+	let life = 0.4 + getPRNGUnit2();
 
 	for (let i = 0; i < count; i++) {
 		const angle = getPRNGUnit2() * Math.PI * 2;
 		const outSpeed = 0.3 + getPRNGUnit2() * (0.4 + speedFall * 0.15);
+		life += 0.04;
 		addParticle(
 			x + (getPRNGUnit2() - 0.5) * 0.6,
-			y + 0.025,
+			y + 0.03,
 			z + (getPRNGUnit2() - 0.5) * 0.6,
 			Math.cos(angle) * outSpeed,
-			0.4 + getPRNGUnit2() * (0.6 + speedFall * 0.1),
+			0.4 + getPRNGUnit2() * (0.6 + speedFall * 0.3),
 			Math.sin(angle) * outSpeed,
-			0.4 + getPRNGUnit2() * 0.4,
+			life,
 			0.08 + getPRNGUnit2() * 0.06,
 			getPRNGUnit2() * Math.PI * 2,
 			getPRNGUnit2() - 0.5,
@@ -619,7 +621,8 @@ export function playLandingDust(
 			lg,
 			lb,
 			1.0,
-			0.1,
+			0.8,
+			1,
 		);
 	}
 }
