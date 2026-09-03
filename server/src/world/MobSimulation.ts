@@ -139,6 +139,13 @@ const WANDER_MIN_MS = 1000;
 const WANDER_MAX_MS = 4000;
 const STUCK_MS = 1500;
 const FALL_LIMIT = 24; // Blocks of free-fall before the mob is removed
+/**
+ * Deepest voluntary step-down (blocks), mirroring the client's NeutralMob
+ * cliff guard. Drops deeper than this would deal fall damage (see
+ * FALL_DAMAGE_THRESHOLD), so canMoveTo refuses them — for wandering and
+ * fleeing alike.
+ */
+const MAX_SAFE_LEDGE_DROP = 3;
 const MAX_SPAWN_SCAN_Y = 1024;
 
 const COLUMN_SCAN_WATER = Number.POSITIVE_INFINITY;
@@ -614,6 +621,9 @@ export class ServerMobSimulation {
 			if (!this.canMoveTo(mob, nx, nz, stats.halfHeight, stats.feetHeight)) {
 				// Turn around, or sidestep while fleeing so a wall does not
 				// pin the mob while the player remains on the other side.
+				// Horizontal refusal never skips the vertical settle below:
+				// an airborne mob must keep falling even when its drift is
+				// blocked, otherwise it would freeze in mid-air.
 				mob.yaw = (mob.yaw + (fleeing ? 64 : 128)) & 255;
 				mob.headingTimer = fleeing ? 800 : Math.min(mob.headingTimer, 800);
 				mob.stuckTimer += deltaMs;
@@ -621,20 +631,19 @@ export class ServerMobSimulation {
 					mob.stuckTimer = 0;
 					mob.headingTimer = 0;
 				}
-				return false;
-			}
+			} else {
+				mob.x = nx;
+				mob.z = nz;
+				mob.stuckTimer = 0;
 
-			mob.x = nx;
-			mob.z = nz;
-			mob.stuckTimer = 0;
-
-			// Mobs don't swim — turn back before wading in.
-			if (
-				this.sampler.sample(nx, Math.floor(mob.y - stats.feetHeight), nz) ===
-				BlockType.Water
-			) {
-				mob.yaw = (mob.yaw + 128) & 255;
-				mob.headingTimer = Math.min(mob.headingTimer, 800);
+				// Mobs don't swim — turn back before wading in.
+				if (
+					this.sampler.sample(nx, Math.floor(mob.y - stats.feetHeight), nz) ===
+					BlockType.Water
+				) {
+					mob.yaw = (mob.yaw + 128) & 255;
+					mob.headingTimer = Math.min(mob.headingTimer, 800);
+				}
 			}
 		}
 
@@ -1346,6 +1355,22 @@ export class ServerMobSimulation {
 		const targetY = groundY + 1 + feetHeight;
 
 		if (targetY > mob.y + 1.01) {
+			return false;
+		}
+
+		// Cliff guard: refuse voluntary steps into drops deeper than
+		// MAX_SAFE_LEDGE_DROP. Skipped while already airborne — a falling
+		// mob keeps its drift so settleHeight can bring it down — and over
+		// water, where any landing is a safe splash-down. The caller turns
+		// the mob on false, so blocked mobs steer away instead of walking
+		// off.
+		const feetNow = Math.floor(mob.y - feetHeight);
+		const supportNow = this.scanDown(mob.x, mob.z, feetNow);
+		const airborne =
+			supportNow === COLUMN_SCAN_AIR ||
+			supportNow === COLUMN_SCAN_WATER ||
+			(supportNow !== COLUMN_SCAN_UNKNOWN && feetNow - supportNow > 1);
+		if (!airborne && groundY < feetNow - MAX_SAFE_LEDGE_DROP) {
 			return false;
 		}
 

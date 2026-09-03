@@ -54,6 +54,17 @@ const WALK_PHASE_DECAY = 6.0;
 const BREATH_MAX = 5.0;
 const DROWN_INTERVAL = 2.0;
 const DROWN_DAMAGE = 1;
+/**
+ * Deepest voluntary step-down (blocks). Drops deeper than this would deal
+ * fall damage (see FALL_DAMAGE_THRESHOLD in MobConfig), so grounded mobs
+ * refuse to walk into them — the cliff guard stops and turns them instead.
+ * Applies to wander drift and fleeing alike.
+ */
+const MAX_SAFE_LEDGE_DROP = 3;
+/** Extra scan depth past MAX_SAFE_LEDGE_DROP before giving up on support. */
+const LEDGE_SCAN_SLACK = 2;
+/** Deepest water landing the guard still treats as a safe splash-down. */
+const LEDGE_WATER_SCAN_DEPTH = 12;
 const SWIM_BUOYANCY = 6.0;
 const SWIM_SPEED_FACTOR = 0.75;
 const WATER_ESCAPE_BUOYANCY = 3.5;
@@ -653,9 +664,37 @@ export abstract class NeutralMob {
 		const wasGrounded = this.#isGrounded(pos);
 		const canStepUp = wasGrounded || (inWater && hasActivePath);
 
-		const moveX = velocity.x * dt;
+		let moveX = velocity.x * dt;
 		const moveY = velocity.y * dt;
-		const moveZ = velocity.z * dt;
+		let moveZ = velocity.z * dt;
+
+		/*
+		 * Cliff guard: a grounded mob on dry land never walks into a drop
+		 * deeper than MAX_SAFE_LEDGE_DROP — whether wandering, drifting, or
+		 * fleeing. Blocked mobs stop and turn so wander repicks instead of
+		 * pushing at the edge; the flee timer keeps running so a panicked
+		 * mob paces the edge rather than leaping off it.
+		 */
+		if (
+			!inWater &&
+			wasGrounded &&
+			(moveX !== 0 || moveZ !== 0) &&
+			this.#hasLethalDropAhead(pos, moveX, moveZ)
+		) {
+			velocity.x = 0;
+			velocity.z = 0;
+			moveX = 0;
+			moveZ = 0;
+			this.#facingAngle += Math.PI * (0.5 + Math.random() * 0.5);
+			if (this.#path.length !== 0) {
+				this.#path.length = 0;
+				this.#pathIndex = 0;
+			}
+			if (!fleeing) {
+				this.#state = NeutralMobState.Idle;
+				this.#stateTimer = 1 + Math.random() * 2;
+			}
+		}
 
 		if (moveX !== 0) {
 			this.#moveAxis(pos, Axis.X, moveX, canStepUp);
@@ -863,6 +902,48 @@ export abstract class NeutralMob {
 			this.#hitHalfExtents.z * 0.7,
 		);
 		return this.#collider.overlapsBox(probe, ext);
+	}
+
+	/**
+	 * Cliff guard: true when the ground at the mob's next horizontal step
+	 * falls away more than MAX_SAFE_LEDGE_DROP below its feet. Water counts
+	 * as a safe landing at any scanned depth (splash-downs never deal fall
+	 * damage), and unloaded columns count as safe so mobs never freeze at
+	 * chunk borders on missing data.
+	 */
+	#hasLethalDropAhead(pos: Vec3, moveX: number, moveZ: number): boolean {
+		const stepLenSq = moveX * moveX + moveZ * moveZ;
+		if (stepLenSq <= 0) return false;
+
+		const stepLen = Math.sqrt(stepLenSq);
+		// Probe one full step ahead plus half a body width so wide mobs
+		// (sheep/cow) don't nose over the edge before the guard trips.
+		const lookAhead = stepLen + 0.5;
+		const px = Math.floor(pos.x + (moveX / stepLen) * lookAhead);
+		const pz = Math.floor(pos.z + (moveZ / stepLen) * lookAhead);
+		const feetY = Math.floor(pos.y - this.#feetHeight);
+
+		const solidScanDepth = MAX_SAFE_LEDGE_DROP + LEDGE_SCAN_SLACK;
+		for (let dy = 0; dy <= solidScanDepth; dy++) {
+			const r = resolveBlockAtWorldCoords(px, feetY - dy, pz);
+			if (r.unloaded) return false;
+			if (r.blockId === BlockType.Water) return false;
+			if (isCollidableBlock(r.blockId)) return dy > MAX_SAFE_LEDGE_DROP;
+		}
+
+		// No support in range — still safe if it's a splash-down into water.
+		for (
+			let dy = solidScanDepth + 1;
+			dy <= LEDGE_WATER_SCAN_DEPTH;
+			dy++
+		) {
+			const r = resolveBlockAtWorldCoords(px, feetY - dy, pz);
+			if (r.unloaded) return false;
+			if (r.blockId === BlockType.Water) return false;
+			if (isCollidableBlock(r.blockId)) return true;
+		}
+
+		return true;
 	}
 
 	#findNearestShore(pos: Vec3): void {
