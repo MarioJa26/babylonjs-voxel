@@ -9,6 +9,7 @@ import {
 } from "@/code/Entities/Arrow/ArrowTypes";
 import type { Mob } from "@/code/Entities/Mobs/Mob";
 import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
+import { getCachedLightColorForOwner } from "@/code/Entities/Mobs/MobLighting";
 import { getPRNGUnit2 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
 import type { Color3 } from "@/code/Lib/Math";
@@ -27,7 +28,11 @@ import {
 import { MessageType } from "@/code/Network/protocol/messages";
 import { dropWorldItem } from "@/code/Player/Inventory/dropWorldItem";
 import { Item } from "@/code/Player/Inventory/Item";
-import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { packedLightToLightColor } from "@/code/Player/PlayerModel";
+import {
+	getBlockByWorldCoords,
+	getLightByWorldCoords,
+} from "@/code/World/Chunk/ChunkLoadingSystem";
 import { isCollidableBlock } from "@/code/World/Texture/BlockType";
 import type { Player } from "../../Player/Player";
 
@@ -51,6 +56,13 @@ const MOB_DRIP_INTERVAL_S = MOB_DRIP_INTERVAL_MS * 0.001;
 const FOLLOW_NONE = 0;
 const FOLLOW_REMOTE = 1;
 const FOLLOW_LOCAL = 2;
+
+/**
+ * Stationary arrows (stuck in a block) resample at most this often when
+ * their voxel has not changed, so torch placement and day/night lighting
+ * still update them. Mirrors MobLighting's DAY_NIGHT_FORCE_MS.
+ */
+const STUCK_LIGHT_FORCE_MS = 1000;
 
 export class Arrow {
 	readonly #pool: ReturnType<typeof getArrowInstancePool>;
@@ -110,6 +122,17 @@ export class Arrow {
 	#bleedMobLocal: Mob | null = null;
 	#bleedAccumulator = 0;
 	#bleedFlushTimer = 0;
+
+	/*
+	 * Voxel of the last self-sampled light value. Flying arrows cross
+	 * voxels every tick so they resample; stationary arrows skip the query
+	 * until they cross into a new voxel or STUCK_LIGHT_FORCE_MS elapses.
+	 * NaN initials force the first sample.
+	 */
+	#lightLX = Number.NaN;
+	#lightLY = Number.NaN;
+	#lightLZ = Number.NaN;
+	#lastLightSampleMs = 0;
 
 	#hitNX = 0;
 	#hitNY = 1;
@@ -231,6 +254,7 @@ export class Arrow {
 
 		this.#setLookQuat(vx, vy, vz);
 		this.#writeTransform();
+		this.#updateLightingSelf(true);
 
 		const arrows = Arrow.#allArrows;
 		this.#arrayIndex = arrows.length;
@@ -357,6 +381,85 @@ export class Arrow {
 		this.#pool.writeColor(this.#slot, color.r, color.g, color.b, 1);
 	}
 
+	#applyLightColor(lightR: number, lightG: number, lightB: number): void {
+		const base = this.#arrowDef.color;
+
+		this.#pool.writeColor(
+			this.#slot,
+			base.r * lightR,
+			base.g * lightG,
+			base.b * lightB,
+			1,
+		);
+	}
+
+	/**
+	 * Sample voxel light at the arrow's own position (sky + block light,
+	 * same mix the mobs use). Skips the query while stationary in a cached
+	 * voxel unless forced.
+	 */
+	#updateLightingSelf(force = false): void {
+		const px = this.#px;
+		const py = this.#py;
+		const pz = this.#pz;
+
+		const lx = Math.floor(px);
+		const ly = Math.floor(py);
+		const lz = Math.floor(pz);
+
+		const now = performance.now();
+
+		if (
+			!force &&
+			lx === this.#lightLX &&
+			ly === this.#lightLY &&
+			lz === this.#lightLZ &&
+			now - this.#lastLightSampleMs < STUCK_LIGHT_FORCE_MS
+		) {
+			return;
+		}
+
+		const packedLight = getLightByWorldCoords(px, py, pz);
+		const lightColor = packedLightToLightColor(packedLight);
+
+		this.#applyLightColor(lightColor[0], lightColor[1], lightColor[2]);
+
+		this.#lightLX = lx;
+		this.#lightLY = ly;
+		this.#lightLZ = lz;
+		this.#lastLightSampleMs = now;
+	}
+
+	/**
+	 * Reuse the host mob's already-computed light so an embedded arrow
+	 * matches its carrier with no second voxel query. Falls back to a
+	 * self-sample when the host has no live lighting entry.
+	 */
+	#updateLightingFromHost(): void {
+		let cached: readonly [number, number, number] | null = null;
+
+		if (this.#followMode === FOLLOW_LOCAL) {
+			const mob = this.#followLocalMob;
+
+			if (mob !== null && !mob.isDisposed) {
+				cached = getCachedLightColorForOwner(mob);
+			}
+		} else if (this.#followMode === FOLLOW_REMOTE) {
+			const manager = Arrow.#frameRemote;
+
+			if (manager !== null && this.#followRemoteId >= 0) {
+				cached = manager.getMobLightColor(this.#followRemoteId);
+			}
+		}
+
+		if (cached !== null) {
+			this.#applyLightColor(cached[0], cached[1], cached[2]);
+			return;
+		}
+
+		this.#updateLightingSelf(true);
+	}
+
 	tick(dt: number): void {
 		if (this.#disposed) {
 			return;
@@ -388,8 +491,10 @@ export class Arrow {
 		if (speedSq < MIN_DIRECTION_LENGTH_SQ) {
 			/*
 			 * Position and orientation did not change, so there is no reason
-			 * to dirty and upload the instance matrix again.
+			 * to dirty and upload the instance matrix again. Lighting still
+			 * gets a (cache-throttled) refresh for day/night changes.
 			 */
+			this.#updateLightingSelf();
 			return;
 		}
 
@@ -434,6 +539,7 @@ export class Arrow {
 		this.#pz += stepZ;
 
 		this.#writeTransform();
+		this.#updateLightingSelf();
 	}
 
 	#sweepBlocks(
@@ -714,6 +820,7 @@ export class Arrow {
 
 		this.#writeTransform();
 		this.#beginStickInMob();
+		this.#updateLightingFromHost();
 
 		return true;
 	}
@@ -765,6 +872,7 @@ export class Arrow {
 		this.#stuckTimer = this.#arrowDef.stickTime;
 
 		this.#writeTransform();
+		this.#updateLightingSelf(true);
 	}
 
 	#tickStuck(dt: number): void {
@@ -813,6 +921,7 @@ export class Arrow {
 			this.#pz = tipZ - this.#dz * ARROW_TIP_OFFSET;
 
 			this.#writeTransform();
+			this.#updateLightingFromHost();
 
 			this.#dripTimer -= dt;
 
@@ -828,6 +937,12 @@ export class Arrow {
 
 				playMobDrip(tipX, tipY, tipZ, this.#arrowDef.bleedPerSecond);
 			}
+		} else {
+			/*
+			 * Stuck in a block and stationary: the throttled self-sample
+			 * keeps torch and day/night changes updating the tint.
+			 */
+			this.#updateLightingSelf();
 		}
 
 		this.#stuckTimer -= dt;

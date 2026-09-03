@@ -200,6 +200,7 @@ export class Sheep extends NeutralMob {
 			slot: this.#bodySlot,
 			getPos: () => this.position,
 			baseColor: [this.#color.r, this.#color.g, this.#color.b],
+			owner: this,
 		});
 	}
 

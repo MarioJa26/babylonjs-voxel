@@ -24,6 +24,7 @@ import type {
 	MobInstancePool,
 } from "@/code/Entities/Mobs/MobInstancePool";
 import {
+	getCachedLightColor,
 	registerMobLight,
 	unregisterMobLight,
 } from "@/code/Entities/Mobs/MobLighting";
@@ -244,6 +245,21 @@ export class RemoteMobManager {
 			z: mob.currentZ,
 			yaw: mob.currentYawRad,
 		};
+	}
+
+	/**
+	 * Cached voxel-light multiplier (0-1 RGB) for a remote mob, reusing the
+	 * value MobLighting already computed for it. Lets stuck projectiles
+	 * match their host without a second voxel query. Null when unknown.
+	 */
+	getMobLightColor(id: number): readonly [number, number, number] | null {
+		const mob = this.mobs.get(id);
+
+		if (mob === undefined) {
+			return null;
+		}
+
+		return getCachedLightColor(mob.slot);
 	}
 
 	/**
@@ -534,6 +550,7 @@ export class RemoteMobManager {
 			slot,
 			getPos: entry.getLightPosition,
 			baseColor: [colorR, colorG, colorB],
+			owner: entry,
 		});
 	}
 

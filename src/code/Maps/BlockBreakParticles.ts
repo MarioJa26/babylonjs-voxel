@@ -552,12 +552,33 @@ export function playLandingDust(
 	// `y` is the physical contact height. Sample the voxel immediately below
 	// it so the puff uses the block that was actually hit, not a hard-coded
 	// atlas tile (and never accidentally samples air at the surface boundary).
-	const groundBlockId = getBlockByWorldCoords(
+	let groundBlockId = getBlockByWorldCoords(
 		Math.floor(x),
 		Math.floor(y - 0.05),
 		Math.floor(z),
 	);
-	if (!isCollidableBlock(groundBlockId)) return;
+	if (!isCollidableBlock(groundBlockId)) {
+		// Pass-through cover (tall grass, snow layers) or a fall that
+		// outran chunk streaming — the collider treats unloaded chunks as
+		// solid, so the landing is real but the query reads air. Scan down
+		// for the first solid block so the puff still matches the terrain;
+		// with nothing loaded yet, fall back to generic dust instead of
+		// silently emitting nothing.
+		groundBlockId = 0;
+		const groundY = Math.floor(y - 0.05);
+		for (let d = 1; d <= 6; d++) {
+			const id = getBlockByWorldCoords(
+				Math.floor(x),
+				groundY - d,
+				Math.floor(z),
+			);
+			if (isCollidableBlock(id)) {
+				groundBlockId = id;
+				break;
+			}
+		}
+		if (groundBlockId === 0) groundBlockId = BlockType.GravellySand;
+	}
 
 	const frame = getBlockFrame(groundBlockId);
 	const light = computeLight(getLightByWorldCoords(x, y + 0.05, z));
@@ -573,15 +594,21 @@ export function playLandingDust(
 		Math.max(8, Math.round(fallDistance * 12)),
 	);
 
+	// Clamp the fall distance driving initial speeds: count already caps at
+	// 198, so unbounded speeds would spread very high falls over a huge disc
+	// that disperses in under a second and reads as no particles. Capped
+	// falls still render as a big dense lingering cloud.
+	const speedFall = Math.min(fallDistance, 12);
+
 	for (let i = 0; i < count; i++) {
 		const angle = getPRNGUnit2() * Math.PI * 2;
-		const outSpeed = 0.3 + getPRNGUnit2() * (0.4 + fallDistance * 0.15);
+		const outSpeed = 0.3 + getPRNGUnit2() * (0.4 + speedFall * 0.15);
 		addParticle(
 			x + (getPRNGUnit2() - 0.5) * 0.6,
 			y + 0.025,
 			z + (getPRNGUnit2() - 0.5) * 0.6,
 			Math.cos(angle) * outSpeed,
-			0.4 + getPRNGUnit2() * (0.6 + fallDistance * 0.1),
+			0.4 + getPRNGUnit2() * (0.6 + speedFall * 0.1),
 			Math.sin(angle) * outSpeed,
 			0.4 + getPRNGUnit2() * 0.4,
 			0.08 + getPRNGUnit2() * 0.06,

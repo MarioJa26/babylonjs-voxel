@@ -56,6 +56,19 @@ type Entry = {
 	baseG: number;
 	baseB: number;
 
+	/**
+	 * Last computed voxel-light multiplier (0-1 RGB), copied out of the
+	 * packedLightToLightColor scratch tuple. Stored separately from the
+	 * base color so stuck projectiles can reuse the host mob's light
+	 * without a second voxel query: arrowTint = arrowBase * cachedLight.
+	 */
+	lightR: number;
+	lightG: number;
+	lightB: number;
+
+	/** Optional owner (local Mob instance or remote mob entry) for O(1) lookup. */
+	owner: object | null;
+
 	lastLX: number;
 	lastLY: number;
 	lastLZ: number;
@@ -70,6 +83,9 @@ type Entry = {
 };
 
 const entriesBySlot = new Map<InstanceSlotHandle, Entry>();
+
+/** Owner (Mob instance / remote mob entry) -> lighting entry. Weak so mob disposal GCs. */
+const entriesByOwner = new WeakMap<object, Entry>();
 
 let entryCount = 0;
 
@@ -157,6 +173,10 @@ function refreshEntry(entry: Entry, now: number, force: boolean): boolean {
 
 	const packedLight = getLightByWorldCoords(sampleX, sampleY, sampleZ);
 	const lightColor = packedLightToLightColor(packedLight);
+
+	entry.lightR = lightColor[0];
+	entry.lightG = lightColor[1];
+	entry.lightB = lightColor[2];
 
 	entry.pool.writeLitColor(
 		entry.slot,
@@ -264,14 +284,32 @@ export function registerMobLight(registration: {
 	slot: InstanceSlotHandle;
 	getPos: () => MobPosition;
 	baseColor: BaseColor;
+	/**
+	 * Optional owner for O(1) reverse lookup (local Mob instance or remote
+	 * mob entry). Lets stuck projectiles reuse this entry's cached light
+	 * without a second voxel query.
+	 */
+	owner?: object | null;
 }): void {
 	ensureObserver();
 
 	const existing = entriesBySlot.get(registration.slot);
 
 	if (existing !== undefined) {
+		const newOwner = registration.owner ?? null;
+
+		if (existing.owner !== null && existing.owner !== newOwner) {
+			entriesByOwner.delete(existing.owner);
+		}
+
 		existing.pool = registration.pool;
 		existing.getPos = registration.getPos;
+		existing.owner = newOwner;
+
+		if (newOwner !== null) {
+			entriesByOwner.set(newOwner, existing);
+		}
+
 		assignBaseColor(existing, registration.baseColor);
 
 		refreshEntry(existing, performance.now(), true);
@@ -298,6 +336,12 @@ export function registerMobLight(registration: {
 		baseG: 0,
 		baseB: 0,
 
+		lightR: 1,
+		lightG: 1,
+		lightB: 1,
+
+		owner: registration.owner ?? null,
+
 		lastLX: Math.floor(sampleX),
 		lastLY: Math.floor(sampleY),
 		lastLZ: Math.floor(sampleZ),
@@ -315,6 +359,10 @@ export function registerMobLight(registration: {
 	const packedLight = getLightByWorldCoords(sampleX, sampleY, sampleZ);
 	const lightColor = packedLightToLightColor(packedLight);
 
+	lightingEntry.lightR = lightColor[0];
+	lightingEntry.lightG = lightColor[1];
+	lightingEntry.lightB = lightColor[2];
+
 	registration.pool.writeLitColor(
 		registration.slot,
 		lightingEntry.baseR * lightColor[0],
@@ -323,6 +371,11 @@ export function registerMobLight(registration: {
 	);
 
 	entriesBySlot.set(registration.slot, lightingEntry);
+
+	if (lightingEntry.owner !== null) {
+		entriesByOwner.set(lightingEntry.owner, lightingEntry);
+	}
+
 	appendEntry(lightingEntry);
 }
 
@@ -334,7 +387,54 @@ export function unregisterMobLight(slot: InstanceSlotHandle): void {
 	}
 
 	entriesBySlot.delete(slot);
+
+	if (entry.owner !== null) {
+		/*
+		 * Only delete when the map still points at this entry. A slot handle
+		 * is never reused across owners, but the guard keeps re-registration
+		 * races from dropping a newer entry's mapping.
+		 */
+		if (entriesByOwner.get(entry.owner) === entry) {
+			entriesByOwner.delete(entry.owner);
+		}
+
+		entry.owner = null;
+	}
+
 	removeEntry(entry);
+}
+
+/**
+ * Cached voxel-light multiplier (0-1 RGB) for an owner passed as
+ * `owner` to registerMobLight. Returns null when the owner has no live
+ * lighting entry. The caller multiplies its own base color by this value.
+ */
+export function getCachedLightColorForOwner(
+	owner: object,
+): readonly [number, number, number] | null {
+	const entry = entriesByOwner.get(owner);
+
+	if (entry === undefined || entriesBySlot.get(entry.slot) !== entry) {
+		return null;
+	}
+
+	return [entry.lightR, entry.lightG, entry.lightB];
+}
+
+/**
+ * Cached voxel-light multiplier (0-1 RGB) for a lighting slot.
+ * Returns null when the slot has no live lighting entry.
+ */
+export function getCachedLightColor(
+	slot: InstanceSlotHandle,
+): readonly [number, number, number] | null {
+	const entry = entriesBySlot.get(slot);
+
+	if (entry === undefined) {
+		return null;
+	}
+
+	return [entry.lightR, entry.lightG, entry.lightB];
 }
 
 export function updateMobBaseColor(

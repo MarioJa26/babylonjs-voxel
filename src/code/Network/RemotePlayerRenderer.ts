@@ -32,6 +32,7 @@ import {
 } from "@babylonjs/lite";
 import {
 	makeSprintEmitterState,
+	playLandingDust,
 	playSprint,
 	SPRINT_FEET_OFFSET,
 	SPRINT_MIN_SPEED_SQ,
@@ -109,6 +110,16 @@ const HEAD_PITCH_SNAP_EPS = 0.001;
 
 const REMOTE_CULL_ENTER_DIST_SQ = 96 * 96;
 const REMOTE_CULL_EXIT_DIST_SQ = 88 * 88;
+
+// Remote landing-dust tuning (velocities in blocks/sec, from interpolated
+// vertical motion): arm peak tracking while descending faster than
+// LANDING_FALL_ARM_SPEED, fire when the descent settles above
+// LANDING_REST_SPEED. Single-frame jumps beyond the teleport guards reset
+// tracking (join / teleport / respawn) instead of puffing.
+const LANDING_FALL_ARM_SPEED = -3;
+const LANDING_REST_SPEED = -1.5;
+const LANDING_TELEPORT_DY = 8;
+const LANDING_TELEPORT_HORIZ_DIST_SQ = 100;
 
 const SKIN_SIZE = 64;
 const SKIN_ROW_BYTES = SKIN_SIZE * 4;
@@ -389,6 +400,16 @@ export class RemotePlayerVisual {
 	private sprintPrevX = Number.NaN;
 	private sprintPrevZ = Number.NaN;
 	private sprintPrevMs = Number.NaN;
+
+	// Landing-dust fall tracking from interpolated motion (local-only
+	// emission, mirroring the sprint-dust pattern — never transmitted).
+	// `landingFallPeakY` is the highest Y seen while descending fast; NaN
+	// when not tracking a fall.
+	private landingPrevY = Number.NaN;
+	private landingPrevX = Number.NaN;
+	private landingPrevZ = Number.NaN;
+	private landingPrevMs = Number.NaN;
+	private landingFallPeakY = Number.NaN;
 
 	private lastFlushMs = -Infinity;
 
@@ -697,6 +718,77 @@ export class RemotePlayerVisual {
 		setRigHeadPitch(this.mat, this.headPitch);
 	}
 
+	/**
+	 * Landing dust for a remote player, derived from interpolated vertical
+	 * motion (local-only emission, like sprint dust — never transmitted).
+	 * Arms peak tracking while descending fast and fires when the descent
+	 * settles; `playLandingDust` itself no-ops when there is no solid ground
+	 * underfoot, and teleports / joins / respawns reset instead of puffing.
+	 */
+	private updateLandingDust(
+		x: number,
+		y: number,
+		z: number,
+		now: number,
+	): void {
+		if (!Number.isFinite(this.landingPrevMs)) {
+			this.landingPrevX = x;
+			this.landingPrevY = y;
+			this.landingPrevZ = z;
+			this.landingPrevMs = now;
+			return;
+		}
+
+		const dt = (now - this.landingPrevMs) * 0.001;
+		const dx = x - this.landingPrevX;
+		const dy = y - this.landingPrevY;
+		const dz = z - this.landingPrevZ;
+
+		this.landingPrevX = x;
+		this.landingPrevY = y;
+		this.landingPrevZ = z;
+		this.landingPrevMs = now;
+
+		if (dt <= 0) return;
+
+		// Teleport / join / respawn: discard, don't puff.
+		if (
+			Math.abs(dy) > LANDING_TELEPORT_DY ||
+			dx * dx + dz * dz > LANDING_TELEPORT_HORIZ_DIST_SQ
+		) {
+			this.landingFallPeakY = Number.NaN;
+			return;
+		}
+
+		const vy = dy / dt;
+
+		if (vy < LANDING_FALL_ARM_SPEED) {
+			if (
+				!Number.isFinite(this.landingFallPeakY) ||
+				y > this.landingFallPeakY
+			) {
+				this.landingFallPeakY = y;
+			}
+			return;
+		}
+
+		if (!Number.isFinite(this.landingFallPeakY) || vy < LANDING_REST_SPEED) {
+			return;
+		}
+
+		// Descent settled: landed.
+		const fallDistance = this.landingFallPeakY - y;
+		this.landingFallPeakY = Number.NaN;
+		if (fallDistance > 0.5) {
+			playLandingDust(x, y - SPRINT_FEET_OFFSET, z, fallDistance);
+		}
+	}
+
+	private resetLandingTracking(): void {
+		this.landingPrevMs = Number.NaN;
+		this.landingFallPeakY = Number.NaN;
+	}
+
 	update(camX: number, camY: number, camZ: number, now: number): void {
 		const player = this.player;
 		const x = player.x;
@@ -726,11 +818,13 @@ export class RemotePlayerVisual {
 			}
 			this.walkSampleMs = Number.NaN;
 			this.sprintPrevMs = Number.NaN;
+			this.resetLandingTracking();
 		} else if (distanceSquared >= REMOTE_CULL_ENTER_DIST_SQ) {
 			this.culled = true;
 			this.mesh.visible = false;
 			this.walkSampleMs = Number.NaN;
 			this.sprintPrevMs = Number.NaN;
+			this.resetLandingTracking();
 
 			if (this.billboardActive) {
 				clearBillboardSprites(this.billboard);
@@ -766,6 +860,8 @@ export class RemotePlayerVisual {
 		this.sprintPrevX = x;
 		this.sprintPrevZ = z;
 		this.sprintPrevMs = now;
+
+		this.updateLandingDust(x, y, z, now);
 
 		if (this.skinBound) {
 			this.syncLight(now);

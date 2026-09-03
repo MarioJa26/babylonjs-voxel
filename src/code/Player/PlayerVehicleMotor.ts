@@ -26,6 +26,7 @@ import {
 	FALL_DAMAGE_THRESHOLD,
 } from "../Entities/MobConfig";
 import type { Mount } from "../Entities/Mount";
+import { playLandingDust } from "../Maps/BlockBreakParticles";
 import type { BoatChunk } from "../World/Boat/BoatChunk";
 import {
 	getBlockAndStateByWorldCoords,
@@ -1187,14 +1188,14 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 		// ── Fall damage (singleplayer + multiplayer) ──────────────────────────
 		// Mirrors NeutralMob/AquaticMob fall tracking (MobConfig thresholds).
-		// Water, Creative, flying, climbing and boats all break the fall.
+		// Water, flying, climbing and boats all break the fall. Creative still
+		// tracks the fall so landing dust emits, but takes no damage.
 		// Mounted movement is handled by the mount itself.
 		{
 			const isCreative = this.#playerStats.gamemode === Gamemodes.Creative;
 			const shouldResetFall =
 				isInWater ||
 				this.isFlying ||
-				isCreative ||
 				this.#isClimbing ||
 				nowOnBoat ||
 				this.mount !== null;
@@ -1203,7 +1204,15 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			} else if (this.voxelIsGrounded) {
 				if (!Number.isNaN(this.#fallStartY)) {
 					const fallDistance = this.#fallStartY - activePos.y;
-					if (fallDistance > FALL_DAMAGE_THRESHOLD) {
+					if (fallDistance > 0.5) {
+						playLandingDust(
+							activePos.x,
+							activePos.y - this.colliderHalfHeight,
+							activePos.z,
+							fallDistance,
+						);
+					}
+					if (fallDistance > FALL_DAMAGE_THRESHOLD && !isCreative) {
 						this.#playerStats.takeDamage(
 							(fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK,
 						);

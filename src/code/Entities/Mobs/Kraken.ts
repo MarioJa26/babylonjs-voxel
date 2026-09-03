@@ -129,6 +129,7 @@ export class Kraken extends AquaticMob {
 			slot: this.#bodySlot,
 			getPos: () => this.position,
 			baseColor: [1, 1, 1],
+			owner: this,
 		});
 	}
 

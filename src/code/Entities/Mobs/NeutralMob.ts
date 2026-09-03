@@ -932,11 +932,7 @@ export abstract class NeutralMob {
 		}
 
 		// No support in range — still safe if it's a splash-down into water.
-		for (
-			let dy = solidScanDepth + 1;
-			dy <= LEDGE_WATER_SCAN_DEPTH;
-			dy++
-		) {
+		for (let dy = solidScanDepth + 1; dy <= LEDGE_WATER_SCAN_DEPTH; dy++) {
 			const r = resolveBlockAtWorldCoords(px, feetY - dy, pz);
 			if (r.unloaded) return false;
 			if (r.blockId === BlockType.Water) return false;
