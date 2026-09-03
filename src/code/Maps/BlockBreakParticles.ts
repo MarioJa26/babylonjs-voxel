@@ -627,6 +627,85 @@ export function playLandingDust(
 	}
 }
 
+const EXPLOSION_FLASH_COUNT = 36;
+const EXPLOSION_SMOKE_PER_RADIUS = 20;
+const EXPLOSION_SMOKE_MAX = 120;
+
+/**
+ * Explosion flash + smoke column. `x/y/z` is the blast center. Hot core
+ * particles are near-white/yellow and fast; smoke is dark, slow, long-lived.
+ * Per-block debris for destroyed blocks is emitted separately by the caller
+ * (capped — the pool only holds POOL_SIZE particles).
+ */
+export function playExplosion(
+	x: number,
+	y: number,
+	z: number,
+	radius: number,
+	packedLight: number,
+): void {
+	if (!billboard) return;
+
+	const frame = getBlockFrame(BlockType.Tnt);
+	const light = computeLight(packedLight);
+	const lr = Math.min(1, light.r + 0.35);
+	const lg = Math.min(1, light.g + 0.35);
+	const lb = Math.min(1, light.b + 0.35);
+
+	for (let i = 0; i < EXPLOSION_FLASH_COUNT; i++) {
+		const theta = getPRNGUnit2() * Math.PI * 2;
+		const up = getPRNGUnit2() * 2 - 1;
+		const flat = Math.sqrt(Math.max(0, 1 - up * up));
+		const speed = (1.5 + getPRNGUnit2() * 3.5) * (0.6 + radius * 0.15);
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.8,
+			y + (getPRNGUnit2() - 0.5) * 0.8,
+			z + (getPRNGUnit2() - 0.5) * 0.8,
+			Math.cos(theta) * flat * speed,
+			up * speed + 1.5,
+			Math.sin(theta) * flat * speed,
+			0.25 + getPRNGUnit2() * 0.35,
+			0.12 + getPRNGUnit2() * 0.2,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			lr,
+			lg * (0.7 + getPRNGUnit2() * 0.25),
+			lb * (0.35 + getPRNGUnit2() * 0.2),
+			1,
+			0.25,
+		);
+	}
+
+	const smokeCount = Math.min(
+		EXPLOSION_SMOKE_MAX,
+		Math.max(8, Math.floor(radius * EXPLOSION_SMOKE_PER_RADIUS)),
+	);
+	for (let i = 0; i < smokeCount; i++) {
+		const angle = getPRNGUnit2() * Math.PI * 2;
+		const outSpeed = 0.5 + getPRNGUnit2() * (1 + radius * 0.4);
+		const shade = 0.16 + getPRNGUnit2() * 0.12;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * radius,
+			y + (getPRNGUnit2() - 0.5) * 0.8,
+			z + (getPRNGUnit2() - 0.5) * radius,
+			Math.cos(angle) * outSpeed,
+			1.2 + getPRNGUnit2() * 2.2,
+			Math.sin(angle) * outSpeed,
+			0.9 + getPRNGUnit2() * 1.1,
+			0.14 + getPRNGUnit2() * 0.16,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			shade * lr,
+			shade * lg,
+			shade * lb,
+			1,
+			-0.12,
+		);
+	}
+}
+
 /**
  * Explicit one-time init, awaited by TestScene after scene registration.
  * Registers the per-frame tick, loads the block atlas, and builds the

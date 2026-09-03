@@ -41,6 +41,8 @@ export type CustomBoatOptions = {
 	customVisualLocalYaw?: number;
 	blockCount?: number;
 	boatChunk?: BoatChunk;
+	/** BoatChunk-local coords of the wheel (BoatCreator) block, if any. */
+	helmLocal?: Vec3;
 };
 
 type SerializedBoatChunk = {
@@ -55,6 +57,7 @@ type CustomBoatSerializedPayload = {
 	customVisualLocalYaw: number;
 	blockCount?: number;
 	boatChunk?: SerializedBoatChunk;
+	helmLocal?: { x: number; y: number; z: number };
 };
 
 export class CustomBoat implements IUsable {
@@ -68,6 +71,11 @@ export class CustomBoat implements IUsable {
 
 	static #activeBoats = new Set<CustomBoat>();
 	static #boatsSnapshot: CustomBoat[] = [];
+	static #boatsByChunk = new Map<BoatChunk, CustomBoat>();
+
+	public static getBoatForChunk(chunk: BoatChunk): CustomBoat | null {
+		return CustomBoat.#boatsByChunk.get(chunk) ?? null;
+	}
 
 	// PERF: Pre-computed boat cull distance squared — avoids recomputing every tick.
 	static #boatCullDistSq =
@@ -204,6 +212,9 @@ export class CustomBoat implements IUsable {
 				customVisualLocalYaw: data.customVisualLocalYaw,
 				blockCount: data.blockCount,
 				boatChunk: restoredBoatChunk,
+				helmLocal: data.helmLocal
+					? vec3(data.helmLocal.x, data.helmLocal.y, data.helmLocal.z)
+					: undefined,
 			});
 		});
 	}
@@ -240,6 +251,18 @@ export class CustomBoat implements IUsable {
 	#boatChunkCollisionProviderHandle?: symbol;
 	#boatChunkBlockChangeUnsubscribe?: () => void;
 	#ignoredDynamicBlockProviders = new Set<symbol>();
+
+	// Helm (ship's wheel) state: BoatChunk-local coords of the BoatCreator
+	// block. The mounted player stands 1 block behind it, on deck.
+	#helmLocal: Vec3 | null = null;
+	// BoatChunk-local Y of the deck top (occupied maxY + 1), used to keep the
+	// rider's feet on deck regardless of where the wheel sits.
+	#deckTopLocalY = Number.NEGATIVE_INFINITY;
+	// Dedicated mount offset/rotation owned by this boat. Mount stores the
+	// references, so mutating them in place updates the rider transform with
+	// zero allocation per tick.
+	#helmMountOffset = vec3Zero();
+	#helmMountRot = Quaternion.Identity();
 
 	// PERF: single query-options object reused by every voxel probe in the
 	// physics tick (#getWorldBlockForBoatPhysics runs ~1k+/s while floating).
@@ -319,6 +342,13 @@ export class CustomBoat implements IUsable {
 				1 / Math.sqrt(options.blockCount),
 			);
 		}
+		if (options?.helmLocal) {
+			this.#helmLocal = vec3(
+				options.helmLocal.x,
+				options.helmLocal.y,
+				options.helmLocal.z,
+			);
+		}
 
 		// 2) Create hull & collider
 		this.#boat = this.#createHull(scene, position, waterLevel);
@@ -361,6 +391,16 @@ export class CustomBoat implements IUsable {
 		// 6) Controls
 		CustomBoat.#boatControls = new CustomBoatControls(this, player);
 		this.#mount = new Mount(this.#boat, CustomBoat.#boatControls);
+		if (this.#helmLocal && this.#boatChunk) {
+			// Yaw-aware helm mount: Mount stores these references, and #tick
+			// rewrites them in place so the rider stays behind the wheel.
+			this.#mount.setMountOffset(this.#helmMountOffset);
+			this.#mount.setMountRotationOffset(this.#helmMountRot);
+			this.#computeHelmMountOffset();
+		}
+		if (this.#boatChunk) {
+			CustomBoat.#boatsByChunk.set(this.#boatChunk, this);
+		}
 
 		// 7) Tick loop (centralized via tickAllActiveBoats)
 
@@ -544,6 +584,9 @@ export class CustomBoat implements IUsable {
 		// Always update collider orientation
 		this.#voxelCollider.setYaw(this.#currentYaw);
 
+		// Keep the rider behind the wheel as the boat turns.
+		this.#syncHelmMount();
+
 		// Sync mounted player to new position
 		this.#mount.update();
 
@@ -707,6 +750,9 @@ export class CustomBoat implements IUsable {
 			initialYaw: this.#currentYaw,
 			customVisualLocalYaw: this.#customVisualLocalYaw,
 			blockCount: boatChunkSnapshot?.blocks.length,
+			helmLocal: this.#helmLocal
+				? { x: this.#helmLocal.x, y: this.#helmLocal.y, z: this.#helmLocal.z }
+				: undefined,
 			boatChunk: boatChunkSnapshot
 				? {
 						// PERF: toSnapshot() already returns a fresh array with fresh
@@ -729,7 +775,50 @@ export class CustomBoat implements IUsable {
 	}
 
 	public use(player: Player): void {
+		this.#computeHelmMountOffset();
 		this.#mount.mount(player);
+	}
+
+	/**
+	 * Recompute the rider transform so the player stands 1 block behind the
+	 * wheel (helm) block, feet on deck, facing boat-forward. Runs every tick
+	 * while mounted because the boat yaws; pure yaw math (no world-matrix
+	 * dependency), matching the visual root's RotationYawPitchRoll frame.
+	 */
+	#syncHelmMount(): void {
+		if (!this.#mount.isMounted()) return;
+		this.#computeHelmMountOffset();
+	}
+
+	#computeHelmMountOffset(): void {
+		if (!this.#helmLocal || !this.#boatChunk) return;
+		const center = this.#boatChunk.center;
+		const totalYaw = this.#currentYaw + this.#customVisualLocalYaw;
+		const c = Math.cos(totalYaw);
+		const s = Math.sin(totalYaw);
+		const dx = this.#helmLocal.x + 0.5 - center.x;
+		const dy = this.#helmLocal.y + 0.5 - center.y;
+		const dz = this.#helmLocal.z + 0.5 - center.z;
+		const helmX = this.#boat.position.x + dx * c + dz * s;
+		const helmY = this.#boat.position.y + dy;
+		const helmZ = this.#boat.position.z - dx * s + dz * c;
+
+		// Boat forward is +Z rotated by currentYaw (see CustomBoatControls).
+		const behindDistance = 1.0;
+		const fx = Math.sin(this.#currentYaw);
+		const fz = Math.cos(this.#currentYaw);
+
+		const deckTopWorldY =
+			this.#boat.position.y + (this.#deckTopLocalY - center.y);
+		const feetY = Math.max(helmY - 0.45, deckTopWorldY + 0.02);
+
+		setVec3(
+			this.#helmMountOffset,
+			helmX - fx * behindDistance - this.#boat.position.x,
+			feetY - this.#boat.position.y,
+			helmZ - fz * behindDistance - this.#boat.position.z,
+		);
+		Quaternion.FromEulerAnglesToRef(0, this.#currentYaw, 0, this.#helmMountRot);
 	}
 
 	public dispose(): void {
@@ -751,6 +840,9 @@ export class CustomBoat implements IUsable {
 		}
 
 		this.#voxelCollider?.dispose();
+		if (this.#boatChunk) {
+			CustomBoat.#boatsByChunk.delete(this.#boatChunk);
+		}
 		this.#boatChunk?.dispose();
 		this.#boatChunk = undefined;
 		CustomBoat.#activeBoats.delete(this);
@@ -773,6 +865,7 @@ export class CustomBoat implements IUsable {
 			this.#scratchBounds,
 		);
 		if (!occupied) return;
+		this.#deckTopLocalY = occupied.maxY + 1;
 
 		const center = this.#boatChunk.center;
 		const pad = 0.05;

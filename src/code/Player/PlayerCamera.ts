@@ -22,6 +22,12 @@ export class PlayerCamera {
 	readonly #maxPitch = Math.PI / 2 - 0.003;
 	public mouseSensitivity = 0.003;
 
+	// Explosion screen shake. 0 = steady, 1 = full trauma. Decays in
+	// moveWithPlayer; offset scales with trauma² for a punchy falloff.
+	#trauma = 0;
+	readonly #traumaDecayPerSec = 1.4;
+	readonly #traumaMaxOffset = 0.45;
+
 	readonly #minZoom = 0.01;
 	readonly #maxZoom = 10000;
 	readonly #zoomSpeed = 5.0;
@@ -68,17 +74,41 @@ export class PlayerCamera {
 
 		const distance = this.#followDistance;
 
+		let shakeX = 0;
+		let shakeY = 0;
+		let shakeZ = 0;
+		if (this.#trauma > 0) {
+			if (deltaSeconds !== undefined && deltaSeconds > 0) {
+				this.#trauma = Math.max(
+					0,
+					this.#trauma - this.#traumaDecayPerSec * deltaSeconds,
+				);
+			}
+			const s = this.#trauma * this.#trauma * this.#traumaMaxOffset;
+			shakeX = (Math.random() * 2 - 1) * s;
+			shakeY = (Math.random() * 2 - 1) * s;
+			shakeZ = (Math.random() * 2 - 1) * s;
+		}
+
 		this.#playerCamera.position.set(
-			characterPosition.x - this.#forwardX * distance,
-			cameraY - this.#forwardY * distance,
-			characterPosition.z - this.#forwardZ * distance,
+			characterPosition.x - this.#forwardX * distance + shakeX,
+			cameraY - this.#forwardY * distance + shakeY,
+			characterPosition.z - this.#forwardZ * distance + shakeZ,
 		);
 
 		this.#playerCamera.target.set(
-			characterPosition.x,
-			cameraY,
-			characterPosition.z,
+			characterPosition.x + shakeX * 0.5,
+			cameraY + shakeY * 0.5,
+			characterPosition.z + shakeZ * 0.5,
 		);
+	}
+
+	/**
+	 * Add explosion shake trauma (0..1, clamps). Near blasts pass ~1,
+	 * distant ones scale down by the caller.
+	 */
+	public addTrauma(amount: number): void {
+		this.#trauma = Math.min(1, Math.max(0, this.#trauma + amount));
 	}
 
 	/** Snap the camera straight to a position, for respawn / save restore / locks. */

@@ -1626,6 +1626,16 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		copyVec3(this.voxelVelocity, v);
 	}
 
+	/**
+	 * Radial knockback from explosions. Adds to the body velocity (m/s);
+	 * the normal physics integration picks it up next frame.
+	 */
+	public addExplosionImpulse(x: number, y: number, z: number): void {
+		this.voxelVelocity.x += x;
+		this.voxelVelocity.y += y;
+		this.voxelVelocity.z += z;
+	}
+
 	/** Current world-space velocity of the player body (m/s). */
 	public get velocity(): Vec3 {
 		return this.voxelVelocity;

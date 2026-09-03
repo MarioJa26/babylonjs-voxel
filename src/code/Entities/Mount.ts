@@ -8,8 +8,11 @@ import type MountOptions from "./MountOptions";
 /**
  * Minimal interface for the Player properties that Mount needs.
  * Avoids a direct import of Player, breaking the Mount ↔ Player cycle.
+ *
+ * Exported so the owner (Player) can register the `isMountableUser`
+ * predicate below without importing Player back into this module.
  */
-interface IMountableUser {
+export interface IMountableUser {
 	readonly playerVehicle: IPlayerBody;
 	readonly playerCamera: { zoomIn(): void; zoomOut(): void };
 	keyboardControls: IControls<unknown>;
@@ -82,9 +85,13 @@ export class Mount implements IMountable {
 		const player = this.user;
 		const vehicle = player.playerVehicle;
 
-		//Prevent stuck keys on remount
+		// Prevent stuck keys on scheme switch: clear the outgoing (vehicle)
+		// keys and the incoming (walking) keys. A movement key held across
+		// the transition (e.g. W held while pressing E) would otherwise stay
+		// stuck in the other scheme's set and drive input with no key held.
 		player.keyboardControls.pressedKeys.clear();
 		player.keyboardControls = player.defaultKeyboardControls;
+		player.keyboardControls.pressedKeys.clear();
 		vehicle.clearControlState();
 
 		if (this.#physicsDisabled && vehicle.characterController) {
@@ -145,6 +152,11 @@ export class Mount implements IMountable {
 			if (this.user === player) this.dismount();
 			return false;
 		}
+
+		// Prevent stuck keys on scheme switch (see dismount): a key held
+		// while boarding must not linger in either scheme's pressed set.
+		player.keyboardControls.pressedKeys.clear();
+		this.#keyBoardControls.pressedKeys.clear();
 
 		this.user = player;
 		this.user.keyboardControls = this.#keyBoardControls;

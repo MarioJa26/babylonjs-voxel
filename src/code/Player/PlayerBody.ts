@@ -1,5 +1,6 @@
 import { type Mesh, type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
 import type { Mount } from "../Entities/Mount";
+import { setVec3 } from "../Lib/Math";
 import type { PlayerCamera } from "./PlayerCamera";
 import type { SimpleCharacterController } from "./SimpleCharacterController";
 
@@ -12,7 +13,10 @@ export class PlayerBodyControlState {
 	public isSneaking = false;
 
 	public reset(): void {
-		this.inputDirection = vec3(0, 0, 0);
+		// Zero in place: WalkingControls/CustomBoatControls cache this exact
+		// object reference, and the motor reads it live. Replacing it would
+		// orphan every cached reference and silently kill keyboard movement.
+		setVec3(this.inputDirection, 0, 0, 0);
 		this.wantJump = 0;
 		this.isSprinting = false;
 		this.isJumpHeld = false;

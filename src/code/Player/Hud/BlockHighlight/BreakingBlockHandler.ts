@@ -29,6 +29,20 @@ const _scratchMiningPos = vec3Zero();
 
 let variation = 1834927911;
 
+// Module-level mirror of the multiplayer block-broken callback (set alongside
+// the instance field in setOnBlockBroken). Systems that delete blocks outside
+// the mining path — e.g. TNT ignition — use getOnBlockBroken() to notify the
+// server without reaching into the handler instance.
+let globalOnBlockBroken:
+	| ((x: number, y: number, z: number, blockId: number) => void)
+	| undefined;
+
+export function getOnBlockBroken():
+	| ((x: number, y: number, z: number, blockId: number) => void)
+	| undefined {
+	return globalOnBlockBroken;
+}
+
 export type BoatBlockHitContext = {
 	kind: "boatChunk";
 	boatChunk: {
@@ -56,6 +70,10 @@ function getDroppedBlockId(blockId: number): number {
 
 	if (blockId === BlockType.Torch) {
 		return 1017;
+	}
+
+	if (blockId === BlockType.Tnt) {
+		return 1110;
 	}
 
 	return blockId;
@@ -140,6 +158,7 @@ export class BlockBreakingHandler {
 		callback: (x: number, y: number, z: number, blockId: number) => void,
 	): void {
 		this.#onBlockBroken = callback;
+		globalOnBlockBroken = callback;
 	}
 
 	public start(): void {

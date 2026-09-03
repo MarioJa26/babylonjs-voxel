@@ -6,7 +6,11 @@ import type {
 	Vec3,
 } from "@babylonjs/lite";
 import { addToScene } from "@babylonjs/lite";
+import { CustomBoat } from "@/code/Entities/CustomBoat";
+import { type IMountableUser, Mount } from "@/code/Entities/Mount";
+import { igniteTnt } from "@/code/Entities/PrimedTnt";
 import { Map1 } from "@/code/Maps/Map1";
+import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "@/code/World/Texture/BlockType";
@@ -41,6 +45,17 @@ import {
 } from "./PlayerModel";
 import { PlayerStats } from "./PlayerStats";
 import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
+
+// Mount ↔ Player bridge: Mount must not import Player (cycle), so the
+// Player module registers the structural predicate Mount.mount() gates on.
+// Without this, mount() refuses every rider and boats can never be driven.
+Mount.isMountableUser = (value: unknown): value is IMountableUser =>
+	typeof value === "object" &&
+	value !== null &&
+	"playerVehicle" in value &&
+	"playerCamera" in value &&
+	"keyboardControls" in value &&
+	"defaultKeyboardControls" in value;
 
 /**
  * Lite (native) port of the Player.
@@ -337,6 +352,13 @@ export class Player {
 	public use(): void {
 		if (this.#pickInFlight || this.#interactionsDisposed) return;
 
+		// While riding a boat, E always dismounts (the wheel toggles drive
+		// mode, so re-pressing E on the wheel remounts on the next press).
+		if (this.#playerVehicle.isMounted && this.#playerVehicle.mount) {
+			this.#playerVehicle.mount.dismount();
+			return;
+		}
+
 		this.#pickInFlight = true;
 
 		try {
@@ -359,11 +381,32 @@ export class Player {
 					return;
 
 				case BlockType.BoatCreator: {
+					// Wheel on a boat: mount that boat instead of creating one.
+					const dynamicContext = blockHit.dynamicContext as {
+						kind?: unknown;
+						boatChunk?: BoatChunk;
+					} | null;
+					if (
+						dynamicContext?.kind === "boatChunk" &&
+						dynamicContext.boatChunk
+					) {
+						const wheelBoat = CustomBoat.getBoatForChunk(
+							dynamicContext.boatChunk,
+						);
+						if (wheelBoat) {
+							wheelBoat.mount.mount(this);
+						}
+						return;
+					}
+
 					const x = Math.floor(blockHit.x);
 					const y = Math.floor(blockHit.y);
 					const z = Math.floor(blockHit.z);
 
-					tryCreateBoatFromMarker(this, x, y, z);
+					const boat = tryCreateBoatFromMarker(this, x, y, z);
+					if (boat) {
+						boat.mount.mount(this);
+					}
 					return;
 				}
 
@@ -378,6 +421,15 @@ export class Player {
 					const z = Math.floor(blockHit.z);
 
 					this.#playerHud.showWoodCrateUI(x, y, z);
+					return;
+				}
+
+				case BlockType.Tnt: {
+					const x = Math.floor(blockHit.x);
+					const y = Math.floor(blockHit.y);
+					const z = Math.floor(blockHit.z);
+
+					igniteTnt(x, y, z);
 					return;
 				}
 
