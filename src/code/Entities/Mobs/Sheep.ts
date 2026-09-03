@@ -5,6 +5,7 @@ import { dropWorldItem } from "../../Player/Inventory/dropWorldItem";
 import { Item } from "../../Player/Inventory/Item";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
 import { getMobStats, MobTypeId } from "../MobConfig";
+import { dropMobFoodForType } from "./MobDrops";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import { registerMobLight, unregisterMobLight } from "./MobLighting";
 import type { MobPartSpec } from "./MobMesh";
@@ -257,6 +258,8 @@ export class Sheep extends NeutralMob {
 
 	onDeath(): void {
 		this.#dropWool();
+		const pos = this.position;
+		dropMobFoodForType("sheep", pos.x, pos.y, pos.z);
 	}
 
 	protected override getExtraPayload(): Record<string, unknown> {

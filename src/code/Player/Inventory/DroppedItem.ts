@@ -21,14 +21,14 @@ import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
 import { vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import {
-	getBlockByWorldCoords,
-	getBlockStateByWorldCoords,
 	getLightByWorldCoords,
+	resolveBlockAtWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	_voxelResolveScratch,
 	Axis as ColliderAxis,
 	createVoxelColliderBlockSampler,
+	UNLOADED_SOLID_RESOLVE,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
@@ -189,6 +189,9 @@ function releaseSpriteMaterial(iconUrl: string, mat: ShaderMaterial): void {
 	}
 	pool.push(mat);
 }
+
+/** Fallback sprite when an item icon PNG is missing (art not created yet). */
+const PLACEHOLDER_ICON_URL = "/texture/placeholder.png";
 
 function getIconTexture(url: string): Promise<Texture2D | null> {
 	let promise = spriteTextureCache.get(url);
@@ -354,10 +357,17 @@ const LIGHT_NORMALIZE_MUL = 1.0 / 15.0;
 // OPTIMIZATION: Share a single block sampler to prevent function closures per item
 const SHARED_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
 	(x, y, z) => {
-		const blockId = getBlockByWorldCoords(x, y, z);
-		if (!isCollidableBlock(blockId)) return null;
-		_voxelResolveScratch.blockId = blockId;
-		_voxelResolveScratch.blockState = getBlockStateByWorldCoords(x, y, z);
+		// Mirrors PlayerVehicleMotor: when the chunk under a probe is still
+		// streaming in (missing / not loaded / no voxel data) we hold the
+		// item up on a solid cobble sentinel instead of letting it fall
+		// through into the void. Without this, dropped items fall
+		// indefinitely at the render-distance edge and at every newly
+		// discovered chunk seam.
+		const r = resolveBlockAtWorldCoords(x, y, z);
+		if (r.unloaded) return UNLOADED_SOLID_RESOLVE;
+		if (!isCollidableBlock(r.blockId)) return null;
+		_voxelResolveScratch.blockId = r.blockId;
+		_voxelResolveScratch.blockState = r.blockState;
 		return _voxelResolveScratch;
 	},
 	{
@@ -578,23 +588,33 @@ export class DroppedItem implements IUsable {
 	/**
 	 * Bind this sprite's icon PNG to its material (async, epoch-guarded so a
 	 * disposed/recycled item never receives a late bind).
+	 *
+	 * If the icon is missing (e.g. art not created yet), fall back to the
+	 * placeholder texture so the drop is still visible and pickable instead
+	 * of silently never entering the scene.
 	 */
 	#bindIconTexture(iconUrl: string): void {
 		const mat = this.#material;
 		const epoch = this.#materialEpoch;
-		void getIconTexture(iconUrl).then((tex) => {
-			if (
-				this.#disposed ||
-				!tex ||
-				this.#material !== mat ||
-				this.#materialEpoch !== epoch
-			)
-				return;
+		void getIconTexture(iconUrl)
+			.then((tex) => {
+				if (tex) return tex;
+				if (iconUrl === PLACEHOLDER_ICON_URL) return null;
+				return getIconTexture(PLACEHOLDER_ICON_URL);
+			})
+			.then((tex) => {
+				if (
+					this.#disposed ||
+					!tex ||
+					this.#material !== mat ||
+					this.#materialEpoch !== epoch
+				)
+					return;
 
-			setShaderTexture(this.#material, "diffuseTexture", tex);
-			this.#ensureAddedToScene();
-			this.#boxMesh.visible = true;
-		});
+				setShaderTexture(this.#material, "diffuseTexture", tex);
+				this.#ensureAddedToScene();
+				this.#boxMesh.visible = true;
+			});
 	}
 
 	/**

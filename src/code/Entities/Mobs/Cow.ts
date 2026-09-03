@@ -5,6 +5,7 @@ import { dropWorldItem } from "../../Player/Inventory/dropWorldItem";
 import { Item } from "../../Player/Inventory/Item";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
 import { getMobStats, MobTypeId } from "../MobConfig";
+import { dropMobFoodForType } from "./MobDrops";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import { registerMobLight, unregisterMobLight } from "./MobLighting";
 import type { MobPartSpec } from "./MobMesh";
@@ -208,6 +209,7 @@ export class Cow extends NeutralMob {
 			0,
 			Map1.mainPlayer ?? undefined,
 		);
+		dropMobFoodForType("cow", pos.x, pos.y, pos.z);
 	}
 
 	dispose(): void {

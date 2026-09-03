@@ -92,7 +92,12 @@ import { getServerConfig } from "../config/ServerConfig.ts";
 import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
 import type { ServerItem } from "../world/ItemSimulation.ts";
 import { ServerItemSimulation } from "../world/ItemSimulation.ts";
-import { type ServerMob, ServerMobSimulation } from "../world/MobSimulation.ts";
+import { rollMobFoodDrop } from "../world/MobDrops.ts";
+import {
+	type ServerMob,
+	type ServerMobDeath,
+	ServerMobSimulation,
+} from "../world/MobSimulation.ts";
 import type { StoredChunkData } from "../world/ServerWorldStorage.ts";
 import { ServerWorldStorage } from "../world/ServerWorldStorage.ts";
 import { ServerWaterBlockAccess } from "../world/WaterBlockAccess.ts";
@@ -225,6 +230,7 @@ export class VoxelRoom extends Room {
 	private mobStatePool: MobUpdateBatchEntry[] = [];
 	private mobStateScratch: MobUpdateBatchEntry[] = [];
 	private mobSnapshotScratch: ServerMob[] = [];
+	private mobDeathScratch: ServerMobDeath[] = [];
 	private mobUpdateEncoder = new BinaryEncoder(2048);
 	private itemSim!: ServerItemSimulation;
 	private itemTickAccum = 0;
@@ -1162,6 +1168,7 @@ export class VoxelRoom extends Room {
 				this.broadcastBytes("binary", encodeMobDespawn(event.mob.id), {});
 			}
 		}
+		this.spawnMobDeathDrops();
 		this.mobTickAccum += deltaMs;
 		if (this.mobTickAccum >= MOB_UPDATE_INTERVAL) {
 			this.mobTickAccum = 0;
@@ -1273,6 +1280,48 @@ export class VoxelRoom extends Room {
 			client.sendBytes(
 				"binary",
 				encodeMobSpawn(mob.id, mob.typeId, mob.x, mob.y, mob.z, mob.yaw),
+			);
+		}
+	}
+
+	/**
+	 * Spawn food drops for mobs that died since the last tick (player kills
+	 * via MobDamage and server-side fall damage alike). Runs before
+	 * itemSim.tick() so fresh drops get physics on the same tick, and uses
+	 * the exact ItemDrop broadcast shape so clients render/pick them up
+	 * like any other drop.
+	 */
+	private spawnMobDeathDrops(): void {
+		const deaths = this.mobSim.drainDeaths(this.mobDeathScratch);
+		for (let i = 0; i < deaths.length; i++) {
+			const death = deaths[i];
+			const drop = rollMobFoodDrop(death.typeId);
+			if (!drop) continue;
+
+			const item = this.itemSim.add(
+				drop.itemId,
+				drop.stackSize,
+				death.x,
+				death.y + 0.5,
+				death.z,
+				(Math.random() - 0.5) * 1.5,
+				2,
+				(Math.random() - 0.5) * 1.5,
+			);
+			this.broadcastBytes(
+				"binary",
+				encodeItemSpawn({
+					id: item.id,
+					itemId: item.itemId,
+					stackSize: item.stackSize,
+					x: item.x,
+					y: item.y,
+					z: item.z,
+					vx: item.vx,
+					vy: item.vy,
+					vz: item.vz,
+				}),
+				{},
 			);
 		}
 	}

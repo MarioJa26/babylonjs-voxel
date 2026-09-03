@@ -1,8 +1,8 @@
 import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import {
-	getBlockByWorldCoords,
 	getLightByWorldCoords,
+	resolveBlockAtWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "../World/Texture/BlockType";
 import type { Mob, MobRegistry, MobSpawnConfig } from "./Mobs/Mob";
@@ -157,10 +157,20 @@ export class SpawnCoordinator {
 		}
 
 		for (let wy = MAX_SPAWN_HEIGHT; wy >= MIN_SPAWN_HEIGHT; wy--) {
-			const blockBelow = getBlockByWorldCoords(wx, wy, wz);
-			const blockAbove = getBlockByWorldCoords(wx, wy + 1, wz);
+			// resolveBlockAtWorldCoords reports unloaded cells (chunk
+			// missing, not loaded, or no voxel data). For a spawn scan
+			// those cells aren't candidates — bail out of the column
+			// entirely instead of spending the rest of the Y range
+			// evaluating unloaded terrain as air.
+			const below = resolveBlockAtWorldCoords(wx, wy, wz);
+			if (!below.loaded) return null;
+			const above = resolveBlockAtWorldCoords(wx, wy + 1, wz);
+			if (!above.loaded) return null;
 
-			if (blockBelow === config.spawnBlockId && blockAbove === 0) {
+			if (
+				below.blockId === config.spawnBlockId &&
+				above.blockId === BlockType.Air
+			) {
 				const light = getLightByWorldCoords(wx, wy + 1, wz);
 				const skyLight = (light >> 4) & 0xf;
 				if (skyLight < 8) continue;
@@ -202,9 +212,19 @@ export class SpawnCoordinator {
 		const yEnd = isKraken ? SEA_LEVEL - 12 : SEA_LEVEL - 4;
 
 		for (let wy = yStart; wy >= yEnd; wy--) {
-			const block = getBlockByWorldCoords(wx, wy, wz);
-			const above = getBlockByWorldCoords(wx, wy + 1, wz);
-			if (block !== BlockType.Water || above !== BlockType.Water) continue; // need water + water above
+			// Same as the land scan: bail out of the column when a cell
+			// is unloaded so we don't keep scanning against "air" until
+			// the streaming frontier rolls in.
+			const block = resolveBlockAtWorldCoords(wx, wy, wz);
+			if (!block.loaded) return null;
+			const above = resolveBlockAtWorldCoords(wx, wy + 1, wz);
+			if (!above.loaded) return null;
+			if (
+				block.blockId !== BlockType.Water ||
+				above.blockId !== BlockType.Water
+			) {
+				continue; // need water + water above
+			}
 
 			let tooClose = false;
 			for (let i = 0; i < _mobSnapshot.length; i++) {

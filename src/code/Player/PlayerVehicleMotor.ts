@@ -11,12 +11,12 @@ import {
 	vec3,
 } from "@babylonjs/lite";
 import { copyVec3, lengthSqVec3, Quaternion, setVec3 } from "@/code/Lib/Math";
-import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	_voxelResolveScratch,
 	Axis,
 	createVoxelColliderBlockSampler,
+	UNLOADED_SOLID_RESOLVE,
 	VoxelAabbCollider,
 	voxelStepUp,
 } from "@/code/World/Collision/VoxelAabbCollider";
@@ -27,7 +27,6 @@ import {
 } from "../Entities/MobConfig";
 import type { Mount } from "../Entities/Mount";
 import type { BoatChunk } from "../World/Boat/BoatChunk";
-import { type Chunk, getChunk } from "../World/Chunk/Chunk";
 import {
 	getBlockAndStateByWorldCoords,
 	getBlockByWorldCoords,
@@ -91,61 +90,6 @@ function _rotateVec3ByQuat(
 	out.x = ix * qw + iw * -qx + iy * -qz - iz * -qy;
 	out.y = iy * qw + iw * -qy + iz * -qx - ix * -qz;
 	out.z = iz * qw + iw * -qz + ix * -qy - iy * -qx;
-}
-
-// Sentinel returned by the player's collision sampler for probes whose chunk
-// is not yet loaded: a solid, full-cube block so the player is held up by
-// unloaded terrain instead of falling through the world while chunks stream in.
-const _unloadedSolid: { blockId: number; blockState: number } = {
-	blockId: BlockType.Cobble,
-	blockState: 0,
-};
-
-// True when the chunk containing the given world coordinate is present and has
-// voxel data. Used to gate collision: an unloaded chunk is treated as solid so
-// the player never falls through terrain that hasn't streamed in.
-//
-// PERF: Collision sweeps probe clusters of adjacent voxels that usually live
-// in one of a handful of chunks, but getChunk() builds three BigInts per call
-// via packCoords. Mirror ChunkWorldMutations.resolveCoords' 8-slot ring: an
-// AABB sweep spans at most 2 chunks per axis (~8 distinct chunks), so hits
-// stay near-constant after warmup. A stale (disposed) entry is refreshed via
-// re-resolution instead of being trusted.
-const _PROBE_SLOTS = 8;
-const _pcx = new Int32Array(_PROBE_SLOTS).fill(0x7fffffff);
-const _pcy = new Int32Array(_PROBE_SLOTS).fill(0x7fffffff);
-const _pcz = new Int32Array(_PROBE_SLOTS).fill(0x7fffffff);
-const _pchunk: (Chunk | undefined)[] = new Array(_PROBE_SLOTS).fill(undefined);
-let _pcursor = 0;
-
-function isChunkLoadedAtWorldCoords(
-	worldX: number,
-	worldY: number,
-	worldZ: number,
-): boolean {
-	const cx = worldToChunkCoord(worldX);
-	const cy = worldToChunkCoord(worldY);
-	const cz = worldToChunkCoord(worldZ);
-
-	for (let i = 0; i < _PROBE_SLOTS; i++) {
-		if (_pcx[i] === cx && _pcy[i] === cy && _pcz[i] === cz) {
-			const cached = _pchunk[i];
-			if (cached?.isLoaded) {
-				return cached.hasVoxelData;
-			}
-			// Stale/disposed entry — fall through and refresh this slot.
-			break;
-		}
-	}
-
-	const chunk = getChunk(cx, cy, cz);
-	_pcx[_pcursor] = cx;
-	_pcy[_pcursor] = cy;
-	_pcz[_pcursor] = cz;
-	_pchunk[_pcursor] = chunk;
-	_pcursor = (_pcursor + 1) % _PROBE_SLOTS;
-
-	return !!chunk && chunk.isLoaded && chunk.hasVoxelData;
 }
 
 export class PlayerVehicleMotor implements IPlayerBody {
@@ -344,7 +288,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 						// Chunk under this probe is not loaded: treat it as solid
 						// terrain so the player collides with / rests on it instead
 						// of falling through into the void while chunks stream in.
-						return _unloadedSolid;
+						return UNLOADED_SOLID_RESOLVE;
 					}
 					if (!isCollidableBlock(r.blockId)) return null;
 					return r;

@@ -19,6 +19,7 @@ import {
 	_voxelResolveScratch,
 	Axis,
 	createVoxelColliderBlockSampler,
+	UNLOADED_SOLID_RESOLVE,
 	VoxelAabbCollider,
 	voxelStepUp,
 } from "@/code/World/Collision/VoxelAabbCollider";
@@ -184,7 +185,20 @@ export abstract class NeutralMob {
 					Math.floor(pos.z / Chunk.SIZE),
 				);
 
-				if (!chunk || chunk.lodLevel > 1) continue;
+				// Match AquaticMob: skip when the chunk isn't loaded yet or
+				// has no voxel data, not just when it's missing or far-LOD.
+				// The collision sampler returns null for unloaded cells, so
+				// ticking on missing data would make the mob accumulate
+				// downward velocity forever (apparent freeze on the streaming
+				// seam). Far mobs are also stopped by the lodLevel > 1 gate.
+				if (
+					!chunk ||
+					!chunk.isLoaded ||
+					!chunk.hasVoxelData ||
+					chunk.lodLevel > 1
+				) {
+					continue;
+				}
 
 				mob.tick(dt);
 			}
@@ -217,13 +231,15 @@ export abstract class NeutralMob {
 			halfSize,
 			createVoxelColliderBlockSampler(
 				(wx, wy, wz) => {
-					// Unloaded chunks are treated as air so mobs can fall
-					// continuously when the block under them is mined. Far
-					// mobs are already frozen by the lodLevel gate in
-					// #ensureObserver, so they won't fall through the void
-					// while the world streams in.
+					// Streaming-unloaded cells now rest on a cobble
+					// sentinel so mobs don't fall through seams the way
+					// they did when this returned null (the observer
+					// gate previously let ticks run on not-yet-loaded
+					// chunks, leaving the mob accumulating fall
+					// velocity forever). Once the chunk streams in the
+					// collider snaps down to the real surface.
 					const r = resolveBlockAtWorldCoords(wx, wy, wz);
-					if (r.unloaded) return null;
+					if (r.unloaded) return UNLOADED_SOLID_RESOLVE;
 					if (!isCollidableBlock(r.blockId)) return null;
 
 					// Shared scratch — consumed immediately by the sampler.

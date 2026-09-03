@@ -19,6 +19,7 @@ import {
 	_voxelResolveScratch,
 	Axis,
 	createVoxelColliderBlockSampler,
+	UNLOADED_SOLID_RESOLVE,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
@@ -252,7 +253,11 @@ export abstract class AquaticMob {
 				(wx, wy, wz) => {
 					const result = resolveBlockAtWorldCoords(wx, wy, wz);
 
-					if (result.unloaded) return null;
+					// Same held-up-by-streaming-terrain behavior as the
+					// player / dropped item / NeutralMob samplers: a
+					// streaming seam presents as a solid cobble until the
+					// chunk loads, then snaps down to the real surface.
+					if (result.unloaded) return UNLOADED_SOLID_RESOLVE;
 
 					if (!isCollidableBlock(result.blockId)) {
 						return null;

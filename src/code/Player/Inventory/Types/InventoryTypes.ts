@@ -19,6 +19,8 @@ export type ItemDefinition = {
 	shape?: string;
 	/** Spawn eggs: the mobType (MobSpawnConfig key) to spawn on use. */
 	spawnMobType?: string;
+	/** Food: hunger points restored when eaten via the use_food action. */
+	hunger?: number;
 };
 export type SavedInventoryItem = {
 	itemId: number;

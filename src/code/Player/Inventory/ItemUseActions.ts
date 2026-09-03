@@ -412,10 +412,39 @@ function placeBoat(player: Player): void {
 	new CustomBoat(player, GenerationParams.SEA_LEVEL, spawnPosition);
 }
 
+/**
+ * Eat a food item: restores hunger from the item definition's `hunger`
+ * value and consumes one from the selected stack (creative is free).
+ * Right-click dispatches here via Item.use() for any def with
+ * useAction "use_food" (see WalkingControls #onRightClickDown).
+ */
+function useFood(player: Player): void {
+	const inventory = player.playerInventory;
+	const hotbar = inventory.inventory[0];
+	const selectedSlot = hotbar?.[player.playerHud.selectedHotbarSlot];
+	const item = selectedSlot?.item;
+
+	if (item == null) {
+		return;
+	}
+
+	const itemDefinition = getRegisteredItemById(item.itemId);
+	if (itemDefinition?.useAction !== "use_food") {
+		return;
+	}
+
+	player.stats.eat(itemDefinition.hunger ?? 20);
+
+	if (player.stats.gamemode !== Gamemodes.Creative) {
+		inventory.removeItems(item.itemId, 1);
+	}
+}
+
 export const ItemUseActions: Readonly<Record<string, ItemUseAction>> = {
 	use_tool: useTool,
 	open_crafting: openCrafting,
 	use_bow: useBow,
 	use_spawn_egg: useSpawnEgg,
 	place_boat: placeBoat,
+	use_food: useFood,
 };

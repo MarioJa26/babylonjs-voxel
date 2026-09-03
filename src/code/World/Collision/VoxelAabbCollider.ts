@@ -10,7 +10,7 @@ import {
 import { copyVec3, Quaternion } from "@/code/Lib/Math";
 import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
 import type { ShapeDefinition } from "../Shape/BlockShapes";
-import { isPassThroughBlock } from "../Texture/BlockType";
+import { BlockType, isPassThroughBlock } from "../Texture/BlockType";
 
 export const enum Axis {
 	X,
@@ -57,6 +57,26 @@ export const _blockShapeInfoScratch: BlockShapeInfo = {
 // neighbor-mask path, which only reads .blockId per probe).
 export const _voxelResolveScratch: { blockId: number; blockState: number } = {
 	blockId: 0,
+	blockState: 0,
+};
+
+/**
+ * Shared "treat unloaded chunks as solid" sentinel for any voxel collider that
+ * samples a streaming world (player, dropped item, mob, …).
+ *
+ * Samplers that want a held-up-by-streaming-terrain behavior should return
+ * this from their `resolveBlock` callback when the underlying chunk is
+ * missing, not loaded, or has no voxel data. The sampler will then translate
+ * `BlockType.Cobble` through the standard `getShapeForBlockId` path so the
+ * collider rests on a full cube until the real terrain loads in.
+ *
+ * Keep this ID-aligned with the player vehicle motor's historical fallback so
+ * all non-player physics share the same held-up seam behavior. The pair is
+ * passed by value so resolvers can return it directly (no per-call allocation
+ * and no shared-state hazard — the sampler only reads the fields once).
+ */
+export const UNLOADED_SOLID_RESOLVE: { blockId: number; blockState: number } = {
+	blockId: BlockType.Cobble,
 	blockState: 0,
 };
 

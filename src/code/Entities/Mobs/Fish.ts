@@ -4,6 +4,7 @@ import { Map1 } from "@/code/Maps/Map1";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
 import { getMobStats, MobTypeId } from "../MobConfig";
 import { AquaticMob } from "./AquaticMob";
+import { dropMobFoodForType } from "./MobDrops";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
 import { registerMobLight, unregisterMobLight } from "./MobLighting";
 import type { MobPartSpec } from "./MobMesh";
@@ -207,7 +208,10 @@ export class Fish extends AquaticMob {
 		return { color: { r: this.#color.r, g: this.#color.g, b: this.#color.b } };
 	}
 
-	onDeath(): void {}
+	onDeath(): void {
+		const pos = this.position;
+		dropMobFoodForType("fish", pos.x, pos.y, pos.z);
+	}
 
 	dispose(): void {
 		if (this.isDisposed) return;

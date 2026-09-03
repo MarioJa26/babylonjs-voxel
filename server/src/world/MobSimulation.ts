@@ -90,6 +90,14 @@ export interface ServerMobEvent {
 	damage?: number;
 }
 
+/** A mob death recorded for food-drop spawning (drained by the room). */
+export interface ServerMobDeath {
+	typeId: number;
+	x: number;
+	y: number;
+	z: number;
+}
+
 const FLEE_SPEED = 5;
 const FLEE_DURATION_MS = 3000; // How long a mob flees after being damaged
 
@@ -349,6 +357,14 @@ export class ServerMobSimulation {
 	private lastTickErrorLog = 0;
 	private lastSpawnCount = 0;
 
+	/**
+	 * Deaths since the last drain (every damageMob kill: player damage and
+	 * server-side fall damage alike). The room drains these each tick to
+	 * spawn food drops. Chunk-lifecycle evictions bypass damageMob, so
+	 * persisted-away mobs correctly drop nothing.
+	 */
+	private readonly recentDeaths: ServerMobDeath[] = [];
+
 	constructor(private readonly storage: ServerWorldStorage) {
 		this.sampler = new TickBlockSampler(storage);
 		// Populate on the first tick that has players instead of waiting out
@@ -387,6 +403,7 @@ export class ServerMobSimulation {
 		this.typeCounts.clear();
 		this.naturalTypeCounts.clear();
 		this.naturalTotal = 0;
+		this.recentDeaths.length = 0;
 	}
 	private addActiveMob(mob: ServerMob): void {
 		this.mobs.set(mob.id, mob);
@@ -1581,6 +1598,7 @@ export class ServerMobSimulation {
 	 * Apply damage to a mob (player projectile hit). Returns true when the
 	 * hit killed the mob — the caller must broadcast the despawn; the mob is
 	 * already removed from the active set (dead mobs are never persisted).
+	 * Kills are recorded for drainDeaths() so the room can spawn food drops.
 	 */
 	damageMob(mobId: number, amount: number): boolean {
 		const mob = this.mobs.get(mobId);
@@ -1594,7 +1612,24 @@ export class ServerMobSimulation {
 		}
 
 		this.removeActiveMob(mob);
+		this.recentDeaths.push({
+			typeId: mob.typeId,
+			x: mob.x,
+			y: mob.y,
+			z: mob.z,
+		});
 		return true;
+	}
+
+	/**
+	 * Drain deaths recorded since the last call (reused scratch — consume
+	 * synchronously before the next tick, like tick()'s event array).
+	 */
+	drainDeaths(target: ServerMobDeath[]): ServerMobDeath[] {
+		target.length = 0;
+		for (const death of this.recentDeaths) target.push(death);
+		this.recentDeaths.length = 0;
+		return target;
 	}
 
 	/** Random species whose natural cap isn't reached yet (equal weights, like the client). */

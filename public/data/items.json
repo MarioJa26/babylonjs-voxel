@@ -131,8 +131,10 @@
 		"id": 1015,
 		"name": "Apple",
 		"description": "Restores a small amount of hunger.",
-		"icon": "/texture/placeholder.png",
-		"maxStack": 64
+		"icon": "/texture/items/food/apple.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 15
 	},
 	{
 		"id": 1016,
@@ -296,5 +298,59 @@
 		"maxStack": 64,
 		"useAction": "use_spawn_egg",
 		"spawnMobType": "kraken"
+	},
+	{
+		"id": 1104,
+		"name": "Raw Chicken",
+		"description": "Dropped by chickens.\nRestores hunger.",
+		"icon": "/texture/items/food/chicken.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 20
+	},
+	{
+		"id": 1105,
+		"name": "Raw Mutton",
+		"description": "Dropped by sheep.\nRestores hunger.",
+		"icon": "/texture/items/food/mutton.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 25
+	},
+	{
+		"id": 1106,
+		"name": "Raw Beef",
+		"description": "Dropped by cows.\nRestores hunger.",
+		"icon": "/texture/items/food/beef.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 30
+	},
+	{
+		"id": 1107,
+		"name": "Raw Fish",
+		"description": "Dropped by fish.\nRestores hunger.",
+		"icon": "/texture/items/food/fish.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 20
+	},
+	{
+		"id": 1108,
+		"name": "Calamari",
+		"description": "Dropped by squid.\nRestores hunger.",
+		"icon": "/texture/items/food/calamari.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 20
+	},
+	{
+		"id": 1109,
+		"name": "Kraken Meat",
+		"description": "Dropped by the kraken.\nRestores a lot of hunger.",
+		"icon": "/texture/items/food/kraken_meat.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 50
 	}
 ]
