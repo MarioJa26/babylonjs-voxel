@@ -1,46 +1,25 @@
+import { getAudioOutput, makeNoiseBuffer } from "./AudioManager";
+
 /**
- * Procedural TNT audio (WebAudio synth — the repo has no sound system yet).
+ * Procedural TNT sound effects, routed through the shared AudioManager master
+ * output (volume + mute apply automatically).
  * All functions are safe no-ops when WebAudio is unavailable (e.g. tests).
  */
-
-let sharedCtx: AudioContext | null = null;
-
-function ensureContext(): AudioContext | null {
-	try {
-		if (typeof AudioContext === "undefined") return null;
-		if (!sharedCtx) {
-			sharedCtx = new AudioContext();
-		}
-		if (sharedCtx.state === "suspended") {
-			void sharedCtx.resume();
-		}
-		return sharedCtx;
-	} catch {
-		return null;
-	}
-}
-
-function noiseBuffer(ctx: AudioContext, seconds: number): AudioBuffer {
-	const length = Math.max(1, Math.floor(ctx.sampleRate * seconds));
-	const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
-	const data = buffer.getChannelData(0);
-	for (let i = 0; i < length; i++) {
-		data[i] = Math.random() * 2 - 1;
-	}
-	return buffer;
-}
 
 /**
  * Deep explosion boom: decaying noise through a sweeping lowpass filter.
  * `intensity` 0..1 scales loudness (1 = point blank).
  */
 export function playExplosionSound(intensity = 1): void {
-	const ctx = ensureContext();
-	if (!ctx) return;
+	const output = getAudioOutput();
+	if (!output) return;
 
 	try {
+		const ctx = output.context;
 		const duration = 0.8;
-		const buffer = noiseBuffer(ctx, duration);
+		const buffer = makeNoiseBuffer(duration);
+		if (!buffer) return;
+
 		const data = buffer.getChannelData(0);
 		// Shape the decay envelope into the buffer (t² falloff).
 		for (let i = 0; i < data.length; i++) {
@@ -65,7 +44,7 @@ export function playExplosionSound(intensity = 1): void {
 
 		source.connect(filter);
 		filter.connect(gain);
-		gain.connect(ctx.destination);
+		gain.connect(output);
 		source.start();
 	} catch {
 		// Audio must never break gameplay.
@@ -74,13 +53,17 @@ export function playExplosionSound(intensity = 1): void {
 
 /** Short fuse hiss when TNT is ignited. */
 export function playFuseHiss(): void {
-	const ctx = ensureContext();
-	if (!ctx) return;
+	const output = getAudioOutput();
+	if (!output) return;
 
 	try {
+		const ctx = output.context;
 		const duration = 0.5;
+		const buffer = makeNoiseBuffer(duration);
+		if (!buffer) return;
+
 		const source = ctx.createBufferSource();
-		source.buffer = noiseBuffer(ctx, duration);
+		source.buffer = buffer;
 
 		const filter = ctx.createBiquadFilter();
 		filter.type = "highpass";
@@ -92,7 +75,7 @@ export function playFuseHiss(): void {
 
 		source.connect(filter);
 		filter.connect(gain);
-		gain.connect(ctx.destination);
+		gain.connect(output);
 		source.start();
 	} catch {
 		// Audio must never break gameplay.

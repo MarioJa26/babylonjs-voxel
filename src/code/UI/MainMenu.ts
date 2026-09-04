@@ -121,6 +121,8 @@ export class MainMenu {
 	private optRenderScale!: { row: HTMLElement; getValue: () => number };
 	private optMsaa!: { row: HTMLElement; getValue: () => boolean };
 	private optFpsCap!: { row: HTMLElement; getValue: () => number };
+	private optVolume!: { row: HTMLElement; getValue: () => number };
+	private optMuted!: { row: HTMLElement; getValue: () => boolean };
 	private optStatusEl!: HTMLElement;
 
 	constructor() {
@@ -481,6 +483,19 @@ export class MainMenu {
 			settings.fpsCap,
 			(v) => (v === 0 ? "Uncapped" : `${v} fps`),
 		);
+		this.optVolume = this.makeOptionSlider(
+			"Master Volume",
+			0,
+			100,
+			5,
+			Math.round(settings.masterVolume * 100),
+			(v) => `${v}%`,
+		);
+		this.optMuted = this.makeOptionToggle(
+			"Mute Audio",
+			settings.muted,
+			() => "",
+		);
 
 		for (const opt of [
 			this.optFov,
@@ -490,6 +505,8 @@ export class MainMenu {
 			this.optRenderScale,
 			this.optMsaa,
 			this.optFpsCap,
+			this.optVolume,
+			this.optMuted,
 		]) {
 			screen.appendChild(opt.row);
 		}
@@ -506,6 +523,8 @@ export class MainMenu {
 			next.renderScale = this.optRenderScale.getValue() / 100;
 			next.msaaEnabled = this.optMsaa.getValue();
 			next.fpsCap = this.optFpsCap.getValue();
+			next.masterVolume = this.optVolume.getValue() / 100;
+			next.muted = this.optMuted.getValue();
 			saveGameSettings(next);
 			this.optStatusEl.classList.remove("error");
 			this.optStatusEl.innerText =

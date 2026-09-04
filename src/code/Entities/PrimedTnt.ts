@@ -9,9 +9,13 @@ import {
 	type Vec3,
 	vec3,
 } from "@babylonjs/lite";
+import { playFuseHiss } from "@/code/Audio/TntAudio";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
 import { Map1 } from "@/code/Maps/Map1";
-import { getOnBlockBroken } from "@/code/Player/Hud/BlockHighlight/BreakingBlockHandler";
+import {
+	getOnBlockBroken,
+	getOnTntIgnite,
+} from "@/code/Player/Hud/BlockHighlight/BreakingBlockHandler";
 import {
 	deleteBlock,
 	getBlockByWorldCoords,
@@ -25,7 +29,6 @@ import {
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { explode } from "@/code/World/Explosion";
-import { playFuseHiss } from "@/code/World/ExplosionAudio";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import {
 	computeFenceNeighborMask,
@@ -47,6 +50,10 @@ const BOUNCE_MIN_SPEED = 1.2;
 const AIR_DAMPING_PER_SEC = 1.2;
 const GROUND_DAMPING_PER_SEC = 6.0;
 const STEP_SIZE = 0.2;
+// Upper bound for relayed fuse values (mirrors the server's MAX_TNT_FUSE).
+const MAX_RELAY_FUSE_SECONDS = 10;
+// Squared radius inside which a remote ignition plays the fuse hiss.
+const REMOTE_HISS_RADIUS_SQ = 32 * 32;
 
 // Same streaming-safe sampler as dropped items: unloaded chunks read as
 // solid so primed TNT can't fall through the world at the render edge.
@@ -68,24 +75,34 @@ const TNT_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
 );
 
 /**
- * Ignite the TNT block at (x, y, z): delete it (with multiplayer notify),
- * spawn a bouncing primed cube, and start the fuse. No-op when the block is
- * no longer live TNT (double-ignite guard for chains).
+ * Ignite the TNT block at (x, y, z): delete it, relay the ignition to other
+ * clients, spawn a bouncing primed cube, and start the fuse. No-op when the
+ * block is no longer live TNT (double-ignite guard for chains).
+ *
+ * `sendBreak` controls only the per-block Break notify (skipped for chains —
+ * the authoritative explosion already owns those blocks and a far-away
+ * notify would be rejected as TooFar). The TntIgnite relay is always sent:
+ * other clients only get the Break (block vanishes) and need it to spawn
+ * the primed entity.
  */
 export function igniteTnt(
 	x: number,
 	y: number,
 	z: number,
 	fuseSeconds: number = TNT_FUSE_SECONDS,
+	sendBreak = true,
 ): boolean {
 	if (getBlockByWorldCoords(x, y, z) !== BlockType.Tnt) {
 		return false;
 	}
 
 	deleteBlock(x, y, z);
-	getOnBlockBroken()?.(x, y, z, BlockType.Tnt);
+	if (sendBreak) {
+		getOnBlockBroken()?.(x, y, z, BlockType.Tnt);
+	}
+	getOnTntIgnite()?.(x, y, z, fuseSeconds);
 
-	const tnt = new PrimedTnt(x + 0.5, y + 0.5, z + 0.5, fuseSeconds);
+	const tnt = spawnPrimedTnt(x + 0.5, y + 0.5, z + 0.5, fuseSeconds, false);
 	// Small random pop so stacked ignitions scatter instead of overlapping.
 	tnt.addVelocity(
 		(Math.random() * 2 - 1) * 1.5,
@@ -98,7 +115,61 @@ export function igniteTnt(
 
 /** Short-fuse igniter passed to explode() for chain reactions. */
 export function igniteChainedTnt(x: number, y: number, z: number): void {
-	igniteTnt(x, y, z, TNT_CHAIN_FUSE_SECONDS + Math.random() * 0.25);
+	igniteTnt(x, y, z, TNT_CHAIN_FUSE_SECONDS + Math.random() * 0.25, false);
+}
+
+/**
+ * Spawn a primed entity directly (no block check/removal). Feeds the local
+ * simulation (igniteTnt) and remote entities from TntIgnite relays.
+ */
+export function spawnPrimedTnt(
+	x: number,
+	y: number,
+	z: number,
+	fuseSeconds: number,
+	remote: boolean,
+): PrimedTnt {
+	return new PrimedTnt(x, y, z, fuseSeconds, remote);
+}
+
+/**
+ * Remote spawn entry point for TntIgnite relays (block coords + fuse).
+ * The block itself is already gone locally via the Break broadcast.
+ */
+export function spawnRemotePrimedTnt(
+	x: number,
+	y: number,
+	z: number,
+	fuseSeconds: number,
+): void {
+	const fuse =
+		Number.isFinite(fuseSeconds) && fuseSeconds > 0
+			? Math.min(fuseSeconds, MAX_RELAY_FUSE_SECONDS)
+			: TNT_FUSE_SECONDS;
+	spawnPrimedTnt(x + 0.5, y + 0.5, z + 0.5, fuse, true);
+
+	// Fuse hiss only when the ignition is close to the local player.
+	const player = Map1.mainPlayer;
+	if (player) {
+		const p = player.position;
+		const dx = p.x - x;
+		const dy = p.y - y;
+		const dz = p.z - z;
+		if (dx * dx + dy * dy + dz * dz <= REMOTE_HISS_RADIUS_SQ) {
+			playFuseHiss();
+		}
+	}
+}
+
+/** Remote chain igniter: ripple visuals without block checks or network. */
+function spawnRemoteChainTnt(x: number, y: number, z: number): void {
+	spawnPrimedTnt(
+		x + 0.5,
+		y + 0.5,
+		z + 0.5,
+		TNT_CHAIN_FUSE_SECONDS + Math.random() * 0.25,
+		true,
+	);
 }
 
 /**
@@ -144,13 +215,24 @@ export class PrimedTnt {
 	#flashOn = false;
 	#grounded = false;
 	#disposed = false;
+	// Remote entities come from TntIgnite relays: same bounce/flash/fuse
+	// sim, but detonation is FX + damage only (no block edits, no Explosion
+	// message — the lighting client owns the authoritative crater).
+	#remote = false;
 
-	constructor(x: number, y: number, z: number, fuseSeconds: number) {
+	constructor(
+		x: number,
+		y: number,
+		z: number,
+		fuseSeconds: number,
+		remote = false,
+	) {
 		PrimedTnt.#ensureObserver();
 
 		this.#position = vec3(x, y, z);
 		this.#velocity = vec3(0, 0, 0);
 		this.#fuse = fuseSeconds;
+		this.#remote = remote;
 
 		this.#mesh = createBox(Map1.engine, 1);
 		this.#mesh.name = "primedTnt";
@@ -187,8 +269,16 @@ export class PrimedTnt {
 		this.#fuse -= dt;
 		if (this.#fuse <= 0) {
 			const { x, y, z } = this.#position;
+			const remote = this.#remote;
 			this.#dispose();
-			explode(x, y, z, { chainIgniter: igniteChainedTnt });
+			if (remote) {
+				explode(x, y, z, {
+					chainIgniter: spawnRemoteChainTnt,
+					syncExplosion: false,
+				});
+			} else {
+				explode(x, y, z, { chainIgniter: igniteChainedTnt });
+			}
 			return;
 		}
 

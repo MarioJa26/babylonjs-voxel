@@ -43,6 +43,44 @@ export function getOnBlockBroken():
 	return globalOnBlockBroken;
 }
 
+// Mirror holder for the multiplayer explosion callback (single Explosion
+// message per detonation — see ExplosionData). Wired alongside the block
+// callbacks in Player.setDefaultBlockEditCallbacks; undefined in singleplayer.
+let globalOnExplosion:
+	| ((x: number, y: number, z: number, radius: number) => void)
+	| undefined;
+
+export function getOnExplosion():
+	| ((x: number, y: number, z: number, radius: number) => void)
+	| undefined {
+	return globalOnExplosion;
+}
+
+export function setOnExplosion(
+	callback: (x: number, y: number, z: number, radius: number) => void,
+): void {
+	globalOnExplosion = callback;
+}
+
+// Mirror holder for the multiplayer ignite callback (one TntIgnite message
+// per ignition so other clients spawn the primed entity — the separate Break
+// edit only removes the block for them). Undefined in singleplayer.
+let globalOnTntIgnite:
+	| ((x: number, y: number, z: number, fuse: number) => void)
+	| undefined;
+
+export function getOnTntIgnite():
+	| ((x: number, y: number, z: number, fuse: number) => void)
+	| undefined {
+	return globalOnTntIgnite;
+}
+
+export function setOnTntIgnite(
+	callback: (x: number, y: number, z: number, fuse: number) => void,
+): void {
+	globalOnTntIgnite = callback;
+}
+
 export type BoatBlockHitContext = {
 	kind: "boatChunk";
 	boatChunk: {

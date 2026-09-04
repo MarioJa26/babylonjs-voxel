@@ -1,3 +1,9 @@
+import {
+	getMasterVolume,
+	isMuted,
+	setMasterVolume,
+	setMuted,
+} from "@/code/Audio/AudioManager";
 import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
 import {
@@ -27,6 +33,12 @@ interface SliderOptions {
 	readonly format: (value: number) => string;
 	readonly onInput: (value: number) => void;
 	readonly step?: number;
+}
+
+interface ToggleOptions {
+	readonly label: string;
+	readonly initialValue: boolean;
+	readonly onInput: (value: boolean) => void;
 }
 
 const LOD_SLIDERS: ReadonlyArray<{
@@ -351,6 +363,27 @@ export class PauseMenu {
 			},
 		});
 
+		container.appendChild(this.createSeparator("Audio"));
+
+		this.createSlider(container, {
+			label: "Master Volume",
+			min: 0,
+			max: 100,
+			initialValue: Math.round(getMasterVolume() * 100),
+			format: (value) => `${value}%`,
+			onInput: (value) => {
+				setMasterVolume(value / 100);
+			},
+		});
+
+		this.createToggle(container, {
+			label: "Mute Audio",
+			initialValue: isMuted(),
+			onInput: (value) => {
+				setMuted(value);
+			},
+		});
+
 		container.appendChild(this.createSeparator("Graphics"));
 
 		this.createSlider(container, {
@@ -544,6 +577,51 @@ export class PauseMenu {
 		});
 
 		return slider;
+	}
+
+	private createToggle(
+		container: HTMLElement,
+		options: ToggleOptions,
+	): HTMLInputElement {
+		const toggleContainer = document.createElement("div");
+		toggleContainer.className = "slider-container";
+		toggleContainer.style.display = "flex";
+		toggleContainer.style.flexDirection = "column";
+		toggleContainer.style.gap = "6px";
+		toggleContainer.style.width = "100%";
+
+		const header = document.createElement("div");
+		header.className = "slider-header";
+		header.style.display = "flex";
+		header.style.alignItems = "center";
+		header.style.justifyContent = "space-between";
+		header.style.gap = "24px";
+		header.style.width = "100%";
+
+		const label = document.createElement("label");
+		label.className = "slider-label";
+		label.textContent = options.label;
+		label.style.flex = "1";
+		label.style.minWidth = "0";
+
+		const toggle = document.createElement("input");
+		toggle.type = "checkbox";
+		toggle.checked = options.initialValue;
+
+		// Connect the visible label to the checkbox input.
+		const toggleId = `pause-toggle-${PauseMenu.nextSliderId++}`;
+		toggle.id = toggleId;
+		label.htmlFor = toggleId;
+
+		header.append(label, toggle);
+		toggleContainer.append(header);
+		container.appendChild(toggleContainer);
+
+		toggle.addEventListener("change", () => {
+			options.onInput(toggle.checked);
+		});
+
+		return toggle;
 	}
 
 	private createSeparator(text: string): HTMLDivElement {

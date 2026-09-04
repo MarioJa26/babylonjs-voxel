@@ -21,6 +21,10 @@ import {
 	pickDroppedItem,
 	pickTarget,
 } from "./Hud/BlockHighlight/BlockRaycaster";
+import {
+	setOnExplosion,
+	setOnTntIgnite,
+} from "./Hud/BlockHighlight/BreakingBlockHandler";
 import { PauseMenu } from "./Hud/PauseMenu";
 import { PlayerHud } from "./Hud/PlayerHud";
 import { DroppedItem } from "./Inventory/DroppedItem";
@@ -464,8 +468,12 @@ export class Player {
 			blockState: number,
 		) => void;
 		onBlockBroken: (x: number, y: number, z: number, blockId: number) => void;
+		onExplosion: (x: number, y: number, z: number, radius: number) => void;
+		onTntIgnite: (x: number, y: number, z: number, fuse: number) => void;
 	}): void {
 		setOnBlockPlaced(net.onBlockPlaced);
 		this.#walkingControls.setOnBlockBroken(net.onBlockBroken);
+		setOnExplosion(net.onExplosion);
+		setOnTntIgnite(net.onTntIgnite);
 	}
 }

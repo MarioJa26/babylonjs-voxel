@@ -1,12 +1,11 @@
-import type { Vec3 } from "@babylonjs/lite";
+import { playExplosionSound } from "@/code/Audio/TntAudio";
 import {
-	play,
-	playDebris,
 	playExplosion,
+	playExplosionDebris,
 	playLandingDust,
 } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
-import { getOnBlockBroken } from "@/code/Player/Hud/BlockHighlight/BreakingBlockHandler";
+import { getOnExplosion } from "@/code/Player/Hud/BlockHighlight/BreakingBlockHandler";
 import type { Player } from "@/code/Player/Player";
 import { Gamemodes } from "@/code/Player/PlayerStats";
 import {
@@ -14,7 +13,6 @@ import {
 	getBlockByWorldCoords,
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { playExplosionSound } from "@/code/World/ExplosionAudio";
 import {
 	collectExplosionTargets,
 	explosionFalloff,
@@ -34,8 +32,14 @@ export interface ExplodeOptions {
 	player?: Player | null;
 	/** Called for live TNT inside the blast so it detonates shortly after. */
 	chainIgniter?: ChainIgniter | null;
-	/** Max destroyed blocks emitting full break bursts (particle pool guard). */
+	/** Max destroyed blocks emitting terrain debris (particle pool guard). */
 	maxBurstBlocks?: number;
+	/**
+	 * Send the single Explosion message to the server (default true).
+	 * Remote (relayed) detonations pass false: the lighting client already
+	 * owns the authoritative crater.
+	 */
+	syncExplosion?: boolean;
 }
 
 export interface ExplosionResult {
@@ -88,10 +92,11 @@ function flashScreen(strength: number): void {
  * damage + knock back the player and mobs, and play FX.
  *
  * Block edits go through the standard ChunkLoadingSystem path (remesh +
- * water updates included) and are reported through the multiplayer
- * block-broken callback. A future server-authoritative `Explosion` message
- * should replace the per-block notify loop (see NetworkManager
- * BlockEditBatch) — the call site is this single loop below.
+ * water updates included). In multiplayer the crater is synced with ONE
+ * Explosion message (see onExplosion): per-block Break notifies would be
+ * rejected as TooFar for blocks past the normal reach and rolled back.
+ * A future batch-compression pass could pack the crater into the message —
+ * the call site is the single getOnExplosion() call below.
  */
 export function explode(
 	cx: number,
@@ -125,34 +130,40 @@ export function explode(
 		}
 	}
 
-	const notify = getOnBlockBroken();
 	for (const target of destroy) {
 		deleteBlock(target.x, target.y, target.z);
-		notify?.(target.x, target.y, target.z, target.blockId);
+	}
+
+	// Single multiplayer sync: the server re-applies the crater
+	// authoritatively (no per-block reach check), except in singleplayer
+	// where no callback is wired — or for remote detonations, where the
+	// lighting client owns the sync.
+	if (options.syncExplosion !== false) {
+		getOnExplosion()?.(cx, cy, cz, radius);
 	}
 
 	// --- FX ---
 	const packedLight = getLightByWorldCoords(cx, cy, cz);
 	playExplosion(cx, cy, cz, radius, packedLight);
 
-	const burstCount = Math.min(options.maxBurstBlocks ?? 12, destroy.length);
-	for (let i = 0; i < burstCount; i++) {
-		const target = destroy[Math.floor((i * destroy.length) / burstCount)];
-		const pos: Vec3 = {
-			x: target.x + 0.5,
-			y: target.y + 0.5,
-			z: target.z + 0.5,
-		};
-		play(pos, target.blockId, packedLight);
-		playDebris(
+	// Terrain chunks: violent omnidirectional scatter from a few destroyed
+	// blocks grounds the blast in the local terrain. Full break bursts (play)
+	// are deliberately NOT used here — those read as block mining, not as an
+	// explosion.
+	const debrisCount = Math.min(options.maxBurstBlocks ?? 8, destroy.length);
+	const debrisPower = 1 + radius / TNT_BLAST_RADIUS;
+	for (let i = 0; i < debrisCount; i++) {
+		const target = destroy[Math.floor((i * destroy.length) / debrisCount)];
+		playExplosionDebris(
 			target.x + 0.5,
 			target.y + 0.5,
 			target.z + 0.5,
 			target.blockId,
 			packedLight,
+			debrisPower,
 		);
 	}
-	playLandingDust(cx, cy, cz, radius * 3);
+	playLandingDust(cx, cy, cz, radius * 2);
 	playExplosionSound(1);
 	flashScreen(1);
 

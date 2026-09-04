@@ -12,10 +12,14 @@ export interface GameSettings {
 	mouseSensitivity: number;
 	/** Multiplier on window.devicePixelRatio for the render canvas. */
 	renderScale: number;
-	/** 4x MSAA on the main surface (costly; see SETTINGS_PARAMS.ENABLE_MSAA). */
+	/** 4x MSAA on the main surface (costly; see SETTING_PARAMS.ENABLE_MSAA). */
 	msaaEnabled: boolean;
 	/** Frame-rate cap in Hz; 0 = uncapped. */
 	fpsCap: number;
+	/** Master audio volume 0..1 (see AudioManager). */
+	masterVolume: number;
+	/** Mute all game audio. */
+	muted: boolean;
 }
 
 const STORAGE_KEY = "b102.settings.v1";
@@ -28,6 +32,8 @@ const DEFAULTS: GameSettings = {
 	renderScale: SETTING_PARAMS.RENDER_SCALE,
 	msaaEnabled: SETTING_PARAMS.ENABLE_MSAA,
 	fpsCap: SETTING_PARAMS.FPS_CAP,
+	masterVolume: 0.8,
+	muted: false,
 };
 
 function clamp(v: number, min: number, fallback: number, max: number): number {
@@ -74,6 +80,13 @@ export function loadGameSettings(): GameSettings {
 			fpsCap: [0, 30, 60, 120].includes(parsed.fpsCap ?? defaults.fpsCap)
 				? (parsed.fpsCap ?? defaults.fpsCap)
 				: defaults.fpsCap,
+			masterVolume: clamp(
+				parsed.masterVolume ?? defaults.masterVolume,
+				0,
+				defaults.masterVolume,
+				1,
+			),
+			muted: typeof parsed.muted === "boolean" ? parsed.muted : defaults.muted,
 		};
 	} catch {
 		return defaults;

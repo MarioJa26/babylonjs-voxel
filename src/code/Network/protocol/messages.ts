@@ -32,6 +32,8 @@ export const MessageType = {
 	MobImpact: 0x2d, // S→C: a mob landed after a fall
 	ArrowShoot: 0x2b, // C→S: a player fired an arrow (cosmetic sync)
 	ArrowSpawn: 0x2c, // S→C: relay an arrow's trajectory to the other clients
+	Explosion: 0x2e, // C→S: a primed TNT detonated (server applies the crater)
+	TntIgnite: 0x2f, // C→S ignite request / S→C relay: spawn a primed TNT entity
 
 	// Server → Client
 	PlayerStateBatch: 0x10,
@@ -219,6 +221,36 @@ export interface MobDamageData {
 	damage: number;
 }
 
+/**
+ * C→S: a primed TNT detonated at (x, y, z). The server validates the blast
+ * center against the sender's position (reach + fuse-travel slack) and the
+ * radius against MAX_EXPLOSION_RADIUS, then applies the crater itself from
+ * authoritative world state and relays the breaks as a BlockEditBatch.
+ * Per-block Break messages for explosion craters must NOT be sent — blocks
+ * past the normal reach would be rejected as TooFar and rolled back.
+ */
+export interface ExplosionData {
+	x: number;
+	y: number;
+	z: number;
+	radius: number;
+}
+
+/**
+ * C→S: this client ignited the TNT block at (x, y, z) with the given fuse.
+ * S→C: relay — other clients spawn a cosmetic primed TNT entity there.
+ * Like ArrowShoot/ArrowSpawn this is cosmetic sync: receivers simulate the
+ * bounce/flash/fuse locally and play detonation FX, but only the lighting
+ * client sends the authoritative Explosion message. The server validates
+ * reach and fuse bounds; it deliberately does NOT check that the block is
+ * still TNT (the igniter's own Break is processed first and would race it).
+ */
+export interface TntIgniteData {
+	x: number;
+	y: number;
+	z: number;
+	fuse: number;
+}
 /** S→C: cosmetic ground impact for a server-authoritative mob. */
 export interface MobImpactData {
 	/** Server-assigned mob id (uint16). */

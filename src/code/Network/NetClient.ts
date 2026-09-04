@@ -17,6 +17,7 @@ import {
 	decodePlayerJoinInto,
 	decodePlayerStateBatchEntriesInto,
 	decodeSpawnPositionInto,
+	decodeTntIgniteInto,
 	decodeWorldConfigInto,
 	encodeSkinUpload,
 	type WorldConfigData,
@@ -29,6 +30,7 @@ import {
 	MessageType,
 	type PlayerJoinData,
 	type PlayerStateBatchEntry,
+	type TntIgniteData,
 } from "./protocol/messages";
 
 export interface RemotePlayer {
@@ -60,6 +62,8 @@ export interface NetClientCallbacks {
 	onPlayerStates?: (states: Map<string, RemotePlayer> | RemotePlayer[]) => void;
 	onBlockEdit?: (edit: BlockEditData) => void;
 	onBlockEditRejected?: (rejection: BlockEditRejectedData) => void;
+	/** Fired when another client ignites TNT (spawn a remote primed entity). */
+	onTntIgnite?: (ignite: TntIgniteData) => void;
 	onChatMessage?: (chat: ChatMessageData) => void;
 	onWorldTime?: (timeOfDay: number) => void;
 	onWorldConfig?: (config: WorldConfigData) => void;
@@ -126,6 +130,12 @@ export class NetClient {
 		blockState: 0,
 		action: 0,
 		reason: 0,
+	};
+	private readonly tntIgniteScratch: TntIgniteData = {
+		x: 0,
+		y: 0,
+		z: 0,
+		fuse: 0,
 	};
 	private readonly chatMessageScratch: ChatMessageData = {
 		sessionId: "",
@@ -471,6 +481,14 @@ export class NetClient {
 						// Handled by Arrow.ensureNetworkHandler via addBinaryHandler.
 						return;
 
+					case MessageType.TntIgnite: {
+						// Reused scratch — safe: the callback consumes fields
+						// synchronously (NetworkManager spawns the entity).
+						const ignite = decodeTntIgniteInto(dec, this.tntIgniteScratch);
+						callbacks.onTntIgnite?.(ignite);
+						break;
+					}
+
 					default:
 						console.warn(
 							`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,
@@ -791,6 +809,36 @@ export class NetClient {
 		encoder.writeFloat32(vy);
 		encoder.writeFloat32(vz);
 		encoder.writeUint8(arrowType);
+
+		room.sendBytes("binary", encoder.getBytes());
+	}
+
+	sendExplosion(x: number, y: number, z: number, radius: number): void {
+		const room = this.getConnectedRoom();
+		if (room === null) return;
+
+		const encoder = this.encoder;
+		encoder.reset();
+		encoder.writeUint8(MessageType.Explosion);
+		encoder.writeFloat32(x);
+		encoder.writeFloat32(y);
+		encoder.writeFloat32(z);
+		encoder.writeFloat32(radius);
+
+		room.sendBytes("binary", encoder.getBytes());
+	}
+
+	sendTntIgnite(x: number, y: number, z: number, fuse: number): void {
+		const room = this.getConnectedRoom();
+		if (room === null) return;
+
+		const encoder = this.encoder;
+		encoder.reset();
+		encoder.writeUint8(MessageType.TntIgnite);
+		encoder.writeFloat32(x);
+		encoder.writeFloat32(y);
+		encoder.writeFloat32(z);
+		encoder.writeFloat32(fuse);
 
 		room.sendBytes("binary", encoder.getBytes());
 	}

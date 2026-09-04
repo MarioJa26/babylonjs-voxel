@@ -234,6 +234,59 @@ export function playDebris(
 }
 
 /**
+ * Violent omnidirectional debris for explosions: terrain chunks launched in
+ * ALL directions (uniform sphere — up, down, sideways) at high speed, arcing
+ * under full gravity and bouncing off the voxel world. Unlike playDebris
+ * (a mining-strength pop with an upward bias), this is true blast scatter —
+ * including downward chunks that slam into the crater floor and ricochet. A
+ * quarter of the chunks are fire-tinted burning debris. `x/y/z` is the burst
+ * center (destroyed block center); `power` scales launch speed (1 = TNT).
+ */
+export function playExplosionDebris(
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+	packedLight: number,
+	power = 1,
+): void {
+	if (!billboard) return;
+
+	const frame = getBlockFrame(blockId);
+	const light = computeLight(packedLight);
+	let life = 2 + getPRNGUnit2();
+
+	for (let i = 0; i < DEBRIS_PER_BREAK; i++) {
+		const theta = getPRNGUnit2() * Math.PI * 2;
+		const up = getPRNGUnit2() * 2;
+		const flat = Math.sqrt(Math.max(0, 1 - up * up));
+		const speed = (6 + getPRNGUnit2() * 8) * power;
+		const burning = getPRNGUnit2() < 0.25;
+		const shade = 0.8 + getPRNGUnit2() * 0.25;
+		life += 0.1;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.9,
+			y + (getPRNGUnit2() - 0.5) * 0.9,
+			z + (getPRNGUnit2() - 0.5) * 0.9,
+			Math.cos(theta) * flat * speed,
+			up * speed,
+			Math.sin(theta) * flat * speed,
+			1.0 + getPRNGUnit2() * 1.0,
+			0.08 + getPRNGUnit2() * 0.08,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 6,
+			frame,
+			burning ? 1.2 : light.r * shade,
+			burning ? 0.5 : light.g * shade,
+			burning ? 0.18 : light.b * shade,
+			1,
+			1,
+			1,
+		);
+	}
+}
+
+/**
  * Sparks that pop out of the block face while it is being mined. Emission is
  * throttled internally, so the caller may call this every frame. `x/y/z` is the
  * face center (block center + normal * 0.5) and `nx/ny/nz` the face normal.
@@ -627,15 +680,19 @@ export function playLandingDust(
 	}
 }
 
-const EXPLOSION_FLASH_COUNT = 36;
-const EXPLOSION_SMOKE_PER_RADIUS = 20;
-const EXPLOSION_SMOKE_MAX = 120;
+const EXPLOSION_SMOKE_PER_RADIUS = 22;
+const EXPLOSION_SMOKE_MAX = 110;
+const EXPLOSION_EMBER_COUNT = 60;
+const EXPLOSION_RING_COUNT = 48;
 
 /**
- * Explosion flash + smoke column. `x/y/z` is the blast center. Hot core
- * particles are near-white/yellow and fast; smoke is dark, slow, long-lived.
- * Per-block debris for destroyed blocks is emitted separately by the caller
- * (capped — the pool only holds POOL_SIZE particles).
+ * Full explosion look: core flash, layered fireball, ground shockwave ring,
+ * rising smoke column, and bouncing embers. `x/y/z` is the blast center.
+ *
+ * Deliberately NOT block-break bursts (those read as mining): the fire and
+ * smoke use the TNT atlas tile purely as chunky filler, tinted per phase.
+ * Terrain chunks come from a few capped playDebris() calls by the detonator.
+ * Total budget stays well under POOL_SIZE so chained blasts don't starve.
  */
 export function playExplosion(
 	x: number,
@@ -651,32 +708,136 @@ export function playExplosion(
 	const lr = Math.min(1, light.r + 0.35);
 	const lg = Math.min(1, light.g + 0.35);
 	const lb = Math.min(1, light.b + 0.35);
+	const speedScale = 0.7 + radius * 0.15;
 
-	for (let i = 0; i < EXPLOSION_FLASH_COUNT; i++) {
+	// --- 1. Core flash: one huge white billboard, gone in a blink. ---
+	addParticle(
+		x,
+		y,
+		z,
+		0,
+		0.5,
+		0,
+		0.1,
+		radius,
+		y,
+		lr,
+		frame,
+		2.5,
+		2.4,
+		2.2,
+		1,
+		0,
+	);
+
+	// --- 2. Hot sparks: white-yellow, fast, very short. ---
+	for (let i = 0; i < 24; i++) {
 		const theta = getPRNGUnit2() * Math.PI * 2;
 		const up = getPRNGUnit2() * 2 - 1;
 		const flat = Math.sqrt(Math.max(0, 1 - up * up));
-		const speed = (1.5 + getPRNGUnit2() * 3.5) * (0.6 + radius * 0.15);
+		const speed = (4 + getPRNGUnit2() * 5) * speedScale;
 		addParticle(
 			x + (getPRNGUnit2() - 0.5) * 0.8,
 			y + (getPRNGUnit2() - 0.5) * 0.8,
 			z + (getPRNGUnit2() - 0.5) * 0.8,
 			Math.cos(theta) * flat * speed,
-			up * speed + 1.5,
+			up * speed + 1,
 			Math.sin(theta) * flat * speed,
-			0.25 + getPRNGUnit2() * 0.35,
-			0.12 + getPRNGUnit2() * 0.2,
+			0.2 + getPRNGUnit2() * 0.15,
+			0.1 + getPRNGUnit2() * 0.1,
 			getPRNGUnit2() * Math.PI * 2,
 			getPRNGUnit2() - 0.5,
 			frame,
-			lr,
-			lg * (0.7 + getPRNGUnit2() * 0.25),
-			lb * (0.35 + getPRNGUnit2() * 0.2),
+			1.4,
+			1.1,
+			0.65,
 			1,
-			0.25,
+			0.1,
 		);
 	}
 
+	// --- 3. Fireball: three shells, white-hot inside → deep red outside. ---
+	spawnFireShell(
+		x,
+		y,
+		z,
+		frame,
+		30,
+		1.3,
+		0.9,
+		0.45,
+		2,
+		6,
+		0.3,
+		0.5,
+		0.15,
+		0.28,
+		0,
+		speedScale,
+	);
+	spawnFireShell(
+		x,
+		y,
+		z,
+		frame,
+		48,
+		1.2,
+		0.55,
+		0.2,
+		1.5,
+		5,
+		0.45,
+		0.7,
+		0.18,
+		0.32,
+		-0.1,
+		speedScale,
+	);
+	spawnFireShell(
+		x,
+		y,
+		z,
+		frame,
+		36,
+		0.9,
+		0.3,
+		0.12,
+		1,
+		3.5,
+		0.6,
+		0.9,
+		0.2,
+		0.36,
+		-0.15,
+		speedScale,
+	);
+
+	// --- 4. Shockwave ring: fast dusty disc hugging the ground. ---
+	for (let i = 0; i < EXPLOSION_RING_COUNT; i++) {
+		const angle = getPRNGUnit2() * Math.PI * 2;
+		const speed = (7 + getPRNGUnit2() * 6) * speedScale;
+		const shade = 0.55 + getPRNGUnit2() * 0.25;
+		addParticle(
+			x + Math.cos(angle) * 0.5,
+			y + 0.2,
+			z + Math.sin(angle) * 0.5,
+			Math.cos(angle) * speed,
+			0.3 + getPRNGUnit2() * 0.9,
+			Math.sin(angle) * speed,
+			0.35 + getPRNGUnit2() * 0.2,
+			0.18 + getPRNGUnit2() * 0.12,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			shade * lr,
+			shade * lg * 0.9,
+			shade * lb * 0.75,
+			1,
+			0.15,
+		);
+	}
+
+	// --- 5. Smoke column: dark, slow, long-lived, drifting up. ---
 	const smokeCount = Math.min(
 		EXPLOSION_SMOKE_MAX,
 		Math.max(8, Math.floor(radius * EXPLOSION_SMOKE_PER_RADIUS)),
@@ -684,7 +845,7 @@ export function playExplosion(
 	for (let i = 0; i < smokeCount; i++) {
 		const angle = getPRNGUnit2() * Math.PI * 2;
 		const outSpeed = 0.5 + getPRNGUnit2() * (1 + radius * 0.4);
-		const shade = 0.16 + getPRNGUnit2() * 0.12;
+		const shade = 0.13 + getPRNGUnit2() * 0.1;
 		addParticle(
 			x + (getPRNGUnit2() - 0.5) * radius,
 			y + (getPRNGUnit2() - 0.5) * 0.8,
@@ -692,8 +853,8 @@ export function playExplosion(
 			Math.cos(angle) * outSpeed,
 			1.2 + getPRNGUnit2() * 2.2,
 			Math.sin(angle) * outSpeed,
-			0.9 + getPRNGUnit2() * 1.1,
-			0.14 + getPRNGUnit2() * 0.16,
+			1.1 + getPRNGUnit2() * 1.1,
+			0.2 + getPRNGUnit2() * 0.22,
 			getPRNGUnit2() * Math.PI * 2,
 			getPRNGUnit2() - 0.5,
 			frame,
@@ -702,6 +863,82 @@ export function playExplosion(
 			shade * lb,
 			1,
 			-0.12,
+		);
+	}
+
+	// --- 6. Embers: tiny bright sparks that arc out and bounce on landing. ---
+	for (let i = 0; i < EXPLOSION_EMBER_COUNT; i++) {
+		const theta = getPRNGUnit2() * Math.PI * 2;
+		const flat = 0.4 + getPRNGUnit2() * 0.6;
+		const speed = (4 + getPRNGUnit2() * 7) * speedScale;
+		addParticle(
+			x,
+			y + 0.3,
+			z,
+			Math.cos(theta) * flat * speed,
+			(1.5 + getPRNGUnit2() * 3.5) * speedScale,
+			Math.sin(theta) * flat * speed,
+			0.6 + getPRNGUnit2() * 0.8,
+			0.04 + getPRNGUnit2() * 0.04,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 6,
+			frame,
+			1.2,
+			0.45 + getPRNGUnit2() * 0.2,
+			0.12,
+			1,
+			1.1,
+			1,
+		);
+	}
+}
+
+/**
+ * One fireball shell: uniformly-distributed sphere velocities, shared tint,
+ * randomized ranges. `grav` is the particle gravity scale (negative rises).
+ */
+function spawnFireShell(
+	x: number,
+	y: number,
+	z: number,
+	frame: number,
+	count: number,
+	r: number,
+	g: number,
+	b: number,
+	minSpeed: number,
+	maxSpeed: number,
+	minLife: number,
+	maxLife: number,
+	minSize: number,
+	maxSize: number,
+	grav: number,
+	speedScale: number,
+): void {
+	for (let i = 0; i < count; i++) {
+		const theta = getPRNGUnit2() * Math.PI * 2;
+		const up = getPRNGUnit2() * 2 - 1;
+		const flat = Math.sqrt(Math.max(0, 1 - up * up));
+		const speed =
+			(minSpeed + getPRNGUnit2() * (maxSpeed - minSpeed)) * speedScale;
+		const flicker = 0.85 + getPRNGUnit2() * 0.3;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.9,
+			y + (getPRNGUnit2() - 0.5) * 0.9,
+			z + (getPRNGUnit2() - 0.5) * 0.9,
+			Math.cos(theta) * flat * speed,
+			up * speed + 1.2,
+			Math.sin(theta) * flat * speed,
+			minLife + getPRNGUnit2() * (maxLife - minLife),
+			minSize + getPRNGUnit2() * (maxSize - minSize),
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			r * flicker,
+			g * flicker,
+			b * flicker,
+			1,
+			grav,
 		);
 	}
 }

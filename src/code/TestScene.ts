@@ -10,6 +10,7 @@ import {
 	stopEngine,
 	vec3,
 } from "@babylonjs/lite";
+import { applyAudioSettings } from "./Audio/AudioManager";
 import { Arrow } from "./Entities/Arrow/Arrow";
 import { preloadMobSkins } from "./Entities/Mobs/MobInstancePool";
 import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
@@ -102,6 +103,7 @@ export class TestScene {
 		this.scene = scene;
 
 		applyGameSettingsToEngine(savedSettings);
+		applyAudioSettings(savedSettings);
 
 		const playerCamera = new PlayerCamera();
 		playerCamera.mouseSensitivity = savedSettings.mouseSensitivity;

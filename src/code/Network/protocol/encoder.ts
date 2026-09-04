@@ -15,6 +15,7 @@ import {
 	type BlockEditRejectedData,
 	type ChatMessageData,
 	ChunkResultKind,
+	type ExplosionData,
 	type ItemDropData,
 	type ItemPickupData,
 	type ItemPickupRejectedData,
@@ -30,6 +31,7 @@ import {
 	type PlayerSkinData,
 	type PlayerStateBatchEntry,
 	type PlayerStateData,
+	type TntIgniteData,
 } from "./messages";
 
 // Module-level scratch encoders: writeString/readString allocate a fresh
@@ -1620,6 +1622,52 @@ export function decodeArrowTrajectoryInto(
 	target.vy = dec.readFloat32();
 	target.vz = dec.readFloat32();
 	target.arrowType = dec.readUint8();
+	return target;
+}
+
+// Explosion (C→S): [type:1][x:f32][y:f32][z:f32][radius:f32]
+
+export function encodeExplosion(data: ExplosionData): Uint8Array {
+	const enc = new BinaryEncoder(1 + 4 * 4);
+	enc.writeUint8(MessageType.Explosion);
+	enc.writeFloat32(data.x);
+	enc.writeFloat32(data.y);
+	enc.writeFloat32(data.z);
+	enc.writeFloat32(data.radius);
+	return enc.getBytes();
+}
+
+export function decodeExplosionInto(
+	dec: BinaryDecoder,
+	target: ExplosionData,
+): typeof target {
+	target.x = dec.readFloat32();
+	target.y = dec.readFloat32();
+	target.z = dec.readFloat32();
+	target.radius = dec.readFloat32();
+	return target;
+}
+
+// TntIgnite (C→S and S→C): [type:1][x:f32][y:f32][z:f32][fuse:f32]
+
+export function encodeTntIgnite(data: TntIgniteData): Uint8Array {
+	const enc = new BinaryEncoder(1 + 4 * 4);
+	enc.writeUint8(MessageType.TntIgnite);
+	enc.writeFloat32(data.x);
+	enc.writeFloat32(data.y);
+	enc.writeFloat32(data.z);
+	enc.writeFloat32(data.fuse);
+	return enc.getBytes();
+}
+
+export function decodeTntIgniteInto(
+	dec: BinaryDecoder,
+	target: TntIgniteData,
+): typeof target {
+	target.x = dec.readFloat32();
+	target.y = dec.readFloat32();
+	target.z = dec.readFloat32();
+	target.fuse = dec.readFloat32();
 	return target;
 }
 

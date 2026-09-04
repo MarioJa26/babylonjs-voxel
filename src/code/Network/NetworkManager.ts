@@ -14,6 +14,7 @@
  */
 
 import type { Vec3 } from "@babylonjs/lite";
+import { spawnRemotePrimedTnt } from "@/code/Entities/PrimedTnt";
 import { resetDistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
 import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { debugLog } from "@/code/Lib/debugLog";
@@ -174,6 +175,9 @@ export class NetworkManager {
 			},
 			onBlockEditRejected: (rejection) => {
 				this.revertRejectedBlockEdit(rejection);
+			},
+			onTntIgnite: (ignite) => {
+				spawnRemotePrimedTnt(ignite.x, ignite.y, ignite.z, ignite.fuse);
 			},
 			onChatMessage: (chat) => {
 				console.log(`[${chat.name}]: ${chat.message}`);
@@ -361,6 +365,28 @@ export class NetworkManager {
 	onBlockBroken = (x: number, y: number, z: number, blockId: number): void => {
 		if (this.client.isConnected) {
 			this.client.sendBlockEdit(x, y, z, blockId, BlockActionType.Break, 0);
+		}
+	};
+
+	/**
+	 * Called when a local primed TNT detonates. The crater blocks were
+	 * already removed locally; the server re-applies them authoritatively
+	 * from a single message so far-away blocks are not rejected as TooFar.
+	 */
+	onExplosion = (x: number, y: number, z: number, radius: number): void => {
+		if (this.client.isConnected) {
+			this.client.sendExplosion(x, y, z, radius);
+		}
+	};
+
+	/**
+	 * Called when the local player ignites TNT. Relays the ignition so other
+	 * clients spawn the primed entity (the separate Break edit only removes
+	 * the block for them).
+	 */
+	onTntIgnite = (x: number, y: number, z: number, fuse: number): void => {
+		if (this.client.isConnected) {
+			this.client.sendTntIgnite(x, y, z, fuse);
 		}
 	};
 

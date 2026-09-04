@@ -27,11 +27,13 @@ import {
 	BinaryDecoder,
 	BinaryEncoder,
 	decodeArrowShootInto,
+	decodeExplosionInto,
 	decodeItemDropInto,
 	decodeItemPickupInto,
 	decodeMobDamageInto,
 	decodeMobSpawnRequestInto,
 	decodePitchByte,
+	decodeTntIgniteInto,
 	decodeYawByte,
 	encodeArrowSpawn,
 	encodeBlockEditBatch,
@@ -52,6 +54,7 @@ import {
 	encodePlayerLeave,
 	encodePlayerSkin,
 	encodeSpawnPosition,
+	encodeTntIgnite,
 	encodeWorldConfig,
 	encodeYawByte,
 	writeItemUpdateBatch,
@@ -64,6 +67,7 @@ import {
 	type BlockEditData,
 	BlockEditRejectReason,
 	type ChatMessageData,
+	type ExplosionData,
 	type ItemDropData,
 	type ItemPickupData,
 	ItemPickupRejectReason,
@@ -76,8 +80,12 @@ import {
 	type MobUpdateBatchEntry,
 	type PlayerStateBatchEntry,
 	type PlayerStateData,
+	type TntIgniteData,
 } from "@/code/Network/protocol/messages.ts";
 import { BlockTickScheduler } from "@/code/World/Chunk/Worker/BlockTickScheduler.ts";
+import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding.ts";
+import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath.ts";
+import { collectExplosionTargets } from "@/code/World/ExplosionSim.ts";
 import { WaterSimulation } from "@/code/World/Chunk/Worker/WaterSimulation.ts";
 import {
 	deflate,
@@ -174,7 +182,7 @@ interface ServerPlayerState {
 	lastSaveTime: number;
 }
 
-const MAX_STORED_EDITS = 200;
+const MAX_STORED_EDITS = 2048;
 const TIME_BROADCAST_INTERVAL = 5000;
 const FULL_SNAPSHOT_INTERVAL = 2000;
 const PLAYER_SAVE_INTERVAL = 3000;
@@ -200,6 +208,18 @@ const MAX_CHUNK_COORD = WORLD_BOUNDARY >> 5;
 // variants occupy the 500+ range).
 const MAX_BLOCK_ID = 1023;
 const MAX_BLOCK_STATE = 63;
+// TNT explosions: the blast center is validated against the sender with a
+// generous slack (primed TNT travels during its 4s fuse and the player can
+// run away), but the radius is hard-capped — the crater footprint itself is
+// always small and server-computed from authoritative state, so per-block
+// reach checks are unnecessary.
+const MAX_EXPLOSION_RADIUS = 8;
+const EXPLOSION_REACH_SLACK = 40;
+// TntIgnite relay: ignition happens at E-press range, so only a small slack
+// for stale positions is needed. Fuse is capped — receivers count it down
+// locally, so absurd values would desync the shared detonation moment.
+const TNT_IGNITE_REACH_SLACK = 8;
+const MAX_TNT_FUSE = 10;
 const MAX_PROTOCOL_VIOLATIONS = 16;
 const FLUSH_CONCURRENCY = 8;
 const CHUNK_BATCH_BYTE_LIMIT = 256 * 1024;
@@ -392,6 +412,18 @@ export class VoxelRoom extends Room {
 		vy: 0,
 		vz: 0,
 		arrowType: 0,
+	};
+	private readonly explosionScratch: ExplosionData = {
+		x: 0,
+		y: 0,
+		z: 0,
+		radius: 0,
+	};
+	private readonly tntIgniteScratch: TntIgniteData = {
+		x: 0,
+		y: 0,
+		z: 0,
+		fuse: 0,
 	};
 
 	private editEntryPool: Array<{
@@ -1599,6 +1631,85 @@ export class VoxelRoom extends Room {
 		return history;
 	}
 
+	/**
+	 * Authoritative single-voxel edit shared by the BlockEdit and Explosion
+	 * handlers: history ring (join snapshot), persistence queue, cache write
+	 * (immediate MobSimulation visibility), and mob notification.
+	 */
+	private applyServerEdit(
+		sessionId: string,
+		x: number,
+		y: number,
+		z: number,
+		blockId: number,
+		blockState: number,
+		action: number,
+	): BlockEditData {
+		const storedEdit: BlockEditData = {
+			sessionId,
+			x,
+			y,
+			z,
+			blockId,
+			blockState,
+			action,
+		};
+		this.recordBlockEdit(storedEdit);
+
+		const cx = x >> 5;
+		const cy = y >> 5;
+		const cz = z >> 5;
+		const key = packChunkKeyFast(cx, cy, cz);
+		let editMap = this.pendingChunkEdits.get(key);
+		if (!editMap) {
+			editMap = new Map();
+			this.pendingChunkEdits.set(key, editMap);
+		}
+
+		const lx = x & 31;
+		const ly = y & 31;
+		const lz = z & 31;
+		const voxelIndex = lx + (ly << 5) + (lz << 10);
+
+		const prev = editMap.get(voxelIndex);
+		if (prev) this.releaseEditEntry(prev);
+		const entry = this.acquireEditEntry();
+		entry.x = x;
+		entry.y = y;
+		entry.z = z;
+		entry.blockId = blockId;
+		entry.blockState = blockState;
+		editMap.set(voxelIndex, entry);
+		this.dirtyChunks.add(key);
+		this.scheduleChunkFlush();
+		// Make the edit visible to MobSimulation immediately — otherwise
+		// TickBlockSampler.getCachedChunkBlocks() keeps returning the old
+		// block for up to 500 ms (flush debounce), so mobs hover after
+		// their support is mined in multiplayer.
+		this.worldStorage.setCachedBlock(x, y, z, blockId, blockState);
+		this.mobSim.notifyBlockEdit(x, y, z, blockId);
+
+		return storedEdit;
+	}
+
+	/**
+	 * Authoritative block lookup for explosion collection. Uncached chunks
+	 * read as air (never delete blind) — the lighting client already removed
+	 * those blocks locally and its chunk data will converge on flush/reload.
+	 */
+	private getAuthoritativeBlock(x: number, y: number, z: number): number {
+		const cx = Math.floor(x / CHUNK_SIZE);
+		const cy = Math.floor(y / CHUNK_SIZE);
+		const cz = Math.floor(z / CHUNK_SIZE);
+		const blocks = this.worldStorage.getCachedChunkBlocks(cx, cy, cz);
+		if (!blocks) return 0;
+
+		const lx = x - cx * CHUNK_SIZE;
+		const ly = y - cy * CHUNK_SIZE;
+		const lz = z - cz * CHUNK_SIZE;
+		return unpackBlockId(blocks[lx + (ly << CHUNK_SHIFT) + (lz << 10)]);
+	}
+
 	private estimateChunkBytes(c: StoredChunkData): number {
 		let size = 12 + 4 + 1;
 		if (c.isUniform) size += 2;
@@ -1919,60 +2030,20 @@ export class VoxelRoom extends Room {
 				}
 
 				const blockId =
-					edit.action === BlockActionType.Break ? 0 : edit.blockId;
-				const blockState =
-					edit.action === BlockActionType.Break ? 0 : edit.blockState;
-				const storedEdit: BlockEditData = {
-					sessionId: client.sessionId,
-					x: edit.x,
-					y: edit.y,
-					z: edit.z,
-					blockId,
-					blockState,
-					action: edit.action,
-				};
-				this.recordBlockEdit(storedEdit);
+				edit.action === BlockActionType.Break ? 0 : edit.blockId;
+			const blockState =
+				edit.action === BlockActionType.Break ? 0 : edit.blockState;
+			const storedEdit = this.applyServerEdit(
+				client.sessionId,
+				edit.x,
+				edit.y,
+				edit.z,
+				blockId,
+				blockState,
+				edit.action,
+			);
 
-				const cx = edit.x >> 5;
-				const cy = edit.y >> 5;
-				const cz = edit.z >> 5;
-				const key = packChunkKeyFast(cx, cy, cz);
-				let editMap = this.pendingChunkEdits.get(key);
-				if (!editMap) {
-					editMap = new Map();
-					this.pendingChunkEdits.set(key, editMap);
-				}
-
-				const lx = edit.x & 31;
-				const ly = edit.y & 31;
-				const lz = edit.z & 31;
-				const voxelIndex = lx + (ly << 5) + (lz << 10);
-
-				const prev = editMap.get(voxelIndex);
-				if (prev) this.releaseEditEntry(prev);
-				const entry = this.acquireEditEntry();
-				entry.x = edit.x;
-				entry.y = edit.y;
-				entry.z = edit.z;
-				entry.blockId = blockId;
-				entry.blockState = blockState;
-				editMap.set(voxelIndex, entry);
-				this.dirtyChunks.add(key);
-				this.scheduleChunkFlush();
-				// Make the edit visible to MobSimulation immediately — otherwise
-				// TickBlockSampler.getCachedChunkBlocks() keeps returning the old
-				// block for up to 500 ms (flush debounce), so mobs hover after
-				// their support is mined in multiplayer.
-				this.worldStorage.setCachedBlock(
-					edit.x,
-					edit.y,
-					edit.z,
-					blockId,
-					blockState,
-				);
-				this.mobSim.notifyBlockEdit(edit.x, edit.y, edit.z, blockId);
-
-				this.editBroadcastEncoder.reset();
+			this.editBroadcastEncoder.reset();
 				this.editBroadcastEncoder.writeUint8(MessageType.BlockEditBroadcast);
 				this.editBroadcastEncoder.writeString(storedEdit.sessionId);
 				this.editBroadcastEncoder.writeInt32(storedEdit.x);
@@ -1982,6 +2053,128 @@ export class VoxelRoom extends Room {
 				this.editBroadcastEncoder.writeUint8(storedEdit.blockState);
 				this.editBroadcastEncoder.writeUint8(storedEdit.action);
 				this.broadcastBytes("binary", this.editBroadcastEncoder.getBytes(), {
+					except: client,
+				});
+				break;
+			}
+
+			case MessageType.Explosion: {
+				const boom = decodeExplosionInto(dec, this.explosionScratch);
+				const player = this.players.get(client.sessionId);
+				if (!player) break;
+
+				if (
+					!Number.isFinite(boom.x) ||
+					!Number.isFinite(boom.y) ||
+					!Number.isFinite(boom.z) ||
+					Math.abs(boom.x) > WORLD_BOUNDARY ||
+					Math.abs(boom.y) > WORLD_BOUNDARY ||
+					Math.abs(boom.z) > WORLD_BOUNDARY ||
+					!Number.isFinite(boom.radius) ||
+					boom.radius <= 0 ||
+					boom.radius > MAX_EXPLOSION_RADIUS
+				) {
+					break;
+				}
+
+				// The blast center gets fuse-travel slack (primed TNT moves
+				// during its 4s fuse and the player can run away), but the
+				// crater itself is server-computed and radius-capped — so no
+				// per-block reach check is needed or wanted here.
+				const dx = boom.x - player.x;
+				const dy = boom.y - player.y;
+				const dz = boom.z - player.z;
+				const distSq = dx * dx + dy * dy + dz * dz;
+				const maxDist = this.config.maxReach + EXPLOSION_REACH_SLACK;
+				if (distSq > maxDist * maxDist) {
+					if (!this.reachRejectWarned.has(client.sessionId)) {
+						this.reachRejectWarned.add(client.sessionId);
+						console.warn(
+							`[VoxelRoom] Explosion rejected: too far (${Math.sqrt(distSq).toFixed(1)} blocks)`,
+						);
+					}
+					break;
+				}
+
+				const { destroy, chain } = collectExplosionTargets(
+					boom.x,
+					boom.y,
+					boom.z,
+					boom.radius,
+					(x, y, z) => this.getAuthoritativeBlock(x, y, z),
+				);
+
+				// The server has no fuse/entity sim: chained TNT vaporizes
+				// immediately. The lighting client's local sim still ripples
+				// and sends follow-up Explosion messages for the cascade.
+				const applied: BlockEditData[] = [];
+				for (const target of destroy) {
+					applied.push(
+						this.applyServerEdit(
+							client.sessionId,
+							target.x,
+							target.y,
+							target.z,
+							0,
+							0,
+							BlockActionType.Break,
+						),
+					);
+				}
+				for (const target of chain) {
+					applied.push(
+						this.applyServerEdit(
+							client.sessionId,
+							target.x,
+							target.y,
+							target.z,
+							0,
+							0,
+							BlockActionType.Break,
+						),
+					);
+				}
+
+				if (applied.length > 0) {
+					this.broadcastBytes("binary", encodeBlockEditBatch(applied), {
+						except: client,
+					});
+				}
+				break;
+			}
+
+			case MessageType.TntIgnite: {
+				const ignite = decodeTntIgniteInto(dec, this.tntIgniteScratch);
+				const player = this.players.get(client.sessionId);
+				if (!player) break;
+
+				if (
+					!Number.isFinite(ignite.x) ||
+					!Number.isFinite(ignite.y) ||
+					!Number.isFinite(ignite.z) ||
+					Math.abs(ignite.x) > WORLD_BOUNDARY ||
+					Math.abs(ignite.y) > WORLD_BOUNDARY ||
+					Math.abs(ignite.z) > WORLD_BOUNDARY ||
+					!Number.isFinite(ignite.fuse) ||
+					ignite.fuse <= 0 ||
+					ignite.fuse > MAX_TNT_FUSE
+				) {
+					break;
+				}
+
+				// Ignition happens at E-press aim range; only slack for stale
+				// positions. Block state is deliberately NOT checked: the
+				// igniter's own Break is processed first and would race it.
+				// Receivers spawn a cosmetic entity (bounce/flash/fuse + FX);
+				// only the lighting client's Explosion message edits the world.
+				const dx = ignite.x - player.x;
+				const dy = ignite.y - player.y;
+				const dz = ignite.z - player.z;
+				const distSq = dx * dx + dy * dy + dz * dz;
+				const maxDist = this.config.maxReach + TNT_IGNITE_REACH_SLACK;
+				if (distSq > maxDist * maxDist) break;
+
+				this.broadcastBytes("binary", encodeTntIgnite(ignite), {
 					except: client,
 				});
 				break;
