@@ -26,6 +26,9 @@ import {
 /** Ignites a live TNT block with a short fuse (chain reactions). */
 export type ChainIgniter = (x: number, y: number, z: number) => void;
 
+/** Screen-flash half range: apparent brightness halves past this distance. */
+const SCREEN_FLASH_HALF_RANGE = 16;
+
 export interface ExplodeOptions {
 	/** Blast radius in blocks (default TNT_BLAST_RADIUS = 4). */
 	radius?: number;
@@ -168,13 +171,13 @@ export function explode(
 	}
 	playLandingDust(cx, cy, cz, radius * 2);
 	playExplosionSound(1);
-	flashScreen(1);
 
-	// --- Player damage / knockback / shake ---
+	// --- Player damage / knockback / shake / screen flash ---
 	// Defaults to the local player so chained blasts (which carry no explicit
 	// player) still hurt. Pass explicit null for FX-only detonation.
 	const player =
 		options.player === undefined ? Map1.mainPlayer : options.player;
+	let flashStrength = 1;
 	if (player) {
 		const p = player.position;
 		const dx = p.x - cx;
@@ -202,6 +205,18 @@ export function explode(
 				player.playerCamera.addTrauma(rumble * 0.4);
 			}
 		}
+
+		// Screen flash follows apparent brightness (~1/d²), NOT the damage
+		// falloff: a blast 10 blocks away can't hurt you but must still
+		// flash the screen. Full at point blank, faint but visible far off.
+		const scaled = dist / SCREEN_FLASH_HALF_RANGE;
+		flashStrength = 1.5 / (1 + scaled * scaled);
+		if (flashStrength < 0.05) {
+			flashStrength = 0;
+		}
+	}
+	if (flashStrength > 0) {
+		flashScreen(flashStrength);
 	}
 
 	// --- Mob damage (no knockback API on mobs yet — damage only, v1) ---

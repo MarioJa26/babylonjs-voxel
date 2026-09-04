@@ -217,7 +217,9 @@ let unitCubeGeometryCache: {
 	indices: Uint32Array;
 } | null = null;
 
-function getUnitCubeGeometry() {
+// Exported for PrimedTnt: same cached unit cube (full 0-1 face UVs) so the
+// primed entity renders the TNT atlas tile with zero extra geometry cost.
+export function getUnitCubeGeometry() {
 	if (unitCubeGeometryCache) return unitCubeGeometryCache;
 
 	const positions: number[] = [];
