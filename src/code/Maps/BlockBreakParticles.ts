@@ -254,25 +254,24 @@ export function playExplosionDebris(
 
 	const frame = getBlockFrame(blockId);
 	const light = computeLight(packedLight);
-	let life = 2 + getPRNGUnit2();
+	let life = 1 + getPRNGUnit2();
 
 	for (let i = 0; i < DEBRIS_PER_BREAK; i++) {
 		const theta = getPRNGUnit2() * Math.PI * 2;
 		const up = getPRNGUnit2() * 2;
-		const flat = Math.sqrt(Math.max(0, 1 - up * up));
 		const speed = (6 + getPRNGUnit2() * 8) * power;
 		const burning = getPRNGUnit2() < 0.25;
 		const shade = 0.8 + getPRNGUnit2() * 0.25;
-		life += 0.1;
+		life += 0.125;
 		addParticle(
 			x + (getPRNGUnit2() - 0.5) * 0.9,
 			y + (getPRNGUnit2() - 0.5) * 0.9,
 			z + (getPRNGUnit2() - 0.5) * 0.9,
-			Math.cos(theta) * flat * speed,
+			Math.cos(theta) * speed,
 			up * speed,
-			Math.sin(theta) * flat * speed,
-			1.0 + getPRNGUnit2() * 1.0,
-			0.08 + getPRNGUnit2() * 0.08,
+			Math.sin(theta) * speed,
+			life,
+			0.1 + getPRNGUnit2() * 0.1,
 			getPRNGUnit2() * Math.PI * 2,
 			(getPRNGUnit2() - 0.5) * 6,
 			frame,
@@ -513,6 +512,51 @@ export function playMobDamage(
 			0.035 + getPRNGUnit2() * 0.025,
 			getPRNGUnit2() * Math.PI * 2,
 			(getPRNGUnit2() - 0.5) * 3,
+			frame,
+			bloodR,
+			bloodG,
+			bloodB,
+			1,
+			1,
+			1,
+		);
+	}
+}
+
+const MOB_DEATH_PARTICLES = 48;
+
+/**
+ * Violent blood burst when a mob is killed outright (explosions, heavy
+ * hits). Bigger, faster, and longer-lived than the playMobDamage hit spray
+ * so a kill reads clearly even inside explosion FX; chunks bounce
+ * off the voxel world and settle like debris.
+ */
+export function playMobDeath(x: number, y: number, z: number): void {
+	if (!billboard) return;
+
+	const frame = getBlockFrame(MOB_BLOOD_BLOCK);
+	const light = computeLight(getLightByWorldCoords(x, y, z));
+	const bloodR = light.r * 1.0;
+	const bloodG = light.g * 0.3;
+	const bloodB = light.b * 0.24;
+	let life = 2 + getPRNGUnit2();
+
+	for (let i = 0; i < MOB_DEATH_PARTICLES; i++) {
+		const theta = getPRNGUnit2() * Math.PI * 2;
+		const up = getPRNGUnit2() * 2;
+		const speed = 1 + getPRNGUnit2() * 2.5;
+		life += 0.1;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.3,
+			y + (getPRNGUnit2() - 0.5) * 0.4,
+			z + (getPRNGUnit2() - 0.5) * 0.3,
+			Math.cos(theta) * speed,
+			up * speed,
+			Math.sin(theta) * speed,
+			life,
+			0.125,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 6,
 			frame,
 			bloodR,
 			bloodG,

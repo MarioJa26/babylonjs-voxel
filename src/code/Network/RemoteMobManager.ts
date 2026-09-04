@@ -40,6 +40,7 @@ import {
 import {
 	playLandingDust,
 	playMobDamage,
+	playMobDeath,
 } from "@/code/Maps/BlockBreakParticles";
 import { MobTypeId } from "../Entities/MobConfig";
 import type { NetClient } from "./NetClient";
@@ -63,6 +64,12 @@ const WALK_PHASE_DECAY = 6;
 
 /** Squared movement threshold used before calculating a square root. */
 const WALK_DISTANCE_EPSILON_SQ = 0.0001;
+
+/**
+ * How long after a MobDamage hit a despawn still counts as a kill (death
+ * burst). Covers TNT (damage relay + immediate despawn) and arrow kills.
+ */
+const MOB_DEATH_BLEED_WINDOW_MS = 1500;
 
 /** Phase below this value snaps back to rest. */
 const WALK_PHASE_EPSILON = 0.01;
@@ -120,6 +127,9 @@ interface RemoteMobInstance {
 
 export class RemoteMobManager {
 	private readonly mobs = new Map<number, RemoteMobInstance>();
+
+	/** mobId → performance.now() of the last MobDamage hit (kill linkage). */
+	private readonly recentDamage = new Map<number, number>();
 
 	private readonly handler: (data: Uint8Array) => void;
 	private readonly onDisconnected: () => void;
@@ -324,6 +334,7 @@ export class RemoteMobManager {
 						mob.currentZ,
 						damage.damage,
 					);
+					this.recentDamage.set(damage.mobId, performance.now());
 				}
 				return;
 			}
@@ -577,7 +588,20 @@ export class RemoteMobManager {
 		const mob = this.mobs.get(id);
 
 		if (mob === undefined) {
+			this.recentDamage.delete(id);
 			return;
+		}
+
+		// Damage-then-despawn inside the window means a kill (TNT, arrows):
+		// burst blood at the mob's last position. Plain despawns (wandered
+		// off) stay clean.
+		const hitAt = this.recentDamage.get(id);
+		this.recentDamage.delete(id);
+		if (
+			hitAt !== undefined &&
+			performance.now() - hitAt <= MOB_DEATH_BLEED_WINDOW_MS
+		) {
+			playMobDeath(mob.currentX, mob.currentY, mob.currentZ);
 		}
 
 		this.mobs.delete(id);
@@ -589,6 +613,21 @@ export class RemoteMobManager {
 	 * Interpolate every mob and update its thin-instance lane.
 	 */
 	update(deltaMs: number): void {
+		if (this.recentDamage.size > 0) {
+			const now = performance.now();
+			const keyIterator = this.recentDamage.keys();
+			for (
+				let next = keyIterator.next();
+				!next.done;
+				next = keyIterator.next()
+			) {
+				const hitAt = this.recentDamage.get(next.value);
+				if (hitAt === undefined || now - hitAt > MOB_DEATH_BLEED_WINDOW_MS) {
+					this.recentDamage.delete(next.value);
+				}
+			}
+		}
+
 		if (this.mobs.size === 0) {
 			return;
 		}
@@ -678,6 +717,8 @@ export class RemoteMobManager {
 
 	/** Release every tracked mob's instance lane. */
 	clearAll(): void {
+		this.recentDamage.clear();
+
 		if (this.mobs.size === 0) {
 			return;
 		}

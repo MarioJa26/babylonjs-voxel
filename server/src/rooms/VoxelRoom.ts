@@ -85,7 +85,11 @@ import {
 import { BlockTickScheduler } from "@/code/World/Chunk/Worker/BlockTickScheduler.ts";
 import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding.ts";
 import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath.ts";
-import { collectExplosionTargets } from "@/code/World/ExplosionSim.ts";
+import {
+	blastMobDamages,
+	collectExplosionTargets,
+	TNT_MAX_DAMAGE,
+} from "@/code/World/ExplosionSim.ts";
 import { WaterSimulation } from "@/code/World/Chunk/Worker/WaterSimulation.ts";
 import {
 	deflate,
@@ -2139,6 +2143,41 @@ export class VoxelRoom extends Room {
 					this.broadcastBytes("binary", encodeBlockEditBatch(applied), {
 						except: client,
 					});
+				}
+
+				// Authoritative mob damage: MP clients simulate no local mobs
+				// (empty registry — mobs are server-owned), so without this,
+				// explosions would never hurt mobs in multiplayer. Hit FX goes
+				// to EVERYONE including the sender, which simulates nothing
+				// locally for server mobs. Kills resolve through the mob tick
+				// (despawn + food drops) like the MobDamage path.
+				const blastMobs = this.mobSim.snapshotInto(this.mobSnapshotScratch);
+				const mobDamages = blastMobDamages(
+					blastMobs,
+					boom.x,
+					boom.y,
+					boom.z,
+					boom.radius,
+					TNT_MAX_DAMAGE,
+				);
+				for (let i = 0; i < blastMobs.length; i++) {
+					const mobDamage = mobDamages[i];
+					if (mobDamage <= 0) continue;
+
+					const target = blastMobs[i];
+					const killed = this.mobSim.damageMob(target.id, mobDamage);
+					this.broadcastBytes(
+						"binary",
+						encodeMobDamage({ mobId: target.id, damage: mobDamage }),
+						{},
+					);
+					if (killed) {
+						this.broadcastBytes(
+							"binary",
+							encodeMobDespawn(target.id),
+							{},
+						);
+					}
 				}
 				break;
 			}

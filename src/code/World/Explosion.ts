@@ -1,8 +1,10 @@
 import { playExplosionSound } from "@/code/Audio/TntAudio";
+import type { Mob } from "@/code/Entities/Mobs/Mob";
 import {
 	playExplosion,
 	playExplosionDebris,
 	playLandingDust,
+	playMobDeath,
 } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import { getOnExplosion } from "@/code/Player/Hud/BlockHighlight/BreakingBlockHandler";
@@ -14,6 +16,7 @@ import {
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
+	blastMobDamages,
 	collectExplosionTargets,
 	explosionFalloff,
 	TNT_BLAST_RADIUS,
@@ -202,22 +205,33 @@ export function explode(
 	}
 
 	// --- Mob damage (no knockback API on mobs yet — damage only, v1) ---
+	// Local registry only: in MP the local sim is empty (mobs are
+	// server-authoritative) and the server applies blast damage itself.
 	const registry = Map1.mobRegistry;
 	if (registry) {
+		const liveMobs: Mob[] = [];
 		for (const mob of registry.getAllMobs()) {
-			if (mob.isDisposed) continue;
-			const mp = mob.position;
-			const dx = mp.x - cx;
-			const dy = mp.y - cy;
-			const dz = mp.z - cz;
-			const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-			const falloff = explosionFalloff(dist, radius);
-			if (falloff > 0) {
-				mob.takeDamage(Math.floor(falloff * maxDamage), {
-					x: cx,
-					y: cy,
-					z: cz,
-				});
+			if (!mob.isDisposed) liveMobs.push(mob);
+		}
+		const damages = blastMobDamages(
+			liveMobs.map((mob) => mob.position),
+			cx,
+			cy,
+			cz,
+			radius,
+			maxDamage,
+		);
+		for (let i = 0; i < liveMobs.length; i++) {
+			if (damages[i] > 0) {
+				const mob = liveMobs[i];
+				// Bleed AT the mob: blood at the blast center would drown in
+				// the fireball. Position is captured first — takeDamage may
+				// dispose the mob synchronously on a lethal hit.
+				const mp = mob.position;
+				mob.takeDamage(damages[i], { x: mp.x, y: mp.y, z: mp.z });
+				if (mob.isDisposed) {
+					playMobDeath(mp.x, mp.y, mp.z);
+				}
 			}
 		}
 	}

@@ -55,6 +55,37 @@ export function explosionDamage(
 }
 
 /**
+ * Per-mob blast damage for a list of entity positions, preserving input
+ * order (0 for mobs outside the radius — callers skip those). Shared by the
+ * client's local-mob loop and the server's authoritative mob damage so SP
+ * and MP use identical math.
+ */
+export function blastMobDamages(
+	mobs: ReadonlyArray<{ x: number; y: number; z: number }>,
+	cx: number,
+	cy: number,
+	cz: number,
+	radius: number,
+	maxDamage: number = TNT_MAX_DAMAGE,
+): number[] {
+	const damages = new Array<number>(mobs.length);
+
+	for (let i = 0; i < mobs.length; i++) {
+		const mob = mobs[i];
+		const dx = mob.x - cx;
+		const dy = mob.y - cy;
+		const dz = mob.z - cz;
+		damages[i] = explosionDamage(
+			Math.sqrt(dx * dx + dy * dy + dz * dz),
+			radius,
+			maxDamage,
+		);
+	}
+
+	return damages;
+}
+
+/**
  * Collect blast targets in a sphere around (cx, cy, cz). Distance is measured
  * to voxel centers. Air and Water are skipped (blasts don't vaporize lakes);
  * blast-resistant blocks are skipped; TNT goes to `chain` (capped) so it
