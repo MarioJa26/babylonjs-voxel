@@ -105,151 +105,195 @@ function flashScreen(strength: number): void {
  * the call site is the single getOnExplosion() call below.
  */
 export function explode(
-	cx: number,
-	cy: number,
-	cz: number,
-	options: ExplodeOptions = {},
+    cx: number,
+    cy: number,
+    cz: number,
+    options: ExplodeOptions = {},
 ): ExplosionResult {
-	const radius = options.radius ?? TNT_BLAST_RADIUS;
-	const maxDamage = options.maxDamage ?? TNT_MAX_DAMAGE;
+    const radius = options.radius ?? TNT_BLAST_RADIUS;
+    const maxDamage = options.maxDamage ?? TNT_MAX_DAMAGE;
 
-	const { destroy, chain } = collectExplosionTargets(
-		cx,
-		cy,
-		cz,
-		radius,
-		(x, y, z) => getBlockByWorldCoords(x, y, z),
-	);
+    const { destroy, chain } = collectExplosionTargets(
+        cx,
+        cy,
+        cz,
+        radius,
+        getBlockByWorldCoords,
+    );
 
-	// Chains first so neighboring TNT pops on a short fuse instead of
-	// vanishing. Without an igniter (e.g. remote replay) just clear it.
-	let chained = 0;
-	const igniter = options.chainIgniter ?? null;
-	if (igniter) {
-		for (const target of chain) {
-			igniter(target.x, target.y, target.z);
-			chained++;
-		}
-	} else {
-		for (const target of chain) {
-			destroy.push(target);
-		}
-	}
+    // Process chained TNT first so it receives a short fuse rather than
+    // disappearing with the other destroyed blocks.
+    const igniter = options.chainIgniter ?? null;
+    let chained = 0;
 
-	for (const target of destroy) {
-		deleteBlock(target.x, target.y, target.z);
-	}
+    if (igniter !== null) {
+        const chainLength = chain.length;
 
-	// Single multiplayer sync: the server re-applies the crater
-	// authoritatively (no per-block reach check), except in singleplayer
-	// where no callback is wired — or for remote detonations, where the
-	// lighting client owns the sync.
-	if (options.syncExplosion !== false) {
-		getOnExplosion()?.(cx, cy, cz, radius);
-	}
+        for (let i = 0; i < chainLength; i++) {
+            const target = chain[i];
+            igniter(target.x, target.y, target.z);
+        }
 
-	// --- FX ---
-	const packedLight = getLightByWorldCoords(cx, cy, cz);
-	playExplosion(cx, cy, cz, radius, packedLight);
+        chained = chainLength;
+    } else if (chain.length > 0) {
+        // Mutate the existing destroy array instead of creating a combined
+        // temporary array.
+        for (let i = 0, length = chain.length; i < length; i++) {
+            destroy.push(chain[i]);
+        }
+    }
 
-	// Terrain chunks: violent omnidirectional scatter from a few destroyed
-	// blocks grounds the blast in the local terrain. Full break bursts (play)
-	// are deliberately NOT used here — those read as block mining, not as an
-	// explosion.
-	const debrisCount = Math.min(options.maxBurstBlocks ?? 8, destroy.length);
-	const debrisPower = 1 + radius / TNT_BLAST_RADIUS;
-	for (let i = 0; i < debrisCount; i++) {
-		const target = destroy[Math.floor((i * destroy.length) / debrisCount)];
-		playExplosionDebris(
-			target.x + 0.5,
-			target.y + 0.5,
-			target.z + 0.5,
-			target.blockId,
-			packedLight,
-			debrisPower,
-		);
-	}
-	playLandingDust(cx, cy, cz, radius * 2);
-	playExplosionSound(1);
+    const destroyed = destroy.length;
 
-	// --- Player damage / knockback / shake / screen flash ---
-	// Defaults to the local player so chained blasts (which carry no explicit
-	// player) still hurt. Pass explicit null for FX-only detonation.
-	const player =
-		options.player === undefined ? Map1.mainPlayer : options.player;
-	let flashStrength = 1;
-	if (player) {
-		const p = player.position;
-		const dx = p.x - cx;
-		const dy = p.y + 0.9 - cy; // aim at the torso, not the feet
-		const dz = p.z - cz;
-		const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-		const falloff = explosionFalloff(dist, radius);
+    for (let i = 0; i < destroyed; i++) {
+        const target = destroy[i];
+        deleteBlock(target.x, target.y, target.z);
+    }
 
-		if (falloff > 0) {
-			if (player.stats.gamemode !== Gamemodes.Creative) {
-				player.stats.takeDamage(Math.floor(falloff * maxDamage));
-			}
-			const inv = 1 / Math.max(dist, 0.5);
-			const force = falloff * 11;
-			player.playerVehicle.addExplosionImpulse(
-				dx * inv * force,
-				(dy * inv * 0.6 + 0.65) * force,
-				dz * inv * force,
-			);
-			player.playerCamera.addTrauma(Math.min(1, falloff + 0.25));
-		} else {
-			// Distant rumble: faint shake out to 2.5x radius.
-			const rumble = explosionFalloff(dist, radius * 2.5);
-			if (rumble > 0) {
-				player.playerCamera.addTrauma(rumble * 0.4);
-			}
-		}
+    // Use one authoritative explosion sync rather than per-block messages.
+    if (options.syncExplosion !== false) {
+        getOnExplosion()?.(cx, cy, cz, radius);
+    }
 
-		// Screen flash follows apparent brightness (~1/d²), NOT the damage
-		// falloff: a blast 10 blocks away can't hurt you but must still
-		// flash the screen. Full at point blank, faint but visible far off.
-		const scaled = dist / SCREEN_FLASH_HALF_RANGE;
-		flashStrength = 1.5 / (1 + scaled * scaled);
-		if (flashStrength < 0.05) {
-			flashStrength = 0;
-		}
-	}
-	if (flashStrength > 0) {
-		flashScreen(flashStrength);
-	}
+    // --- Explosion FX ---
+    const packedLight = getLightByWorldCoords(cx, cy, cz);
 
-	// --- Mob damage (no knockback API on mobs yet — damage only, v1) ---
-	// Local registry only: in MP the local sim is empty (mobs are
-	// server-authoritative) and the server applies blast damage itself.
-	const registry = Map1.mobRegistry;
-	if (registry) {
-		const liveMobs: Mob[] = [];
-		for (const mob of registry.getAllMobs()) {
-			if (!mob.isDisposed) liveMobs.push(mob);
-		}
-		const damages = blastMobDamages(
-			liveMobs.map((mob) => mob.position),
-			cx,
-			cy,
-			cz,
-			radius,
-			maxDamage,
-		);
-		for (let i = 0; i < liveMobs.length; i++) {
-			if (damages[i] > 0) {
-				const mob = liveMobs[i];
-				// Bleed AT the mob: blood at the blast center would drown in
-				// the fireball. Position is captured first — takeDamage may
-				// dispose the mob synchronously on a lethal hit.
-				const mp = mob.position;
-				mob.takeDamage(damages[i], { x: mp.x, y: mp.y, z: mp.z });
-				if (mob.isDisposed) {
-					playMobDeath(mp.x, mp.y, mp.z);
-				}
-			}
-		}
-	}
+    playExplosion(cx, cy, cz, radius, packedLight);
 
-	return { destroyed: destroy.length, chained };
+    const maxBurstBlocks = options.maxBurstBlocks ?? 8;
+    const debrisCount =
+        maxBurstBlocks > 0 && destroyed > 0
+            ? Math.min(maxBurstBlocks, destroyed)
+            : 0;
+
+    if (debrisCount > 0) {
+        const debrisPower = 1 + radius / TNT_BLAST_RADIUS;
+
+        for (let i = 0; i < debrisCount; i++) {
+            const targetIndex = Math.floor((i * destroyed) / debrisCount);
+            const target = destroy[targetIndex];
+
+            playExplosionDebris(
+                target.x + 0.5,
+                target.y + 0.5,
+                target.z + 0.5,
+                target.blockId,
+                packedLight,
+                debrisPower,
+            );
+        }
+    }
+
+    playLandingDust(cx, cy, cz, radius * 2);
+    playExplosionSound(1);
+
+    // --- Player damage, knockback, shake and screen flash ---
+    // Undefined means the current local player. Explicit null means FX-only.
+    const player =
+        options.player === undefined ? Map1.mainPlayer : options.player;
+
+    let flashStrength = 1;
+
+    if (player !== null) {
+        const position = player.position;
+        const dx = position.x - cx;
+        const dy = position.y + 0.9 - cy;
+        const dz = position.z - cz;
+        const distanceSquared = dx * dx + dy * dy + dz * dz;
+        const distance = Math.sqrt(distanceSquared);
+        const falloff = explosionFalloff(distance, radius);
+
+        if (falloff > 0) {
+            if (player.stats.gamemode !== Gamemodes.Creative) {
+                player.stats.takeDamage(Math.floor(falloff * maxDamage));
+            }
+
+            const inverseDistance = 1 / Math.max(distance, 0.5);
+            const force = falloff * 11;
+
+            player.playerVehicle.addExplosionImpulse(
+                dx * inverseDistance * force,
+                (dy * inverseDistance * 0.6 + 0.65) * force,
+                dz * inverseDistance * force,
+            );
+
+            player.playerCamera.addTrauma(Math.min(1, falloff + 0.25));
+        } else {
+            const rumble = explosionFalloff(distance, radius * 2.5);
+
+            if (rumble > 0) {
+                player.playerCamera.addTrauma(rumble * 0.4);
+            }
+        }
+
+        // Equivalent inverse-square brightness falloff, using the already
+        // calculated squared distance to avoid another division and square.
+        const halfRangeSquared =
+            SCREEN_FLASH_HALF_RANGE * SCREEN_FLASH_HALF_RANGE;
+
+        flashStrength =
+            1.5 / (1 + distanceSquared / halfRangeSquared);
+
+        if (flashStrength < 0.05) {
+            flashStrength = 0;
+        }
+    }
+
+    if (flashStrength > 0) {
+        flashScreen(flashStrength);
+    }
+
+    // --- Mob damage ---
+    const registry = Map1.mobRegistry;
+
+    if (registry) {
+        const liveMobs: Mob[] = [];
+        const mobPositions: Mob["position"][] = [];
+
+        // Build both arrays in one pass. This avoids liveMobs.map(...), its
+        // callback invocation overhead, and an additional traversal.
+        for (const mob of registry.getAllMobs()) {
+            if (!mob.isDisposed) {
+                liveMobs.push(mob);
+                mobPositions.push(mob.position);
+            }
+        }
+
+        const mobCount = liveMobs.length;
+
+        if (mobCount > 0) {
+            const damages = blastMobDamages(
+                mobPositions,
+                cx,
+                cy,
+                cz,
+                radius,
+                maxDamage,
+            );
+
+            for (let i = 0; i < mobCount; i++) {
+                const damage = damages[i];
+
+                if (damage <= 0) {
+                    continue;
+                }
+
+                const mob = liveMobs[i];
+                const position = mob.position;
+                const x = position.x;
+                const y = position.y;
+                const z = position.z;
+
+                // Capture scalar coordinates before takeDamage because lethal
+                // damage may synchronously dispose or mutate the mob.
+                mob.takeDamage(damage, { x, y, z });
+
+                if (mob.isDisposed) {
+                    playMobDeath(x, y, z);
+                }
+            }
+        }
+    }
+
+    return { destroyed, chained };
 }
