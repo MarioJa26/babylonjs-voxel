@@ -1648,15 +1648,16 @@ export function decodeExplosionInto(
 	return target;
 }
 
-// TntIgnite (C→S and S→C): [type:1][x:f32][y:f32][z:f32][fuse:f32]
+// TntIgnite (C→S and S→C): [type:1][x:f32][y:f32][z:f32][fuse:f32][radius:f32]
 
 export function encodeTntIgnite(data: TntIgniteData): Uint8Array {
-	const enc = new BinaryEncoder(1 + 4 * 4);
+	const enc = new BinaryEncoder(1 + 4 * 5);
 	enc.writeUint8(MessageType.TntIgnite);
 	enc.writeFloat32(data.x);
 	enc.writeFloat32(data.y);
 	enc.writeFloat32(data.z);
 	enc.writeFloat32(data.fuse);
+	enc.writeFloat32(data.radius);
 	return enc.getBytes();
 }
 
@@ -1668,6 +1669,7 @@ export function decodeTntIgniteInto(
 	target.y = dec.readFloat32();
 	target.z = dec.readFloat32();
 	target.fuse = dec.readFloat32();
+	target.radius = dec.readFloat32();
 	return target;
 }
 

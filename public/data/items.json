@@ -1,6 +1,6 @@
 [
 	{
-		"id": 100,
+		"id": 1111,
 		"name": "Small Row Boat",
 		"description": "Boat",
 		"icon": "/texture/other/boat-row-small.png",
@@ -352,14 +352,5 @@
 		"maxStack": 64,
 		"useAction": "use_food",
 		"hunger": 50
-	},
-	{
-		"id": 1110,
-		"name": "TNT",
-		"description": "Press E while aiming at it to ignite.\nExplodes after a short fuse.",
-		"maxStack": 64,
-		"useAction": "place_block",
-		"blockId": 100,
-		"blockState": 0
 	}
 ]

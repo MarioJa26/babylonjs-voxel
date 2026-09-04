@@ -136,6 +136,7 @@ export class NetClient {
 		y: 0,
 		z: 0,
 		fuse: 0,
+		radius: 0,
 	};
 	private readonly chatMessageScratch: ChatMessageData = {
 		sessionId: "",
@@ -828,7 +829,13 @@ export class NetClient {
 		room.sendBytes("binary", encoder.getBytes());
 	}
 
-	sendTntIgnite(x: number, y: number, z: number, fuse: number): void {
+	sendTntIgnite(
+		x: number,
+		y: number,
+		z: number,
+		fuse: number,
+		radius: number,
+	): void {
 		const room = this.getConnectedRoom();
 		if (room === null) return;
 
@@ -839,6 +846,7 @@ export class NetClient {
 		encoder.writeFloat32(y);
 		encoder.writeFloat32(z);
 		encoder.writeFloat32(fuse);
+		encoder.writeFloat32(radius);
 
 		room.sendBytes("binary", encoder.getBytes());
 	}

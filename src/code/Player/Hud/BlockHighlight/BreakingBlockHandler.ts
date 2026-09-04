@@ -66,17 +66,23 @@ export function setOnExplosion(
 // per ignition so other clients spawn the primed entity — the separate Break
 // edit only removes the block for them). Undefined in singleplayer.
 let globalOnTntIgnite:
-	| ((x: number, y: number, z: number, fuse: number) => void)
+	| ((x: number, y: number, z: number, fuse: number, radius: number) => void)
 	| undefined;
 
 export function getOnTntIgnite():
-	| ((x: number, y: number, z: number, fuse: number) => void)
+	| ((x: number, y: number, z: number, fuse: number, radius: number) => void)
 	| undefined {
 	return globalOnTntIgnite;
 }
 
 export function setOnTntIgnite(
-	callback: (x: number, y: number, z: number, fuse: number) => void,
+	callback: (
+		x: number,
+		y: number,
+		z: number,
+		fuse: number,
+		radius: number,
+	) => void,
 ): void {
 	globalOnTntIgnite = callback;
 }

@@ -177,7 +177,13 @@ export class NetworkManager {
 				this.revertRejectedBlockEdit(rejection);
 			},
 			onTntIgnite: (ignite) => {
-				spawnRemotePrimedTnt(ignite.x, ignite.y, ignite.z, ignite.fuse);
+				spawnRemotePrimedTnt(
+					ignite.x,
+					ignite.y,
+					ignite.z,
+					ignite.fuse,
+					ignite.radius,
+				);
 			},
 			onChatMessage: (chat) => {
 				console.log(`[${chat.name}]: ${chat.message}`);
@@ -384,9 +390,15 @@ export class NetworkManager {
 	 * clients spawn the primed entity (the separate Break edit only removes
 	 * the block for them).
 	 */
-	onTntIgnite = (x: number, y: number, z: number, fuse: number): void => {
+	onTntIgnite = (
+		x: number,
+		y: number,
+		z: number,
+		fuse: number,
+		radius: number,
+	): void => {
 		if (this.client.isConnected) {
-			this.client.sendTntIgnite(x, y, z, fuse);
+			this.client.sendTntIgnite(x, y, z, fuse, radius);
 		}
 	};
 

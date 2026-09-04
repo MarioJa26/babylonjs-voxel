@@ -237,7 +237,8 @@ export interface ExplosionData {
 }
 
 /**
- * C→S: this client ignited the TNT block at (x, y, z) with the given fuse.
+ * C→S: this client ignited the TNT block at (x, y, z) with the given fuse
+ * and blast radius (full block vs. half-size slab / half wall variant).
  * S→C: relay — other clients spawn a cosmetic primed TNT entity there.
  * Like ArrowShoot/ArrowSpawn this is cosmetic sync: receivers simulate the
  * bounce/flash/fuse locally and play detonation FX, but only the lighting
@@ -250,6 +251,7 @@ export interface TntIgniteData {
 	y: number;
 	z: number;
 	fuse: number;
+	radius: number;
 }
 /** S→C: cosmetic ground impact for a server-authoritative mob. */
 export interface MobImpactData {

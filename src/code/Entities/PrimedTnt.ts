@@ -36,6 +36,7 @@ import {
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { explode } from "@/code/World/Explosion";
+import { TNT_BLAST_RADIUS, tntBlastRadius } from "@/code/World/ExplosionSim";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
@@ -75,6 +76,8 @@ const VERTICAL_AIR_DAMPING_PER_SEC = 0.2;
 const STEP_SIZE = 0.2;
 
 const MAX_RELAY_FUSE_SECONDS = 10;
+// Upper bound for relayed blast radii (mirrors the server's max).
+const MAX_RELAY_BLAST_RADIUS = 8;
 const REMOTE_HISS_RADIUS_SQ = 32 * 32;
 
 const CHAIN_FUSE_VARIANCE = 0.25;
@@ -191,7 +194,10 @@ function randomChainFuse(): number {
 
 /**
  * Ignite a live TNT block, remove it from the world, relay the ignition, and
- * spawn its primed physics entity.
+ * spawn its primed physics entity. Works for full blocks as well as the
+ * ignitable mason variants (slab, half wall) — the blast radius comes from
+ * the block itself. No-op when the block is not ignitable TNT
+ * (double-ignite guard for chains).
  */
 export function igniteTnt(
 	x: number,
@@ -200,19 +206,29 @@ export function igniteTnt(
 	fuseSeconds: number = TNT_FUSE_SECONDS,
 	sendBreak = true,
 ): boolean {
-	if (getBlockByWorldCoords(x, y, z) !== BlockType.Tnt) {
+	const blockId = getBlockByWorldCoords(x, y, z);
+	const blastRadius = tntBlastRadius(blockId);
+
+	if (blastRadius === null) {
 		return false;
 	}
 
 	deleteBlock(x, y, z);
 
 	if (sendBreak) {
-		getOnBlockBroken()?.(x, y, z, BlockType.Tnt);
+		getOnBlockBroken()?.(x, y, z, blockId);
 	}
 
-	getOnTntIgnite()?.(x, y, z, fuseSeconds);
+	getOnTntIgnite()?.(x, y, z, fuseSeconds, blastRadius);
 
-	const tnt = spawnPrimedTnt(x + 0.5, y + 0.5, z + 0.5, fuseSeconds, false);
+	const tnt = spawnPrimedTnt(
+		x + 0.5,
+		y + 0.5,
+		z + 0.5,
+		fuseSeconds,
+		false,
+		blastRadius,
+	);
 
 	tnt.addVelocity(
 		randomSignedMagnitude(INITIAL_HORIZONTAL_SPEED),
@@ -239,8 +255,9 @@ export function spawnPrimedTnt(
 	z: number,
 	fuseSeconds: number,
 	remote: boolean,
+	blastRadius: number = TNT_BLAST_RADIUS,
 ): PrimedTnt {
-	return new PrimedTnt(x, y, z, fuseSeconds, remote);
+	return new PrimedTnt(x, y, z, fuseSeconds, remote, blastRadius);
 }
 
 /**
@@ -253,13 +270,21 @@ export function spawnRemotePrimedTnt(
 	y: number,
 	z: number,
 	fuseSeconds: number,
+	blastRadius?: number,
 ): void {
 	const fuse =
 		Number.isFinite(fuseSeconds) && fuseSeconds > 0
 			? Math.min(fuseSeconds, MAX_RELAY_FUSE_SECONDS)
 			: TNT_FUSE_SECONDS;
+	const radius =
+		typeof blastRadius === "number" &&
+		Number.isFinite(blastRadius) &&
+		blastRadius > 0 &&
+		blastRadius <= MAX_RELAY_BLAST_RADIUS
+			? blastRadius
+			: TNT_BLAST_RADIUS;
 
-	spawnPrimedTnt(x + 0.5, y + 0.5, z + 0.5, fuse, true);
+	spawnPrimedTnt(x + 0.5, y + 0.5, z + 0.5, fuse, true, radius);
 
 	const player = Map1.mainPlayer;
 
@@ -279,7 +304,24 @@ export function spawnRemotePrimedTnt(
 
 /** Spawn a remote chain entity without block checks or network messages. */
 function spawnRemoteChainTnt(x: number, y: number, z: number): void {
-	spawnPrimedTnt(x + 0.5, y + 0.5, z + 0.5, randomChainFuse(), true);
+	// The block is usually still present locally (chains route to the
+	// igniter, not to destroy) — read its radius. If the server batch
+	// already cleared it, fall back to the full range.
+	const blastRadius =
+		tntBlastRadius(getBlockByWorldCoords(x, y, z)) ?? TNT_BLAST_RADIUS;
+	const primed = spawnPrimedTnt(
+		x + 0.5,
+		y + 0.5,
+		z + 0.5,
+		randomChainFuse(),
+		true,
+		blastRadius,
+	);
+	primed.addVelocity(
+		randomSignedMagnitude(INITIAL_HORIZONTAL_SPEED),
+		INITIAL_VERTICAL_SPEED + Math.random() * INITIAL_VERTICAL_VARIANCE,
+		randomSignedMagnitude(INITIAL_HORIZONTAL_SPEED),
+	);
 }
 
 /**
@@ -364,6 +406,7 @@ export class PrimedTnt {
 
 	#fuse: number;
 	#initialFuse: number;
+	#blastRadius: number;
 	#tint: [number, number, number] = [1, 1, 1];
 	#lastLightX = Number.NaN;
 	#lastLightY = Number.NaN;
@@ -377,6 +420,7 @@ export class PrimedTnt {
 		z: number,
 		fuseSeconds: number,
 		remote = false,
+		blastRadius: number = TNT_BLAST_RADIUS,
 	) {
 		PrimedTnt.#ensureObserver();
 
@@ -384,6 +428,10 @@ export class PrimedTnt {
 		this.#velocity = vec3(0, 0, 0);
 		this.#fuse = fuseSeconds;
 		this.#initialFuse = fuseSeconds > 0 ? fuseSeconds : 1;
+		this.#blastRadius =
+			Number.isFinite(blastRadius) && blastRadius > 0
+				? blastRadius
+				: TNT_BLAST_RADIUS;
 		this.#remote = remote;
 
 		const geometry = getUnitCubeGeometry();
@@ -462,6 +510,7 @@ export class PrimedTnt {
 
 		if (remote) {
 			explode(x, y, z, {
+				radius: this.#blastRadius,
 				chainIgniter: spawnRemoteChainTnt,
 				syncExplosion: false,
 			});
@@ -470,6 +519,7 @@ export class PrimedTnt {
 		}
 
 		explode(x, y, z, {
+			radius: this.#blastRadius,
 			chainIgniter: igniteChainedTnt,
 		});
 	}

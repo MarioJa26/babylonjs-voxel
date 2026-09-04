@@ -1,3 +1,4 @@
+import { getVirtualBlockId } from "@/code/World/Texture/BlockTextures";
 import { BlockType } from "@/code/World/Texture/BlockType";
 
 /**
@@ -7,6 +8,9 @@ import { BlockType } from "@/code/World/Texture/BlockType";
 
 /** Default blast radius in blocks. */
 export const TNT_BLAST_RADIUS = 4;
+
+/** Blast radius for half-size TNT variants (slab, half wall). */
+export const TNT_HALF_BLAST_RADIUS = TNT_BLAST_RADIUS / 2;
 
 /** Damage at the explosion center. */
 export const TNT_MAX_DAMAGE = 40;
@@ -36,6 +40,27 @@ export type ExplosionTargets = {
 	/** Live TNT blocks to ignite instead of deleting. */
 	chain: ExplosionTarget[];
 };
+
+/**
+ * Blast radius for an ignitable block, or null when the block cannot be
+ * ignited. Full TNT blocks get the full range; the half-size mason variants
+ * (slab, half wall) get half range. Other shapes (stairs, pane, fence) and
+ * all other blocks are not ignitable.
+ */
+export function tntBlastRadius(blockId: number): number | null {
+	if (blockId === BlockType.Tnt) {
+		return TNT_BLAST_RADIUS;
+	}
+
+	if (
+		blockId === getVirtualBlockId(BlockType.Tnt, "slab") ||
+		blockId === getVirtualBlockId(BlockType.Tnt, "half_wall")
+	) {
+		return TNT_HALF_BLAST_RADIUS;
+	}
+
+	return null;
+}
 
 /**
  * Linear falloff:
@@ -132,7 +157,8 @@ export function blastMobDamages(
  * Collects blast targets in a sphere around the explosion center.
  *
  * Distance is measured from the explosion center to voxel centers.
- * Air, water, and blast-resistant blocks are skipped. TNT is placed in
+ * Air, water, and blast-resistant blocks are skipped. Ignitable TNT (full
+ * blocks plus slab / half wall variants, see tntBlastRadius) is placed in
  * `chain` until TNT_MAX_CHAIN is reached, after which it is destroyed.
  */
 export function collectExplosionTargets(
@@ -212,7 +238,7 @@ export function collectExplosionTargets(
 					blockId,
 				};
 
-				if (blockId === BlockType.Tnt && chain.length < TNT_MAX_CHAIN) {
+				if (tntBlastRadius(blockId) !== null && chain.length < TNT_MAX_CHAIN) {
 					chain.push(target);
 				} else {
 					// Overflow TNT is destroyed to prevent runaway chains.

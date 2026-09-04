@@ -13,6 +13,7 @@ import { Map1 } from "@/code/Maps/Map1";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { tntBlastRadius } from "@/code/World/ExplosionSim";
 import { BlockType } from "@/code/World/Texture/BlockType";
 import type { IControls } from "../Interface/IControls";
 import { getIsPaused, isUiOpen, setIsPaused } from "../Lib/GameRuntimeState";
@@ -437,8 +438,21 @@ export class Player {
 					return;
 				}
 
-				default:
+				default: {
+					// Ignitable TNT mason variants (slab, half wall) don't
+					// match the full-block case above — same E-ignite path,
+					// with the blast radius coming from the block itself.
+					if (tntBlastRadius(blockHit.blockId) === null) {
+						return;
+					}
+
+					const x = Math.floor(blockHit.x);
+					const y = Math.floor(blockHit.y);
+					const z = Math.floor(blockHit.z);
+
+					igniteTnt(x, y, z);
 					return;
+				}
 			}
 		} finally {
 			this.#pickInFlight = false;
@@ -469,7 +483,13 @@ export class Player {
 		) => void;
 		onBlockBroken: (x: number, y: number, z: number, blockId: number) => void;
 		onExplosion: (x: number, y: number, z: number, radius: number) => void;
-		onTntIgnite: (x: number, y: number, z: number, fuse: number) => void;
+		onTntIgnite: (
+			x: number,
+			y: number,
+			z: number,
+			fuse: number,
+			radius: number,
+		) => void;
 	}): void {
 		setOnBlockPlaced(net.onBlockPlaced);
 		this.#walkingControls.setOnBlockBroken(net.onBlockBroken);

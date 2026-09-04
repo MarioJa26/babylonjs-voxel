@@ -23,6 +23,7 @@
 import { type Client, ClientState, CloseCode, Room } from "colyseus";
 import { MOB_STATS } from "@/code/Entities/MobConfig";
 import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
+import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath.ts";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
@@ -82,15 +83,14 @@ import {
 	type PlayerStateData,
 	type TntIgniteData,
 } from "@/code/Network/protocol/messages.ts";
-import { BlockTickScheduler } from "@/code/World/Chunk/Worker/BlockTickScheduler.ts";
 import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding.ts";
-import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath.ts";
+import { BlockTickScheduler } from "@/code/World/Chunk/Worker/BlockTickScheduler.ts";
+import { WaterSimulation } from "@/code/World/Chunk/Worker/WaterSimulation.ts";
 import {
 	blastMobDamages,
 	collectExplosionTargets,
 	TNT_MAX_DAMAGE,
 } from "@/code/World/ExplosionSim.ts";
-import { WaterSimulation } from "@/code/World/Chunk/Worker/WaterSimulation.ts";
 import {
 	deflate,
 	deflateSupported,
@@ -428,6 +428,7 @@ export class VoxelRoom extends Room {
 		y: 0,
 		z: 0,
 		fuse: 0,
+		radius: 0,
 	};
 
 	private editEntryPool: Array<{
@@ -2034,20 +2035,20 @@ export class VoxelRoom extends Room {
 				}
 
 				const blockId =
-				edit.action === BlockActionType.Break ? 0 : edit.blockId;
-			const blockState =
-				edit.action === BlockActionType.Break ? 0 : edit.blockState;
-			const storedEdit = this.applyServerEdit(
-				client.sessionId,
-				edit.x,
-				edit.y,
-				edit.z,
-				blockId,
-				blockState,
-				edit.action,
-			);
+					edit.action === BlockActionType.Break ? 0 : edit.blockId;
+				const blockState =
+					edit.action === BlockActionType.Break ? 0 : edit.blockState;
+				const storedEdit = this.applyServerEdit(
+					client.sessionId,
+					edit.x,
+					edit.y,
+					edit.z,
+					blockId,
+					blockState,
+					edit.action,
+				);
 
-			this.editBroadcastEncoder.reset();
+				this.editBroadcastEncoder.reset();
 				this.editBroadcastEncoder.writeUint8(MessageType.BlockEditBroadcast);
 				this.editBroadcastEncoder.writeString(storedEdit.sessionId);
 				this.editBroadcastEncoder.writeInt32(storedEdit.x);
@@ -2172,11 +2173,7 @@ export class VoxelRoom extends Room {
 						{},
 					);
 					if (killed) {
-						this.broadcastBytes(
-							"binary",
-							encodeMobDespawn(target.id),
-							{},
-						);
+						this.broadcastBytes("binary", encodeMobDespawn(target.id), {});
 					}
 				}
 				break;
@@ -2196,7 +2193,10 @@ export class VoxelRoom extends Room {
 					Math.abs(ignite.z) > WORLD_BOUNDARY ||
 					!Number.isFinite(ignite.fuse) ||
 					ignite.fuse <= 0 ||
-					ignite.fuse > MAX_TNT_FUSE
+					ignite.fuse > MAX_TNT_FUSE ||
+					!Number.isFinite(ignite.radius) ||
+					ignite.radius <= 0 ||
+					ignite.radius > MAX_EXPLOSION_RADIUS
 				) {
 					break;
 				}

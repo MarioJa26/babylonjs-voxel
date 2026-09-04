@@ -654,5 +654,12 @@
 		"path": "/texture/cobble/cobbleiron_1k",
 		"hardness": 1.3,
 		"preferredTool": "pickaxe"
+	},
+	{
+		"id": "Tnt",
+		"name": "TNT",
+		"path": "/texture/other/tnt_1k",
+		"hardness": 0.1,
+		"preferredTool": "pickaxe"
 	}
 ]

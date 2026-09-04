@@ -54,11 +54,8 @@ function buildBlockTextures(
 	// MasonTable (90) shares WoodPlanks (35) tile.
 	writeDirect(90, 34 & 15, 34 >> 4);
 
-	// Tnt (100) placeholder: reuses the CastleBrickRed (5) tile (atlas index
-	// 4) until dedicated TNT art is baked into diffuse_atlas.png via
-	// tools/AtlasBuilder.html. Deterministic here so main thread and workers
-	// agree; delete this alias after the atlas rebuild.
-	writeDirect(100, 4 & 15, 4 >> 4);
+	// Tnt (100) uses its natural sequential tile (atlas index 99), where the
+	// dedicated TNT art is baked. No alias — it would hide the real texture.
 
 	// Virtual shape variants (500+) — direct writes, no intermediate defs.
 	for (let id = 1; id <= maxId; id++) {
@@ -74,7 +71,6 @@ function buildBlockTextures(
 	}
 	// Re-apply aliases after virtual loop to ensure they stick
 	writeDirect(90, 34 & 15, 34 >> 4);
-	writeDirect(100, 4 & 15, 4 >> 4);
 
 	return result;
 }
