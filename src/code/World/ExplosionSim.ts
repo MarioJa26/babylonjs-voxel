@@ -1,20 +1,22 @@
 import { BlockType } from "@/code/World/Texture/BlockType";
 
 /**
- * Pure (engine-free) TNT blast helpers. No DOM, no GPU, no scene imports —
- * safe to unit-test under tsx. Engine side effects live in Explosion.ts.
+ * Pure, engine-free TNT blast helpers.
+ * Safe to unit-test without DOM, GPU, or scene dependencies.
  */
 
-/** Default blast radius in blocks (user-confirmed). */
+/** Default blast radius in blocks. */
 export const TNT_BLAST_RADIUS = 4;
+
 /** Damage at the explosion center. */
 export const TNT_MAX_DAMAGE = 40;
-/** Max TNT blocks ignited as chains by a single blast (runaway guard). */
+
+/** Max TNT blocks ignited as chains by a single blast. */
 export const TNT_MAX_CHAIN = 20;
 
 /**
- * Blocks the blast never destroys. Obsidian is the blast-proof building
- * material; more entries (e.g. Bedrock) can be added here later.
+ * Blocks that explosions never destroy.
+ * Additional blast-proof blocks can be added here.
  */
 export const BLAST_RESISTANT_BLOCKS: ReadonlySet<number> = new Set([
 	BlockType.Obsidian,
@@ -30,35 +32,49 @@ export type ExplosionTarget = {
 export type ExplosionTargets = {
 	/** Solid blocks to vaporize. */
 	destroy: ExplosionTarget[];
-	/** Live TNT blocks to ignite with a short fuse instead of deleting. */
+
+	/** Live TNT blocks to ignite instead of deleting. */
 	chain: ExplosionTarget[];
 };
 
 /**
- * Linear falloff: 1 at the center, 0 at/ past the rim. Distance is measured
- * from the explosion center to the target position.
+ * Linear falloff:
+ * - 1 at or behind the center
+ * - 0 at or beyond the radius
  */
 export function explosionFalloff(distance: number, radius: number): number {
-	if (radius <= 0) return 0;
-	if (distance >= radius) return 0;
-	if (distance <= 0) return 1;
+	if (radius <= 0 || distance >= radius) {
+		return 0;
+	}
+
+	if (distance <= 0) {
+		return 1;
+	}
+
 	return 1 - distance / radius;
 }
 
-/** Falloff-scaled damage, rounded down (0 outside the radius). */
+/** Falloff-scaled damage, rounded down. */
 export function explosionDamage(
 	distance: number,
 	radius: number,
 	maxDamage: number = TNT_MAX_DAMAGE,
 ): number {
-	return Math.floor(explosionFalloff(distance, radius) * maxDamage);
+	if (radius <= 0 || distance >= radius) {
+		return 0;
+	}
+
+	if (distance <= 0) {
+		return Math.floor(maxDamage);
+	}
+
+	return Math.floor((1 - distance / radius) * maxDamage);
 }
 
 /**
- * Per-mob blast damage for a list of entity positions, preserving input
- * order (0 for mobs outside the radius — callers skip those). Shared by the
- * client's local-mob loop and the server's authoritative mob damage so SP
- * and MP use identical math.
+ * Calculates per-mob blast damage while preserving input order.
+ *
+ * Mobs at or beyond the blast radius receive zero damage.
  */
 export function blastMobDamages(
 	mobs: ReadonlyArray<{ x: number; y: number; z: number }>,
@@ -68,28 +84,56 @@ export function blastMobDamages(
 	radius: number,
 	maxDamage: number = TNT_MAX_DAMAGE,
 ): number[] {
-	const damages = new Array<number>(mobs.length);
+	const mobCount = mobs.length;
+	const damages = new Array<number>(mobCount);
 
-	for (let i = 0; i < mobs.length; i++) {
+	if (mobCount === 0) {
+		return damages;
+	}
+
+	// Preserve explosionFalloff behavior for invalid or zero radii while
+	// avoiding unnecessary position calculations.
+	if (radius <= 0) {
+		damages.fill(0);
+		return damages;
+	}
+
+	const radiusSquared = radius * radius;
+	const damageScale = maxDamage / radius;
+
+	for (let i = 0; i < mobCount; i++) {
 		const mob = mobs[i];
 		const dx = mob.x - cx;
 		const dy = mob.y - cy;
 		const dz = mob.z - cz;
-		damages[i] = explosionDamage(
-			Math.sqrt(dx * dx + dy * dy + dz * dz),
-			radius,
-			maxDamage,
-		);
+		const distanceSquared = dx * dx + dy * dy + dz * dz;
+
+		// Avoid Math.sqrt for mobs at or outside the blast radius.
+		if (distanceSquared >= radiusSquared) {
+			damages[i] = 0;
+			continue;
+		}
+
+		if (distanceSquared <= 0) {
+			damages[i] = Math.floor(maxDamage);
+			continue;
+		}
+
+		// Equivalent to:
+		// floor((1 - distance / radius) * maxDamage)
+		const distance = Math.sqrt(distanceSquared);
+		damages[i] = Math.floor(maxDamage - distance * damageScale);
 	}
 
 	return damages;
 }
 
 /**
- * Collect blast targets in a sphere around (cx, cy, cz). Distance is measured
- * to voxel centers. Air and Water are skipped (blasts don't vaporize lakes);
- * blast-resistant blocks are skipped; TNT goes to `chain` (capped) so it
- * ignites instead of vanishing; everything else goes to `destroy`.
+ * Collects blast targets in a sphere around the explosion center.
+ *
+ * Distance is measured from the explosion center to voxel centers.
+ * Air, water, and blast-resistant blocks are skipped. TNT is placed in
+ * `chain` until TNT_MAX_CHAIN is reached, after which it is destroyed.
  */
 export function collectExplosionTargets(
 	cx: number,
@@ -101,39 +145,79 @@ export function collectExplosionTargets(
 	const destroy: ExplosionTarget[] = [];
 	const chain: ExplosionTarget[] = [];
 
-	const r = Math.ceil(radius);
-	for (let dx = -r; dx <= r; dx++) {
-		for (let dy = -r; dy <= r; dy++) {
-			for (let dz = -r; dz <= r; dz++) {
-				const x = Math.floor(cx) + dx;
-				const y = Math.floor(cy) + dy;
-				const z = Math.floor(cz) + dz;
+	if (radius < 0) {
+		return { destroy, chain };
+	}
 
-				const dist = Math.sqrt(
-					(x + 0.5 - cx) * (x + 0.5 - cx) +
-						(y + 0.5 - cy) * (y + 0.5 - cy) +
-						(z + 0.5 - cz) * (z + 0.5 - cz),
-				);
-				if (dist > radius) continue;
+	const range = Math.ceil(radius);
+	const radiusSquared = radius * radius;
 
+	const centerBlockX = Math.floor(cx);
+	const centerBlockY = Math.floor(cy);
+	const centerBlockZ = Math.floor(cz);
+
+	// Offset from the explosion center to the center of its containing voxel.
+	// For each loop iteration, adding the integer delta gives the candidate
+	// voxel-center displacement without recalculating world coordinates.
+	const baseOffsetX = centerBlockX + 0.5 - cx;
+	const baseOffsetY = centerBlockY + 0.5 - cy;
+	const baseOffsetZ = centerBlockZ + 0.5 - cz;
+
+	for (let dx = -range; dx <= range; dx++) {
+		const offsetX = baseOffsetX + dx;
+		const offsetXSquared = offsetX * offsetX;
+
+		// No point scanning this entire yz plane if its x distance alone
+		// already lies outside the sphere.
+		if (offsetXSquared > radiusSquared) {
+			continue;
+		}
+
+		const x = centerBlockX + dx;
+
+		for (let dy = -range; dy <= range; dy++) {
+			const offsetY = baseOffsetY + dy;
+			const xyDistanceSquared = offsetXSquared + offsetY * offsetY;
+
+			// Skip the entire z row when x and y already exceed the radius.
+			if (xyDistanceSquared > radiusSquared) {
+				continue;
+			}
+
+			const y = centerBlockY + dy;
+
+			for (let dz = -range; dz <= range; dz++) {
+				const offsetZ = baseOffsetZ + dz;
+				const distanceSquared = xyDistanceSquared + offsetZ * offsetZ;
+
+				if (distanceSquared > radiusSquared) {
+					continue;
+				}
+
+				const z = centerBlockZ + dz;
 				const blockId = getBlock(x, y, z);
-				if (blockId === BlockType.Air || blockId === BlockType.Water) {
-					continue;
-				}
-				if (BLAST_RESISTANT_BLOCKS.has(blockId)) continue;
 
-				if (blockId === BlockType.Tnt) {
-					// Cap chain ignitions; overflow TNT is still destroyed so a
-					// dense TNT store can't cascade forever.
-					if (chain.length < TNT_MAX_CHAIN) {
-						chain.push({ x, y, z, blockId });
-					} else {
-						destroy.push({ x, y, z, blockId });
-					}
+				if (
+					blockId === BlockType.Air ||
+					blockId === BlockType.Water ||
+					BLAST_RESISTANT_BLOCKS.has(blockId)
+				) {
 					continue;
 				}
 
-				destroy.push({ x, y, z, blockId });
+				const target: ExplosionTarget = {
+					x,
+					y,
+					z,
+					blockId,
+				};
+
+				if (blockId === BlockType.Tnt && chain.length < TNT_MAX_CHAIN) {
+					chain.push(target);
+				} else {
+					// Overflow TNT is destroyed to prevent runaway chains.
+					destroy.push(target);
+				}
 			}
 		}
 	}

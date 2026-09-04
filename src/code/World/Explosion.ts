@@ -105,195 +105,193 @@ function flashScreen(strength: number): void {
  * the call site is the single getOnExplosion() call below.
  */
 export function explode(
-    cx: number,
-    cy: number,
-    cz: number,
-    options: ExplodeOptions = {},
+	cx: number,
+	cy: number,
+	cz: number,
+	options: ExplodeOptions = {},
 ): ExplosionResult {
-    const radius = options.radius ?? TNT_BLAST_RADIUS;
-    const maxDamage = options.maxDamage ?? TNT_MAX_DAMAGE;
+	const radius = options.radius ?? TNT_BLAST_RADIUS;
+	const maxDamage = options.maxDamage ?? TNT_MAX_DAMAGE;
 
-    const { destroy, chain } = collectExplosionTargets(
-        cx,
-        cy,
-        cz,
-        radius,
-        getBlockByWorldCoords,
-    );
+	const { destroy, chain } = collectExplosionTargets(
+		cx,
+		cy,
+		cz,
+		radius,
+		getBlockByWorldCoords,
+	);
 
-    // Process chained TNT first so it receives a short fuse rather than
-    // disappearing with the other destroyed blocks.
-    const igniter = options.chainIgniter ?? null;
-    let chained = 0;
+	// Process chained TNT first so it receives a short fuse rather than
+	// disappearing with the other destroyed blocks.
+	const igniter = options.chainIgniter ?? null;
+	let chained = 0;
 
-    if (igniter !== null) {
-        const chainLength = chain.length;
+	if (igniter !== null) {
+		const chainLength = chain.length;
 
-        for (let i = 0; i < chainLength; i++) {
-            const target = chain[i];
-            igniter(target.x, target.y, target.z);
-        }
+		for (let i = 0; i < chainLength; i++) {
+			const target = chain[i];
+			igniter(target.x, target.y, target.z);
+		}
 
-        chained = chainLength;
-    } else if (chain.length > 0) {
-        // Mutate the existing destroy array instead of creating a combined
-        // temporary array.
-        for (let i = 0, length = chain.length; i < length; i++) {
-            destroy.push(chain[i]);
-        }
-    }
+		chained = chainLength;
+	} else if (chain.length > 0) {
+		// Mutate the existing destroy array instead of creating a combined
+		// temporary array.
+		for (let i = 0, length = chain.length; i < length; i++) {
+			destroy.push(chain[i]);
+		}
+	}
 
-    const destroyed = destroy.length;
+	const destroyed = destroy.length;
 
-    for (let i = 0; i < destroyed; i++) {
-        const target = destroy[i];
-        deleteBlock(target.x, target.y, target.z);
-    }
+	for (let i = 0; i < destroyed; i++) {
+		const target = destroy[i];
+		deleteBlock(target.x, target.y, target.z);
+	}
 
-    // Use one authoritative explosion sync rather than per-block messages.
-    if (options.syncExplosion !== false) {
-        getOnExplosion()?.(cx, cy, cz, radius);
-    }
+	// Use one authoritative explosion sync rather than per-block messages.
+	if (options.syncExplosion !== false) {
+		getOnExplosion()?.(cx, cy, cz, radius);
+	}
 
-    // --- Explosion FX ---
-    const packedLight = getLightByWorldCoords(cx, cy, cz);
+	// --- Explosion FX ---
+	const packedLight = getLightByWorldCoords(cx, cy, cz);
 
-    playExplosion(cx, cy, cz, radius, packedLight);
+	playExplosion(cx, cy, cz, radius, packedLight);
 
-    const maxBurstBlocks = options.maxBurstBlocks ?? 8;
-    const debrisCount =
-        maxBurstBlocks > 0 && destroyed > 0
-            ? Math.min(maxBurstBlocks, destroyed)
-            : 0;
+	const maxBurstBlocks = options.maxBurstBlocks ?? 8;
+	const debrisCount =
+		maxBurstBlocks > 0 && destroyed > 0
+			? Math.min(maxBurstBlocks, destroyed)
+			: 0;
 
-    if (debrisCount > 0) {
-        const debrisPower = 1 + radius / TNT_BLAST_RADIUS;
+	if (debrisCount > 0) {
+		const debrisPower = 1 + radius / TNT_BLAST_RADIUS;
 
-        for (let i = 0; i < debrisCount; i++) {
-            const targetIndex = Math.floor((i * destroyed) / debrisCount);
-            const target = destroy[targetIndex];
+		for (let i = 0; i < debrisCount; i++) {
+			const targetIndex = Math.floor((i * destroyed) / debrisCount);
+			const target = destroy[targetIndex];
 
-            playExplosionDebris(
-                target.x + 0.5,
-                target.y + 0.5,
-                target.z + 0.5,
-                target.blockId,
-                packedLight,
-                debrisPower,
-            );
-        }
-    }
+			playExplosionDebris(
+				target.x + 0.5,
+				target.y + 0.5,
+				target.z + 0.5,
+				target.blockId,
+				packedLight,
+				debrisPower,
+			);
+		}
+	}
 
-    playLandingDust(cx, cy, cz, radius * 2);
-    playExplosionSound(1);
+	playLandingDust(cx, cy, cz, radius * 2);
+	playExplosionSound(1);
 
-    // --- Player damage, knockback, shake and screen flash ---
-    // Undefined means the current local player. Explicit null means FX-only.
-    const player =
-        options.player === undefined ? Map1.mainPlayer : options.player;
+	// --- Player damage, knockback, shake and screen flash ---
+	// Undefined means the current local player. Explicit null means FX-only.
+	const player =
+		options.player === undefined ? Map1.mainPlayer : options.player;
 
-    let flashStrength = 1;
+	let flashStrength = 1;
 
-    if (player !== null) {
-        const position = player.position;
-        const dx = position.x - cx;
-        const dy = position.y + 0.9 - cy;
-        const dz = position.z - cz;
-        const distanceSquared = dx * dx + dy * dy + dz * dz;
-        const distance = Math.sqrt(distanceSquared);
-        const falloff = explosionFalloff(distance, radius);
+	if (player !== null) {
+		const position = player.position;
+		const dx = position.x - cx;
+		const dy = position.y + 0.9 - cy;
+		const dz = position.z - cz;
+		const distanceSquared = dx * dx + dy * dy + dz * dz;
+		const distance = Math.sqrt(distanceSquared);
+		const falloff = explosionFalloff(distance, radius);
 
-        if (falloff > 0) {
-            if (player.stats.gamemode !== Gamemodes.Creative) {
-                player.stats.takeDamage(Math.floor(falloff * maxDamage));
-            }
+		if (falloff > 0) {
+			if (player.stats.gamemode !== Gamemodes.Creative) {
+				player.stats.takeDamage(Math.floor(falloff * maxDamage));
+			}
 
-            const inverseDistance = 1 / Math.max(distance, 0.5);
-            const force = falloff * 11;
+			const inverseDistance = 1 / Math.max(distance, 0.5);
+			const force = falloff * 11;
 
-            player.playerVehicle.addExplosionImpulse(
-                dx * inverseDistance * force,
-                (dy * inverseDistance * 0.6 + 0.65) * force,
-                dz * inverseDistance * force,
-            );
+			player.playerVehicle.addExplosionImpulse(
+				dx * inverseDistance * force,
+				(dy * inverseDistance * 0.6 + 0.65) * force,
+				dz * inverseDistance * force,
+			);
 
-            player.playerCamera.addTrauma(Math.min(1, falloff + 0.25));
-        } else {
-            const rumble = explosionFalloff(distance, radius * 2.5);
+			player.playerCamera.addTrauma(Math.min(1, falloff + 0.25));
+		} else {
+			const rumble = explosionFalloff(distance, radius * 2.5);
 
-            if (rumble > 0) {
-                player.playerCamera.addTrauma(rumble * 0.4);
-            }
-        }
+			if (rumble > 0) {
+				player.playerCamera.addTrauma(rumble * 0.4);
+			}
+		}
 
-        // Equivalent inverse-square brightness falloff, using the already
-        // calculated squared distance to avoid another division and square.
-        const halfRangeSquared =
-            SCREEN_FLASH_HALF_RANGE * SCREEN_FLASH_HALF_RANGE;
+		// Equivalent inverse-square brightness falloff, using the already
+		// calculated squared distance to avoid another division and square.
+		const halfRangeSquared = SCREEN_FLASH_HALF_RANGE * SCREEN_FLASH_HALF_RANGE;
 
-        flashStrength =
-            1.5 / (1 + distanceSquared / halfRangeSquared);
+		flashStrength = 1.5 / (1 + distanceSquared / halfRangeSquared);
 
-        if (flashStrength < 0.05) {
-            flashStrength = 0;
-        }
-    }
+		if (flashStrength < 0.05) {
+			flashStrength = 0;
+		}
+	}
 
-    if (flashStrength > 0) {
-        flashScreen(flashStrength);
-    }
+	if (flashStrength > 0) {
+		flashScreen(flashStrength);
+	}
 
-    // --- Mob damage ---
-    const registry = Map1.mobRegistry;
+	// --- Mob damage ---
+	const registry = Map1.mobRegistry;
 
-    if (registry) {
-        const liveMobs: Mob[] = [];
-        const mobPositions: Mob["position"][] = [];
+	if (registry) {
+		const liveMobs: Mob[] = [];
+		const mobPositions: Mob["position"][] = [];
 
-        // Build both arrays in one pass. This avoids liveMobs.map(...), its
-        // callback invocation overhead, and an additional traversal.
-        for (const mob of registry.getAllMobs()) {
-            if (!mob.isDisposed) {
-                liveMobs.push(mob);
-                mobPositions.push(mob.position);
-            }
-        }
+		// Build both arrays in one pass. This avoids liveMobs.map(...), its
+		// callback invocation overhead, and an additional traversal.
+		for (const mob of registry.getAllMobs()) {
+			if (!mob.isDisposed) {
+				liveMobs.push(mob);
+				mobPositions.push(mob.position);
+			}
+		}
 
-        const mobCount = liveMobs.length;
+		const mobCount = liveMobs.length;
 
-        if (mobCount > 0) {
-            const damages = blastMobDamages(
-                mobPositions,
-                cx,
-                cy,
-                cz,
-                radius,
-                maxDamage,
-            );
+		if (mobCount > 0) {
+			const damages = blastMobDamages(
+				mobPositions,
+				cx,
+				cy,
+				cz,
+				radius,
+				maxDamage,
+			);
 
-            for (let i = 0; i < mobCount; i++) {
-                const damage = damages[i];
+			for (let i = 0; i < mobCount; i++) {
+				const damage = damages[i];
 
-                if (damage <= 0) {
-                    continue;
-                }
+				if (damage <= 0) {
+					continue;
+				}
 
-                const mob = liveMobs[i];
-                const position = mob.position;
-                const x = position.x;
-                const y = position.y;
-                const z = position.z;
+				const mob = liveMobs[i];
+				const position = mob.position;
+				const x = position.x;
+				const y = position.y;
+				const z = position.z;
 
-                // Capture scalar coordinates before takeDamage because lethal
-                // damage may synchronously dispose or mutate the mob.
-                mob.takeDamage(damage, { x, y, z });
+				// Capture scalar coordinates before takeDamage because lethal
+				// damage may synchronously dispose or mutate the mob.
+				mob.takeDamage(damage, { x, y, z });
 
-                if (mob.isDisposed) {
-                    playMobDeath(x, y, z);
-                }
-            }
-        }
-    }
+				if (mob.isDisposed) {
+					playMobDeath(x, y, z);
+				}
+			}
+		}
+	}
 
-    return { destroyed, chained };
+	return { destroyed, chained };
 }

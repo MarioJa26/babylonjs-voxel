@@ -51,42 +51,36 @@ import {
 	getDiffuseTexture2D,
 } from "@/code/World/Texture/TextureAtlasFactory";
 
-/** Standard 4s fuse for player-ignited TNT. */
+/** Standard four-second fuse for player-ignited TNT. */
 export const TNT_FUSE_SECONDS = 4;
-/** Short fuse for chain-ignited TNT so cascades ripple instead of syncing. */
+
+/** Short fuse for chain-ignited TNT. */
 export const TNT_CHAIN_FUSE_SECONDS = 0.4;
 
 const GRAVITY = -18;
 const MAX_TICK_DT = 0.1;
+
 const HALF_EXTENT = 0.49;
+const TNT_SCALE = HALF_EXTENT * 2;
+const COLLIDER_EPSILON = 0.001;
+
 const BOUNCE_RESTITUTION = 0.35;
 const BOUNCE_MIN_SPEED = 1.2;
+
 const AIR_DAMPING_PER_SEC = 1.2;
-const GROUND_DAMPING_PER_SEC = 6.0;
+const GROUND_DAMPING_PER_SEC = 6;
+const VERTICAL_AIR_DAMPING_PER_SEC = 0.2;
+
 const STEP_SIZE = 0.2;
-// Upper bound for relayed fuse values (mirrors the server's MAX_TNT_FUSE).
+
 const MAX_RELAY_FUSE_SECONDS = 10;
-// Squared radius inside which a remote ignition plays the fuse hiss.
 const REMOTE_HISS_RADIUS_SQ = 32 * 32;
 
-// Same streaming-safe sampler as dropped items: unloaded chunks read as
-// solid so primed TNT can't fall through the world at the render edge.
-const TNT_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
-	(x, y, z) => {
-		const r = resolveBlockAtWorldCoords(x, y, z);
-		if (r.unloaded) return UNLOADED_SOLID_RESOLVE;
-		if (!isCollidableBlock(r.blockId)) return null;
-		_voxelResolveScratch.blockId = r.blockId;
-		_voxelResolveScratch.blockState = r.blockState;
-		return _voxelResolveScratch;
-	},
-	{
-		getFenceDynamicShape,
-		getShapeForBlockId,
-		isFenceBlockId,
-		computeFenceNeighborMask,
-	},
-);
+const CHAIN_FUSE_VARIANCE = 0.25;
+
+const INITIAL_HORIZONTAL_SPEED = 1.5;
+const INITIAL_VERTICAL_SPEED = 3;
+const INITIAL_VERTICAL_VARIANCE = 1.5;
 
 const primedTntVertexWGSL = /* wgsl */ `
 struct VSOut {
@@ -161,16 +155,42 @@ const TNT_BLOCK_LIGHT_COLOR = { x: 0.9, y: 0.6, z: 0.2 };
 /** Fuse-burn white level at detonation: the texture fades to 75% white. */
 const DETONATION_FLASH = 0.75;
 
+const TNT_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
+	(x, y, z) => {
+		const resolved = resolveBlockAtWorldCoords(x, y, z);
+
+		if (resolved.unloaded) {
+			return UNLOADED_SOLID_RESOLVE;
+		}
+
+		if (!isCollidableBlock(resolved.blockId)) {
+			return null;
+		}
+
+		_voxelResolveScratch.blockId = resolved.blockId;
+		_voxelResolveScratch.blockState = resolved.blockState;
+
+		return _voxelResolveScratch;
+	},
+	{
+		getFenceDynamicShape,
+		getShapeForBlockId,
+		isFenceBlockId,
+		computeFenceNeighborMask,
+	},
+);
+
+function randomSignedMagnitude(magnitude: number): number {
+	return (Math.random() * 2 - 1) * magnitude;
+}
+
+function randomChainFuse(): number {
+	return TNT_CHAIN_FUSE_SECONDS + Math.random() * CHAIN_FUSE_VARIANCE;
+}
+
 /**
- * Ignite the TNT block at (x, y, z): delete it, relay the ignition to other
- * clients, spawn a bouncing primed cube, and start the fuse. No-op when the
- * block is no longer live TNT (double-ignite guard for chains).
- *
- * `sendBreak` controls only the per-block Break notify (skipped for chains —
- * the authoritative explosion already owns those blocks and a far-away
- * notify would be rejected as TooFar). The TntIgnite relay is always sent:
- * other clients only get the Break (block vanishes) and need it to spawn
- * the primed entity.
+ * Ignite a live TNT block, remove it from the world, relay the ignition, and
+ * spawn its primed physics entity.
  */
 export function igniteTnt(
 	x: number,
@@ -184,30 +204,33 @@ export function igniteTnt(
 	}
 
 	deleteBlock(x, y, z);
+
 	if (sendBreak) {
 		getOnBlockBroken()?.(x, y, z, BlockType.Tnt);
 	}
+
 	getOnTntIgnite()?.(x, y, z, fuseSeconds);
 
 	const tnt = spawnPrimedTnt(x + 0.5, y + 0.5, z + 0.5, fuseSeconds, false);
-	// Small random pop so stacked ignitions scatter instead of overlapping.
+
 	tnt.addVelocity(
-		(Math.random() * 2 - 1) * 1.5,
-		3 + Math.random() * 1.5,
-		(Math.random() * 2 - 1) * 1.5,
+		randomSignedMagnitude(INITIAL_HORIZONTAL_SPEED),
+		INITIAL_VERTICAL_SPEED + Math.random() * INITIAL_VERTICAL_VARIANCE,
+		randomSignedMagnitude(INITIAL_HORIZONTAL_SPEED),
 	);
+
 	playFuseHiss();
+
 	return true;
 }
 
-/** Short-fuse igniter passed to explode() for chain reactions. */
+/** Short-fuse igniter passed to local explosions for chain reactions. */
 export function igniteChainedTnt(x: number, y: number, z: number): void {
-	igniteTnt(x, y, z, TNT_CHAIN_FUSE_SECONDS + Math.random() * 0.25, false);
+	igniteTnt(x, y, z, randomChainFuse(), false);
 }
 
 /**
- * Spawn a primed entity directly (no block check/removal). Feeds the local
- * simulation (igniteTnt) and remote entities from TntIgnite relays.
+ * Spawn a primed TNT entity directly without checking or removing a block.
  */
 export function spawnPrimedTnt(
 	x: number,
@@ -220,8 +243,9 @@ export function spawnPrimedTnt(
 }
 
 /**
- * Remote spawn entry point for TntIgnite relays (block coords + fuse).
- * The block itself is already gone locally via the Break broadcast.
+ * Spawn a remotely relayed primed TNT entity.
+ *
+ * The corresponding block has already been removed by the Break broadcast.
  */
 export function spawnRemotePrimedTnt(
 	x: number,
@@ -233,61 +257,98 @@ export function spawnRemotePrimedTnt(
 		Number.isFinite(fuseSeconds) && fuseSeconds > 0
 			? Math.min(fuseSeconds, MAX_RELAY_FUSE_SECONDS)
 			: TNT_FUSE_SECONDS;
+
 	spawnPrimedTnt(x + 0.5, y + 0.5, z + 0.5, fuse, true);
 
-	// Fuse hiss only when the ignition is close to the local player.
 	const player = Map1.mainPlayer;
-	if (player) {
-		const p = player.position;
-		const dx = p.x - x;
-		const dy = p.y - y;
-		const dz = p.z - z;
-		if (dx * dx + dy * dy + dz * dz <= REMOTE_HISS_RADIUS_SQ) {
-			playFuseHiss();
-		}
+
+	if (!player) {
+		return;
+	}
+
+	const position = player.position;
+	const dx = position.x - x;
+	const dy = position.y - y;
+	const dz = position.z - z;
+
+	if (dx * dx + dy * dy + dz * dz <= REMOTE_HISS_RADIUS_SQ) {
+		playFuseHiss();
 	}
 }
 
-/** Remote chain igniter: ripple visuals without block checks or network. */
+/** Spawn a remote chain entity without block checks or network messages. */
 function spawnRemoteChainTnt(x: number, y: number, z: number): void {
-	spawnPrimedTnt(
-		x + 0.5,
-		y + 0.5,
-		z + 0.5,
-		TNT_CHAIN_FUSE_SECONDS + Math.random() * 0.25,
-		true,
-	);
+	spawnPrimedTnt(x + 0.5, y + 0.5, z + 0.5, randomChainFuse(), true);
 }
 
 /**
- * Primed TNT: a TNT-textured bouncing cube with dropped-item-style AABB
- * physics and a fuse countdown. The texture fades toward white as the fuse
- * burns (75% white at detonation — no blinking). On expiry it detonates via
- * explode() (radius 4, chained ignition, player/mob damage, FX).
+ * Flashing, bouncing primed TNT with a fuse countdown.
  */
 export class PrimedTnt {
 	static readonly #all = new Set<PrimedTnt>();
+
+	/**
+	 * Reused frame snapshot.
+	 *
+	 * A snapshot is still necessary because detonating one TNT can synchronously
+	 * spawn chained TNT. Newly spawned entities must begin ticking next frame,
+	 * matching the original `[...#all]` behavior.
+	 */
+	static readonly #tickSnapshot: PrimedTnt[] = [];
+
 	static #observerRegistered = false;
 
 	static #ensureObserver(): void {
-		if (PrimedTnt.#observerRegistered) return;
+		if (PrimedTnt.#observerRegistered) {
+			return;
+		}
+
 		PrimedTnt.#observerRegistered = true;
 
 		onBeforeRender(Map1.mainScene, (deltaMs: number) => {
-			const dt = Math.min(MAX_TICK_DT, deltaMs * 0.001);
-			if (dt <= 0) return;
-			if (isUiOpen(UiFocus.pauseMenu)) return;
-
-			for (const tnt of [...PrimedTnt.#all]) {
-				tnt.#tick(dt);
+			if (isUiOpen(UiFocus.pauseMenu)) {
+				return;
 			}
+
+			const dt = Math.min(MAX_TICK_DT, deltaMs * 0.001);
+
+			if (dt <= 0) {
+				return;
+			}
+
+			const snapshot = PrimedTnt.#tickSnapshot;
+			snapshot.length = 0;
+
+			for (const tnt of PrimedTnt.#all) {
+				snapshot.push(tnt);
+			}
+
+			const count = snapshot.length;
+
+			for (let i = 0; i < count; i++) {
+				snapshot[i].#tick(dt);
+			}
+
+			// Do not retain disposed instances between frames.
+			snapshot.length = 0;
 		});
 	}
 
 	static disposeAll(): void {
-		for (const tnt of [...PrimedTnt.#all]) {
-			tnt.#dispose();
+		const snapshot = PrimedTnt.#tickSnapshot;
+		snapshot.length = 0;
+
+		for (const tnt of PrimedTnt.#all) {
+			snapshot.push(tnt);
 		}
+
+		const count = snapshot.length;
+
+		for (let i = 0; i < count; i++) {
+			snapshot[i].#dispose();
+		}
+
+		snapshot.length = 0;
 	}
 
 	#mesh: Mesh;
@@ -296,20 +357,18 @@ export class PrimedTnt {
 	#materialEpoch = 0;
 	#sceneAdded = false;
 	#collider: VoxelAabbCollider;
+
 	#position: Vec3;
 	#velocity: Vec3;
+
 	#fuse: number;
 	#initialFuse: number;
 	#tint: [number, number, number] = [1, 1, 1];
 	#lastLightX = Number.NaN;
 	#lastLightY = Number.NaN;
 	#lastLightZ = Number.NaN;
-	#grounded = false;
 	#disposed = false;
-	// Remote entities come from TntIgnite relays: same bounce/flash/fuse
-	// sim, but detonation is FX + damage only (no block edits, no Explosion
-	// message — the lighting client owns the authoritative crater).
-	#remote = false;
+	#remote: boolean;
 
 	constructor(
 		x: number,
@@ -327,7 +386,7 @@ export class PrimedTnt {
 		this.#remote = remote;
 
 		const geometry = getUnitCubeGeometry();
-		this.#mesh = createMeshFromData(
+		const mesh = createMeshFromData(
 			Map1.engine,
 			"primedTnt",
 			geometry.positions,
@@ -335,16 +394,20 @@ export class PrimedTnt {
 			geometry.indices,
 			geometry.uvs,
 		);
-		this.#mesh.name = "primedTnt";
-		this.#mesh.position.set(x, y, z);
-		this.#mesh.scaling.set(HALF_EXTENT * 2, HALF_EXTENT * 2, HALF_EXTENT * 2);
-		this.#mesh.pickable = false;
+		mesh.name = "primedTnt";
+		mesh.position.set(x, y, z);
+		mesh.scaling.set(TNT_SCALE, TNT_SCALE, TNT_SCALE);
+		mesh.pickable = false;
 		// Stays out of the scene (and invisible) until the atlas texture is
 		// bound — an unbound sampler crashes the Lite bind-group build.
-		this.#mesh.visible = false;
+		mesh.visible = false;
 
-		this.#material = createPrimedTntMaterial();
-		this.#mesh.material = this.#material;
+		const material = createPrimedTntMaterial();
+		mesh.material = material;
+
+		this.#mesh = mesh;
+		this.#material = material;
+
 		this.#applyAtlasTile();
 		this.#updateLightingIfNeeded(true);
 		this.#bindAtlasTexture();
@@ -352,50 +415,73 @@ export class PrimedTnt {
 		this.#collider = new VoxelAabbCollider(
 			vec3(HALF_EXTENT, HALF_EXTENT, HALF_EXTENT),
 			TNT_BLOCK_SAMPLER,
-			0.001,
+			COLLIDER_EPSILON,
 		);
 
 		PrimedTnt.#all.add(this);
 	}
 
 	addVelocity(x: number, y: number, z: number): void {
-		this.#velocity.x += x;
-		this.#velocity.y += y;
-		this.#velocity.z += z;
+		const velocity = this.#velocity;
+
+		velocity.x += x;
+		velocity.y += y;
+		velocity.z += z;
 	}
 
 	#tick(dt: number): void {
-		if (this.#disposed) return;
-
-		this.#fuse -= dt;
-		if (this.#fuse <= 0) {
-			const { x, y, z } = this.#position;
-			const remote = this.#remote;
-			this.#dispose();
-			if (remote) {
-				explode(x, y, z, {
-					chainIgniter: spawnRemoteChainTnt,
-					syncExplosion: false,
-				});
-			} else {
-				explode(x, y, z, { chainIgniter: igniteChainedTnt });
-			}
+		if (this.#disposed) {
 			return;
 		}
 
+		this.#fuse -= dt;
+
+		if (this.#fuse <= 0) {
+			this.#detonate();
+			return;
+		}
+
+		this.#updateFlash(dt);
+		this.#updatePhysics(dt);
+
+		const position = this.#position;
+
+		this.#mesh.position.set(position.x, position.y, position.z);
+		this.#updateLightingIfNeeded();
+	}
+
+	#detonate(): void {
+		const position = this.#position;
+		const x = position.x;
+		const y = position.y;
+		const z = position.z;
+		const remote = this.#remote;
+
+		this.#dispose();
+
+		if (remote) {
+			explode(x, y, z, {
+				chainIgniter: spawnRemoteChainTnt,
+				syncExplosion: false,
+			});
+
+			return;
+		}
+
+		explode(x, y, z, {
+			chainIgniter: igniteChainedTnt,
+		});
+	}
+
+	#updateFlash(dt: number): void {
+		void dt;
 		// Fuse burn: steady fade toward white, no blinking. uFlash reaches
-		// DETONATION_FLASH (75% white) exactly at detonation.
+		// DETONATION_FLASH (75% white) exactly at detonation. Per-frame
+		// setShaderUniform is a proven path (water time, player uAnim,
+		// crack uCrackStage all update this way).
 		const progress = 1 - this.#fuse / this.#initialFuse;
 		const flash = Math.min(1, Math.max(0, progress)) * DETONATION_FLASH;
 		setShaderUniform(this.#material, "uFlash", flash);
-
-		this.#updatePhysics(dt);
-		this.#updateLightingIfNeeded();
-		this.#mesh.position.set(
-			this.#position.x,
-			this.#position.y,
-			this.#position.z,
-		);
 	}
 
 	#applyAtlasTile(): void {
@@ -502,70 +588,78 @@ export class PrimedTnt {
 	}
 
 	#updatePhysics(dt: number): void {
-		this.#velocity.y += GRAVITY * dt;
+		const position = this.#position;
+		const velocity = this.#velocity;
+		const collider = this.#collider;
 
-		this.#collider.moveAxis(
-			this.#position,
-			this.#velocity,
+		velocity.y += GRAVITY * dt;
+
+		collider.moveAxis(
+			position,
+			velocity,
 			ColliderAxis.X,
-			this.#velocity.x * dt,
+			velocity.x * dt,
 			STEP_SIZE,
 		);
 
-		this.#grounded = false;
-		const preY = this.#position.y;
-		const preVy = this.#velocity.y;
-		this.#collider.moveAxis(
-			this.#position,
-			this.#velocity,
+		const previousY = position.y;
+		const impactVelocityY = velocity.y;
+
+		collider.moveAxis(
+			position,
+			velocity,
 			ColliderAxis.Y,
-			this.#velocity.y * dt,
+			impactVelocityY * dt,
 			STEP_SIZE,
 		);
-		if (this.#position.y === preY && preVy < 0) {
-			this.#grounded = true;
-		}
 
-		this.#collider.moveAxis(
-			this.#position,
-			this.#velocity,
+		const grounded = position.y === previousY && impactVelocityY < 0;
+
+		collider.moveAxis(
+			position,
+			velocity,
 			ColliderAxis.Z,
-			this.#velocity.z * dt,
+			velocity.z * dt,
 			STEP_SIZE,
 		);
 
-		// moveAxis zeroes velocity on impact; restore a bounce on hard
-		// landings so primed TNT hops instead of sticking.
-		if (this.#grounded) {
-			if (-preVy > BOUNCE_MIN_SPEED) {
-				this.#velocity.y = -preVy * BOUNCE_RESTITUTION;
-			} else {
-				this.#velocity.y = 0;
-			}
+		if (grounded) {
+			velocity.y =
+				-impactVelocityY > BOUNCE_MIN_SPEED
+					? -impactVelocityY * BOUNCE_RESTITUTION
+					: 0;
 		}
 
-		const damping = this.#grounded
+		const horizontalDamping = grounded
 			? GROUND_DAMPING_PER_SEC
 			: AIR_DAMPING_PER_SEC;
-		const keep = Math.exp(-damping * dt);
-		this.#velocity.x *= keep;
-		this.#velocity.z *= keep;
-		if (!this.#grounded) {
-			this.#velocity.y *= Math.exp(-0.2 * dt);
+
+		const horizontalKeep = Math.exp(-horizontalDamping * dt);
+
+		velocity.x *= horizontalKeep;
+		velocity.z *= horizontalKeep;
+
+		if (!grounded) {
+			velocity.y *= Math.exp(-VERTICAL_AIR_DAMPING_PER_SEC * dt);
 		}
 	}
 
 	#dispose(): void {
-		if (this.#disposed) return;
+		if (this.#disposed) {
+			return;
+		}
+
 		this.#disposed = true;
 		PrimedTnt.#all.delete(this);
+
 		this.#collider.dispose();
+
 		if (this.#sceneAdded) {
 			removeFromScene(Map1.mainScene, this.#mesh);
 		}
 		disposeMeshGpu(this.#mesh);
-		// Invalidate any in-flight atlas bind, then free the material: it is
-		// per-instance (unlike DroppedItem's pool) and primed TNT is rare.
+		// Invalidate any in-flight atlas bind, then free the per-instance
+		// material (primed TNT is rare — no pool needed, unlike drops).
 		this.#materialEpoch++;
 		disposeTntMaterial(this.#material);
 	}
