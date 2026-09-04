@@ -37,6 +37,7 @@ import {
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { explode } from "@/code/World/Explosion";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
+import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import {
 	computeFenceNeighborMask,
@@ -657,10 +658,29 @@ export class PrimedTnt {
 		if (this.#sceneAdded) {
 			removeFromScene(Map1.mainScene, this.#mesh);
 		}
-		disposeMeshGpu(this.#mesh);
-		// Invalidate any in-flight atlas bind, then free the per-instance
-		// material (primed TNT is rare — no pool needed, unlike drops).
+		// Invalidate any in-flight atlas bind, then free GPU resources once
+		// previously-submitted frames have drained (see deferTntGpuDisposal).
 		this.#materialEpoch++;
-		disposeTntMaterial(this.#material);
+		deferTntGpuDisposal(this.#mesh, this.#material);
 	}
+}
+// BUGFIX: Deferred GPU disposal (same hazard as Chunk.ts/PackedChunkMesh.ts:
+// disposeMeshGpu() destroys buffers immediately, but the GPU may still be
+// rendering with them from a previously-submitted command buffer, producing
+// "buffer used in submit while destroyed" validation errors every frame).
+// The mesh leaves the scene synchronously (no new submits reference it);
+// buffer and material destruction waits until the GPU is idle.
+function deferTntGpuDisposal(mesh: Mesh, mat: ShaderMaterial): void {
+	const engine = Map1.engine;
+	if (!engine) {
+		disposeMeshGpu(mesh);
+		disposeTntMaterial(mat);
+		return;
+	}
+
+	const destroy = (): void => {
+		disposeMeshGpu(mesh);
+		disposeTntMaterial(mat);
+	};
+	void onGpuWorkDone(engine).then(destroy, destroy);
 }
