@@ -59,36 +59,47 @@ export interface ExplosionResult {
 let flashOverlay: HTMLDivElement | null = null;
 let flashTimer: number | null = null;
 
-function flashScreen(strength: number): void {
-	if (typeof document === "undefined") return;
+const SCREEN_FLASH_HALF_RANGE_SQUARED =
+	SCREEN_FLASH_HALF_RANGE * SCREEN_FLASH_HALF_RANGE;
 
+function fadeFlashOverlay(): void {
+	flashTimer = null;
+
+	if (!flashOverlay) {
+		return;
+	}
+
+	flashOverlay.style.transition = "opacity 220ms ease-out";
+	flashOverlay.style.opacity = "0";
+}
+
+function flashScreen(strength: number): void {
 	try {
 		if (!flashOverlay) {
-			flashOverlay = document.createElement("div");
-			flashOverlay.style.position = "fixed";
-			flashOverlay.style.inset = "0";
-			flashOverlay.style.pointerEvents = "none";
-			flashOverlay.style.zIndex = "60";
-			flashOverlay.style.opacity = "0";
-			flashOverlay.style.background =
+			const overlay = document.createElement("div");
+
+			overlay.style.position = "fixed";
+			overlay.style.inset = "0";
+			overlay.style.pointerEvents = "none";
+			overlay.style.zIndex = "60";
+			overlay.style.opacity = "0";
+			overlay.style.background =
 				"radial-gradient(ellipse at center, rgba(255,240,200,0.9) 0%, rgba(255,160,60,0.45) 55%, rgba(255,120,20,0.15) 100%)";
-			document.body.appendChild(flashOverlay);
+
+			document.body.appendChild(overlay);
+			flashOverlay = overlay;
 		}
 
 		if (flashTimer !== null) {
 			window.clearTimeout(flashTimer);
-			flashTimer = null;
 		}
+
 		flashOverlay.style.transition = "none";
 		flashOverlay.style.opacity = String(
 			0.55 * Math.min(1, Math.max(0, strength)),
 		);
 
-		flashTimer = window.setTimeout(() => {
-			if (!flashOverlay) return;
-			flashOverlay.style.transition = "opacity 220ms ease-out";
-			flashOverlay.style.opacity = "0";
-		}, 40);
+		flashTimer = window.setTimeout(fadeFlashOverlay, 40);
 	} catch {
 		// Flash must never break gameplay.
 	}
@@ -113,6 +124,7 @@ export function explode(
 ): ExplosionResult {
 	const radius = options.radius ?? TNT_BLAST_RADIUS;
 	const maxDamage = options.maxDamage ?? TNT_MAX_DAMAGE;
+	const igniter = options.chainIgniter ?? null;
 
 	const { destroy, chain } = collectExplosionTargets(
 		cx,
@@ -122,49 +134,43 @@ export function explode(
 		getBlockByWorldCoords,
 	);
 
-	// Process chained TNT first so it receives a short fuse rather than
-	// disappearing with the other destroyed blocks.
-	const igniter = options.chainIgniter ?? null;
-	let chained = 0;
+	const destroyLength = destroy.length;
+	const chainLength = chain.length;
+	const destroyChainAsTerrain = igniter === null;
+	const destroyed = destroyLength + (destroyChainAsTerrain ? chainLength : 0);
+	const chained = destroyChainAsTerrain ? 0 : chainLength;
 
-	// Batch the whole crater (chains + destroy loop): one remesh per
-	// touched chunk and one LightMutateBatch per chunk instead of ~250
-	// individual light round trips. endBlockEditBatch flushes both.
+	// Keep the two target arrays separate. This avoids growing `destroy`
+	// to create a temporary combined list when chained TNT is terrain.
 	Chunk.beginBlockEditBatch();
+
 	try {
 		if (igniter !== null) {
-			const chainLength = chain.length;
-
 			for (let i = 0; i < chainLength; i++) {
 				const target = chain[i];
 				igniter(target.x, target.y, target.z);
 			}
-
-			chained = chainLength;
-		} else if (chain.length > 0) {
-			// Mutate the existing destroy array instead of creating a combined
-			// temporary array.
-			for (let i = 0, length = chain.length; i < length; i++) {
-				destroy.push(chain[i]);
-			}
 		}
 
-		for (let i = 0, destroyed = destroy.length; i < destroyed; i++) {
+		for (let i = 0; i < destroyLength; i++) {
 			const target = destroy[i];
 			deleteBlock(target.x, target.y, target.z);
+		}
+
+		if (destroyChainAsTerrain) {
+			for (let i = 0; i < chainLength; i++) {
+				const target = chain[i];
+				deleteBlock(target.x, target.y, target.z);
+			}
 		}
 	} finally {
 		Chunk.endBlockEditBatch();
 	}
 
-	const destroyed = destroy.length;
-
-	// Use one authoritative explosion sync rather than per-block messages.
 	if (options.syncExplosion !== false) {
 		getOnExplosion()?.(cx, cy, cz, radius);
 	}
 
-	// --- Explosion FX ---
 	const packedLight = getLightByWorldCoords(cx, cy, cz);
 
 	playExplosion(cx, cy, cz, radius, packedLight);
@@ -177,10 +183,14 @@ export function explode(
 
 	if (debrisCount > 0) {
 		const debrisPower = 1 + radius / TNT_BLAST_RADIUS;
+		const debrisStep = destroyed / debrisCount;
 
 		for (let i = 0; i < debrisCount; i++) {
-			const targetIndex = Math.floor((i * destroyed) / debrisCount);
-			const target = destroy[targetIndex];
+			const targetIndex = Math.floor(i * debrisStep);
+			const target =
+				targetIndex < destroyLength
+					? destroy[targetIndex]
+					: chain[targetIndex - destroyLength];
 
 			playExplosionDebris(
 				target.x + 0.5,
@@ -196,8 +206,7 @@ export function explode(
 	playLandingDust(cx, cy, cz, radius * 2);
 	playExplosionSound(1);
 
-	// --- Player damage, knockback, shake and screen flash ---
-	// Undefined means the current local player. Explicit null means FX-only.
+	// Undefined selects the current local player. Explicit null means FX-only.
 	const player =
 		options.player === undefined ? Map1.mainPlayer : options.player;
 
@@ -217,13 +226,14 @@ export function explode(
 				player.stats.takeDamage(Math.floor(falloff * maxDamage));
 			}
 
-			const inverseDistance = 1 / Math.max(distance, 0.5);
 			const force = falloff * 11;
+			const inverseDistance = 1 / Math.max(distance, 0.5);
+			const scaledForce = inverseDistance * force;
 
 			player.playerVehicle.addExplosionImpulse(
-				dx * inverseDistance * force,
+				dx * scaledForce,
 				(dy * inverseDistance * 0.6 + 0.65) * force,
-				dz * inverseDistance * force,
+				dz * scaledForce,
 			);
 
 			player.playerCamera.addTrauma(Math.min(1, falloff + 0.25));
@@ -235,11 +245,8 @@ export function explode(
 			}
 		}
 
-		// Equivalent inverse-square brightness falloff, using the already
-		// calculated squared distance to avoid another division and square.
-		const halfRangeSquared = SCREEN_FLASH_HALF_RANGE * SCREEN_FLASH_HALF_RANGE;
-
-		flashStrength = 1.5 / (1 + distanceSquared / halfRangeSquared);
+		flashStrength =
+			1.5 / (1 + distanceSquared / SCREEN_FLASH_HALF_RANGE_SQUARED);
 
 		if (flashStrength < 0.05) {
 			flashStrength = 0;
@@ -250,15 +257,20 @@ export function explode(
 		flashScreen(flashStrength);
 	}
 
-	// --- Mob damage ---
 	const registry = Map1.mobRegistry;
 
 	if (registry) {
+		/*
+		 * These arrays remain necessary because blastMobDamages accepts a
+		 * position array, while applying its results requires retaining the
+		 * matching mob for each position.
+		 *
+		 * Per-call arrays are safer than module-level scratch buffers because
+		 * mob.takeDamage may synchronously cause another explosion.
+		 */
 		const liveMobs: Mob[] = [];
 		const mobPositions: Mob["position"][] = [];
 
-		// Build both arrays in one pass. This avoids liveMobs.map(...), its
-		// callback invocation overhead, and an additional traversal.
 		for (const mob of registry.getAllMobs()) {
 			if (!mob.isDisposed) {
 				liveMobs.push(mob);
@@ -291,8 +303,7 @@ export function explode(
 				const y = position.y;
 				const z = position.z;
 
-				// Capture scalar coordinates before takeDamage because lethal
-				// damage may synchronously dispose or mutate the mob.
+				// Keep this object per call in case takeDamage retains it.
 				mob.takeDamage(damage, { x, y, z });
 
 				if (mob.isDisposed) {

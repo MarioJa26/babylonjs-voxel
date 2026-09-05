@@ -111,7 +111,7 @@ export const ARROW_TYPES: readonly ArrowTypeDef[] = [
 		damage: 2,
 		stickTime: 0,
 		bleedPerSecond: 0,
-		blastRadius: 12,
+		blastRadius: 4,
 	},
 ];
 
