@@ -987,6 +987,16 @@ export class ChunkWorkerPool {
 		this.debugStats.lightDispatches++;
 	}
 
+	public postLightMutateBatch(req: {
+		chunkId: bigint;
+		headerSlot: number;
+		muts: Uint32Array;
+		seq: number;
+	}): void {
+		this.getLightWorker().postLightMutateBatch(req);
+		this.debugStats.lightDispatches++;
+	}
+
 	public postLightAddEmission(req: {
 		chunkId: bigint;
 		headerSlot: number;
@@ -1585,6 +1595,7 @@ export class ChunkWorkerPool {
 		Chunk.onLightChunkDisposed = (chunk) => this.onLightChunkDisposed(chunk);
 		Chunk._lightPool = {
 			postLightMutate: (req) => this.postLightMutate(req),
+			postLightMutateBatch: (req) => this.postLightMutateBatch(req),
 			postLightAddEmission: (req) => this.postLightAddEmission(req),
 			nextLightSeq: () => this.nextLightSeq(),
 			enqueueDeferredLightFromSunlightInit: (

@@ -639,6 +639,26 @@ export class ChunkWorker {
 		this.terrainWorker.postMessage(msg);
 	}
 
+	public postLightMutateBatch(req: {
+		chunkId: bigint;
+		headerSlot: number;
+		muts: Uint32Array;
+		seq: number;
+	}): void {
+		// Transfer the mutation buffer zero-copy; the caller must not reuse
+		// it after posting (flushed arrays are freshly allocated per chunk).
+		this.terrainWorker.postMessage(
+			{
+				type: WorkerTaskType.LightMutateBatch,
+				chunkId: req.chunkId,
+				headerSlot: req.headerSlot,
+				muts: req.muts,
+				seq: req.seq,
+			},
+			[req.muts.buffer],
+		);
+	}
+
 	public postLightAddEmission(req: {
 		chunkId: bigint;
 		headerSlot: number;

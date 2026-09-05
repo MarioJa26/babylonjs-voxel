@@ -400,6 +400,10 @@ const onMessageHandler = (event: MessageEvent) => {
 			LightTaskHandlers.handleMutate(event.data);
 			return;
 		}
+		case WorkerTaskType.LightMutateBatch: {
+			LightTaskHandlers.handleMutateBatch(event.data);
+			return;
+		}
 		case WorkerTaskType.LightAddEmission: {
 			LightTaskHandlers.handleAddEmission(event.data);
 			return;

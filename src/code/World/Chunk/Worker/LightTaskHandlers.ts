@@ -9,6 +9,7 @@ import type {
 	InitLightSharedRequest,
 	LightAddEmissionRequest,
 	LightDirtyMessage,
+	LightMutateBatchRequest,
 	LightMutateRequest,
 	LightPropagateDeferredRequest,
 	LightRegisterChunkBatchRequest,
@@ -309,6 +310,67 @@ function handleMutate(req: LightMutateRequest): void {
 
 	postDirty(req.seq, dirty, registry);
 }
+
+/**
+ * Batched variant of handleMutate: runs the same lightMutate core per entry
+ * and merges dirty slots into a single LightDirty reply. lightMutate
+ * returns shared scratch (cleared per call), so each result is copied into
+ * the batch accumulator before the next iteration. Entries for a chunk
+ * whose view is not loaded fall back to the pendingMutations replay queue
+ * with the same cap as single requests.
+ */
+export function handleMutateBatch(req: LightMutateBatchRequest): void {
+	const registry = state.registry;
+	if (!registry) return;
+
+	const muts = req.muts;
+	const view = getLoadedView(registry, req.headerSlot, req.chunkId);
+
+	if (!view) {
+		let queue = pendingMutations.get(req.chunkId);
+
+		if (!queue) {
+			queue = [];
+			pendingMutations.set(req.chunkId, queue);
+		}
+
+		for (
+			let i = 0;
+			i + 4 < muts.length && queue.length < MAX_PENDING_PER_CHUNK;
+			i += 5
+		) {
+			queue.push({
+				type: WorkerTaskType.LightMutate,
+				chunkId: req.chunkId,
+				headerSlot: req.headerSlot,
+				x: muts[i],
+				y: muts[i + 1],
+				z: muts[i + 2],
+				oldPacked: muts[i + 3],
+				newPacked: muts[i + 4],
+				seq: req.seq,
+			});
+		}
+
+		return;
+	}
+
+	_dirtyScratch.clear();
+	for (let i = 0; i + 4 < muts.length; i += 5) {
+		const dirty = lightMutate(
+			registry,
+			req.headerSlot,
+			muts[i],
+			muts[i + 1],
+			muts[i + 2],
+			muts[i + 3],
+			muts[i + 4],
+		);
+		dirty.forEach((slot) => _dirtyScratch.add(slot));
+	}
+
+	postDirty(req.seq, _dirtyScratch, registry);
+}
 function handleAddEmission(req: LightAddEmissionRequest): void {
 	const registry = state.registry;
 	if (!registry) return;
@@ -374,6 +436,7 @@ export const LightTaskHandlers = {
 	handleUnregisterChunkBatch,
 	handleUpdateBuffers,
 	handleMutate,
+	handleMutateBatch,
 	handleAddEmission,
 	handleSkyReconcile,
 	handlePropagateDeferred,

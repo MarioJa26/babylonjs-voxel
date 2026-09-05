@@ -10,6 +10,7 @@ import { Map1 } from "@/code/Maps/Map1";
 import { getOnExplosion } from "@/code/Player/Hud/BlockHighlight/BreakingBlockHandler";
 import type { Player } from "@/code/Player/Player";
 import { Gamemodes } from "@/code/Player/PlayerStats";
+import { Chunk } from "@/code/World/Chunk/Chunk";
 import {
 	deleteBlock,
 	getBlockByWorldCoords,
@@ -126,29 +127,37 @@ export function explode(
 	const igniter = options.chainIgniter ?? null;
 	let chained = 0;
 
-	if (igniter !== null) {
-		const chainLength = chain.length;
+	// Batch the whole crater (chains + destroy loop): one remesh per
+	// touched chunk and one LightMutateBatch per chunk instead of ~250
+	// individual light round trips. endBlockEditBatch flushes both.
+	Chunk.beginBlockEditBatch();
+	try {
+		if (igniter !== null) {
+			const chainLength = chain.length;
 
-		for (let i = 0; i < chainLength; i++) {
-			const target = chain[i];
-			igniter(target.x, target.y, target.z);
+			for (let i = 0; i < chainLength; i++) {
+				const target = chain[i];
+				igniter(target.x, target.y, target.z);
+			}
+
+			chained = chainLength;
+		} else if (chain.length > 0) {
+			// Mutate the existing destroy array instead of creating a combined
+			// temporary array.
+			for (let i = 0, length = chain.length; i < length; i++) {
+				destroy.push(chain[i]);
+			}
 		}
 
-		chained = chainLength;
-	} else if (chain.length > 0) {
-		// Mutate the existing destroy array instead of creating a combined
-		// temporary array.
-		for (let i = 0, length = chain.length; i < length; i++) {
-			destroy.push(chain[i]);
+		for (let i = 0, destroyed = destroy.length; i < destroyed; i++) {
+			const target = destroy[i];
+			deleteBlock(target.x, target.y, target.z);
 		}
+	} finally {
+		Chunk.endBlockEditBatch();
 	}
 
 	const destroyed = destroy.length;
-
-	for (let i = 0; i < destroyed; i++) {
-		const target = destroy[i];
-		deleteBlock(target.x, target.y, target.z);
-	}
 
 	// Use one authoritative explosion sync rather than per-block messages.
 	if (options.syncExplosion !== false) {

@@ -28,6 +28,7 @@ export const enum WorkerTaskType {
 	LightUnregisterChunkBatch,
 	LightUpdateChunkBuffers,
 	LightMutate,
+	LightMutateBatch,
 	LightAddEmission,
 	LightSkyReconcile,
 	LightPropagateDeferred,
@@ -215,6 +216,7 @@ export type WorkerRequestData =
 	| LightUnregisterChunkBatchRequest
 	| LightUpdateChunkBuffersRequest
 	| LightMutateRequest
+	| LightMutateBatchRequest
 	| LightAddEmissionRequest
 	| LightSkyReconcileRequest
 	| LightPropagateDeferredRequest
@@ -293,6 +295,20 @@ export type LightMutateRequest = {
 	z: number;
 	oldPacked: number;
 	newPacked: number;
+	seq: number;
+};
+
+/**
+ * Batched light mutations for a single chunk: flat [x,y,z,oldPacked,
+ * newPacked] quintuples sharing one chunkId/headerSlot/seq. Posted
+ * zero-copy (transferred buffer). Handled by looping the same lightMutate
+ * core as single requests, with a single LightDirty reply per chunk.
+ */
+export type LightMutateBatchRequest = {
+	type: WorkerTaskType.LightMutateBatch;
+	chunkId: bigint;
+	headerSlot: number;
+	muts: Uint32Array;
 	seq: number;
 };
 

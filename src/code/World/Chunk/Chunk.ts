@@ -314,6 +314,10 @@ export class Chunk {
 	// -------------------------------------------------------------------------
 	private static _blockEditBatchDepth = 0;
 	private static readonly _blockEditBatchChunks = new Set<Chunk>();
+	// Pending light mutations accumulated while a batch is open: flat
+	// [x,y,z,oldPacked,newPacked] quintuples per chunk, flushed as one
+	// LightMutateBatch message per chunk by endBlockEditBatch().
+	private static readonly _pendingLightMutates = new Map<Chunk, number[]>();
 
 	public static beginBlockEditBatch(): void {
 		Chunk._blockEditBatchDepth++;
@@ -328,6 +332,7 @@ export class Chunk {
 			return;
 		}
 		const dirty = Chunk._blockEditBatchChunks;
+		Chunk.flushPendingLightMutates();
 		if (dirty.size === 0) return;
 		for (const chunk of dirty) {
 			if (!chunk.isLoaded) continue;
@@ -345,6 +350,30 @@ export class Chunk {
 		}
 		this.clearCachedLODMeshes();
 		this.scheduleRemesh(true);
+	}
+
+	/**
+	 * Flush accumulated light mutations, one LightMutateBatch per chunk.
+	 * No-op outside a batch (dispatch posts immediately) or without a pool.
+	 */
+	private static flushPendingLightMutates(): void {
+		const pending = Chunk._pendingLightMutates;
+		if (pending.size === 0) return;
+		const pool = Chunk._lightPool;
+		if (!pool) {
+			pending.clear();
+			return;
+		}
+		for (const [chunk, muts] of pending) {
+			if (muts.length === 0) continue;
+			pool.postLightMutateBatch({
+				chunkId: chunk.id,
+				headerSlot: chunk.lightHeaderSlot,
+				muts: new Uint32Array(muts),
+				seq: pool.nextLightSeq(),
+			});
+		}
+		pending.clear();
 	}
 
 	// -------------------------------------------------------------------------
@@ -1526,6 +1555,17 @@ export class Chunk {
 		oldPacked: number,
 		newPacked: number,
 	): void {
+		// Inside a batch, accumulate per chunk; endBlockEditBatch flushes
+		// one LightMutateBatch per chunk instead of a postMessage per block.
+		if (Chunk._blockEditBatchDepth > 0) {
+			let muts = Chunk._pendingLightMutates.get(this);
+			if (!muts) {
+				muts = [];
+				Chunk._pendingLightMutates.set(this, muts);
+			}
+			muts.push(localX, localY, localZ, oldPacked, newPacked);
+			return;
+		}
 		const pool = Chunk._lightPool;
 		if (!pool) return;
 		pool.postLightMutate({
@@ -1547,6 +1587,7 @@ export class Chunk {
 	 */
 	public static _lightPool: {
 		postLightMutate(req: any): void;
+		postLightMutateBatch(req: any): void;
 		postLightAddEmission(req: any): void;
 		nextLightSeq(): number;
 		enqueueDeferredLightFromSunlightInit?(
