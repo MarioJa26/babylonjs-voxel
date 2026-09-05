@@ -10,6 +10,7 @@ import {
 import type { Mob } from "@/code/Entities/Mobs/Mob";
 import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
 import { getCachedLightColorForOwner } from "@/code/Entities/Mobs/MobLighting";
+import { igniteChainedTnt } from "@/code/Entities/PrimedTnt";
 import { getPRNGUnit2 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
 import type { Color3 } from "@/code/Lib/Math";
@@ -33,6 +34,7 @@ import {
 	getBlockByWorldCoords,
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { explode } from "@/code/World/Explosion";
 import { isCollidableBlock } from "@/code/World/Texture/BlockType";
 import type { Player } from "../../Player/Player";
 
@@ -530,6 +532,18 @@ export class Arrow {
 		}
 
 		if (blockT >= 0) {
+			const blastRadius = this.#arrowDef.blastRadius;
+			if (blastRadius !== undefined) {
+				// Explosive arrow: detonate at the impact point instead of
+				// embedding. Never sticks, never drops as an item.
+				this.#detonateAt(
+					sx + stepX * blockT,
+					sy + stepY * blockT,
+					sz + stepZ * blockT,
+					blastRadius,
+				);
+				return;
+			}
 			this.#stickInBlock(sx, sy, sz, stepX, stepY, stepZ, blockT);
 			return;
 		}
@@ -770,6 +784,7 @@ export class Arrow {
 		const hy = this.#tmpHY;
 		const hz = this.#tmpHZ;
 		const shooter = this.#shooter;
+		const blastRadius = this.#arrowDef.blastRadius;
 
 		if (this.#tmpIsRemote) {
 			const remoteId = this.#tmpRemoteId;
@@ -783,6 +798,12 @@ export class Arrow {
 				remoteId,
 				this.#arrowDef.damage,
 			);
+
+			if (blastRadius !== undefined) {
+				// Explosive arrow: direct hit plus detonation, no sticking.
+				this.#detonateAt(hx, hy, hz, blastRadius);
+				return true;
+			}
 
 			if (shooter !== null) {
 				this.#bleedMobId = remoteId;
@@ -801,6 +822,12 @@ export class Arrow {
 			mob.takeDamage(this.#arrowDef.damage, { x: hx, y: hy, z: hz });
 
 			shooter?.playerHud.crossHair.showHitMarker();
+
+			if (blastRadius !== undefined) {
+				// Explosive arrow: direct hit plus detonation, no sticking.
+				this.#detonateAt(hx, hy, hz, blastRadius);
+				return true;
+			}
 
 			if (shooter !== null) {
 				this.#bleedMobLocal = mob;
@@ -823,6 +850,20 @@ export class Arrow {
 		this.#updateLightingFromHost();
 
 		return true;
+	}
+
+	/**
+	 * Detonate an explosive arrow at the impact point and dispose it.
+	 * Only the shooter's own client syncs the crater to the server;
+	 * relayed arrows explode FX-locally (same pattern as remote PrimedTnt).
+	 */
+	#detonateAt(x: number, y: number, z: number, blastRadius: number): void {
+		explode(x, y, z, {
+			radius: blastRadius,
+			chainIgniter: igniteChainedTnt,
+			syncExplosion: this.#shooter !== null,
+		});
+		this.dispose();
 	}
 
 	#stickInBlock(

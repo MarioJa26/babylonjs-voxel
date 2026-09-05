@@ -15,6 +15,13 @@ export class ItemSlot implements EventListenerObject {
 	 */
 	onDraggedOut?: (slot: ItemSlot) => void;
 
+	/**
+	 * Fired whenever this slot's contents change (swap, set, clear, or an
+	 * in-place stack merge). The crate UI uses it to push live deltas to the
+	 * server; singleplayer leaves it unset (zero overhead when undefined).
+	 */
+	onChanged?: (slot: ItemSlot) => void;
+
 	row: number;
 	col: number;
 
@@ -47,6 +54,8 @@ export class ItemSlot implements EventListenerObject {
 				slot.#render();
 			}
 
+			this.onChanged?.(this);
+			slot.onChanged?.(slot);
 			return;
 		}
 
@@ -65,6 +74,8 @@ export class ItemSlot implements EventListenerObject {
 
 		this.#render();
 		slot.#render();
+		this.onChanged?.(this);
+		slot.onChanged?.(slot);
 	}
 
 	public get divItemSlot(): HTMLDivElement {
@@ -106,6 +117,7 @@ export class ItemSlot implements EventListenerObject {
 		}
 
 		this.#render();
+		this.onChanged?.(this);
 	}
 
 	public get item(): Item | null {
@@ -115,6 +127,7 @@ export class ItemSlot implements EventListenerObject {
 	public clearItemSlots(): void {
 		this.#item = null;
 		this.#render();
+		this.onChanged?.(this);
 
 		if (draggedItem === this) {
 			draggedItem = null;

@@ -69,6 +69,16 @@ export const MessageType = {
 	ItemUpdateBatch: 0x27, // Position batch for all dropped items (fixed-rate)
 	ItemDespawn: 0x28, // A dropped item was picked up / expired / removed
 	ItemPickupRejected: 0x29, // S→C: this client's ItemPickup was denied
+
+	// Server-authoritative block containers (Wood Crate). The server owns the
+	// slot contents; clients render the crate UI from ContainerState and push
+	// every local edit as a ContainerSetSlot delta (last-write-wins per slot).
+	ContainerOpen: 0x30, // C→S: request to view the crate at (x, y, z)
+	ContainerState: 0x31, // S→C: full slot snapshot for a crate
+	ContainerSetSlot: 0x32, // C→S: set one crate slot (itemId 0 = clear)
+	ContainerSlotUpdate: 0x33, // S→C: one crate slot changed (relay to viewers)
+	ContainerClose: 0x34, // C→S: stop viewing the crate at (x, y, z)
+	ContainerRejected: 0x35, // S→C: open/write refused (also forces UI close)
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];
@@ -354,5 +364,83 @@ export interface ItemPickupRejectedData {
 	/** Server-assigned item instance id (uint32). */
 	id: number;
 	/** One of ItemPickupRejectReason. */
+	reason: number;
+}
+
+/** One crate slot: itemId 0 + stackSize 0 means empty. */
+export interface ContainerSlotData {
+	itemId: number;
+	stackSize: number;
+}
+
+/** C→S: request to view the crate at a block position. */
+export interface ContainerOpenData {
+	x: number;
+	y: number;
+	z: number;
+}
+
+/**
+ * S→C: full slot snapshot for one crate. Slots are row-major
+ * (length === width * height). Version increments on every accepted write;
+ * clients ignore SlotUpdates with an older version.
+ */
+export interface ContainerStateData {
+	x: number;
+	y: number;
+	z: number;
+	version: number;
+	width: number;
+	height: number;
+	slots: ContainerSlotData[];
+}
+
+/** C→S: set one crate slot. S→C relay adds the new version (slot update). */
+export interface ContainerSetSlotData {
+	x: number;
+	y: number;
+	z: number;
+	row: number;
+	col: number;
+	/** 0 clears the slot. */
+	itemId: number;
+	stackSize: number;
+}
+
+/** S→C: one crate slot changed. Fan-out to every viewer of the crate. */
+export interface ContainerSlotUpdateData extends ContainerSetSlotData {
+	version: number;
+}
+
+/** C→S: stop viewing the crate at a block position. */
+export interface ContainerCloseData {
+	x: number;
+	y: number;
+	z: number;
+}
+
+/** Why the server refused a container open/write. */
+export const ContainerRejectReason = {
+	/** No such container (never opened, already broken, unknown coords). */
+	NotFound: 0,
+	/** The crate is farther from the player than the interaction reach. */
+	TooFar: 1,
+	/** The block at the coords is not a crate. */
+	NotCrate: 2,
+	/** Row/col outside the crate grid. */
+	BadSlot: 3,
+	/** itemId/stackSize out of range. */
+	BadItem: 4,
+} as const;
+
+export type ContainerRejectReason =
+	(typeof ContainerRejectReason)[keyof typeof ContainerRejectReason];
+
+/** S→C: a container open/write was denied. Clients close the crate UI. */
+export interface ContainerRejectedData {
+	x: number;
+	y: number;
+	z: number;
+	/** One of ContainerRejectReason. */
 	reason: number;
 }

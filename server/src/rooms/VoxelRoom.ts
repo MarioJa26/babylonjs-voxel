@@ -28,6 +28,9 @@ import {
 	BinaryDecoder,
 	BinaryEncoder,
 	decodeArrowShootInto,
+	decodeContainerCloseInto,
+	decodeContainerOpenInto,
+	decodeContainerSetSlotInto,
 	decodeExplosionInto,
 	decodeItemDropInto,
 	decodeItemPickupInto,
@@ -43,6 +46,9 @@ import {
 	encodeChunkData,
 	encodeChunkDataDeflatedPayload,
 	encodeChunkUnchanged,
+	encodeContainerRejected,
+	encodeContainerSlotUpdate,
+	encodeContainerState,
 	encodeItemDespawn,
 	encodeItemPickupRejected,
 	encodeItemSpawn,
@@ -68,6 +74,10 @@ import {
 	type BlockEditData,
 	BlockEditRejectReason,
 	type ChatMessageData,
+	type ContainerCloseData,
+	type ContainerOpenData,
+	ContainerRejectReason,
+	type ContainerSetSlotData,
 	type ExplosionData,
 	type ItemDropData,
 	type ItemPickupData,
@@ -100,8 +110,17 @@ import {
 	unpackChunkKeyFast,
 } from "@/code/World/Storage/ChunkKey.ts";
 import { serializeVoxelData } from "@/code/World/Storage/VoxelSerializer.ts";
+import { BlockType } from "@/code/World/Texture/BlockType.ts";
 import { getServerConfig } from "../config/ServerConfig.ts";
 import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
+import {
+	CONTAINER_HEIGHT,
+	CONTAINER_WIDTH,
+	containerKey,
+	MAX_CONTAINER_ITEM_ID,
+	MAX_CONTAINER_STACK,
+	ServerContainerStore,
+} from "../world/ContainerSimulation.ts";
 import type { ServerItem } from "../world/ItemSimulation.ts";
 import { ServerItemSimulation } from "../world/ItemSimulation.ts";
 import { rollMobFoodDrop } from "../world/MobDrops.ts";
@@ -262,6 +281,12 @@ export class VoxelRoom extends Room {
 	private itemStateScratch: ItemUpdateBatchEntry[] = [];
 	private itemSnapshotScratch: ServerItem[] = [];
 	private itemUpdateEncoder = new BinaryEncoder(4096);
+	// Server-authoritative crate inventories + per-crate viewer fan-out.
+	// Shared live view: every viewer gets SlotUpdates for every accepted
+	// write (last-write-wins per slot, no exclusive lock).
+	private containerStore!: ServerContainerStore;
+	private readonly containerViewers = new Map<string, Set<string>>();
+	private readonly viewerContainers = new Map<string, Set<string>>();
 	// Authoritative water simulation — shares the client's WaterSimulation logic
 	// via injected ServerWaterBlockAccess + a dedicated BlockTickScheduler.
 	private waterSim!: WaterSimulation;
@@ -400,6 +425,25 @@ export class VoxelRoom extends Room {
 		vy: 0,
 		vz: 0,
 	};
+	private readonly containerOpenScratch: ContainerOpenData = {
+		x: 0,
+		y: 0,
+		z: 0,
+	};
+	private readonly containerSetSlotScratch: ContainerSetSlotData = {
+		x: 0,
+		y: 0,
+		z: 0,
+		row: 0,
+		col: 0,
+		itemId: 0,
+		stackSize: 0,
+	};
+	private readonly containerCloseScratch: ContainerCloseData = {
+		x: 0,
+		y: 0,
+		z: 0,
+	};
 	private readonly itemPickupScratch: ItemPickupData = { itemId: 0 };
 	private readonly mobSpawnRequestScratch: MobSpawnRequestData = {
 		typeId: 0,
@@ -478,6 +522,7 @@ export class VoxelRoom extends Room {
 
 		this.mobSim = new ServerMobSimulation(this.worldStorage);
 		this.itemSim = new ServerItemSimulation(this.worldStorage);
+		this.containerStore = new ServerContainerStore(this.worldStorage);
 
 		// Authoritative water simulation. Shares the client's WaterSimulation
 		// class (single definition) — only the block access and scheduler are
@@ -706,6 +751,7 @@ export class VoxelRoom extends Room {
 		this.protocolViolations.delete(client.sessionId);
 		this.reachRejectWarned.delete(client.sessionId);
 		this.unknownTypeWarned.delete(client.sessionId);
+		this.removeClientFromContainers(client.sessionId);
 		const player = this.players.get(client.sessionId);
 		console.log(
 			`[VoxelRoom] ${player?.name ?? client.sessionId} left (code: ${code})`,
@@ -817,6 +863,9 @@ export class VoxelRoom extends Room {
 		this.protocolViolations.clear();
 		this.reachRejectWarned.clear();
 		this.unknownTypeWarned.clear();
+		this.containerViewers.clear();
+		this.viewerContainers.clear();
+		this.containerStore?.clear();
 
 		await this.mobSim.persistAll();
 		this.clearChunkFlush();
@@ -2034,6 +2083,12 @@ export class VoxelRoom extends Room {
 					return;
 				}
 
+				// Capture the pre-edit block so a broken crate can scatter its
+				// server-owned contents (clients never see crate inventories).
+				const brokeCrate =
+					edit.action === BlockActionType.Break &&
+					this.getAuthoritativeBlock(edit.x, edit.y, edit.z) ===
+						BlockType.WoodCrate;
 				const blockId =
 					edit.action === BlockActionType.Break ? 0 : edit.blockId;
 				const blockState =
@@ -2047,6 +2102,7 @@ export class VoxelRoom extends Room {
 					blockState,
 					edit.action,
 				);
+				if (brokeCrate) this.scatterContainerContents(edit.x, edit.y, edit.z);
 
 				this.editBroadcastEncoder.reset();
 				this.editBroadcastEncoder.writeUint8(MessageType.BlockEditBroadcast);
@@ -2113,31 +2169,32 @@ export class VoxelRoom extends Room {
 				// immediately. The lighting client's local sim still ripples
 				// and sends follow-up Explosion messages for the cascade.
 				const applied: BlockEditData[] = [];
-				for (const target of destroy) {
-					applied.push(
-						this.applyServerEdit(
-							client.sessionId,
-							target.x,
-							target.y,
-							target.z,
-							0,
-							0,
-							BlockActionType.Break,
-						),
-					);
-				}
-				for (const target of chain) {
-					applied.push(
-						this.applyServerEdit(
-							client.sessionId,
-							target.x,
-							target.y,
-							target.z,
-							0,
-							0,
-							BlockActionType.Break,
-						),
-					);
+				const craterCrates: Array<{ x: number; y: number; z: number }> = [];
+				const collectCrater = (targets: typeof destroy): void => {
+					for (const target of targets) {
+						if (
+							this.getAuthoritativeBlock(target.x, target.y, target.z) ===
+							BlockType.WoodCrate
+						) {
+							craterCrates.push({ x: target.x, y: target.y, z: target.z });
+						}
+						applied.push(
+							this.applyServerEdit(
+								client.sessionId,
+								target.x,
+								target.y,
+								target.z,
+								0,
+								0,
+								BlockActionType.Break,
+							),
+						);
+					}
+				};
+				collectCrater(destroy);
+				collectCrater(chain);
+				for (const crate of craterCrates) {
+					this.scatterContainerContents(crate.x, crate.y, crate.z);
 				}
 
 				if (applied.length > 0) {
@@ -2340,6 +2397,48 @@ export class VoxelRoom extends Room {
 
 				this.itemSim.remove(pickup.itemId);
 				this.broadcastBytes("binary", encodeItemDespawn(pickup.itemId), {});
+				break;
+			}
+
+			case MessageType.ContainerOpen: {
+				const open = decodeContainerOpenInto(dec, this.containerOpenScratch);
+				const player = this.players.get(client.sessionId);
+				if (!player) return;
+				if (!this.isValidContainerCoords(open)) return;
+				// Async (LevelDB load-through) — copy coords out of the scratch.
+				void this.handleContainerOpen(client, open.x, open.y, open.z);
+				break;
+			}
+
+			case MessageType.ContainerSetSlot: {
+				const write = decodeContainerSetSlotInto(
+					dec,
+					this.containerSetSlotScratch,
+				);
+				const player = this.players.get(client.sessionId);
+				if (!player) return;
+				if (!this.isValidContainerCoords(write)) return;
+				this.handleContainerSetSlot(
+					client,
+					player,
+					write.x,
+					write.y,
+					write.z,
+					write.row,
+					write.col,
+					write.itemId,
+					write.stackSize,
+				);
+				break;
+			}
+
+			case MessageType.ContainerClose: {
+				const close = decodeContainerCloseInto(dec, this.containerCloseScratch);
+				if (!this.players.has(client.sessionId)) return;
+				this.removeContainerViewer(
+					containerKey(close.x, close.y, close.z),
+					client.sessionId,
+				);
 				break;
 			}
 
@@ -2943,6 +3042,314 @@ export class VoxelRoom extends Room {
 		}>;
 		seen: Set<number>;
 	}> = [];
+	// ─── Server-authoritative crates ────────────────────────────────────
+
+	private isValidContainerCoords(coords: {
+		x: number;
+		y: number;
+		z: number;
+	}): boolean {
+		return (
+			Number.isSafeInteger(coords.x) &&
+			Number.isSafeInteger(coords.y) &&
+			Number.isSafeInteger(coords.z) &&
+			Math.abs(coords.x) <= WORLD_BOUNDARY &&
+			Math.abs(coords.y) <= WORLD_BOUNDARY &&
+			Math.abs(coords.z) <= WORLD_BOUNDARY
+		);
+	}
+
+	private isContainerInReach(
+		player: { x: number; y: number; z: number },
+		x: number,
+		y: number,
+		z: number,
+	): boolean {
+		const dx = x - player.x;
+		const dy = y - player.y;
+		const dz = z - player.z;
+		const maxReachSq = this.config.maxReach * this.config.maxReach;
+		return dx * dx + dy * dy + dz * dz <= maxReachSq;
+	}
+
+	private sendContainerRejected(
+		client: Client,
+		x: number,
+		y: number,
+		z: number,
+		reason: number,
+	): void {
+		client.sendBytes("binary", encodeContainerRejected({ x, y, z, reason }));
+	}
+
+	private sendToSession(sessionId: string, bytes: Uint8Array): void {
+		const clients = this.clients;
+		for (let i = 0; i < clients.length; i++) {
+			if (clients[i].sessionId === sessionId) {
+				clients[i].sendBytes("binary", bytes);
+				return;
+			}
+		}
+	}
+
+	private addContainerViewer(key: string, sessionId: string): void {
+		let viewers = this.containerViewers.get(key);
+		if (!viewers) {
+			viewers = new Set();
+			this.containerViewers.set(key, viewers);
+		}
+		viewers.add(sessionId);
+		let owned = this.viewerContainers.get(sessionId);
+		if (!owned) {
+			owned = new Set();
+			this.viewerContainers.set(sessionId, owned);
+		}
+		owned.add(key);
+	}
+
+	private removeContainerViewer(key: string, sessionId: string): void {
+		const viewers = this.containerViewers.get(key);
+		if (viewers) {
+			viewers.delete(sessionId);
+			if (viewers.size === 0) this.containerViewers.delete(key);
+		}
+		const owned = this.viewerContainers.get(sessionId);
+		if (owned) {
+			owned.delete(key);
+			if (owned.size === 0) this.viewerContainers.delete(sessionId);
+		}
+	}
+
+	private removeClientFromContainers(sessionId: string): void {
+		const owned = this.viewerContainers.get(sessionId);
+		if (!owned) return;
+		for (const key of owned) {
+			const viewers = this.containerViewers.get(key);
+			if (viewers) {
+				viewers.delete(sessionId);
+				if (viewers.size === 0) this.containerViewers.delete(key);
+			}
+		}
+		this.viewerContainers.delete(sessionId);
+	}
+
+	private async handleContainerOpen(
+		client: Client,
+		x: number,
+		y: number,
+		z: number,
+	): Promise<void> {
+		const player = this.players.get(client.sessionId);
+		if (!player) return;
+		if (!this.isContainerInReach(player, x, y, z)) {
+			this.sendContainerRejected(client, x, y, z, ContainerRejectReason.TooFar);
+			return;
+		}
+		if (this.getAuthoritativeBlock(x, y, z) !== BlockType.WoodCrate) {
+			this.sendContainerRejected(
+				client,
+				x,
+				y,
+				z,
+				ContainerRejectReason.NotCrate,
+			);
+			return;
+		}
+		const container = await this.containerStore.open(x, y, z);
+		// Re-validate after the await: the crate may have been broken and the
+		// client may have disconnected while loading from storage.
+		if (!this.players.has(client.sessionId)) return;
+		if (this.getAuthoritativeBlock(x, y, z) !== BlockType.WoodCrate) {
+			this.sendContainerRejected(
+				client,
+				x,
+				y,
+				z,
+				ContainerRejectReason.NotCrate,
+			);
+			return;
+		}
+		this.addContainerViewer(containerKey(x, y, z), client.sessionId);
+		client.sendBytes(
+			"binary",
+			encodeContainerState({
+				x,
+				y,
+				z,
+				version: container.version,
+				width: container.width,
+				height: container.height,
+				slots: container.slots,
+			}),
+		);
+	}
+
+	private handleContainerSetSlot(
+		client: Client,
+		player: { x: number; y: number; z: number },
+		x: number,
+		y: number,
+		z: number,
+		row: number,
+		col: number,
+		itemId: number,
+		stackSize: number,
+	): void {
+		if (!this.isContainerInReach(player, x, y, z)) {
+			this.sendContainerRejected(client, x, y, z, ContainerRejectReason.TooFar);
+			return;
+		}
+		if (this.getAuthoritativeBlock(x, y, z) !== BlockType.WoodCrate) {
+			this.sendContainerRejected(
+				client,
+				x,
+				y,
+				z,
+				ContainerRejectReason.NotCrate,
+			);
+			return;
+		}
+		const key = containerKey(x, y, z);
+		const viewers = this.containerViewers.get(key);
+		if (!viewers || !viewers.has(client.sessionId)) {
+			this.sendContainerRejected(
+				client,
+				x,
+				y,
+				z,
+				ContainerRejectReason.NotFound,
+			);
+			return;
+		}
+		if (
+			!Number.isInteger(row) ||
+			!Number.isInteger(col) ||
+			row < 0 ||
+			col < 0 ||
+			row >= CONTAINER_HEIGHT ||
+			col >= CONTAINER_WIDTH
+		) {
+			this.sendContainerRejected(
+				client,
+				x,
+				y,
+				z,
+				ContainerRejectReason.BadSlot,
+			);
+			return;
+		}
+		const empty = itemId === 0 && stackSize === 0;
+		const stocked =
+			Number.isInteger(itemId) &&
+			Number.isInteger(stackSize) &&
+			itemId >= 1 &&
+			itemId <= MAX_CONTAINER_ITEM_ID &&
+			stackSize >= 1 &&
+			stackSize <= MAX_CONTAINER_STACK;
+		if (!empty && !stocked) {
+			this.sendContainerRejected(
+				client,
+				x,
+				y,
+				z,
+				ContainerRejectReason.BadItem,
+			);
+			return;
+		}
+		const container = this.containerStore.setSlot(
+			x,
+			y,
+			z,
+			row,
+			col,
+			itemId,
+			stackSize,
+		);
+		if (!container) {
+			this.sendContainerRejected(
+				client,
+				x,
+				y,
+				z,
+				ContainerRejectReason.NotFound,
+			);
+			return;
+		}
+		const stored = container.slots[row * container.width + col];
+		const update = encodeContainerSlotUpdate({
+			x,
+			y,
+			z,
+			version: container.version,
+			row,
+			col,
+			itemId: stored.itemId,
+			stackSize: stored.stackSize,
+		});
+		// Fan-out to every viewer (including the writer — the echo carries
+		// the authoritative version and is idempotent client-side).
+		for (const sessionId of viewers) {
+			this.sendToSession(sessionId, update);
+		}
+	}
+
+	/**
+	 * A crate was broken (mined or exploded): drop its server-owned contents
+	 * as world items for everyone and force-close every viewer's UI. Runs on
+	 * the authoritative edit path, so multiplayer clients must NOT scatter
+	 * crate contents locally.
+	 */
+	private scatterContainerContents(x: number, y: number, z: number): void {
+		const key = containerKey(x, y, z);
+		const contents = this.containerStore.takeAll(x, y, z);
+		const viewers = this.containerViewers.get(key);
+		if (viewers) {
+			const rejected = encodeContainerRejected({
+				x,
+				y,
+				z,
+				reason: ContainerRejectReason.NotFound,
+			});
+			for (const sessionId of viewers) {
+				this.sendToSession(sessionId, rejected);
+				const owned = this.viewerContainers.get(sessionId);
+				if (owned) {
+					owned.delete(key);
+					if (owned.size === 0) this.viewerContainers.delete(sessionId);
+				}
+			}
+			this.containerViewers.delete(key);
+		}
+		for (let i = 0; i < contents.length; i++) {
+			const slot = contents[i];
+			const item = this.itemSim.add(
+				slot.itemId,
+				slot.stackSize,
+				x + 0.5,
+				y + 0.5,
+				z + 0.5,
+				(Math.random() - 0.5) * 1.5,
+				2,
+				(Math.random() - 0.5) * 1.5,
+			);
+			this.broadcastBytes(
+				"binary",
+				encodeItemSpawn({
+					id: item.id,
+					itemId: item.itemId,
+					stackSize: item.stackSize,
+					x: item.x,
+					y: item.y,
+					z: item.z,
+					vx: item.vx,
+					vy: item.vy,
+					vz: item.vz,
+				}),
+				{},
+			);
+		}
+	}
+
 	private sendUnchangedBatch(
 		client: Client,
 		unchangedChunks: Array<{

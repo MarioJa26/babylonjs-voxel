@@ -7,6 +7,7 @@ import {
 } from "./code/World/WorldContext";
 import "@/style/theme.css";
 import "@/style/hud.css";
+import "@/style/crosshair-options.css";
 import "@/style/Item.css";
 import "@/style/MultiplayerHUD.css";
 

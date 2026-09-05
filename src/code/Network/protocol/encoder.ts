@@ -15,6 +15,13 @@ import {
 	type BlockEditRejectedData,
 	type ChatMessageData,
 	ChunkResultKind,
+	type ContainerCloseData,
+	type ContainerOpenData,
+	type ContainerRejectedData,
+	type ContainerSetSlotData,
+	type ContainerSlotData,
+	type ContainerSlotUpdateData,
+	type ContainerStateData,
 	type ExplosionData,
 	type ItemDropData,
 	type ItemPickupData,
@@ -1808,6 +1815,183 @@ export function decodeItemPickupRejectedInto(
 	target: ItemPickupRejectedData,
 ): typeof target {
 	target.id = dec.readUint32();
+	target.reason = dec.readUint8();
+	return target;
+}
+
+// ---------------------------------------------------------------------------
+// Server-authoritative block containers (Wood Crate)
+// ContainerOpen (C→S):        [type:1][x:i32][y:i32][z:i32]
+// ContainerState (S→C):       [type:1][x:i32][y:i32][z:i32][version:u32][w:u8][h:u8][itemId:u16][stack:u16] × (w*h)
+// ContainerSetSlot (C→S):     [type:1][x:i32][y:i32][z:i32][row:u8][col:u8][itemId:u16][stack:u16]
+// ContainerSlotUpdate (S→C):  [type:1][x:i32][y:i32][z:i32][version:u32][row:u8][col:u8][itemId:u16][stack:u16]
+// ContainerClose (C→S):       [type:1][x:i32][y:i32][z:i32]
+// ContainerRejected (S→C):    [type:1][x:i32][y:i32][z:i32][reason:u8]
+// ---------------------------------------------------------------------------
+
+/** Max slots accepted in a ContainerState payload (guards malicious blobs). */
+export const MAX_CONTAINER_SLOTS = 64;
+
+export function encodeContainerOpen(data: ContainerOpenData): Uint8Array {
+	const enc = new BinaryEncoder(13);
+	enc.writeUint8(MessageType.ContainerOpen);
+	enc.writeInt32(data.x);
+	enc.writeInt32(data.y);
+	enc.writeInt32(data.z);
+	return enc.getBytes();
+}
+
+export function decodeContainerOpenInto(
+	dec: BinaryDecoder,
+	target: ContainerOpenData,
+): typeof target {
+	target.x = dec.readInt32();
+	target.y = dec.readInt32();
+	target.z = dec.readInt32();
+	return target;
+}
+
+export function encodeContainerState(data: ContainerStateData): Uint8Array {
+	const count = data.width * data.height;
+	const enc = new BinaryEncoder(19 + count * 4);
+	enc.writeUint8(MessageType.ContainerState);
+	enc.writeInt32(data.x);
+	enc.writeInt32(data.y);
+	enc.writeInt32(data.z);
+	enc.writeUint32(data.version);
+	enc.writeUint8(data.width);
+	enc.writeUint8(data.height);
+	for (let i = 0; i < count; i++) {
+		const slot: ContainerSlotData = data.slots[i] ?? {
+			itemId: 0,
+			stackSize: 0,
+		};
+		enc.writeUint16(slot.itemId);
+		enc.writeUint16(slot.stackSize);
+	}
+	return enc.getBytes();
+}
+
+export function decodeContainerStateInto(
+	dec: BinaryDecoder,
+	target: ContainerStateData,
+): typeof target {
+	target.x = dec.readInt32();
+	target.y = dec.readInt32();
+	target.z = dec.readInt32();
+	target.version = dec.readUint32();
+	target.width = dec.readUint8();
+	target.height = dec.readUint8();
+	const count = target.width * target.height;
+	if (count < 0 || count > MAX_CONTAINER_SLOTS) {
+		throw new Error(`container state out of range: ${count} slots`);
+	}
+	const slots: ContainerSlotData[] = new Array(count);
+	for (let i = 0; i < count; i++) {
+		slots[i] = { itemId: dec.readUint16(), stackSize: dec.readUint16() };
+	}
+	target.slots = slots;
+	return target;
+}
+
+export function encodeContainerSetSlot(data: ContainerSetSlotData): Uint8Array {
+	const enc = new BinaryEncoder(19);
+	enc.writeUint8(MessageType.ContainerSetSlot);
+	enc.writeInt32(data.x);
+	enc.writeInt32(data.y);
+	enc.writeInt32(data.z);
+	enc.writeUint8(data.row);
+	enc.writeUint8(data.col);
+	enc.writeUint16(data.itemId);
+	enc.writeUint16(data.stackSize);
+	return enc.getBytes();
+}
+
+export function decodeContainerSetSlotInto(
+	dec: BinaryDecoder,
+	target: ContainerSetSlotData,
+): typeof target {
+	target.x = dec.readInt32();
+	target.y = dec.readInt32();
+	target.z = dec.readInt32();
+	target.row = dec.readUint8();
+	target.col = dec.readUint8();
+	target.itemId = dec.readUint16();
+	target.stackSize = dec.readUint16();
+	return target;
+}
+
+export function encodeContainerSlotUpdate(
+	data: ContainerSlotUpdateData,
+): Uint8Array {
+	const enc = _singleEventEncoder;
+	enc.reset();
+	enc.writeUint8(MessageType.ContainerSlotUpdate);
+	enc.writeInt32(data.x);
+	enc.writeInt32(data.y);
+	enc.writeInt32(data.z);
+	enc.writeUint32(data.version);
+	enc.writeUint8(data.row);
+	enc.writeUint8(data.col);
+	enc.writeUint16(data.itemId);
+	enc.writeUint16(data.stackSize);
+	return enc.getBytes();
+}
+
+export function decodeContainerSlotUpdateInto(
+	dec: BinaryDecoder,
+	target: ContainerSlotUpdateData,
+): typeof target {
+	target.x = dec.readInt32();
+	target.y = dec.readInt32();
+	target.z = dec.readInt32();
+	target.version = dec.readUint32();
+	target.row = dec.readUint8();
+	target.col = dec.readUint8();
+	target.itemId = dec.readUint16();
+	target.stackSize = dec.readUint16();
+	return target;
+}
+
+export function encodeContainerClose(data: ContainerCloseData): Uint8Array {
+	const enc = new BinaryEncoder(13);
+	enc.writeUint8(MessageType.ContainerClose);
+	enc.writeInt32(data.x);
+	enc.writeInt32(data.y);
+	enc.writeInt32(data.z);
+	return enc.getBytes();
+}
+
+export function decodeContainerCloseInto(
+	dec: BinaryDecoder,
+	target: ContainerCloseData,
+): typeof target {
+	target.x = dec.readInt32();
+	target.y = dec.readInt32();
+	target.z = dec.readInt32();
+	return target;
+}
+
+export function encodeContainerRejected(
+	data: ContainerRejectedData,
+): Uint8Array {
+	const enc = _singleEventEncoder;
+	enc.reset();
+	enc.writeUint8(MessageType.ContainerRejected);
+	enc.writeInt32(data.x);
+	enc.writeInt32(data.y);
+	enc.writeInt32(data.z);
+	enc.writeUint8(data.reason);
+	return enc.getBytes();
+}
+
+export function decodeContainerRejectedInto(
+	dec: BinaryDecoder,
+	target: ContainerRejectedData,
+): typeof target {
+	target.x = dec.readInt32();
+	target.y = dec.readInt32();
+	target.z = dec.readInt32();
 	target.reason = dec.readUint8();
 	return target;
 }

@@ -143,6 +143,14 @@ export const Recipes: Recipe[] = [
 			{ itemId: 1023, count: 4 },
 		],
 	}, // Glass Arrow
+	{
+		resultId: 1045,
+		resultCount: 1,
+		ingredients: [
+			{ itemId: 100, count: 1 },
+			{ itemId: 1023, count: 1 },
+		],
+	}, // TNT Arrow
 ];
 
 export interface MasonRecipe {

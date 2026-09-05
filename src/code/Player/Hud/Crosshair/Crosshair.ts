@@ -13,6 +13,7 @@ import {
 	pickTarget as raycastPickTarget,
 	pickWaterTarget as raycastPickWaterTarget,
 } from "../BlockHighlight/BlockRaycaster";
+import type { CrosshairVisualOptions } from "./CrosshairOptions";
 import { CrosshairUI } from "./CrosshairUI";
 
 type LiteForwardRayCamera = {
@@ -44,8 +45,8 @@ export class Crosshair {
 		return meta instanceof MetadataContainer && meta.has("mob");
 	};
 
-	constructor() {
-		this.#ui = new CrosshairUI();
+	constructor(options?: Partial<CrosshairVisualOptions>) {
+		this.#ui = new CrosshairUI(options);
 		this.#highlight = new BlockHighlight();
 
 		// Pointer lock requires a user gesture; at startup it will reject — ignore.
@@ -64,6 +65,31 @@ export class Crosshair {
 
 	setCrosshair(id: string): void {
 		this.#ui.setCrosshair(id);
+	}
+
+	getCrosshairId(): string {
+		return this.#ui.getCrosshairId();
+	}
+
+	setCrosshairSize(sizePx: number): void {
+		this.#ui.setSize(sizePx);
+	}
+
+	setCrosshairColor(hex: string): void {
+		this.#ui.setColor(hex);
+	}
+
+	setCrosshairVisible(visible: boolean): void {
+		this.#ui.setVisible(visible);
+	}
+
+	setHitmarkerEnabled(enabled: boolean): void {
+		this.#ui.setHitmarkerEnabled(enabled);
+	}
+
+	/** Apply a full visual option set (used at boot and by settings menus). */
+	applyCrosshairOptions(options: Partial<CrosshairVisualOptions>): void {
+		this.#ui.applyVisualOptions(options);
 	}
 
 	showHitMarker(): void {

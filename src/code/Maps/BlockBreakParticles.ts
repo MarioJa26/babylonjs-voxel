@@ -747,7 +747,7 @@ export function playExplosion(
 ): void {
 	if (!billboard) return;
 
-	const frame = getBlockFrame(BlockType.Tnt);
+	const frame = getBlockFrame(BlockType.CastleBrickRed);
 	const light = computeLight(packedLight);
 	const lr = Math.min(1, light.r + 0.35);
 	const lg = Math.min(1, light.g + 0.35);
@@ -897,7 +897,7 @@ export function playExplosion(
 			Math.cos(angle) * outSpeed,
 			1.2 + getPRNGUnit2() * 2.2,
 			Math.sin(angle) * outSpeed,
-			1.1 + getPRNGUnit2() * 1.1,
+			1.7 + getPRNGUnit2() * 1.4,
 			0.2 + getPRNGUnit2() * 0.22,
 			getPRNGUnit2() * Math.PI * 2,
 			getPRNGUnit2() - 0.5,
@@ -906,7 +906,8 @@ export function playExplosion(
 			shade * lg,
 			shade * lb,
 			1,
-			-0.12,
+			-0.1,
+			1,
 		);
 	}
 

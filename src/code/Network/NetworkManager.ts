@@ -38,6 +38,7 @@ import { RemoteChunkProvider } from "./chunk/RemoteChunkProvider";
 import { MultiplayerHUD } from "./MultiplayerHUD";
 import { NetClient, type RemotePlayer } from "./NetClient";
 import { BlockActionType, BlockEditRejectReason } from "./protocol/messages";
+import { RemoteContainerManager } from "./RemoteContainerManager";
 import { RemotePlayerRenderer } from "./RemotePlayerRenderer";
 
 const SEND_RATE = 20;
@@ -94,6 +95,8 @@ export class NetworkManager {
 	private renderer: RemotePlayerRenderer;
 	private hud: MultiplayerHUD;
 	private chunkProvider: RemoteChunkProvider;
+	/** Server-authoritative crate sync (owned here so the HUD can reach it). */
+	readonly containers: RemoteContainerManager;
 	private player: Player;
 	private sendAccum = 0;
 	// Last state actually sent to the server, quantized to wire values. The
@@ -129,6 +132,7 @@ export class NetworkManager {
 			(open) => this.onToggleChat(open),
 		);
 		this.chunkProvider = new RemoteChunkProvider(this.client);
+		this.containers = new RemoteContainerManager(this.client);
 	}
 
 	async connect(playerName: string, worldName: string): Promise<void> {
@@ -657,10 +661,16 @@ export class NetworkManager {
 	disconnect(): void {
 		ChunkWorkerPool.getInstance()?.setRemoteChunkProvider(null);
 		this.client.disconnect();
+		this.containers.dispose();
 		this.renderer.dispose();
 		this.hud.dispose();
 		window.removeEventListener("resize", this._onCanvasResize);
 		this._canvas = null;
+	}
+
+	/** Show a transient system line in the multiplayer chat HUD. */
+	notifySystemMessage(text: string): void {
+		this.hud.addSystemMessage(text);
 	}
 
 	/** Expose the underlying NetClient so subsystems (e.g. RemoteMobManager)

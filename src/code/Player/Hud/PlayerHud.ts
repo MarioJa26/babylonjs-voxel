@@ -8,9 +8,17 @@ import {
 	UiFocus,
 } from "@/code/Lib/GameRuntimeState";
 import { Map1 } from "@/code/Maps/Map1";
+import { ContainerRejectReason } from "@/code/Network/protocol/messages";
+import type {
+	RemoteContainerRejection,
+	RemoteContainerSlotUpdate,
+	RemoteContainerState,
+} from "@/code/Network/RemoteContainerManager";
 import { getToolTooltipStats } from "@/code/Player/Inventory/ProceduralTools";
+import { loadGameSettings } from "@/code/UI/GameSettings";
 import {
 	buildBlockInventorySlots,
+	createEmptyInventory,
 	getBlockInventory,
 	type SavedBlockInventory,
 	saveBlockInventory,
@@ -65,6 +73,14 @@ export class PlayerHud {
 	#woodCrateBlockPos: { x: number; y: number; z: number } | null = null;
 	#woodCrateSlots: ItemSlot[][] | null = null;
 	#woodCrateSavedState: SavedBlockInventory | null = null;
+	// Multiplayer (server-authoritative crate): when true the grid mirrors
+	// the server snapshot and every local edit is pushed as a slot delta.
+	#woodCrateRemote = false;
+	#woodCrateLoading = false;
+	#woodCrateVersion = 0;
+	#woodCrateApplyingRemote = false;
+	#woodCrateLastSent: { itemId: number; stackSize: number }[][] | null = null;
+	#woodCrateInventoryObserverId: number | null = null;
 
 	#selectedHotbarSlot = 0;
 	#hotbarSlots: HTMLDivElement[] = [];
@@ -131,7 +147,8 @@ export class PlayerHud {
 		this.#player = player;
 		PlayerHud.#inventory = player.playerInventory;
 		this.#craftMenu = new CraftMenu(player.playerInventory);
-		this.crossHair = new Crosshair();
+		// Apply persisted crosshair visuals (style/size/color/visibility).
+		this.crossHair = new Crosshair(loadGameSettings());
 		this.#overlayDiv = this.initializeHUD();
 		this.createHotbarUI();
 		this.createStatsUI();
@@ -500,16 +517,55 @@ export class PlayerHud {
 		this.#woodCrateBlockPos = { x, y, z };
 		openUi(UiFocus.woodCrate);
 
-		// Load saved state and build live slots
-		const saved = getBlockInventory(x, y, z);
-		this.#woodCrateSavedState = saved;
-		this.#woodCrateSlots = buildBlockInventorySlots(saved);
+		const net = this.#player.networkManager;
+		const remote = net?.isConnected === true ? net : null;
+		if (remote) {
+			// Server-authoritative: open with an empty grid, then fill it
+			// from the ContainerState snapshot. Edits made before the
+			// snapshot arrives are not sent (loading gate in pushCrateDiff).
+			this.#woodCrateRemote = true;
+			this.#woodCrateLoading = true;
+			this.#woodCrateVersion = 0;
+			const empty = createEmptyInventory(3, 6);
+			this.#woodCrateSavedState = empty;
+			this.#woodCrateSlots = buildBlockInventorySlots(empty);
+			this.#attachCrateSlotListeners();
+			this.#woodCrateLastSent = PlayerHud.emptyCrateSnapshot();
+		} else {
+			// Load saved state and build live slots
+			const saved = getBlockInventory(x, y, z);
+			this.#woodCrateSavedState = saved;
+			this.#woodCrateSlots = buildBlockInventorySlots(saved);
+			this.#attachCrateSlotListeners();
+		}
 
 		if (!this.#woodCrateDiv) {
 			this.#woodCrateDiv = this.createWoodCrateUI();
 		} else {
 			// Rebuild the block inventory content
 			this.#refreshWoodCrateContent();
+		}
+
+		if (remote) {
+			remote.containers.setCallbacks({
+				onState: (state) => this.#onRemoteCrateState(state),
+				onSlotUpdate: (update) => this.#applyRemoteCrateCell(update),
+				onRejected: (rejection) => this.#onRemoteCrateRejected(rejection),
+			});
+			void remote.containers.open(x, y, z).then(
+				(state) => {
+					if (this.#woodCrateOpen && this.#woodCrateLoading) {
+						this.#onRemoteCrateState(state);
+					}
+				},
+				() => {
+					// Rejection details arrive via onRejected; a timeout or
+					// disconnect just closes the loading UI quietly.
+					if (this.#woodCrateOpen && this.#woodCrateLoading) {
+						this.hideWoodCrateUI();
+					}
+				},
+			);
 		}
 
 		// Switch to inventory controls for Q-drop and cross-inventory drag
@@ -551,6 +607,15 @@ export class PlayerHud {
 			this.#woodCrateClickHandler,
 			true,
 		);
+
+		// Catch-all for inventory-system mutations that bypass slot setters:
+		// Q-drop (and similar consume paths) edit hovered crate items in
+		// place, so no onChanged fires. Every such path ends with
+		// onInventoryChangedObservable, where we repair + push the diff.
+		this.#woodCrateInventoryObserverId =
+			PlayerHud.#inventory.onInventoryChangedObservable.add(() =>
+				this.#onInventorySystemChanged(),
+			);
 	}
 
 	public hideWoodCrateUI(): void {
@@ -558,7 +623,26 @@ export class PlayerHud {
 
 		this.#woodCrateOpen = false;
 
-		if (this.#woodCrateBlockPos && this.#woodCrateSlots) {
+		if (this.#woodCrateRemote) {
+			// Server already has every accepted delta; just unsubscribe.
+			const net = this.#player.networkManager;
+			if (this.#woodCrateBlockPos) {
+				const { x, y, z } = this.#woodCrateBlockPos;
+				try {
+					net?.containers.sendClose(x, y, z);
+				} catch {
+					// Close is best-effort; the server also cleans up on leave.
+				}
+			}
+			try {
+				net?.containers.setCallbacks({});
+			} catch {
+				// ignore
+			}
+			this.#woodCrateRemote = false;
+			this.#woodCrateLoading = false;
+			this.#woodCrateLastSent = null;
+		} else if (this.#woodCrateBlockPos && this.#woodCrateSlots) {
 			const saved = serializeBlockSlots(this.#woodCrateSlots);
 			const { x, y, z } = this.#woodCrateBlockPos;
 			saveBlockInventory(x, y, z, saved);
@@ -608,6 +692,13 @@ export class PlayerHud {
 			this.#woodCrateClickHandler = undefined;
 		}
 
+		if (this.#woodCrateInventoryObserverId !== null) {
+			PlayerHud.#inventory.onInventoryChangedObservable.remove(
+				this.#woodCrateInventoryObserverId,
+			);
+			this.#woodCrateInventoryObserverId = null;
+		}
+
 		if (!isUiOpen()) {
 			this.#enterPointerLock();
 		}
@@ -615,6 +706,229 @@ export class PlayerHud {
 
 	public get isWoodCrateOpen(): boolean {
 		return this.#woodCrateOpen;
+	}
+
+	/**
+	 * Catch-all for inventory-system mutations (Q-drop, stack consumes) that
+	 * edit crate items in place without touching slot setters. Repairs
+	 * depleted/detached crate items, then pushes the diff (remote only —
+	 * pushCrateDiff gates on remote/loading itself).
+	 */
+	#onInventorySystemChanged(): void {
+		if (!this.#woodCrateOpen || !this.#woodCrateSlots) return;
+		this.#repairCrateSlots();
+		this.#pushCrateDiff();
+	}
+
+	/**
+	 * Q-drop depletes the hovered item in place and its delete path only
+	 * knows the player grid, so a fully-dropped crate item is left behind as
+	 * a detached 0-stack ghost. Clear those (and re-attach renders that lost
+	 * their DOM parent) so the grid — and the next diff — reflect reality.
+	 */
+	#repairCrateSlots(): void {
+		const grid = this.#woodCrateSlots;
+		if (!grid) return;
+		for (const row of grid) {
+			for (const slot of row) {
+				const item = slot.item;
+				if (!item) continue;
+				if (item.stackSize <= 0) {
+					slot.clearItemSlots();
+				} else if (item.div.parentElement !== slot.divItemSlot) {
+					// Content unchanged — re-render only, no server write
+					// (the diff against last-sent stays clean).
+					slot.item = item;
+				}
+			}
+		}
+	}
+
+	// ─── Server-authoritative crate sync ────────────────────────────────
+
+	private static emptyCrateSnapshot(): {
+		itemId: number;
+		stackSize: number;
+	}[][] {
+		const rows: { itemId: number; stackSize: number }[][] = [];
+		for (let r = 0; r < 6; r++) {
+			const row: { itemId: number; stackSize: number }[] = [];
+			for (let c = 0; c < 3; c++) row.push({ itemId: 0, stackSize: 0 });
+			rows.push(row);
+		}
+		return rows;
+	}
+
+	/** Attach live-delta listeners to the current crate grid. */
+	#attachCrateSlotListeners(): void {
+		const grid = this.#woodCrateSlots;
+		if (!grid) return;
+		for (const row of grid) {
+			for (const slot of row) {
+				slot.onChanged = () => this.#pushCrateDiff();
+			}
+		}
+	}
+
+	/**
+	 * Diff the live crate grid against the last-sent snapshot and push every
+	 * changed cell to the server. No-op in singleplayer, while loading, or
+	 * while applying a remote update (the snapshot is updated alongside).
+	 */
+	#pushCrateDiff(): void {
+		if (
+			!this.#woodCrateOpen ||
+			!this.#woodCrateRemote ||
+			this.#woodCrateLoading ||
+			this.#woodCrateApplyingRemote
+		) {
+			return;
+		}
+		const net = this.#player.networkManager;
+		if (net?.isConnected !== true) return;
+		const pos = this.#woodCrateBlockPos;
+		const grid = this.#woodCrateSlots;
+		const last = this.#woodCrateLastSent;
+		if (!pos || !grid || !last) return;
+		for (let r = 0; r < grid.length; r++) {
+			const gridRow = grid[r];
+			const lastRow = last[r];
+			if (!gridRow || !lastRow) continue;
+			for (let c = 0; c < gridRow.length; c++) {
+				const slot = gridRow[c];
+				const prev = lastRow[c];
+				if (!slot || !prev) continue;
+				const item = slot.item;
+				const curItemId = item?.itemId ?? 0;
+				const curStack = item?.stackSize ?? 0;
+				if (prev.itemId === curItemId && prev.stackSize === curStack) {
+					continue;
+				}
+				lastRow[c] = { itemId: curItemId, stackSize: curStack };
+				net.containers.sendSetSlot(
+					pos.x,
+					pos.y,
+					pos.z,
+					r,
+					c,
+					curItemId,
+					curStack,
+				);
+			}
+		}
+	}
+
+	/** Apply a full authoritative snapshot (open response / re-sync). */
+	#onRemoteCrateState(state: RemoteContainerState): void {
+		if (!this.#woodCrateOpen || !this.#woodCrateRemote) return;
+		const pos = this.#woodCrateBlockPos;
+		if (!pos || state.x !== pos.x || state.y !== pos.y || state.z !== pos.z) {
+			return;
+		}
+		if (
+			!this.#woodCrateLoading &&
+			state.version <= this.#woodCrateVersion &&
+			this.#woodCrateSlots
+		) {
+			return;
+		}
+		if (
+			state.width < 1 ||
+			state.width > 8 ||
+			state.height < 1 ||
+			state.height > 8 ||
+			state.slots.length !== state.width * state.height
+		) {
+			return;
+		}
+		this.#woodCrateVersion = state.version;
+		const saved: SavedBlockInventory = {
+			width: state.width,
+			height: state.height,
+			slots: [],
+		};
+		const last = PlayerHud.emptyCrateSnapshot();
+		for (let r = 0; r < state.height; r++) {
+			const savedRow: SavedBlockInventory["slots"][number] = [];
+			for (let c = 0; c < state.width; c++) {
+				const s = state.slots[r * state.width + c];
+				if (r < 6 && c < 3)
+					last[r][c] = { itemId: s.itemId, stackSize: s.stackSize };
+				savedRow.push(
+					s.itemId === 0 ? null : { itemId: s.itemId, stackSize: s.stackSize },
+				);
+			}
+			saved.slots.push(savedRow);
+		}
+		this.#woodCrateSavedState = saved;
+		this.#woodCrateSlots = buildBlockInventorySlots(saved);
+		this.#attachCrateSlotListeners();
+		this.#woodCrateLastSent = last;
+		this.#woodCrateLoading = false;
+		this.#refreshWoodCrateContent();
+	}
+
+	/** Apply one authoritative slot delta from another viewer (or our echo). */
+	#applyRemoteCrateCell(update: RemoteContainerSlotUpdate): void {
+		if (!this.#woodCrateOpen || !this.#woodCrateRemote) return;
+		const pos = this.#woodCrateBlockPos;
+		if (
+			!pos ||
+			update.x !== pos.x ||
+			update.y !== pos.y ||
+			update.z !== pos.z
+		) {
+			return;
+		}
+		if (update.version < this.#woodCrateVersion) return;
+		this.#woodCrateVersion = update.version;
+		const slot = this.#woodCrateSlots?.[update.row]?.[update.col];
+		const lastRow = this.#woodCrateLastSent?.[update.row];
+		if (!slot || !lastRow?.[update.col]) return;
+		lastRow[update.col] = {
+			itemId: update.itemId,
+			stackSize: update.stackSize,
+		};
+		this.#woodCrateApplyingRemote = true;
+		try {
+			if (update.itemId === 0) {
+				slot.clearItemSlots();
+			} else {
+				try {
+					const item = Item.createById(update.itemId, update.row, update.col);
+					item.stackSize = update.stackSize;
+					slot.item = item;
+				} catch {
+					// Unknown item id — render empty rather than crashing.
+					slot.clearItemSlots();
+				}
+			}
+		} finally {
+			this.#woodCrateApplyingRemote = false;
+		}
+	}
+
+	/** The server refused the open/write (or the crate is gone): close up. */
+	#onRemoteCrateRejected(rejection: RemoteContainerRejection): void {
+		if (!this.#woodCrateOpen || !this.#woodCrateRemote) return;
+		const pos = this.#woodCrateBlockPos;
+		if (
+			!pos ||
+			rejection.x !== pos.x ||
+			rejection.y !== pos.y ||
+			rejection.z !== pos.z
+		) {
+			return;
+		}
+		const net = this.#player.networkManager;
+		let detail = "is no longer available";
+		if (rejection.reason === ContainerRejectReason.TooFar) {
+			detail = "is too far away";
+		} else if (rejection.reason === ContainerRejectReason.NotCrate) {
+			detail = "is not a crate";
+		}
+		this.hideWoodCrateUI();
+		net?.notifySystemMessage(`Crate ${detail} — closed`);
 	}
 
 	#moveItemBetweenCrateAndInventory(slot: ItemSlot): boolean {
@@ -637,11 +951,15 @@ export class PlayerHud {
 
 		// First try to stack into existing stacks.
 		if (this.tryStackItemIntoRows(slot, item, targetRows)) {
+			// In-place stack merges bypass slot setters — push explicitly.
+			this.#pushCrateDiff();
 			return true;
 		}
 
 		// Then try to move into the first empty slot.
-		return this.tryMoveItemToEmptySlot(slot, item, targetRows);
+		const moved = this.tryMoveItemToEmptySlot(slot, item, targetRows);
+		if (moved) this.#pushCrateDiff();
+		return moved;
 	}
 	private slotExistsInRows(slot: ItemSlot, rows: ItemSlot[][]): boolean {
 		for (let row = 0, rowCount = rows.length; row < rowCount; row++) {

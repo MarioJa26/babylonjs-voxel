@@ -1,4 +1,5 @@
 import type { Mesh, Vec3 } from "@babylonjs/lite";
+import { playBlockBreak, playMineHit } from "@/code/Audio/SurfaceAudio";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
 import { play, playDebris, playMining } from "@/code/Maps/BlockBreakParticles";
 import {
@@ -412,6 +413,7 @@ export class BlockBreakingHandler {
 			hit.nz,
 			blockId,
 		);
+		playMineHit(blockId);
 	}
 
 	#breakBlock(
@@ -472,6 +474,7 @@ export class BlockBreakingHandler {
 			blockId,
 			packedLight,
 		);
+		playBlockBreak(blockId);
 
 		this.reset();
 
@@ -491,6 +494,16 @@ export class BlockBreakingHandler {
 		}
 
 		if (blockId === BlockType.WoodCrate) {
+			// Multiplayer: crate contents are server-owned — the server
+			// scatters them as world items and force-closes viewers on the
+			// authoritative break path. Scattering locally would duplicate
+			// items and desync every other viewer.
+			if (this.#player.networkManager?.isConnected === true) {
+				if (di && this.#player.stats.gamemode === Gamemodes.Creative) {
+					di.use(this.#player);
+				}
+				return;
+			}
 			const blockInventory = getBlockInventory(x, y, z);
 
 			const dropX = x + 0.5;

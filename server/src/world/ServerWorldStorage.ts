@@ -1598,6 +1598,96 @@ export class ServerWorldStorage {
 			return [];
 		}
 	}
+
+	/**
+	 * Persist a block container (Wood Crate) inventory. Stored durably under
+	 * a per-position meta key so crate contents survive restarts. Slots are
+	 * row-major `{itemId, stackSize}` entries; empty slots are itemId 0.
+	 */
+	async saveContainer(
+		x: number,
+		y: number,
+		z: number,
+		data: PersistedContainer,
+	): Promise<void> {
+		this.assertActive();
+		await this.store.setMeta(
+			`crate:${x},${y},${z}`,
+			JSON.stringify({
+				version: data.version,
+				width: data.width,
+				height: data.height,
+				slots: data.slots,
+			}),
+		);
+	}
+
+	/** Load a persisted container, or null if the crate was never written. */
+	async loadContainer(
+		x: number,
+		y: number,
+		z: number,
+	): Promise<PersistedContainer | null> {
+		this.assertActive();
+
+		const raw = await this.store.getMeta(`crate:${x},${y},${z}`);
+		if (!raw) return null;
+
+		try {
+			const parsed: unknown = JSON.parse(raw);
+			return isPersistedContainer(parsed) ? parsed : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Delete a container (crate broken). Missing keys are a no-op. */
+	async deleteContainer(x: number, y: number, z: number): Promise<void> {
+		this.assertActive();
+		await this.store.deleteMeta(`crate:${x},${y},${z}`);
+	}
+}
+
+/** Durable snapshot of one crate's inventory (row-major slots). */
+export interface PersistedContainer {
+	version: number;
+	width: number;
+	height: number;
+	slots: Array<{ itemId: number; stackSize: number }>;
+}
+
+function isPersistedContainerSlot(value: unknown): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	const s = value as { itemId?: unknown; stackSize?: unknown };
+	return (
+		typeof s.itemId === "number" &&
+		Number.isInteger(s.itemId) &&
+		s.itemId >= 0 &&
+		typeof s.stackSize === "number" &&
+		Number.isInteger(s.stackSize) &&
+		s.stackSize >= 0
+	);
+}
+
+function isPersistedContainer(value: unknown): value is PersistedContainer {
+	if (typeof value !== "object" || value === null) return false;
+	const c = value as Partial<PersistedContainer>;
+	return (
+		typeof c.version === "number" &&
+		Number.isInteger(c.version) &&
+		c.version >= 0 &&
+		typeof c.width === "number" &&
+		Number.isInteger(c.width) &&
+		c.width > 0 &&
+		c.width <= 8 &&
+		typeof c.height === "number" &&
+		Number.isInteger(c.height) &&
+		c.height > 0 &&
+		c.height <= 8 &&
+		Array.isArray(c.slots) &&
+		c.slots.length === c.width * c.height &&
+		c.slots.every(isPersistedContainerSlot)
+	);
 }
 
 function isPersistedMob(value: unknown): value is PersistedMob {

@@ -14,7 +14,8 @@ export type ArrowTypeName =
 	| "gold"
 	| "coal"
 	| "copper"
-	| "glass";
+	| "glass"
+	| "tnt";
 
 export interface ArrowTypeDef {
 	/** Stable identifier (also the item's arrowType key). */
@@ -33,6 +34,11 @@ export interface ArrowTypeDef {
 	stickTime: number;
 	/** Damage per second applied to a mob while the arrow is stuck. */
 	bleedPerSecond: number;
+	/**
+	 * Blast radius when this arrow impacts. Set only on explosive arrows
+	 * (TNT) — undefined means a normal embed/stick/bleed arrow.
+	 */
+	blastRadius?: number;
 }
 
 export const ARROW_TYPES: readonly ArrowTypeDef[] = [
@@ -96,6 +102,17 @@ export const ARROW_TYPES: readonly ArrowTypeDef[] = [
 		stickTime: 4,
 		bleedPerSecond: 2.5,
 	},
+	{
+		type: "tnt",
+		itemId: 1045,
+		color: new Color3(0.85, 0.2, 0.1),
+		icon: "/texture/items/item/arrow/tntarrow.png",
+		texture: "/texture/items/item/arrow/tntarrow.png",
+		damage: 2,
+		stickTime: 0,
+		bleedPerSecond: 0,
+		blastRadius: 12,
+	},
 ];
 
 export const ARROW_TYPE_COUNT = ARROW_TYPES.length;
@@ -122,9 +139,13 @@ export function getArrowTooltipStats(itemId: number): string | null {
 	if (index === undefined) return null;
 
 	const def = ARROW_TYPES[index]!;
-	return [
+	const lines = [
 		`Damage: ${def.damage}`,
 		`Stick time: ${def.stickTime}s`,
 		`Bleed: ${def.bleedPerSecond}/s`,
-	].join("\n");
+	];
+	if (def.blastRadius !== undefined) {
+		lines.push(`Explodes on impact (radius ${def.blastRadius})`);
+	}
+	return lines.join("\n");
 }

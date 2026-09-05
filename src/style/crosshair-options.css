@@ -1,0 +1,227 @@
+/* ─── Crosshair option menus (main-menu Options + pause Settings) ──────────
+ *
+ * Shared styles for the collapsible crosshair subsections built by
+ * CrosshairOptions.ts (preview, thumbnail grid, color swatches). Loaded via
+ * main.ts so the rules are always present; ensureCrosshairOptionStyles() in
+ * CrosshairOptions.ts injects an identical copy as a fallback.
+ */
+
+.crosshair-collapsible {
+	width: 100%;
+	max-width: min(480px, 90vw);
+	border: 1px solid var(--hud-frame-dim, #3a3a3a);
+	border-radius: 4px;
+	background: rgba(0, 0, 0, 0.25);
+	box-sizing: border-box;
+}
+
+.crosshair-collapsible-header {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 10px 12px;
+	background: none;
+	border: none;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	box-sizing: border-box;
+}
+
+.crosshair-collapsible-header:hover {
+	color: #fff;
+}
+
+.crosshair-collapsible-body {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 12px;
+	padding: 4px 12px 14px;
+	box-sizing: border-box;
+}
+
+.crosshair-preview-wrap {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+.crosshair-preview-box {
+	flex: 0 0 auto;
+	width: 64px;
+	height: 64px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background:
+		repeating-conic-gradient(
+			rgba(255, 255, 255, 0.09) 0% 25%,
+			transparent 0% 50%
+		)
+		0 0 / 16px 16px,
+		rgba(0, 0, 0, 0.55);
+	border: 1px solid var(--hud-frame-dim, #3a3a3a);
+	border-radius: 4px;
+	overflow: hidden;
+}
+
+.crosshair-preview-box img {
+	pointer-events: none;
+	user-select: none;
+}
+
+.crosshair-preview-label {
+	font-size: 0.85em;
+	color: var(--hud-text-muted, #9aa4ad);
+}
+
+.crosshair-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
+	gap: 4px;
+	max-height: 240px;
+	overflow-y: auto;
+	padding: 4px;
+	background: rgba(0, 0, 0, 0.35);
+	border: 1px solid var(--hud-frame-dim, #3a3a3a);
+	border-radius: 1px;
+	scrollbar-width: thin;
+}
+
+.crosshair-thumb {
+	aspect-ratio: 1;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 100%;
+	min-width: 0;
+	min-height: 0;
+	margin: 0;
+	overflow: hidden;
+	padding: 1px;
+	background: rgba(255, 255, 255, 0.04);
+	border: 1px solid transparent;
+	border-radius: 4px;
+	cursor: pointer;
+	box-sizing: border-box;
+	appearance: none;
+	font: inherit;
+	line-height: 0;
+}
+
+.crosshair-thumb:hover {
+	background: rgba(255, 255, 255, 0.1);
+}
+
+.crosshair-thumb.selected {
+	border-color: var(--hud-accent, #00bbff);
+	background: rgba(0, 187, 255, 0.12);
+}
+
+.crosshair-thumb img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	max-width: 100%;
+	max-height: 100%;
+	min-width: 0;
+	min-height: 0;
+	object-fit: contain;
+	pointer-events: none;
+	user-select: none;
+}
+
+.crosshair-swatches {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+}
+
+.crosshair-swatch {
+	width: 28px;
+	height: 28px;
+	border-radius: 50%;
+	border: 2px solid rgba(255, 255, 255, 0.25);
+	cursor: pointer;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+.crosshair-swatch:hover {
+	transform: scale(1.1);
+}
+
+.crosshair-swatch.selected {
+	border-color: #fff;
+	box-shadow: 0 0 0 2px var(--hud-accent, #00bbff);
+}
+
+.crosshair-color-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 0.85em;
+	color: var(--hud-text-muted, #9aa4ad);
+}
+
+.crosshair-color-row input[type="color"] {
+	width: 40px;
+	height: 28px;
+	padding: 0;
+	border: 1px solid var(--hud-frame-dim, #3a3a3a);
+	background: none;
+	cursor: pointer;
+}
+
+/* ─── Pause-menu overrides ───────────────────────────────────────────────
+ *
+ * hud.css themes every button inside #pauseMenuContainer (min-width: 220px,
+ * large padding, 2px border) at ID specificity, which would blow the small
+ * crosshair controls up to full-size buttons. Re-scope them above it.
+ */
+
+#pauseMenuContainer .crosshair-collapsible-header,
+#pauseMenuContainer .crosshair-thumb,
+#pauseMenuContainer .crosshair-swatch {
+	min-width: 0;
+	font-size: 1em;
+}
+
+#pauseMenuContainer .crosshair-collapsible-header {
+	padding: 10px 12px;
+	background: none;
+	border: none;
+}
+
+#pauseMenuContainer .crosshair-thumb {
+	padding: 1px;
+	border: 1px solid transparent;
+	background: rgba(255, 255, 255, 0.04);
+	line-height: 0;
+}
+
+#pauseMenuContainer .crosshair-thumb:hover {
+	border-color: var(--hud-accent, #00bbff);
+	background: rgba(255, 255, 255, 0.1);
+}
+
+#pauseMenuContainer .crosshair-thumb.selected {
+	border-color: var(--hud-accent, #00bbff);
+	background: rgba(0, 187, 255, 0.12);
+}
+
+#pauseMenuContainer .crosshair-swatch {
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	border: 2px solid rgba(255, 255, 255, 0.25);
+	border-radius: 50%;
+}
+
+#pauseMenuContainer .crosshair-swatch.selected {
+	border-color: #fff;
+}

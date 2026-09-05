@@ -1,6 +1,7 @@
 // Add these module-level reusable scratch buffers near _indexedScratch.
 
 import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
+import { playFootstep } from "../Audio/SurfaceAudio";
 import { CustomBoat } from "../Entities/CustomBoat";
 import { MobTypeId } from "../Entities/MobConfig";
 import { update as updateDistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
@@ -21,6 +22,7 @@ import { Map1 } from "../Maps/Map1";
 import { isEyeUnderwater } from "../Maps/UnderWaterEffect";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
+	getBlockByWorldCoords,
 	getDebugStats,
 	processFrameBudgetedStreamingWork,
 	updateChunksAround,
@@ -40,6 +42,7 @@ import { FarTileManager } from "../World/FarTiles/FarTileManager";
 import { onGpuWorkDone } from "../World/Light/liteGpuBuffer";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
 import { onSpawnPrepared } from "../World/SpawnPoint";
+import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import {
 	type BlockRaycastHit,
 	pickTarget,
@@ -107,6 +110,9 @@ export class PlayerLoopController {
 	// cadence independent of remote players.
 	#sprintEmitter = makeSprintEmitterState();
 
+	// Stride accumulator for footstep sounds (meters since the last step).
+	#strideDistance = 0;
+
 	private readonly scene: SceneContext;
 
 	constructor(
@@ -115,6 +121,9 @@ export class PlayerLoopController {
 			isSprinting: boolean;
 			isClimbing: boolean;
 			isFlying: boolean;
+			isMounted: boolean;
+			isGrounded: boolean;
+			onAudibleStep: (() => void) | null;
 			velocity: Vec3;
 			inputDirection: Vec3;
 			update(dt: number): void;
@@ -146,6 +155,12 @@ export class PlayerLoopController {
 		Chunk.onChunkLoaded = (chunk: Chunk) => {
 			this.#previousOnChunkLoaded?.(chunk);
 			this.#occlusionCuller.incrementalAdd(chunk);
+		};
+
+		// Step-up sounds share the stride cooldown: any audible step-up
+		// restarts the walking cadence so the two never overlap.
+		this.playerVehicle.onAudibleStep = () => {
+			this.#strideDistance = 0;
 		};
 
 		// Profiling keys: F5 dumps a frame-section report, F6 toggles far-tile
@@ -231,6 +246,7 @@ export class PlayerLoopController {
 		vehicle.update(deltaMs);
 
 		this.updateSprintParticles(uiOpen, playerPos);
+		this.updateFootsteps(uiOpen, playerPos, dtSec);
 
 		stats.update(
 			dtSec,
@@ -387,6 +403,74 @@ export class PlayerLoopController {
 			vel.x,
 			vel.z,
 		);
+	}
+
+	/**
+	 * Footstep sounds from stride distance. Plays the ground material's
+	 * footstep (or a splash when wading) every ~2m walked / ~2.6m sprinted.
+	 * Riding, flying, climbing, and UI-open states stay silent.
+	 */
+	updateFootsteps(
+		uiOpen: boolean,
+		playerPos: { x: number; y: number; z: number },
+		dtSec: number,
+	): void {
+		const vehicle = this.playerVehicle;
+
+		if (
+			uiOpen ||
+			vehicle.isMounted ||
+			vehicle.isFlying ||
+			vehicle.isClimbing ||
+			!vehicle.isGrounded
+		) {
+			this.#strideDistance = 0;
+			return;
+		}
+
+		const vel = vehicle.velocity;
+		const horizontalSpeed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+
+		if (horizontalSpeed < 1.2 || dtSec <= 0) {
+			this.#strideDistance = 0;
+			return;
+		}
+
+		this.#strideDistance += horizontalSpeed * dtSec;
+
+		const stride = vehicle.isSprinting ? 2.6 : 2.0;
+		if (this.#strideDistance < stride) {
+			return;
+		}
+		// Hold at threshold while the shared cooldown suppresses us so at
+		// most one step stays pending — it fires as soon as the gate opens
+		// instead of bursting afterwards.
+		this.#strideDistance = stride;
+
+		const intensity = Math.min(1, Math.max(0.4, horizontalSpeed / 6));
+
+		// Feet sit ~0.85 below the body origin (cf. sprint dust); scan down
+		// for the first solid block so slabs and half-steps resolve.
+		const blockX = Math.floor(playerPos.x);
+		const blockZ = Math.floor(playerPos.z);
+		const feetBlockY = Math.floor(playerPos.y - 0.85);
+
+		for (let d = 0; d <= 2; d++) {
+			const blockId = getBlockByWorldCoords(blockX, feetBlockY - d, blockZ);
+
+			if (blockId === BlockType.Water) {
+				if (playFootstep(blockId, intensity)) this.#strideDistance = 0;
+				return;
+			}
+
+			if (isCollidableBlock(blockId)) {
+				if (playFootstep(blockId, intensity)) this.#strideDistance = 0;
+				return;
+			}
+		}
+
+		// No ground found (world edge): drop the pending step.
+		this.#strideDistance = 0;
 	}
 
 	updateCaveState(playerY: number): boolean {

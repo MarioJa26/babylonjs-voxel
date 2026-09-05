@@ -8,6 +8,19 @@ import {
 } from "../Network/serverList";
 import { fetchAllStatuses, type ServerStatus } from "../Network/serverStatus";
 import {
+	CROSSHAIR_MAX_SIZE,
+	CROSSHAIR_MIN_SIZE,
+	type CrosshairGrid,
+	type CrosshairPreview,
+	type CrosshairSwatches,
+	createCrosshairGrid,
+	createCrosshairPreview,
+	createCrosshairSwatches,
+	ensureCrosshairOptionStyles,
+	normalizeCrosshairColor,
+	normalizeCrosshairId,
+} from "../Player/Hud/Crosshair/CrosshairOptions";
+import {
 	isValidWorldName,
 	removeStoredWorldSeed,
 	sanitizeWorldName,
@@ -123,6 +136,14 @@ export class MainMenu {
 	private optFpsCap!: { row: HTMLElement; getValue: () => number };
 	private optVolume!: { row: HTMLElement; getValue: () => number };
 	private optMuted!: { row: HTMLElement; getValue: () => boolean };
+	private optCrosshairSize!: { row: HTMLElement; getValue: () => number };
+	private optCrosshairVisible!: { row: HTMLElement; getValue: () => boolean };
+	private optHitmarker!: { row: HTMLElement; getValue: () => boolean };
+	private crosshairId = "179";
+	private crosshairColor = "#ffffff";
+	private crosshairGrid?: CrosshairGrid;
+	private crosshairSwatches?: CrosshairSwatches;
+	private crosshairPreview?: CrosshairPreview;
 	private optStatusEl!: HTMLElement;
 
 	constructor() {
@@ -511,6 +532,15 @@ export class MainMenu {
 			screen.appendChild(opt.row);
 		}
 
+		screen.appendChild(
+			this.createCrosshairSection(settings.crosshairId, {
+				size: settings.crosshairSize,
+				color: settings.crosshairColor,
+				visible: settings.crosshairVisible,
+				hitmarkerEnabled: settings.hitmarkerEnabled,
+			}),
+		);
+
 		const saveBtn = document.createElement("button");
 		btnMinecraft(saveBtn, "Save Settings");
 		saveBtn.classList.add("mc-btn-green", "options-save");
@@ -525,6 +555,11 @@ export class MainMenu {
 			next.fpsCap = this.optFpsCap.getValue();
 			next.masterVolume = this.optVolume.getValue() / 100;
 			next.muted = this.optMuted.getValue();
+			next.crosshairId = normalizeCrosshairId(this.crosshairId);
+			next.crosshairSize = this.optCrosshairSize.getValue();
+			next.crosshairColor = normalizeCrosshairColor(this.crosshairColor);
+			next.crosshairVisible = this.optCrosshairVisible.getValue();
+			next.hitmarkerEnabled = this.optHitmarker.getValue();
 			saveGameSettings(next);
 			this.optStatusEl.classList.remove("error");
 			this.optStatusEl.innerText =
@@ -538,6 +573,124 @@ export class MainMenu {
 		screen.appendChild(this.optStatusEl);
 
 		return screen;
+	}
+
+	/**
+	 * Collapsible crosshair subsection (one layer deeper) so the 200-style
+	 * grid, swatches and sliders don't dominate the Options screen.
+	 */
+	private createCrosshairSection(
+		initialId: string,
+		initial: {
+			size: number;
+			color: string;
+			visible: boolean;
+			hitmarkerEnabled: boolean;
+		},
+	): HTMLElement {
+		ensureCrosshairOptionStyles();
+
+		this.crosshairId = normalizeCrosshairId(initialId);
+		this.crosshairColor = normalizeCrosshairColor(initial.color);
+
+		const section = document.createElement("div");
+		section.className = "crosshair-collapsible";
+
+		const header = document.createElement("button");
+		header.type = "button";
+		header.className = "crosshair-collapsible-header";
+		header.setAttribute("aria-expanded", "false");
+
+		const headerText = document.createElement("span");
+		headerText.innerText = "Crosshair";
+
+		const arrow = document.createElement("span");
+		arrow.innerText = "▸";
+		arrow.setAttribute("aria-hidden", "true");
+		header.append(headerText, arrow);
+
+		const body = document.createElement("div");
+		body.className = "crosshair-collapsible-body";
+		body.style.display = "none";
+
+		header.onclick = () => {
+			const open = body.style.display === "none";
+			body.style.display = open ? "flex" : "none";
+			arrow.innerText = open ? "▾" : "▸";
+			header.setAttribute("aria-expanded", String(open));
+		};
+
+		this.crosshairPreview = createCrosshairPreview({
+			id: this.crosshairId,
+			size: initial.size,
+			color: this.crosshairColor,
+			visible: initial.visible,
+		});
+		body.appendChild(this.crosshairPreview.element);
+
+		this.optCrosshairSize = this.makeOptionSlider(
+			"Crosshair Size",
+			CROSSHAIR_MIN_SIZE,
+			CROSSHAIR_MAX_SIZE,
+			2,
+			initial.size,
+			(v) => `${v}px`,
+		);
+		this.optCrosshairVisible = this.makeOptionToggle(
+			"Show Crosshair",
+			initial.visible,
+			() => "",
+		);
+		this.optHitmarker = this.makeOptionToggle(
+			"Hit Marker",
+			initial.hitmarkerEnabled,
+			() => "",
+		);
+
+		this.crosshairSwatches = createCrosshairSwatches(
+			this.crosshairColor,
+			(hex) => {
+				this.crosshairColor = normalizeCrosshairColor(hex);
+				this.crosshairSwatches?.setSelected(this.crosshairColor);
+				this.updateCrosshairPreview();
+			},
+		);
+
+		this.crosshairGrid = createCrosshairGrid(this.crosshairId, (id) => {
+			this.crosshairId = normalizeCrosshairId(id);
+			this.crosshairGrid?.setSelected(this.crosshairId);
+			this.updateCrosshairPreview();
+		});
+
+		body.append(
+			this.optCrosshairSize.row,
+			this.crosshairSwatches.element,
+			this.optCrosshairVisible.row,
+			this.optHitmarker.row,
+			this.crosshairGrid.element,
+		);
+
+		// Keep the preview in sync with the slider/toggle rows.
+		this.optCrosshairSize.row
+			.querySelector("input")
+			?.addEventListener("input", () => this.updateCrosshairPreview());
+		for (const row of [this.optCrosshairVisible.row, this.optHitmarker.row]) {
+			row
+				.querySelector("button")
+				?.addEventListener("click", () => this.updateCrosshairPreview());
+		}
+
+		section.append(header, body);
+		return section;
+	}
+
+	private updateCrosshairPreview(): void {
+		this.crosshairPreview?.update({
+			id: this.crosshairId,
+			size: this.optCrosshairSize?.getValue() ?? CROSSHAIR_MIN_SIZE,
+			color: this.crosshairColor,
+			visible: this.optCrosshairVisible?.getValue() ?? true,
+		});
 	}
 
 	private showScreen(screen: MenuScreen): void {

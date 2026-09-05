@@ -246,6 +246,13 @@
 		"maxStack": 64
 	},
 	{
+		"id": 1045,
+		"name": "TNT Arrow",
+		"description": "Ammunition for bows.\nExplodes on impact.",
+		"icon": "/texture/items/item/arrow/tntarrow.png",
+		"maxStack": 64
+	},
+	{
 		"id": 1037,
 		"name": "Chicken Spawn Egg",
 		"description": "Spawns a chicken where you click.\nDoes not count toward the mob cap.",

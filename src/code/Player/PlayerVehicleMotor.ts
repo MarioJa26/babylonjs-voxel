@@ -20,6 +20,7 @@ import {
 	VoxelAabbCollider,
 	voxelStepUp,
 } from "@/code/World/Collision/VoxelAabbCollider";
+import { playFootstep, playLand } from "../Audio/SurfaceAudio";
 import { CustomBoat } from "../Entities/CustomBoat";
 import {
 	FALL_DAMAGE_PER_BLOCK,
@@ -101,6 +102,12 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	readonly #playerStats: PlayerStats;
 	public mount: Mount | null = null;
 	public isMounted = false;
+
+	/**
+	 * Fired by step-up movement after an audible step sound so the
+	 * footstep stride cadence restarts (wired by PlayerLoopController).
+	 */
+	public onAudibleStep: (() => void) | null = null;
 
 	#displayCapsule!: Mesh;
 	#displayMat: ShaderMaterial | null = null;
@@ -355,6 +362,11 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	}
 	public get position(): Vec3 {
 		return this.voxelPosition;
+	}
+
+	/** True when the body is standing on voxel ground (updated by physics). */
+	public get isGrounded(): boolean {
+		return this.voxelIsGrounded;
 	}
 	public get isMovementLocked(): boolean {
 		return this.#movementLocked;
@@ -828,6 +840,22 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	readonly #onStepUp = (_steppedPos: Vec3): void => {
 		if (this.#stepUpVel !== null) this.#stepUpVel.y = 0;
 		this.lastStepUpTime = this.now;
+
+		// Audible step onto the ledge, using the stepped-onto material.
+		// Skipped while riding or flying — boats and flight run through the
+		// same axis mover but shouldn't make walking sounds.
+		if (this.isMounted || this.isFlying) return;
+
+		const blockX = Math.floor(_steppedPos.x);
+		const blockZ = Math.floor(_steppedPos.z);
+		const feetBlockY = Math.floor(_steppedPos.y - this.colliderHalfHeight);
+		for (let d = 0; d <= 2; d++) {
+			const steppedId = getBlockByWorldCoords(blockX, feetBlockY - d, blockZ);
+			if (steppedId === BlockType.Water || isCollidableBlock(steppedId)) {
+				if (playFootstep(steppedId, 0.7)) this.onAudibleStep?.();
+				return;
+			}
+		}
 	};
 
 	#attemptStepUp(
@@ -1211,6 +1239,24 @@ export class PlayerVehicleMotor implements IPlayerBody {
 							activePos.z,
 							fallDistance,
 						);
+						// Thud on the ground material (first solid block
+						// below the feet, like the footstep lookup).
+						const landX = Math.floor(activePos.x);
+						const landZ = Math.floor(activePos.z);
+						const feetBlockY = Math.floor(
+							activePos.y - this.colliderHalfHeight,
+						);
+						for (let d = 0; d <= 2; d++) {
+							const landId = getBlockByWorldCoords(
+								landX,
+								feetBlockY - d,
+								landZ,
+							);
+							if (landId === BlockType.Water || isCollidableBlock(landId)) {
+								playLand(landId, fallDistance);
+								break;
+							}
+						}
 					}
 					if (fallDistance > FALL_DAMAGE_THRESHOLD && !isCreative) {
 						this.#playerStats.takeDamage(

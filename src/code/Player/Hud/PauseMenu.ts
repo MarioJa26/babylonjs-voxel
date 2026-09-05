@@ -18,6 +18,18 @@ import {
 } from "../../World/Chunk/ChunkLoadingSystem";
 import { WorldStorage } from "../../World/WorldStorage";
 import type { Player } from "../Player";
+import type { Crosshair } from "./Crosshair/Crosshair";
+import {
+	CROSSHAIR_MAX_SIZE,
+	CROSSHAIR_MIN_SIZE,
+	createCrosshairGrid,
+	createCrosshairPreview,
+	createCrosshairSwatches,
+	ensureCrosshairOptionStyles,
+	normalizeCrosshairColor,
+	normalizeCrosshairId,
+	normalizeCrosshairSize,
+} from "./Crosshair/CrosshairOptions";
 
 type NumericSettingKey = {
 	[K in keyof typeof SETTING_PARAMS]: (typeof SETTING_PARAMS)[K] extends number
@@ -363,6 +375,9 @@ export class PauseMenu {
 			},
 		});
 
+		container.appendChild(this.createSeparator("Crosshair"));
+		container.appendChild(this.createCrosshairSection());
+
 		container.appendChild(this.createSeparator("Audio"));
 
 		this.createSlider(container, {
@@ -476,6 +491,111 @@ export class PauseMenu {
 		container.append(separator, backButton);
 
 		return container;
+	}
+
+	/**
+	 * Collapsible crosshair subsection (one layer deeper) so the 200-style
+	 * grid, swatches and sliders don't dominate the Settings panel.
+	 * Every change applies live to the HUD and persists to GameSettings.
+	 */
+	private createCrosshairSection(): HTMLElement {
+		ensureCrosshairOptionStyles();
+
+		const settings = loadGameSettings();
+		let id = normalizeCrosshairId(settings.crosshairId);
+		let color = normalizeCrosshairColor(settings.crosshairColor);
+		let size = normalizeCrosshairSize(settings.crosshairSize);
+		let visible = settings.crosshairVisible;
+
+		const crosshair = (): Crosshair => this.player.playerHud.crossHair;
+
+		const section = document.createElement("div");
+		section.className = "crosshair-collapsible";
+
+		const header = document.createElement("button");
+		header.type = "button";
+		header.className = "crosshair-collapsible-header";
+		header.setAttribute("aria-expanded", "false");
+
+		const headerText = document.createElement("span");
+		headerText.textContent = "Crosshair";
+
+		const arrow = document.createElement("span");
+		arrow.textContent = "▸";
+		arrow.setAttribute("aria-hidden", "true");
+		header.append(headerText, arrow);
+
+		const body = document.createElement("div");
+		body.className = "crosshair-collapsible-body";
+		body.style.display = "none";
+
+		header.addEventListener("click", () => {
+			const open = body.style.display === "none";
+			body.style.display = open ? "flex" : "none";
+			arrow.textContent = open ? "▾" : "▸";
+			header.setAttribute("aria-expanded", String(open));
+		});
+
+		const preview = createCrosshairPreview({ id, size, color, visible });
+		const refreshPreview = (): void => {
+			preview.update({ id, size, color, visible });
+		};
+		body.appendChild(preview.element);
+
+		this.createSlider(body, {
+			label: "Crosshair Size",
+			min: CROSSHAIR_MIN_SIZE,
+			max: CROSSHAIR_MAX_SIZE,
+			initialValue: size,
+			format: (value) => `${value}px`,
+			onInput: (value) => {
+				size = normalizeCrosshairSize(value);
+				crosshair().setCrosshairSize(size);
+				this.persistSetting("crosshairSize", size);
+				refreshPreview();
+			},
+		});
+
+		const swatches = createCrosshairSwatches(color, (hex) => {
+			color = normalizeCrosshairColor(hex);
+			swatches.setSelected(color);
+			crosshair().setCrosshairColor(color);
+			this.persistSetting("crosshairColor", color);
+			refreshPreview();
+		});
+		body.appendChild(swatches.element);
+
+		this.createToggle(body, {
+			label: "Show Crosshair",
+			initialValue: visible,
+			onInput: (value) => {
+				visible = value;
+				crosshair().setCrosshairVisible(value);
+				this.persistSetting("crosshairVisible", value);
+				refreshPreview();
+			},
+		});
+
+		this.createToggle(body, {
+			label: "Hit Marker",
+			initialValue: settings.hitmarkerEnabled,
+			onInput: (value) => {
+				crosshair().setHitmarkerEnabled(value);
+				this.persistSetting("hitmarkerEnabled", value);
+			},
+		});
+
+		const grid = createCrosshairGrid(id, (picked) => {
+			id = normalizeCrosshairId(picked);
+			grid.setSelected(id);
+			crosshair().setCrosshair(id);
+			this.persistSetting("crosshairId", id);
+			refreshPreview();
+		});
+		body.appendChild(grid.element);
+
+		section.append(header, body);
+		return section;
 	}
 
 	/**

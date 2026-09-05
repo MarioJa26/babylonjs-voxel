@@ -19,6 +19,9 @@ import {
 	decodeSpawnPositionInto,
 	decodeTntIgniteInto,
 	decodeWorldConfigInto,
+	encodeContainerClose,
+	encodeContainerOpen,
+	encodeContainerSetSlot,
 	encodeSkinUpload,
 	type WorldConfigData,
 } from "./protocol/encoder";
@@ -478,6 +481,12 @@ export class NetClient {
 						// Handled by RemoteItemManager via addBinaryHandler.
 						return;
 
+					case MessageType.ContainerState:
+					case MessageType.ContainerSlotUpdate:
+					case MessageType.ContainerRejected:
+						// Handled by RemoteContainerManager via addBinaryHandler.
+						return;
+
 					case MessageType.ArrowSpawn:
 						// Handled by Arrow.ensureNetworkHandler via addBinaryHandler.
 						return;
@@ -759,6 +768,40 @@ export class NetClient {
 		this.encoder.writeUint32(instanceId);
 
 		room.sendBytes("binary", this.encoder.getBytes());
+	}
+
+	/**
+	 * Crate sync (server-authoritative): open a crate for viewing, push one
+	 * slot delta, or stop viewing. Slot deltas are last-write-wins per slot;
+	 * the server relays every accepted write to all viewers.
+	 */
+	sendContainerOpen(x: number, y: number, z: number): void {
+		const room = this.getConnectedRoom();
+		if (room === null) return;
+		room.sendBytes("binary", encodeContainerOpen({ x, y, z }));
+	}
+
+	sendContainerSetSlot(
+		x: number,
+		y: number,
+		z: number,
+		row: number,
+		col: number,
+		itemId: number,
+		stackSize: number,
+	): void {
+		const room = this.getConnectedRoom();
+		if (room === null) return;
+		room.sendBytes(
+			"binary",
+			encodeContainerSetSlot({ x, y, z, row, col, itemId, stackSize }),
+		);
+	}
+
+	sendContainerClose(x: number, y: number, z: number): void {
+		const room = this.getConnectedRoom();
+		if (room === null) return;
+		room.sendBytes("binary", encodeContainerClose({ x, y, z }));
 	}
 
 	sendMobSpawnRequest(typeId: number, x: number, y: number, z: number): void {

@@ -1,3 +1,9 @@
+import {
+	DEFAULT_CROSSHAIR_OPTIONS,
+	normalizeCrosshairColor,
+	normalizeCrosshairId,
+	normalizeCrosshairSize,
+} from "@/code/Player/Hud/Crosshair/CrosshairOptions";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 
 /**
@@ -20,6 +26,16 @@ export interface GameSettings {
 	masterVolume: number;
 	/** Mute all game audio. */
 	muted: boolean;
+	/** Crosshair texture id, "001".."200" (see CrosshairOptions). */
+	crosshairId: string;
+	/** Crosshair rendered size in px. */
+	crosshairSize: number;
+	/** Crosshair tint color as #rrggbb. */
+	crosshairColor: string;
+	/** Whether the crosshair image is shown at all. */
+	crosshairVisible: boolean;
+	/** Whether hits flash the hit marker. */
+	hitmarkerEnabled: boolean;
 }
 
 const STORAGE_KEY = "b102.settings.v1";
@@ -34,6 +50,11 @@ const DEFAULTS: GameSettings = {
 	fpsCap: SETTING_PARAMS.FPS_CAP,
 	masterVolume: 0.8,
 	muted: false,
+	crosshairId: DEFAULT_CROSSHAIR_OPTIONS.crosshairId,
+	crosshairSize: DEFAULT_CROSSHAIR_OPTIONS.crosshairSize,
+	crosshairColor: DEFAULT_CROSSHAIR_OPTIONS.crosshairColor,
+	crosshairVisible: DEFAULT_CROSSHAIR_OPTIONS.crosshairVisible,
+	hitmarkerEnabled: DEFAULT_CROSSHAIR_OPTIONS.hitmarkerEnabled,
 };
 
 function clamp(v: number, min: number, fallback: number, max: number): number {
@@ -87,6 +108,23 @@ export function loadGameSettings(): GameSettings {
 				1,
 			),
 			muted: typeof parsed.muted === "boolean" ? parsed.muted : defaults.muted,
+			crosshairId: normalizeCrosshairId(
+				parsed.crosshairId ?? defaults.crosshairId,
+			),
+			crosshairSize: normalizeCrosshairSize(
+				parsed.crosshairSize ?? defaults.crosshairSize,
+			),
+			crosshairColor: normalizeCrosshairColor(
+				parsed.crosshairColor ?? defaults.crosshairColor,
+			),
+			crosshairVisible:
+				typeof parsed.crosshairVisible === "boolean"
+					? parsed.crosshairVisible
+					: defaults.crosshairVisible,
+			hitmarkerEnabled:
+				typeof parsed.hitmarkerEnabled === "boolean"
+					? parsed.hitmarkerEnabled
+					: defaults.hitmarkerEnabled,
 		};
 	} catch {
 		return defaults;
