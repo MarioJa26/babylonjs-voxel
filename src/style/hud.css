@@ -141,9 +141,7 @@
 
 	user-select: none;
 	cursor: pointer;
-	transition:
-		color 0.15s,
-		border-color 0.15s;
+	transition: color 0.15s;
 }
 
 .hud-close-button:hover {
@@ -529,9 +527,7 @@
 
 	cursor: pointer;
 	color: var(--hud-text);
-	transition:
-		border-color 0.1s,
-		background-color 0.1s;
+	transition: background-color 0.1s;
 }
 
 .crafting-recipe.not-craftable {
@@ -662,9 +658,6 @@
 	border: var(--hud-border-width) dashed var(--hud-frame);
 	border-radius: var(--hud-radius-sm);
 	cursor: pointer;
-	transition:
-		border-color 0.1s,
-		box-shadow 0.1s;
 }
 
 .recipe-search-slot:hover {
@@ -830,9 +823,7 @@
 	border-radius: var(--hud-radius-sm);
 	color: var(--hud-text);
 	cursor: pointer;
-	transition:
-		border-color 0.1s,
-		background-color 0.1s;
+	transition: background-color 0.1s;
 }
 
 .recipe-picker-done:hover {
@@ -936,9 +927,7 @@
 	border: 2px solid var(--hud-frame);
 	border-radius: var(--hud-radius-sm);
 	cursor: pointer;
-	transition:
-		border-color 0.1s,
-		background-color 0.1s;
+	transition: background-color 0.1s;
 }
 
 .mason-source-btn:hover {
@@ -983,9 +972,7 @@
 	border: 2px solid var(--hud-frame);
 	border-radius: var(--hud-radius-sm);
 	cursor: pointer;
-	transition:
-		border-color 0.1s,
-		background-color 0.1s;
+	transition: background-color 0.1s;
 }
 
 .mason-shape-btn:hover {
@@ -1026,7 +1013,6 @@
 	font-weight: bold;
 	cursor: not-allowed;
 	transition:
-		border-color 0.1s,
 		background-color 0.1s,
 		color 0.1s;
 	margin-top: 1em;
@@ -1260,8 +1246,12 @@
 
 .bow-draw-fill {
 	height: 100%;
-	width: 0%;
-	transition: width 0.05s linear;
+	width: 100%;
+	transform: scaleX(0);
+	transform-origin: left center;
+	will-change: transform;
+	/* No transition: JS drives progress every frame, and transform-only
+	   animation stays on the compositor (width would force layout). */
 }
 
 .hit-marker {
@@ -1522,7 +1512,6 @@
 	cursor: pointer;
 	user-select: none;
 	transition:
-		border-color 0.15s,
 		background-color 0.15s,
 		color 0.15s;
 }

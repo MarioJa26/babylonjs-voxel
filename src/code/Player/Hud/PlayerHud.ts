@@ -374,7 +374,7 @@ export class PlayerHud {
 			}
 
 			if (this.#lastDrawProgress !== 0) {
-				this.#drawFill.style.width = "0%";
+				this.#drawFill.style.transform = "scaleX(0)";
 				this.#lastDrawProgress = 0;
 			}
 
@@ -393,7 +393,7 @@ export class PlayerHud {
 
 		this.#lastDrawProgress = pct;
 
-		this.#drawFill.style.width = `${pct * 100}%`;
+		this.#drawFill.style.transform = `scaleX(${pct})`;
 
 		const { r: r1, g: g1, b: b1 } = this.#drawStartColor;
 		const { r: r2, g: g2, b: b2 } = this.#drawEndColor;
