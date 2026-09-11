@@ -237,15 +237,19 @@ export function buildPackedVertexWGSL(
 		bakeShade,
 	};
 
-	const loadFaceBranches = new Array<string>(arenas);
-	for (let i = 0; i < arenas; i++) {
-		loadFaceBranches[i] =
-			`  if (arena == ${i}u) { return vec3<u32>(faceData${i}[i3], faceData${i}[i3 + 1u], faceData${i}[i3 + 2u]); }`;
-	}
-
 	const loadFaceBody =
-		`${loadFaceBranches.join("\n")}\n` +
-		"  return vec3<u32>(faceData0[i3], faceData0[i3 + 1u], faceData0[i3 + 2u]);";
+		arenas === 1
+			? // Single-arena materials skip the branch entirely: every face is
+				// in faceData0. (Multi-arena materials still need the select.)
+				"  return vec3<u32>(faceData0[i3], faceData0[i3 + 1u], faceData0[i3 + 2u]);"
+			: `  switch arena {
+${Array.from(
+	{ length: arenas },
+	(_, i) =>
+		`    case ${i}u: { return vec3<u32>(faceData${i}[i3], faceData${i}[i3 + 1u], faceData${i}[i3 + 2u]); }`,
+).join("\n")}
+    default: { return vec3<u32>(faceData0[i3], faceData0[i3 + 1u], faceData0[i3 + 2u]); }
+  }`;
 
 	const boundaryRestoreBlock = o.boundarySentinel
 		? `

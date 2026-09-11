@@ -69,8 +69,10 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     discard;
   }
 
+  let wetness = shaderUniforms.wetness;
+
   diffuseColor = vec4<f32>(
-    diffuseColor.rgb * mix(1.0, 0.5, shaderUniforms.wetness),
+    diffuseColor.rgb * mix(1.0, 0.5, wetness),
     diffuseColor.a
   );
 
@@ -90,7 +92,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 
   let normalMapDiffuse = max(0.0, dot(normalMap, lightDirectionTS));
 
-  let shininess = mix(16.0, 128.0, shaderUniforms.wetness);
+  let shininess = mix(16.0, 128.0, wetness);
 
   let halfwayDirTS = normalize(viewDirTS + lightDirectionTS);
   let NH = max(dot(normalMap, halfwayDirTS), 0.0);
@@ -100,7 +102,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   );
 
   let specIntensity =
-    mix(0.03, 0.7, shaderUniforms.wetness) *
+    mix(0.03, 0.7, wetness) *
     in.vLight.x;
 
   let specular =
