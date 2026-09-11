@@ -84,4 +84,14 @@ export type ChunkLoadingDebugStats = {
 	totalHydrated: number;
 	totalUnloaded: number;
 	totalSaved: number;
+	// Phase-0 streaming instrumentation (ms, last updateChunksAround).
+	// Identifies which scan stage hitches on move/fast-fly.
+	lastUpdateAroundMs: number;
+	lastReconcileMs: number;
+	lastShellMs: number;
+	lastUndergroundMs: number;
+	lastRefreshMs: number;
+	lastSortMs: number;
+	lastUnloadScanMs: number;
+	totalUpdateAroundMs: number;
 };

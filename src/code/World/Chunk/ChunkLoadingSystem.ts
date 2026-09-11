@@ -98,6 +98,14 @@ const debugStats: ChunkLoadingDebugStats = {
 	totalHydrated: 0,
 	totalUnloaded: 0,
 	totalSaved: 0,
+	lastUpdateAroundMs: 0,
+	lastReconcileMs: 0,
+	lastShellMs: 0,
+	lastUndergroundMs: 0,
+	lastRefreshMs: 0,
+	lastSortMs: 0,
+	lastUnloadScanMs: 0,
+	totalUpdateAroundMs: 0,
 };
 
 const chunkEntityRegistry = new ChunkEntityRegistry<ChunkBoundEntity>({
@@ -565,9 +573,28 @@ export async function updateChunksAround(
 		playerWorldZ,
 	);
 
+	syncStreamingTimings();
+
 	if (!processScheduler.processing) {
 		void processScheduler.processQueues();
 	}
+}
+
+function syncStreamingTimings(): void {
+	const t = streamingController.getLastTimings();
+	debugStats.lastUpdateAroundMs = t.updateAroundMs;
+	debugStats.lastReconcileMs = t.reconcileMs;
+	debugStats.lastShellMs = t.shellMs;
+	debugStats.lastUndergroundMs = t.undergroundMs;
+	debugStats.lastRefreshMs = t.refreshMs;
+	debugStats.lastSortMs = t.sortMs;
+	debugStats.lastUnloadScanMs = t.unloadMs;
+	debugStats.totalUpdateAroundMs += t.updateAroundMs;
+	refreshQueueDebugSnapshot();
+}
+
+export function getStreamingTimings() {
+	return streamingController.getLastTimings();
 }
 
 function updateSliceDebugStats(state: InFlightProcessState): void {

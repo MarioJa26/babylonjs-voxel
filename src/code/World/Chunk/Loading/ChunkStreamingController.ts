@@ -8,6 +8,10 @@ import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
 import { FarTileManager } from "../../FarTiles/FarTileManager";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
+import {
+	buildInitialColumnList,
+	sortColumnsAheadFirst,
+} from "./ColumnStreamingOrder";
 import { Chunk, getChunk } from "../Chunk";
 import { createMeshFromData } from "../ChunkMesher";
 import { ChunkWorkerPool } from "../ChunkWorkerPool";
@@ -261,6 +265,26 @@ function buriedChunkCulled(
 	return chunkY < buriedTopChunkY(chunkX, chunkZ);
 }
 
+export type StreamingStageTimings = {
+	updateAroundMs: number;
+	reconcileMs: number;
+	shellMs: number;
+	undergroundMs: number;
+	refreshMs: number;
+	sortMs: number;
+	unloadMs: number;
+};
+
+const ZERO_TIMINGS: StreamingStageTimings = {
+	updateAroundMs: 0,
+	reconcileMs: 0,
+	shellMs: 0,
+	undergroundMs: 0,
+	refreshMs: 0,
+	sortMs: 0,
+	unloadMs: 0,
+};
+
 export class ChunkStreamingController {
 	private static readonly DESIRED_STATE_REVISION_RETENTION = 8;
 	/** Full-band refresh scan runs every Nth player-chunk-move (near window
@@ -268,6 +292,16 @@ export class ChunkStreamingController {
 	private static readonly OUTER_SCAN_INTERVAL = 4;
 
 	private streamRevision = 0;
+
+	/** Phase-0 instrumentation: per-stage ms of the last updateChunksAround. */
+	private lastTimings: StreamingStageTimings = { ...ZERO_TIMINGS };
+	/** Chunk-space movement direction of the last update (for ahead bonus). */
+	private lastMoveDx = 0;
+	private lastMoveDz = 0;
+
+	public getLastTimings(): StreamingStageTimings {
+		return this.lastTimings;
+	}
 
 	// Packed as desiredLod + revision * 8.
 	// Keyed by chunk.numericId, because number keys avoid BigInt box churn.
@@ -447,6 +481,24 @@ export class ChunkStreamingController {
 		playerWorldZ?: number,
 	): Promise<void> {
 		const revision = ++this.streamRevision;
+		const updateStart = performance.now();
+
+		// Movement direction in chunk space (clamped) for ahead-of-motion
+		// priority. Defaults to 0 (no bonus) on teleport/initial load.
+		if (
+			prevChunkX !== undefined &&
+			prevChunkZ !== undefined &&
+			Math.abs(chunkX - prevChunkX) <= 8 &&
+			Math.abs(chunkZ - prevChunkZ) <= 8
+		) {
+			this.lastMoveDx =
+				chunkX - prevChunkX > 0 ? 1 : chunkX - prevChunkX < 0 ? -1 : 0;
+			this.lastMoveDz =
+				chunkZ - prevChunkZ > 0 ? 1 : chunkZ - prevChunkZ < 0 ? -1 : 0;
+		} else {
+			this.lastMoveDx = 0;
+			this.lastMoveDz = 0;
+		}
 
 		// Reuse the existing map and its internal capacity instead of allocating
 		// a replacement map and leaving the old one for garbage collection.
@@ -499,6 +551,7 @@ export class ChunkStreamingController {
 
 			this.loadQueueRequestMap.clear();
 
+			const reconcileStart = performance.now();
 			let writeIndex = 0;
 
 			// Capture the initial length because this loop compacts the same array.
@@ -605,6 +658,7 @@ export class ChunkStreamingController {
 			}
 
 			loadQueue.length = writeIndex;
+			const reconcileMs = performance.now() - reconcileStart;
 
 			for (const chunk of unloadQueueSet) {
 				const relX = chunk.chunkX - chunkX;
@@ -650,6 +704,7 @@ export class ChunkStreamingController {
 				Math.abs(chunkY - prevChunkY) <= 1 &&
 				Math.abs(chunkZ - prevChunkZ) <= 1;
 
+			const shellStart = performance.now();
 			if (canUseDelta) {
 				this.processMovementRings(
 					chunkX,
@@ -660,11 +715,21 @@ export class ChunkStreamingController {
 					prevChunkZ,
 					lodRuleSet,
 				);
+			} else if (SETTING_PARAMS.COLUMN_STREAMING_ENABLED) {
+				this.processInitialShellColumnOrdered(
+					chunkX,
+					chunkY,
+					chunkZ,
+					lodRuleSet,
+				);
 			} else {
 				this.processInitialShell(chunkX, chunkY, chunkZ, lodRuleSet);
 			}
+			const shellMs = performance.now() - shellStart;
 
+			const undergroundStart = performance.now();
 			this.ensureUndergroundBand(chunkX, chunkY, chunkZ, lodRuleSet);
+			const undergroundMs = performance.now() - undergroundStart;
 
 			const unloadBuffer = SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER + 8;
 			const unloadScanRadius = operationalRadius + unloadBuffer;
@@ -687,6 +752,7 @@ export class ChunkStreamingController {
 			const outerScan =
 				revision % ChunkStreamingController.OUTER_SCAN_INTERVAL === 0;
 
+			const refreshStart = performance.now();
 			this.enqueueLoadedChunksForRefresh(
 				chunkX,
 				chunkY,
@@ -694,9 +760,13 @@ export class ChunkStreamingController {
 				lodRuleSet,
 				outerScan,
 			);
+			const refreshMs = performance.now() - refreshStart;
 
+			const sortStart = performance.now();
 			this.sortLoadQueue();
+			const sortMs = performance.now() - sortStart;
 
+			const unloadStart = performance.now();
 			this.queueUnloading(
 				chunkX,
 				chunkY,
@@ -705,6 +775,17 @@ export class ChunkStreamingController {
 				operationalVerticalRadius,
 				lodRuleSet,
 			);
+			const unloadMs = performance.now() - unloadStart;
+
+			this.lastTimings = {
+				updateAroundMs: performance.now() - updateStart,
+				reconcileMs,
+				shellMs,
+				undergroundMs,
+				refreshMs,
+				sortMs,
+				unloadMs,
+			};
 
 			if (!caveState) {
 				ChunkWorkerPool.getInstance().scheduleBackgroundLodPrecompute(
@@ -1505,6 +1586,70 @@ export class ChunkStreamingController {
 		const dy = chunk.chunkY - playerChunkY;
 		const dz = chunk.chunkZ - playerChunkZ;
 
-		return desiredLod * 1_000_000 + dx * dx + dy * dy + dz * dz;
+		let priority = desiredLod * 1_000_000 + dx * dx + dy * dy + dz * dz;
+
+		// Column-ring bonus: approaching columns load first within their LOD
+		// band during fast fly. Stays below the 1M LOD band by construction.
+		if (SETTING_PARAMS.COLUMN_STREAMING_ENABLED) {
+			const moveDx = this.lastMoveDx;
+			const moveDz = this.lastMoveDz;
+			if (
+				(moveDx !== 0 || moveDz !== 0) &&
+				dx * moveDx + dz * moveDz > 0
+			) {
+				priority -= SETTING_PARAMS.COLUMN_AHEAD_BONUS;
+			}
+		}
+
+		return priority;
+	}
+
+	/**
+	 * Column-ordered variant of processInitialShell for COLUMN_STREAMING_ENABLED.
+	 * Same per-coordinate decisions (via processTargetChunkCoordinate — sky
+	 * guard, buried cull, LOD hysteresis all reused), but columns are scanned
+	 * nearer-first with approaching columns first within a ring. Groups all Y
+	 * levels of a column together so columnTop/buried height caches stay hot.
+	 */
+	private processInitialShellColumnOrdered(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		lodRuleSet: ChunkLodRuleSet,
+	): void {
+		const r = lodRuleSet.maxHorizontalRadius();
+		const ry = lodRuleSet.maxVerticalRadius();
+
+		const minY = SETTING_PARAMS.MIN_CHUNK_Y;
+		const maxY = minY + SETTING_PARAMS.MAX_CHUNK_HEIGHT;
+
+		const startY = chunkY - ry;
+		const endY = chunkY + ry;
+
+		const columns = sortColumnsAheadFirst(
+			buildInitialColumnList(
+				chunkX,
+				chunkZ,
+				r,
+				this.lastMoveDx,
+				this.lastMoveDz,
+			),
+		);
+
+		for (let ci = 0; ci < columns.length; ci++) {
+			const col = columns[ci];
+			for (let y = startY; y <= endY; y++) {
+				if (y < minY || y >= maxY) continue;
+				this.processTargetChunkCoordinate(
+					col.x,
+					y,
+					col.z,
+					chunkX,
+					chunkY,
+					chunkZ,
+					lodRuleSet,
+				);
+			}
+		}
 	}
 }

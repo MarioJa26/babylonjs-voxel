@@ -44,6 +44,14 @@ export const SETTING_PARAMS = {
 	CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK: 0,
 	// 0 = auto (derived from hardware concurrency); >0 = explicit worker pool size
 	CHUNK_WORKER_POOL_SIZE: 0,
+	// Column-ring streaming (phase 1 re-arch): order new-coordinate shell by
+	// column distance with ahead-of-movement bonus, and bias queue priority
+	// toward approaching columns so fast fly loads ahead first. false = legacy
+	// x/y/z shell order. No extra radius yet — same set, better order.
+	COLUMN_STREAMING_ENABLED: false,
+	// Priority bonus (subtracted) for approaching columns. Must stay well
+	// below the 1M LOD band so near LOD always beats far LOD.
+	COLUMN_AHEAD_BONUS: 50000,
 
 	// --- Day/Night Cycle ---
 	DAY_DURATION_MS: 10 * 60 * 2000, // 20 minutes for a full day
