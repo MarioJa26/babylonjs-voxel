@@ -70,9 +70,9 @@ export function sortColumnsAheadFirst(
 ): ColumnEntry[] {
 	columns.sort(
 		(a, b) =>
-			a.hDist - (a.ahead ? aheadRingBonus : 0) - (
-				b.hDist - (b.ahead ? aheadRingBonus : 0)
-			),
+			a.hDist -
+			(a.ahead ? aheadRingBonus : 0) -
+			(b.hDist - (b.ahead ? aheadRingBonus : 0)),
 	);
 	return columns;
 }

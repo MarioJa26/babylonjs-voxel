@@ -8,10 +8,6 @@ import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
 import { FarTileManager } from "../../FarTiles/FarTileManager";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
-import {
-	buildInitialColumnList,
-	sortColumnsAheadFirst,
-} from "./ColumnStreamingOrder";
 import { Chunk, getChunk } from "../Chunk";
 import { createMeshFromData } from "../ChunkMesher";
 import { ChunkWorkerPool } from "../ChunkWorkerPool";
@@ -25,6 +21,10 @@ import {
 	UNDERGROUND_CULL_EXEMPT_RADIUS,
 	UNDERGROUND_SKIP_LOD,
 } from "../Worker/LODUtilities";
+import {
+	buildInitialColumnList,
+	sortColumnsAheadFirst,
+} from "./ColumnStreamingOrder";
 
 /** Underground (cave) chunks never coarsen: clamp any desired LOD. */
 function clampLodForY(chunkY: number, lod: number): number {
@@ -1593,10 +1593,7 @@ export class ChunkStreamingController {
 		if (SETTING_PARAMS.COLUMN_STREAMING_ENABLED) {
 			const moveDx = this.lastMoveDx;
 			const moveDz = this.lastMoveDz;
-			if (
-				(moveDx !== 0 || moveDz !== 0) &&
-				dx * moveDx + dz * moveDz > 0
-			) {
+			if ((moveDx !== 0 || moveDz !== 0) && dx * moveDx + dz * moveDz > 0) {
 				priority -= SETTING_PARAMS.COLUMN_AHEAD_BONUS;
 			}
 		}
