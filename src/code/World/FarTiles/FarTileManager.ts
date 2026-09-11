@@ -1556,6 +1556,12 @@ function syncThinInstanceCount(mesh: FarMeshLike, wm: WindingMesh): void {
 		wm.clearDirty();
 		return;
 	}
+	if (!ti.compact) {
+		// Buffer created before compact mode: force a full re-upload +
+		// pipeline rebuild via a fresh version (mirrors PackedChunkMesh).
+		ti.compact = true;
+		ti._gpuVersion = -1;
+	}
 	ti.matrices = wm.records;
 	ti.count = count;
 
@@ -1563,8 +1569,18 @@ function syncThinInstanceCount(mesh: FarMeshLike, wm: WindingMesh): void {
 		const lo = Math.max(0, wm.dirtyMin);
 		const hi = Math.min(count, wm.dirtyMax);
 		if (hi > lo) {
-			ti._dirtyMin = Math.min(ti._dirtyMin, lo);
-			ti._dirtyMax = Math.max(ti._dirtyMax, hi);
+			// Lite's thin-instance GPU sync only uploads when
+			// _version !== _gpuVersion. Without the bump below, in-place
+			// record updates (the common case once capacity is grown)
+			// never reach the GPU: instances keep pointing at stale face
+			// indices while the face-word + origin buffers DID update —
+			// tiles render at wrong origins / heights (floating + shifted)
+			// as soon as the player moves and new tiles stream in.
+			// Union with a still-pending range instead of clobbering it.
+			const inSync = ti._version === ti._gpuVersion;
+			ti._dirtyMin = inSync ? lo : Math.min(ti._dirtyMin, lo);
+			ti._dirtyMax = inSync ? hi : Math.max(ti._dirtyMax, hi);
+			ti._version++;
 		}
 	}
 	wm.clearDirty();

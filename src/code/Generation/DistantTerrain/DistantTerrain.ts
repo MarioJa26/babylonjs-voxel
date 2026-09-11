@@ -1,13 +1,14 @@
 import {
 	addToScene,
-	createGround,
 	createMeshFromData,
 	createTexture2DFromPixels,
+	disposeMeshGpu,
 	type EngineContext,
 	getCameraPosition,
 	loadTexture2D,
 	type Mesh,
 	onBeforeRender,
+	removeFromScene,
 	type SceneContext,
 	setShaderUniform,
 	updateMeshNormals,
@@ -25,6 +26,7 @@ import {
 	createDistantTerrainMaterial,
 	createDistantWaterMaterial,
 } from "@/code/World/Light/DistantTerrainShaderLite";
+import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import {
 	atlasTileSize,
@@ -56,6 +58,18 @@ let lastChunkX: number = Number.NaN;
 let lastChunkZ: number = Number.NaN;
 let lastRenderDistance: number = Number.NaN;
 
+// Chunk radius of the close-up hole cut out of the clip meshes. Real
+// chunk/LOD geometry covers this region, so the clipmap neither shades nor
+// rasterizes it there. Rebuilt only when the effective render distance
+// changes — never per frame, never per vertex.
+let holeHalfChunks = -1;
+
+// Last applied terrain origin, so rebuilt meshes can re-upload the most
+// recent worker data immediately instead of flashing empty for a roundtrip.
+let lastWorldX = 0;
+let lastWorldZ = 0;
+let hasTerrainData = false;
+
 let engine: EngineContext;
 let scene: SceneContext;
 
@@ -73,36 +87,205 @@ function setUniformBoth(name: string, value: number | Float32Array): void {
 // Grid mesh construction
 // =====================================================================
 
-function createEmptyGridMesh(engine: EngineContext, name: string): Mesh {
+// The impostor dips below every real-geometry LOD band (INSIDE_CLIP_Y), so
+// the hole radius must cover the OUTERMOST per-chunk LOD ring — not just the
+// near bands. Mirrors the worker's clip test (DistantTerrainGenerator).
+function effectiveClipRadius(): number {
+	return (
+		SETTING_PARAMS.RENDER_DISTANCE +
+		Math.max(
+			SETTING_PARAMS.LOD_1_OFFSET,
+			SETTING_PARAMS.LOD_2_OFFSET,
+			SETTING_PARAMS.LOD_3_OFFSET,
+			SETTING_PARAMS.LOD_4_OFFSET,
+			SETTING_PARAMS.LOD_5_OFFSET,
+		)
+	);
+}
+
+// Grid cell (x, z) maps to chunk offset (x * gridStep - radius) because the
+// grid snaps to the center chunk (gridStep = 1 ⇒ grid center == center
+// chunk), so hole membership per cell is STATIC under sliding-window moves:
+// the hole never needs per-frame or per-vertex updates.
+function buildTerrainIndices(holeRd: number): Uint32Array {
 	const res = gridResolution;
-	const quadCount = (res - 1) * (res - 1);
-	const indexCount = quadCount * 6;
 
-	// createMeshFromData is typed to accept Uint32Array only.
-	// Keep this as Uint32Array unless the @babylonjs/lite wrapper signature
-	// is changed to accept Uint16Array too.
-	const indices = new Uint32Array(indexCount);
+	const insideX: boolean[] = new Array(res);
+	const insideZ: boolean[] = new Array(res);
 
-	let k = 0;
+	for (let v = 0; v < res; v++) {
+		// Same inside test as the worker's generateVertex (strictly greater
+		// on the low side, inclusive on the high side).
+		const off = v * gridStep - radius;
+		const inside = off > -holeRd && off <= holeRd;
+		insideX[v] = inside;
+		insideZ[v] = inside;
+	}
+
+	const indices: number[] = [];
+
 	for (let z = 0; z < res - 1; z++) {
 		const row = z * res;
 		const next = row + res;
+		const inZ0 = insideZ[z];
+		const inZ1 = insideZ[z + 1];
 
 		for (let x = 0; x < res - 1; x++) {
+			// Skip quads fully inside the close-up region: real geometry
+			// covers them. Zero vertex cost, zero fragment cost, and — unlike
+			// a shader camera-distance test — zero ALU per vertex to decide.
+			// Boundary quads are kept so their outer half still renders.
+			if (inZ0 && inZ1 && insideX[x] && insideX[x + 1]) continue;
+
 			const i0 = row + x;
 			const i1 = i0 + 1;
 			const i2 = next + x;
 			const i3 = i2 + 1;
 
-			indices[k++] = i0;
-			indices[k++] = i1;
-			indices[k++] = i2;
-
-			indices[k++] = i1;
-			indices[k++] = i3;
-			indices[k++] = i2;
+			indices.push(i0, i1, i2, i1, i3, i2);
 		}
 	}
+
+	return Uint32Array.from(indices);
+}
+
+function createDistantWaterMesh(): Mesh {
+	const cs = Chunk.SIZE;
+	const outer = radius * cs;
+	// Clamp the hole inside the plane so a huge render distance can never
+	// invert the ring into bow-tie (degenerate) triangles.
+	const inner = Math.min(Math.max(holeHalfChunks, 0) * cs, outer);
+
+	// Square frame with a rectangular hole: full-width north/south strips
+	// plus middle west/east strips. Same (i0,i1,i2)/(i1,i3,i2) winding pattern
+	// as the terrain grid (up-facing with backface culling on).
+	const positions = new Float32Array([
+		-outer,
+		0,
+		-outer, // 0 N-strip
+		outer,
+		0,
+		-outer, // 1
+		-outer,
+		0,
+		-inner, // 2
+		outer,
+		0,
+		-inner, // 3
+		-outer,
+		0,
+		inner, // 4 S-strip
+		outer,
+		0,
+		inner, // 5
+		-outer,
+		0,
+		outer, // 6
+		outer,
+		0,
+		outer, // 7
+		-inner,
+		0,
+		-inner, // 8 W-strip
+		-inner,
+		0,
+		inner, // 9
+		inner,
+		0,
+		-inner, // 10 E-strip
+		inner,
+		0,
+		inner, // 11
+	]);
+
+	const normals = new Float32Array(12 * 3);
+
+	for (let i = 1; i < normals.length; i += 3) {
+		normals[i] = 1;
+	}
+
+	const indices = new Uint32Array([
+		0,
+		1,
+		2,
+		1,
+		3,
+		2, // north
+		4,
+		5,
+		6,
+		5,
+		7,
+		6, // south
+		2,
+		8,
+		4,
+		8,
+		9,
+		4, // west
+		10,
+		3,
+		11,
+		3,
+		5,
+		11, // east
+	]);
+
+	const m = createMeshFromData(
+		engine,
+		"distantWater",
+		positions,
+		normals,
+		indices,
+	);
+	m.pickable = false;
+	return m;
+}
+
+// Recreate both clip meshes so their index buffers match a new hole size.
+// Runs only when the effective render distance changes. Old GPU buffers are
+// retired after the in-flight frames finish (same pattern as the face-arena
+// growth path) so a rebuild can never destroy a buffer mid-submit.
+function rebuildClipMeshes(): void {
+	const oldTerrain = mesh;
+	mesh = createEmptyGridMesh(engine, "distantTerrain");
+	mesh.material = material;
+	mesh.renderOrder = 0;
+	addToScene(scene, mesh);
+
+	if (oldTerrain) {
+		removeFromScene(scene, oldTerrain);
+		void onGpuWorkDone(engine).then(() => disposeMeshGpu(oldTerrain));
+	}
+
+	if (hasTerrainData) {
+		updateMeshPositions(engine, mesh, sharedPositions);
+		updateMeshNormals(engine, mesh, sharedNormals);
+		mesh.position.set(lastWorldX, -2, lastWorldZ);
+	}
+
+	const oldWater = waterMesh;
+	waterMesh = createDistantWaterMesh();
+	waterMesh.material = waterMaterial;
+	waterMesh.renderOrder = 0;
+	addToScene(scene, waterMesh);
+
+	if (oldWater) {
+		removeFromScene(scene, oldWater);
+		void onGpuWorkDone(engine).then(() => disposeMeshGpu(oldWater));
+	}
+
+	if (hasTerrainData) {
+		waterMesh.position.set(
+			lastWorldX,
+			GenerationParams.SEA_LEVEL - 3,
+			lastWorldZ,
+		);
+	}
+}
+
+function createEmptyGridMesh(engine: EngineContext, name: string): Mesh {
+	const indices = buildTerrainIndices(Math.max(holeHalfChunks, 0));
 
 	const positions = new Float32Array(vertexCount * 3);
 	const normals = new Float32Array(vertexCount * 3);
@@ -252,6 +435,10 @@ function applyTerrainData(
 	// never z-fight with far-tile water tops (which draw AT sea level).
 	waterMesh.position.set(worldX, GenerationParams.SEA_LEVEL - 3, worldZ);
 
+	lastWorldX = worldX;
+	lastWorldZ = worldZ;
+	hasTerrainData = true;
+
 	const originX = worldX - radius * Chunk.SIZE;
 	const originZ = worldZ - radius * Chunk.SIZE;
 
@@ -289,6 +476,7 @@ export async function initDistantTerrain(): Promise<void> {
 	const segments = Math.floor((radius * 2) / gridStep);
 	gridResolution = segments + 1;
 	vertexCount = gridResolution * gridResolution;
+	holeHalfChunks = effectiveClipRadius();
 
 	if (
 		typeof SharedArrayBuffer === "undefined" ||
@@ -335,14 +523,10 @@ export async function initDistantTerrain(): Promise<void> {
 	// fragment it shaded was overdrawn — a full-horizon blended pass wasted
 	// every frame. Keep it at the clip-map radius only: it still fills the
 	// ocean inside the streaming underlay, and beyond that edge far tiles
-	// render the horizon themselves.
-	const size = radius * 2 * Chunk.SIZE;
-	waterMesh = createGround(engine, {
-		width: size,
-		height: size,
-		subdivisions: 1,
-	});
-	waterMesh.pickable = false;
+	// render the horizon themselves. The plane is a square frame with a
+	// close-up hole (same skip as the terrain grid): real chunk water covers
+	// the middle, so those fragments are never shaded at all.
+	waterMesh = createDistantWaterMesh();
 
 	surfaceTileLookupData = new Uint8Array(vertexCount * 4);
 
@@ -431,20 +615,23 @@ export function update(worldX: number, worldZ: number) {
 	// The impostor dips below every real-geometry LOD band (INSIDE_CLIP_Y),
 	// so the clip radius must cover the OUTERMOST per-chunk LOD ring — not
 	// just the near bands.
-	const effectiveRenderDistance =
-		SETTING_PARAMS.RENDER_DISTANCE +
-		Math.max(
-			SETTING_PARAMS.LOD_1_OFFSET,
-			SETTING_PARAMS.LOD_2_OFFSET,
-			SETTING_PARAMS.LOD_3_OFFSET,
-			SETTING_PARAMS.LOD_4_OFFSET,
-			SETTING_PARAMS.LOD_5_OFFSET,
-		);
+	const effectiveRenderDistance = effectiveClipRadius();
 	const renderDistanceChanged = effectiveRenderDistance !== lastRenderDistance;
 	if (cx === lastChunkX && cz === lastChunkZ && !renderDistanceChanged) return;
 	lastChunkX = cx;
 	lastChunkZ = cz;
 	lastRenderDistance = effectiveRenderDistance;
+	// The hole rect is static under player movement (grid snaps to the center
+	// chunk), so the index buffers only need a rebuild when the clip radius
+	// itself changes — i.e. on render-distance settings changes, not per frame.
+	if (
+		renderDistanceChanged &&
+		initialized &&
+		effectiveRenderDistance !== holeHalfChunks
+	) {
+		holeHalfChunks = effectiveRenderDistance;
+		rebuildClipMeshes();
+	}
 	ChunkWorkerPool.getInstance().scheduleDistantTerrain(
 		cx,
 		cz,
