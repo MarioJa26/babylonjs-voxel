@@ -13,8 +13,8 @@ import {
 } from "@babylonjs/lite";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
 import {
+	getBlockAndStateByWorldCoordsInto,
 	getBlockByWorldCoords,
-	getBlockStateByWorldCoords,
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
@@ -36,7 +36,7 @@ import { FaceName } from "../World/Texture/FaceName";
 import { atlasSize, tileSize } from "../World/Texture/TextureAtlasFactory";
 
 const ATLAS_URL = "/texture/diffuse_atlas.png";
-const POOL_SIZE = 2048;
+const POOL_SIZE = 8192;
 const PARTICLES_PER_BREAK = 198;
 
 const MINING_PARTICLES_PER_EMIT = 6;
@@ -81,12 +81,22 @@ const MOB_BLOOD_BLOCK = BlockType.CoralBlock;
 const GRAVITY = -16;
 const MAX_DT = 0.1;
 const FADE_START = 0.85;
+const FADE_RANGE = 1 - FADE_START;
+
+const DEBRIS_PER_EXPLOSION = 96;
 
 const DEBRIS_PER_BREAK = 32;
 const DEBRIS_RESTITUTION = 0.35;
-const DEBRIS_COLLIDE_STEP = 0.15;
+// 0.25 stays below the thinnest collidable (fence arms/posts 0.25 wide,
+// effective width larger with particle radius) so sweeps cannot tunnel,
+// while needing ~40% fewer substeps than 0.15 for fast explosion debris.
+const DEBRIS_COLLIDE_STEP = 0.25;
 const DEBRIS_SETTLE_SPEED = 1.0;
 const DEBRIS_RADIUS_SCALE = 0.4;
+// Initial GPU billboard capacity. POOL_SIZE (particle pool) is unchanged —
+// this only sizes the preallocated instance buffer. 16k holds 10k+ alive
+// with headroom; the lite system grows (doubles) if chained blasts exceed it.
+const BILLBOARD_INITIAL_CAPACITY = 16384;
 
 let lastMiningEmitMs = 0;
 let lastArrowHitEmitMs = 0;
@@ -118,6 +128,11 @@ const pg = new Float32Array(POOL_SIZE);
 const pb = new Float32Array(POOL_SIZE);
 const pa = new Float32Array(POOL_SIZE);
 const pgrav = new Float32Array(POOL_SIZE);
+// Precomputed fade curve per particle: fadeStartAge = life * FADE_START,
+// fadeInv = 1 / (life - fadeStartAge). Avoids a multiply per particle per
+// frame (and a divide while fading) in tick.
+const pFadeStart = new Float32Array(POOL_SIZE);
+const pFadeInv = new Float32Array(POOL_SIZE);
 const pframe = new Uint16Array(POOL_SIZE);
 /** bit0 = collide (routes through voxel collision in tick), bit1 = settled. */
 const pflags = new Uint8Array(POOL_SIZE);
@@ -151,12 +166,13 @@ const scratchDebrisHalf: Vec3 = { x: 0, y: 0, z: 0 };
 // Shared shape-aware voxel sampler + stateless collider (DroppedItem pattern).
 // The collider's fixed half-extents are never used; debris sweeps call
 // `overlapsBox` with per-particle radii instead.
+//
+// Single-fetch: one chunk resolve for id+state instead of two
+// (getBlock + getState each resolved the chunk). Identical shape/fence logic.
 const DEBRIS_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
 	(x, y, z) => {
-		const blockId = getBlockByWorldCoords(x, y, z);
-		if (!isCollidableBlock(blockId)) return null;
-		_voxelResolveScratch.blockId = blockId;
-		_voxelResolveScratch.blockState = getBlockStateByWorldCoords(x, y, z);
+		getBlockAndStateByWorldCoordsInto(x, y, z, _voxelResolveScratch);
+		if (!isCollidableBlock(_voxelResolveScratch.blockId)) return null;
 		return _voxelResolveScratch;
 	},
 	{
@@ -256,13 +272,13 @@ export function playExplosionDebris(
 	const light = computeLight(packedLight);
 	let life = 1 + getPRNGUnit2();
 
-	for (let i = 0; i < DEBRIS_PER_BREAK; i++) {
+	for (let i = 0; i < DEBRIS_PER_EXPLOSION; i++) {
 		const theta = getPRNGUnit2() * Math.PI * 2;
 		const up = getPRNGUnit2() * 2;
 		const speed = (6 + getPRNGUnit2() * 8) * power;
 		const burning = getPRNGUnit2() < 0.25;
 		const shade = 0.8 + getPRNGUnit2() * 0.25;
-		life += 0.125;
+		life += 0.06;
 		addParticle(
 			x + (getPRNGUnit2() - 0.5) * 0.9,
 			y + (getPRNGUnit2() - 0.5) * 0.9,
@@ -1014,7 +1030,7 @@ export async function initBlockBreakParticles(
 			cellHeightPx: tileSize,
 		});
 		const system = createFacingBillboardSystem(atlas, {
-			capacity: POOL_SIZE,
+			capacity: BILLBOARD_INITIAL_CAPACITY,
 			blendMode: billboardBlendAlpha,
 		});
 		addFacingBillboardSystem(scene, system);
@@ -1055,58 +1071,87 @@ function tick(deltaMs: number): void {
 
 	const gravityDt = GRAVITY * dt;
 
-	for (let i = 0; i < aliveCount; i++) {
-		const flags = pflags[i];
+	// Hoist SoA refs to locals so the 10k-iteration hot loop avoids
+	// module-scope lookups per access.
+	const lpx = px;
+	const lpy = py;
+	const lpz = pz;
+	const lpvx = pvx;
+	const lpvy = pvy;
+	const lpvz = pvz;
+	const lpage = page;
+	const lplife = plife;
+	const lpsize = psize;
+	const lpangle = pangle;
+	const lpspin = pspin;
+	const lpr = pr;
+	const lpg = pg;
+	const lpb = pb;
+	const lpa = pa;
+	const lpgrav = pgrav;
+	const lpFadeStart = pFadeStart;
+	const lpFadeInv = pFadeInv;
+	const lpframe = pframe;
+	const lpflags = pflags;
 
-		if (flags & COLLIDE_BIT) {
-			if (!(flags & SETTLED_BIT)) {
+	for (let i = 0; i < aliveCount; i++) {
+		const life = lplife[i];
+		const age = lpage[i] + dt;
+
+		// Death check first: expiring particles skip physics, collision
+		// probes (the expensive part), and billboard upload entirely.
+		if (age >= life) {
+			removeParticle(i);
+			// removeParticle swapped the last live particle into slot i;
+			// reprocess this slot instead of skipping it (previous `continue`
+			// without i-- skipped the swapped particle for a frame, popping
+			// one live sprite per death).
+			i--;
+			continue;
+		}
+		lpage[i] = age;
+
+		const flags = lpflags[i];
+
+		if ((flags & COLLIDE_BIT) !== 0) {
+			if ((flags & SETTLED_BIT) === 0) {
 				collideParticle(i, dt);
 			}
 		} else {
-			pvy[i] += gravityDt * pgrav[i];
-			px[i] += pvx[i] * dt;
-			py[i] += pvy[i] * dt;
-			pz[i] += pvz[i] * dt;
+			lpvy[i] += gravityDt * lpgrav[i];
+			lpx[i] += lpvx[i] * dt;
+			lpy[i] += lpvy[i] * dt;
+			lpz[i] += lpvz[i] * dt;
 		}
 
-		const age = page[i] + dt;
-		page[i] = age;
-
-		if (!(pflags[i] & SETTLED_BIT)) {
-			pangle[i] += pspin[i] * dt;
+		// Re-read flags: collideParticle may have set SETTLED_BIT this frame.
+		if ((lpflags[i] & SETTLED_BIT) === 0) {
+			const spin = lpspin[i];
+			if (spin !== 0) {
+				lpangle[i] += spin * dt;
+			}
 		}
 
-		const life = plife[i];
-		if (age >= life) {
-			removeParticle(i);
-
-			// Do not increment i. removeParticle swapped the final live
-			// particle into this slot, so that particle must be processed.
-			continue;
+		let alpha = lpa[i];
+		if (age > lpFadeStart[i]) {
+			alpha *= (life - age) * lpFadeInv[i];
 		}
 
-		let alpha = pa[i];
-		const fadeStartAge = life * FADE_START;
+		scratchPos[0] = lpx[i];
+		scratchPos[1] = lpy[i];
+		scratchPos[2] = lpz[i];
 
-		if (age > fadeStartAge) {
-			alpha *= (life - age) / (life - fadeStartAge);
-		}
-
-		scratchPos[0] = px[i];
-		scratchPos[1] = py[i];
-		scratchPos[2] = pz[i];
-
-		const size = psize[i];
+		const size = lpsize[i];
 		scratchSize[0] = size;
 		scratchSize[1] = size;
 
-		scratchColor[0] = pr[i];
-		scratchColor[1] = pg[i];
-		scratchColor[2] = pb[i];
+		scratchColor[0] = lpr[i];
+		scratchColor[1] = lpg[i];
+		scratchColor[2] = lpb[i];
 		scratchColor[3] = alpha;
 
-		scratchProps.rotation = pangle[i];
-		scratchProps.frame = pframe[i];
+		scratchProps.rotation = lpangle[i];
+		scratchProps.frame = lpframe[i];
 
 		addBillboardSpriteIndex(system, scratchProps);
 	}
@@ -1279,6 +1324,10 @@ function addParticle(
 	pvz[i] = vz;
 	page[i] = 0;
 	plife[i] = life;
+	const fadeStart = life * FADE_START;
+	pFadeStart[i] = fadeStart;
+	// life is always > 0 at spawn sites (min 0.1); guard anyway.
+	pFadeInv[i] = life > 0 ? (1 / life) * FADE_RANGE : 0;
 	psize[i] = size;
 	pangle[i] = angle;
 	pspin[i] = spin;
@@ -1303,6 +1352,8 @@ function removeParticle(i: number): void {
 	pvz[i] = pvz[last];
 	page[i] = page[last];
 	plife[i] = plife[last];
+	pFadeStart[i] = pFadeStart[last];
+	pFadeInv[i] = pFadeInv[last];
 	psize[i] = psize[last];
 	pangle[i] = pangle[last];
 	pspin[i] = pspin[last];
