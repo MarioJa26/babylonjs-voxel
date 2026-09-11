@@ -171,6 +171,11 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	private voxelVelocity: Vec3 = vec3(0, 0, 0);
 	private voxelIsGrounded = false;
 	private prevJumpHeld = false;
+	// Last AIRBORNE `isJumpHeld` rising edge (performance.now ms). A short
+	// grace window lets a press slightly before wall contact still latch.
+	// Grounded presses are ignored on purpose: a single ground jump steered
+	// into a wall must NOT latch — only a second press while airborne latches.
+	private lastJumpPressMs = Number.NEGATIVE_INFINITY;
 	#isClimbing = false;
 	/** Y where the current fall started; NaN when grounded, swimming, flying or climbing. */
 	#fallStartY = Number.NaN;
@@ -208,11 +213,16 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	private readonly stepUpCooldown = 0.01;
 
 	// ── Wall jump / climbing ─────────────────────────────────────────────────
-	// Formalised replacement for the old "jump up a wall" exploit. Touching a
-	// wall is not sticky: tapping jump while airborne and in contact launches a
-	// parkour wall-jump (up impulse + small push off the wall). Gravity arcs
-	// between hops; at zero stamina you can't hop and instead slide down slowly.
+	// Jump-gated grip (strict double-jump press-to-latch). Touching a wall
+	// mid-air is NOT sticky on its own, and a single ground jump steered into
+	// a wall does NOT latch either. Only a fresh Space press while airborne
+	// and in wall contact latches. Once latched, grip slow-slides and a
+	// further distinct Space press wall-hops. Gravity arcs between hops; at
+	// zero stamina you can't hop and instead slide down slowly.
 	private readonly noStaminaSlideSpeed = 0.15; // slow slide while climbing
+	// How long after an airborne jump-press edge wall contact still latches
+	// (ms). Lets a press slightly before contact still grip.
+	private readonly climbLatchWindowMs = 200;
 	// Controlled descent speed while climbing + sneaking (faster than the
 	// out-of-stamina slow slide). Tunable.
 	private readonly climbDownSneakSpeed = 5.0;
@@ -431,6 +441,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.voxelPosition.z = spawn.z;
 		setVec3(this.voxelVelocity, 0, 0, 0);
 		this.#fallStartY = Number.NaN;
+		this.#isClimbing = false;
+		this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+		this.prevJumpHeld = this.isJumpHeld;
 		this.#characterController.setPosition(this.voxelPosition);
 		this.#camera.snapToPlayer(this.voxelPosition);
 		this.#displayCapsule?.position.copyFrom(this.voxelPosition);
@@ -448,6 +461,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.voxelPosition.z = z;
 		setVec3(this.voxelVelocity, 0, 0, 0);
 		this.#fallStartY = Number.NaN;
+		this.#isClimbing = false;
+		this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+		this.prevJumpHeld = this.isJumpHeld;
 		this.#characterController.setPosition(this.voxelPosition);
 		this.#camera.snapToPlayer(this.voxelPosition);
 		this.#displayCapsule?.position.copyFrom(this.voxelPosition);
@@ -1057,6 +1073,16 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 		const isInWater = this.frameIsInWater;
 
+		// Jump-press edge, hoisted above the climbing state so entry can be
+		// gated on it. Runs on every substep (including water) so a stale
+		// held state can't leak a false edge when leaving water. Only
+		// AIRBORNE presses arm the latch — a grounded press (the initial
+		// ground jump) is ignored so a single jump can't latch.
+		const jumpPressed = this.isJumpHeld && !this.prevJumpHeld;
+		this.prevJumpHeld = this.isJumpHeld;
+		if (jumpPressed && !this.voxelIsGrounded && !isInWater)
+			this.lastJumpPressMs = this.now;
+
 		// Wall contact is only meaningful for climbing, which can't start while
 		// grounded (and is already tracked once climbing). Skip the 4 side probes
 		// on normal ground movement.
@@ -1075,15 +1101,29 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			(this.isClimbing || this.#wallContact) &&
 			this.#hasGroundBelowFeet(activePos, activeCol, this.climbGroundMaxDist);
 
-		// Climbing state: entered while airborne and in wall contact, exited when
-		// the player leaves the wall, lands, or is within 1 block of the ground.
+		// Climbing state: strict double-jump press-to-latch. Entered while
+		// airborne in wall contact only from a recent AIRBORNE jump press.
+		// A single ground jump into a wall does NOT latch. Exited when the
+		// player leaves the wall, lands, or is within 1 block of the ground.
 		// Drives the slow-slide grip and wall-jumps; horizontal movement stays
-		// fully free.
+		// free.
+		// NOTE: quick double-tap Space in non-Survival toggles fly in
+		// WalkingControls (which clears wantJump), so that press never reaches
+		// this latch — quick = fly, slower second press = climb.
+		let latchedThisStep = false;
 		if (this.isClimbing) {
 			if (!this.#wallContact || this.voxelIsGrounded || nearGroundBelow)
 				this.#isClimbing = false;
-		} else if (this.#wallContact && !this.voxelIsGrounded && !nearGroundBelow) {
+		} else if (
+			this.#wallContact &&
+			!this.voxelIsGrounded &&
+			!nearGroundBelow &&
+			this.now - this.lastJumpPressMs <= this.climbLatchWindowMs
+		) {
 			this.#isClimbing = true;
+			// Consume this press for the latch so it doesn't also wall-hop
+			// below; the NEXT distinct press hops.
+			latchedThisStep = jumpPressed;
 		}
 
 		const speed = isInWater
@@ -1151,12 +1191,11 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			activeVel.z *= this.swimHorizontalDrag;
 			this.wantJump = 0;
 		} else {
-			// Wall-jump: a fresh jump press while airborne and touching a wall
-			// launches straight up (like a normal jump). Costs stamina in every
-			// gamemode. Gated on the press edge so holding Space doesn't spam hops.
-			const jumpPressed = this.isJumpHeld && !this.prevJumpHeld;
-			this.prevJumpHeld = this.isJumpHeld;
-
+			// Wall-jump: a fresh jump press while already climbing launches
+			// straight up (like a normal jump). Costs stamina in every
+			// gamemode. Gated on the press edge so holding Space doesn't spam
+			// hops. `jumpPressed` is hoisted above (also feeds climb latching);
+			// a press that latched this substep is consumed and doesn't hop.
 			if (this.wantJump > 0 && this.voxelIsGrounded) {
 				this.wantJump--;
 				const canJump = this.#playerStats.consumeStamina(this.jumpStaminaCost);
@@ -1166,7 +1205,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 					activeVel.y = Math.max(this.jumpImpulse, activeVel.y);
 					this.voxelIsGrounded = false;
 				}
-			} else if (jumpPressed && this.isClimbing) {
+			} else if (jumpPressed && this.isClimbing && !latchedThisStep) {
 				const canJump = this.#playerStats.consumeStamina(this.jumpStaminaCost);
 				if (canJump || this.#playerStats.gamemode === Gamemodes.Creative) {
 					activeVel.y = Math.max(this.jumpImpulse, activeVel.y);
@@ -1339,6 +1378,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			this.#characterController.setVelocity(this.#zeroVelocity);
 			this.voxelCollider.syncDebugMesh(this.voxelPosition);
 			this.#fallStartY = Number.NaN;
+			this.#isClimbing = false;
+			this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+			this.prevJumpHeld = this.isJumpHeld;
 			return;
 		}
 
@@ -1394,6 +1436,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			copyVec3(this.voxelPosition, this.#characterController.getPosition());
 			setVec3(this.voxelVelocity, 0, 0, 0);
 			this.#fallStartY = Number.NaN;
+			this.#isClimbing = false;
+			this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+			this.prevJumpHeld = this.isJumpHeld;
 		} else {
 			if (this.isFlying) {
 				const dv = this.calculateFlyingVelocity(deltaTime);
@@ -1405,6 +1450,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 				this.#characterController.setVelocity(this.#zeroVelocity);
 				this.voxelCollider.syncDebugMesh(this.voxelPosition);
 				this.#fallStartY = Number.NaN;
+				this.#isClimbing = false;
+				this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+				this.prevJumpHeld = this.isJumpHeld;
 				return;
 			}
 			this.integrateMovement(deltaTime);
@@ -1437,6 +1485,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		setVec3(this.voxelVelocity, 0, 0, 0);
 		this.#characterController.setVelocity(this.#zeroVelocity);
 		this.#fallStartY = Number.NaN;
+		this.#isClimbing = false;
+		this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+		this.prevJumpHeld = this.isJumpHeld;
 	}
 
 	public getSavedPosition(): Vec3 {
@@ -1454,6 +1505,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		copyVec3(this.voxelPosition, p);
 		setVec3(this.voxelVelocity, 0, 0, 0);
 		this.#fallStartY = Number.NaN;
+		this.#isClimbing = false;
+		this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+		this.prevJumpHeld = this.isJumpHeld;
 		this.#characterController.setPosition(p);
 		if (this.#movementLocked) this.#lockedPosition = vec3(p.x, p.y, p.z);
 		this.#camera.snapToPlayer(p);
