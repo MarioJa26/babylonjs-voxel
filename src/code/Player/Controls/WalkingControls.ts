@@ -10,6 +10,7 @@ import type { BlockRaycastHit } from "../Hud/BlockHighlight/BlockRaycaster";
 import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
 import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakingBlockHandler";
 import { Crosshair } from "../Hud/Crosshair/Crosshair";
+import { swingHeldItemView } from "../Inventory/HeldItemView";
 import type { Item } from "../Inventory/Item";
 import { getRegisteredItemById } from "../Inventory/ItemRegistry";
 import {
@@ -108,6 +109,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	public handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void {
 		if (WalkingControls.MOUSE1.includes(mouseEvent.button)) {
 			if (isKeyDown) {
+				swingHeldItemView();
 				const target = Crosshair.pickMobTarget(this.#player);
 				if (target) {
 					const mob = resolveMobFromPick(target.mesh, target.thinInstanceIndex);

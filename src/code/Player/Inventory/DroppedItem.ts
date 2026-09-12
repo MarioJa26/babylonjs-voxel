@@ -124,14 +124,14 @@ function disposeItemMaterial(mat: ShaderMaterial): void {
 	(mat as unknown as { dispose?: () => void }).dispose?.();
 }
 
-function acquireDroppedItemMaterial(blockId: number): ShaderMaterial {
+export function acquireDroppedItemMaterial(blockId: number): ShaderMaterial {
 	const pool = droppedItemMaterialPool.get(blockId);
 	const reused = pool?.pop();
 	if (reused) return reused;
 	return createDroppedItemMaterial();
 }
 
-function releaseDroppedItemMaterial(
+export function releaseDroppedItemMaterial(
 	blockId: number,
 	mat: ShaderMaterial,
 ): void {
@@ -194,9 +194,9 @@ export function releaseSpriteMaterial(
 }
 
 /** Fallback sprite when an item icon PNG is missing (art not created yet). */
-const PLACEHOLDER_ICON_URL = "/texture/placeholder.png";
+export const PLACEHOLDER_ICON_URL = "/texture/placeholder.png";
 
-function getIconTexture(url: string): Promise<Texture2D | null> {
+export function getIconTexture(url: string): Promise<Texture2D | null> {
 	let promise = spriteTextureCache.get(url);
 	if (!promise) {
 		promise = loadTexture2D(Map1.engine, url, {

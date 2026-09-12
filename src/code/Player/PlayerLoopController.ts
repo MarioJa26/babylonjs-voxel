@@ -48,6 +48,7 @@ import {
 	pickTarget,
 } from "./Hud/BlockHighlight/BlockRaycaster";
 import { PlayerHud } from "./Hud/PlayerHud";
+import { updateHeldItemView } from "./Inventory/HeldItemView";
 import type { PlayerCamera } from "./PlayerCamera";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
 
@@ -263,6 +264,7 @@ export class PlayerLoopController {
 
 		frameProfiler.begin("controls");
 		this.updateControls(uiOpen, pickHit);
+		updateHeldItemView(this.playerHud.player, dtSec);
 		frameProfiler.end("controls");
 
 		if (this.updateCaveState(playerPos.y)) {
