@@ -12,6 +12,8 @@ export const MobTypeId = {
 	Squid: 4,
 	Fish: 5,
 	Kraken: 6,
+	Zombie: 7,
+	Skeleton: 8,
 } as const;
 
 /** Squared radius (meters) within which a nearby player triggers panic. */
@@ -123,6 +125,24 @@ export const MOB_STATS: Record<number, MobStats> = {
 		aquatic: true,
 		depthRange: { min: 5, max: 12 }, // Deep water dweller
 	},
+	[MobTypeId.Zombie]: {
+		hp: 20,
+		speed: 2.2,
+		halfHeight: 0.9,
+		feetHeight: 0.9,
+		halfExtents: { x: 0.32, y: 0.9, z: 0.32 },
+		fleeRadiusSq: 0,
+		aquatic: false,
+	},
+	[MobTypeId.Skeleton]: {
+		hp: 20,
+		speed: 2.4,
+		halfHeight: 0.95,
+		feetHeight: 0.95,
+		halfExtents: { x: 0.3, y: 0.95, z: 0.3 },
+		fleeRadiusSq: 0,
+		aquatic: false,
+	},
 };
 
 /** Natural spawn configurations, keyed by MobTypeId. */
@@ -169,6 +189,20 @@ export const MOB_SPAWN_CONFIGS: Record<number, MobSpawnConfig> = {
 		despawnable: false,
 		spawnYOffset: 0.5,
 	},
+	[MobTypeId.Zombie]: {
+		maxCount: 8,
+		spawnWeight: 1,
+		spawnBlockId: 15, // BlockType.Grass001
+		despawnable: true,
+		spawnYOffset: 0.3,
+	},
+	[MobTypeId.Skeleton]: {
+		maxCount: 8,
+		spawnWeight: 1,
+		spawnBlockId: 15, // BlockType.Grass001
+		despawnable: true,
+		spawnYOffset: 0.3,
+	},
 };
 
 /** Get stats for a mob type, throwing if unknown. */
@@ -187,4 +221,24 @@ export function getMobSpawnConfig(typeId: number): MobSpawnConfig {
 		throw new Error(`Unknown mob typeId: ${typeId}`);
 	}
 	return config;
+}
+
+/**
+ * True for hostile (player-hunting) mob types. Hostiles chase and melee the
+ * player, spawn only at night, and burn in daylight — passives do none of
+ * this. Keyed by MobTypeId so client and server agree.
+ */
+export function isHostileTypeId(typeId: number): boolean {
+	return typeId === MobTypeId.Zombie || typeId === MobTypeId.Skeleton;
+}
+
+/**
+ * True when a day-cycle fraction (0..1, same basis as WorldEnvironment and
+ * the server's WorldTime broadcast) is night. Mirrors the renderer's sun
+ * curve (sunIntensity = max(0, sin(t * 2π))): dark from late evening
+ * through sunrise.
+ */
+export function isNightTimeFraction(fraction: number): boolean {
+	const f = fraction - Math.floor(fraction);
+	return f < 0.03 || f >= 0.53;
 }

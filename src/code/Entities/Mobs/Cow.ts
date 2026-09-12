@@ -21,6 +21,7 @@ import {
 	MOB_COW_SKIN_PATH,
 } from "./MobSkin";
 import { NeutralMob } from "./NeutralMob";
+import { spawnXpOrbs } from "./XpOrb";
 
 const COW_MOB_TYPE = "cow";
 const COW_CHUNK_ENTITY_TYPE = "cow_v1";
@@ -211,6 +212,7 @@ export class Cow extends NeutralMob {
 			Map1.mainPlayer ?? undefined,
 		);
 		dropMobFoodForType("cow", pos.x, pos.y, pos.z);
+		spawnXpOrbs(pos.x, pos.y, pos.z, 1, 1);
 	}
 
 	dispose(): void {

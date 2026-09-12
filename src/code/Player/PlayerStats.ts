@@ -15,6 +15,12 @@ export const REACH_AURA = 3;
 // clamping client-side keeps optimistic pickups from silently desyncing.
 // Local (singleplayer) items keep the full interaction reach.
 export const ITEM_PICKUP_MAX_REACH = 2.0;
+
+export type SavedPlayerStats = {
+	xp: number;
+	xpLevel: number;
+};
+
 export class PlayerStats {
 	public gamemode: Gamemodes = Gamemodes.Creative;
 
@@ -29,6 +35,11 @@ export class PlayerStats {
 
 	public maxMana = 100;
 	public mana = 100;
+
+	/** Experience points banked from XP orbs (zombie/skeleton kills). */
+	public xp = 0;
+	/** Experience level derived from total xp (see addXp). */
+	public xpLevel = 0;
 
 	// Rates per second
 	public healthRegenRate = 1;
@@ -87,6 +98,54 @@ export class PlayerStats {
 
 	public takeDamage(amount: number): void {
 		this.health = Math.max(0, this.health - amount);
+	}
+
+	/** XP for the next level: 7 + level * 4 (cheap early, grindy late). */
+	public xpForNextLevel(): number {
+		return 7 + this.xpLevel * 4;
+	}
+
+	/** Bank XP, leveling up (and keeping overflow) whenever affordable. */
+	public addXp(amount: number): void {
+		if (!(amount > 0)) return;
+		this.xp += Math.floor(amount);
+		let need = this.xpForNextLevel();
+		while (this.xp >= need) {
+			this.xp -= need;
+			this.xpLevel++;
+			need = this.xpForNextLevel();
+		}
+	}
+
+	/** Serializable XP snapshot for PlayerStatePersistence. */
+	public getSavedStatsState(): SavedPlayerStats {
+		return {
+			xp: Math.max(0, Math.floor(this.xp)),
+			xpLevel: Math.max(0, Math.floor(this.xpLevel)),
+		};
+	}
+
+	/**
+	 * Restore a persisted XP snapshot. Returns false (keeping current
+	 * values) when the payload is malformed.
+	 */
+	public restoreSavedStatsState(saved: SavedPlayerStats): boolean {
+		if (saved === null || typeof saved !== "object") return false;
+		const xp = (saved as { xp?: unknown }).xp;
+		const xpLevel = (saved as { xpLevel?: unknown }).xpLevel;
+		if (
+			typeof xp !== "number" ||
+			typeof xpLevel !== "number" ||
+			!Number.isFinite(xp) ||
+			!Number.isFinite(xpLevel) ||
+			xp < 0 ||
+			xpLevel < 0
+		) {
+			return false;
+		}
+		this.xp = Math.floor(xp);
+		this.xpLevel = Math.floor(xpLevel);
+		return true;
 	}
 
 	public heal(amount: number): void {

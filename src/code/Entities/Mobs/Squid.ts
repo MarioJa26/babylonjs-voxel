@@ -14,6 +14,7 @@ import {
 	SQUID_HEAD_UV,
 	SQUID_TENTACLE_UVS,
 } from "./MobSkin";
+import { spawnXpOrbs } from "./XpOrb";
 
 const SQUID_MOB_TYPE = "squid";
 const SQUID_CHUNK_ENTITY_TYPE = "squid_v1";
@@ -166,6 +167,7 @@ export class Squid extends AquaticMob {
 	onDeath(): void {
 		const pos = this.position;
 		dropMobFoodForType("squid", pos.x, pos.y, pos.z);
+		spawnXpOrbs(pos.x, pos.y, pos.z, 1, 1);
 	}
 
 	dispose(): void {

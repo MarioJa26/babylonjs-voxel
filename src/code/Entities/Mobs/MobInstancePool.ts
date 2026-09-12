@@ -13,6 +13,7 @@ import { MetadataContainer } from "@/code/Entities/MetadataContainer";
 import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import type { AquaticMob } from "./AquaticMob";
+import type { HostileMob } from "./HostileMob";
 import type { Mob } from "./Mob";
 import {
 	buildMobModelGeometry,
@@ -25,11 +26,13 @@ import {
 	MOB_FISH_SKIN_PATH,
 	MOB_KRAKEN_SKIN_PATH,
 	MOB_SHEEP_SKIN_PATH,
+	MOB_SKELETON_SKIN_PATH,
 	MOB_SQUID_SKIN_PATH,
+	MOB_ZOMBIE_SKIN_PATH,
 } from "./MobSkin";
 import type { NeutralMob } from "./NeutralMob";
 
-type MobOwner = Mob | NeutralMob | AquaticMob;
+type MobOwner = Mob | NeutralMob | AquaticMob | HostileMob;
 
 /**
  * Per-species thin-instance pools for mob rendering.
@@ -114,6 +117,8 @@ export async function preloadMobSkins(): Promise<void> {
 		loadMobSkin(MOB_SQUID_SKIN_PATH),
 		loadMobSkin(MOB_FISH_SKIN_PATH),
 		loadMobSkin(MOB_KRAKEN_SKIN_PATH),
+		loadMobSkin(MOB_ZOMBIE_SKIN_PATH),
+		loadMobSkin(MOB_SKELETON_SKIN_PATH),
 	]);
 }
 
@@ -148,6 +153,17 @@ type MobInstancePoolOptions = {
 	 * the body. Leg vertices rotate about this X axis line while walking.
 	 */
 	hipPivotY: number;
+	/**
+	 * Y coordinate (mob-local space) of the shoulder pivot line — where arms
+	 * meet the body. Optional: defaults to the hip pivot. Only species whose
+	 * parts use arm tags (1/2) need this.
+	 */
+	shoulderPivotY?: number;
+	/**
+	 * Fixed base arm rotation for an attack-pose pool variant (see
+	 * createInstancedMobAtlasMaterial). Optional, defaults to 0.
+	 */
+	attackRaise?: number;
 	/** Walk-stride amplitude 0–1 (1 = full SWING_MAX swing). */
 	walkAmp: number;
 	initialCapacity?: number;
@@ -202,6 +218,8 @@ export class MobInstancePool {
 			options.tint ?? Color3.White(),
 			options.hipPivotY,
 			options.walkAmp,
+			options.shoulderPivotY,
+			options.attackRaise,
 		);
 		mesh.material = this.#material;
 

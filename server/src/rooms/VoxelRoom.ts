@@ -21,7 +21,7 @@
  *    track pending edits without GC pressure.
  */
 import { type Client, ClientState, CloseCode, Room } from "colyseus";
-import { MOB_STATS } from "@/code/Entities/MobConfig";
+import { isNightTimeFraction, MOB_STATS } from "@/code/Entities/MobConfig";
 import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
 import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath.ts";
 import {
@@ -123,7 +123,7 @@ import {
 } from "../world/ContainerSimulation.ts";
 import type { ServerItem } from "../world/ItemSimulation.ts";
 import { ServerItemSimulation } from "../world/ItemSimulation.ts";
-import { rollMobFoodDrop } from "../world/MobDrops.ts";
+import { rollMobFoodDrop, rollMobItemDrops } from "../world/MobDrops.ts";
 import {
 	type ServerMob,
 	type ServerMobDeath,
@@ -1201,7 +1201,11 @@ export class VoxelRoom extends Room {
 		posScratch.length = playerCount;
 		this.worldStorage.setPlayerPositions(posScratch);
 
-		const mobEvents = this.mobSim.tick(deltaMs, posScratch);
+		const mobEvents = this.mobSim.tick(
+			deltaMs,
+			posScratch,
+			isNightTimeFraction(this.timeOfDay),
+		);
 
 		this.mobDebugAccum += deltaMs;
 		if (this.mobDebugAccum >= 5000) {
@@ -1382,34 +1386,46 @@ export class VoxelRoom extends Room {
 		for (let i = 0; i < deaths.length; i++) {
 			const death = deaths[i];
 			const drop = rollMobFoodDrop(death.typeId);
-			if (!drop) continue;
+			if (drop) this.spawnDeathDrop(death, drop.itemId, drop.stackSize);
 
-			const item = this.itemSim.add(
-				drop.itemId,
-				drop.stackSize,
-				death.x,
-				death.y + 0.5,
-				death.z,
-				(Math.random() - 0.5) * 1.5,
-				2,
-				(Math.random() - 0.5) * 1.5,
-			);
-			this.broadcastBytes(
-				"binary",
-				encodeItemSpawn({
-					id: item.id,
-					itemId: item.itemId,
-					stackSize: item.stackSize,
-					x: item.x,
-					y: item.y,
-					z: item.z,
-					vx: item.vx,
-					vy: item.vy,
-					vz: item.vz,
-				}),
-				{},
-			);
+			// Hostile item drops (rotten flesh, bones, arrows).
+			const itemDrops = rollMobItemDrops(death.typeId);
+			for (let j = 0; j < itemDrops.length; j++) {
+				this.spawnDeathDrop(death, itemDrops[j].itemId, itemDrops[j].stackSize);
+			}
 		}
+	}
+
+	private spawnDeathDrop(
+		death: { x: number; y: number; z: number },
+		itemId: number,
+		stackSize: number,
+	): void {
+		const item = this.itemSim.add(
+			itemId,
+			stackSize,
+			death.x,
+			death.y + 0.5,
+			death.z,
+			(Math.random() - 0.5) * 1.5,
+			2,
+			(Math.random() - 0.5) * 1.5,
+		);
+		this.broadcastBytes(
+			"binary",
+			encodeItemSpawn({
+				id: item.id,
+				itemId: item.itemId,
+				stackSize: item.stackSize,
+				x: item.x,
+				y: item.y,
+				z: item.z,
+				vx: item.vx,
+				vy: item.vy,
+				vz: item.vz,
+			}),
+			{},
+		);
 	}
 
 	private writeMobUpdateBatch(): void {

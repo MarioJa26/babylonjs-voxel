@@ -798,6 +798,8 @@ export class Arrow {
 				remoteId,
 				this.#arrowDef.damage,
 			);
+			// Optimistic kill-link: the server echo skips the sender.
+			Arrow.#frameRemote?.noteOutgoingDamage(remoteId);
 
 			if (blastRadius !== undefined) {
 				// Explosive arrow: direct hit plus detonation, no sticking.
@@ -1096,6 +1098,7 @@ export class Arrow {
 						this.#bleedMobId,
 						amount,
 					);
+					Arrow.#frameRemote?.noteOutgoingDamage(this.#bleedMobId);
 				}
 			}
 
@@ -1130,6 +1133,7 @@ export class Arrow {
 			this.#bleedMobId,
 			amount,
 		);
+		Arrow.#frameRemote?.noteOutgoingDamage(this.#bleedMobId);
 	}
 
 	dropAsItem(): void {

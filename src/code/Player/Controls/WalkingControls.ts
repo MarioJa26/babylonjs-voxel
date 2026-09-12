@@ -1,6 +1,8 @@
 import type { Vec3 } from "@babylonjs/lite";
 import { resolveMobFromPick } from "@/code/Entities/Mobs/MobInstancePool";
+import { getMeleeDamage, getMeleeRange } from "@/code/Entities/WeaponStats";
 import type { IControls } from "@/code/Interface/IControls";
+import { Map1 } from "@/code/Maps/Map1";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { validateChunksAround } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { isUiOpen, UiFocus } from "../../Lib/GameRuntimeState";
@@ -110,10 +112,15 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 				if (target) {
 					const mob = resolveMobFromPick(target.mesh, target.thinInstanceIndex);
 					if (mob) {
-						mob.takeDamage(1);
+						// Punch damage comes from the held weapon (WeaponStats);
+						// empty hand keeps the classic 1-hp hit.
+						mob.takeDamage(getMeleeDamage(this.selectedItem?.itemId));
 						return;
 					}
 				}
+				// Multiplayer: local pools hold no server mobs, so sweep the
+				// remote mobs along the view ray and send a validated hit.
+				if (this.#tryRemoteMelee()) return;
 				this.#blockBreaking.start();
 			} else {
 				this.#blockBreaking.stop();
@@ -186,6 +193,45 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 				this.#player.playerHud.selectedHotbarSlot
 			]?.item ?? null
 		);
+	}
+
+	/**
+	 * Melee a server-authoritative (remote) mob in multiplayer. Sweeps the
+	 * view ray against RemoteMobManager and sends MobDamage when it lands.
+	 * True when a swing connected (caller must not start block breaking).
+	 */
+	#tryRemoteMelee(): boolean {
+		const remote = Map1.remoteMobManager;
+		const netClient = this.#player.networkManager?.netClient;
+		if (!remote || !netClient?.isConnected) return false;
+
+		const cam = this.#player.playerCamera.playerCamera;
+		const px = cam.position.x;
+		const py = cam.position.y;
+		const pz = cam.position.z;
+		let dx = cam.target.x - px;
+		let dy = cam.target.y - py;
+		let dz = cam.target.z - pz;
+		const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+		dx /= len;
+		dy /= len;
+		dz /= len;
+
+		const reach = Math.max(3.2, getMeleeRange(this.selectedItem?.itemId));
+		const hit = remote.findSegmentHit(
+			px,
+			py,
+			pz,
+			px + dx * reach,
+			py + dy * reach,
+			pz + dz * reach,
+		);
+		if (!hit) return false;
+		netClient.sendMobDamage(hit.id, getMeleeDamage(this.selectedItem?.itemId));
+		// Optimistic kill-link: the server echo skips the sender, so record
+		// the hit locally or our own kills show no burst/XP.
+		remote.noteOutgoingDamage(hit.id);
+		return true;
 	}
 
 	public update(hit?: BlockRaycastHit | null): void {

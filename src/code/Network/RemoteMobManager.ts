@@ -34,15 +34,33 @@ import {
 	SHEEP_HIT_HALF,
 } from "@/code/Entities/Mobs/Sheep";
 import {
+	getSkeletonInstancePool,
+	SKELETON_HIT_HALF,
+} from "@/code/Entities/Mobs/Skeleton";
+import {
 	getSquidInstancePool,
 	SQUID_HIT_HALF,
 } from "@/code/Entities/Mobs/Squid";
+import { spawnXpOrbs } from "@/code/Entities/Mobs/XpOrb";
+import {
+	getZombieAttackPool,
+	getZombieInstancePool,
+	ZOMBIE_HIT_HALF,
+} from "@/code/Entities/Mobs/Zombie";
+import {
+	getMeleeDamage,
+	getMeleeRange,
+	getMobWeaponIdByTypeId,
+} from "@/code/Entities/WeaponStats";
 import {
 	playLandingDust,
 	playMobDamage,
+	playMobDamageDirected,
 	playMobDeath,
 } from "@/code/Maps/BlockBreakParticles";
-import { MobTypeId } from "../Entities/MobConfig";
+import { Map1 } from "@/code/Maps/Map1";
+import { Gamemodes } from "@/code/Player/PlayerStats";
+import { isHostileTypeId, MobTypeId } from "../Entities/MobConfig";
 import type { NetClient } from "./NetClient";
 import {
 	BinaryDecoder,
@@ -123,6 +141,12 @@ interface RemoteMobInstance {
 	 * The callback returns lightPosition without allocating.
 	 */
 	getLightPosition: () => MutablePosition;
+
+	/** Seconds until this hostile may strike the local player again. */
+	strikeCooldown: number;
+
+	/** True while this zombie renders through the attack-pose pool. */
+	inAttackPool: boolean;
 }
 
 export class RemoteMobManager {
@@ -171,6 +195,20 @@ export class RemoteMobManager {
 
 	get size(): number {
 		return this.mobs.size;
+	}
+
+	/**
+	 * Optimistic kill-link for outgoing hits (melee punches, arrows).
+	 *
+	 * The server relays accepted MobDamage to everyone EXCEPT the sender,
+	 * so without this the attacker's own client could never link its kills:
+	 * melee/arrow despawns would show no death burst and no XP orbs for the
+	 * killer (explosions broadcast to all, which is why only they dropped
+	 * XP). The despawn must still arrive inside the bleed window, so a
+	 * rejected hit links nothing on its own.
+	 */
+	noteOutgoingDamage(mobId: number): void {
+		this.recentDamage.set(mobId, performance.now());
 	}
 
 	/**
@@ -427,6 +465,12 @@ export class RemoteMobManager {
 			case MobTypeId.Kraken:
 				return getKrakenInstancePool();
 
+			case MobTypeId.Zombie:
+				return getZombieInstancePool();
+
+			case MobTypeId.Skeleton:
+				return getSkeletonInstancePool();
+
 			case MobTypeId.Chicken:
 			default:
 				return getChickenInstancePool();
@@ -451,6 +495,12 @@ export class RemoteMobManager {
 
 			case MobTypeId.Kraken:
 				return KRAKEN_HIT_HALF;
+
+			case MobTypeId.Zombie:
+				return ZOMBIE_HIT_HALF;
+
+			case MobTypeId.Skeleton:
+				return SKELETON_HIT_HALF;
 
 			case MobTypeId.Chicken:
 			default:
@@ -548,6 +598,8 @@ export class RemoteMobManager {
 
 			lightPosition,
 			getLightPosition: () => lightPosition,
+			strikeCooldown: 0,
+			inAttackPool: false,
 		};
 
 		this.mobs.set(id, entry);
@@ -584,6 +636,38 @@ export class RemoteMobManager {
 		mob.targetYawRad = yaw * YAW_BYTE_TO_RAD;
 	}
 
+	/**
+	 * Move a remote zombie's lane between the normal and attack-pose pools.
+	 * Same pattern as the singleplayer Zombie: light registration follows
+	 * the lane, and the written-transform cache is invalidated so the new
+	 * lane is uploaded even when the mob stands still.
+	 */
+	private swapZombiePool(mob: RemoteMobInstance, attacking: boolean): void {
+		const want = attacking ? getZombieAttackPool() : getZombieInstancePool();
+		if (want === mob.pool) {
+			mob.inAttackPool = attacking;
+			return;
+		}
+
+		unregisterMobLight(mob.slot);
+		mob.pool.release(mob.slot);
+		mob.pool = want;
+		mob.slot = want.acquire(null);
+		mob.inAttackPool = attacking;
+		want.writeColor(mob.slot, 1, 1, 1, mob.walkPhase);
+		mob.writtenX = Number.NaN;
+		mob.writtenY = Number.NaN;
+		mob.writtenZ = Number.NaN;
+		mob.writtenYawRad = Number.NaN;
+		registerMobLight({
+			pool: want,
+			slot: mob.slot,
+			getPos: mob.getLightPosition,
+			baseColor: [1, 1, 1],
+			owner: mob,
+		});
+	}
+
 	private despawnMob(id: number): void {
 		const mob = this.mobs.get(id);
 
@@ -594,7 +678,8 @@ export class RemoteMobManager {
 
 		// Damage-then-despawn inside the window means a kill (TNT, arrows):
 		// burst blood at the mob's last position. Plain despawns (wandered
-		// off) stay clean.
+		// off) stay clean. Kills additionally shower XP orbs (local-only,
+		// like singleplayer onDeath): 3-6 for hostiles, 1 for passives.
 		const hitAt = this.recentDamage.get(id);
 		this.recentDamage.delete(id);
 		if (
@@ -602,6 +687,11 @@ export class RemoteMobManager {
 			performance.now() - hitAt <= MOB_DEATH_BLEED_WINDOW_MS
 		) {
 			playMobDeath(mob.currentX, mob.currentY, mob.currentZ);
+			if (isHostileTypeId(mob.typeId)) {
+				spawnXpOrbs(mob.currentX, mob.currentY, mob.currentZ, 3, 6);
+			} else {
+				spawnXpOrbs(mob.currentX, mob.currentY, mob.currentZ, 1, 1);
+			}
 		}
 
 		this.mobs.delete(id);
@@ -635,6 +725,18 @@ export class RemoteMobManager {
 		const dt = deltaMs * 0.001;
 		const alpha = 1 - Math.exp(-dt * 12);
 		const idlePhaseMultiplier = Math.max(0, 1 - WALK_PHASE_DECAY * dt);
+
+		// Hostile strike targeting (multiplayer): server mobs are
+		// position-authoritative but player HP is client-local, so the
+		// client applies melee when a hostile closes to its weapon's reach.
+		const player = Map1.mainPlayer;
+		const playerHarmable =
+			player !== null &&
+			player !== undefined &&
+			player.stats.gamemode !== Gamemodes.Creative;
+		const playerX = player?.position.x ?? 0;
+		const playerY = player?.position.y ?? 0;
+		const playerZ = player?.position.z ?? 0;
 
 		const iterator = this.mobs.values();
 
@@ -687,6 +789,46 @@ export class RemoteMobManager {
 			lightPosition.x = currentX;
 			lightPosition.y = currentY;
 			lightPosition.z = currentZ;
+
+			// Hostile strike (multiplayer): runs even when the mob stands
+			// still, so a zombie already in reach keeps swinging. Zombies
+			// also raise their arms while in reach (attack-pose pool).
+			if (playerHarmable && isHostileTypeId(mob.typeId)) {
+				mob.strikeCooldown -= dt;
+				const weaponId = getMobWeaponIdByTypeId(mob.typeId);
+				const range = getMeleeRange(weaponId);
+				const sdx = playerX - currentX;
+				const sdz = playerZ - currentZ;
+				const sdy = playerY - currentY;
+				const inReach =
+					sdx * sdx + sdz * sdz <= range * range && sdy >= -1 && sdy <= 2.5;
+				// Attack pose follows the pursuit, not the final swing: chase
+				// hysteresis (16 aggro / 32 deaggro) mirrors the server, so
+				// arms stay horizontal for the whole chase like singleplayer.
+				if (mob.typeId === MobTypeId.Zombie) {
+					const distSq = sdx * sdx + sdz * sdz;
+					const chaseRadiusSq = mob.inAttackPool ? 32 * 32 : 16 * 16;
+					const pursuing = distSq < chaseRadiusSq;
+					if (pursuing !== mob.inAttackPool) {
+						this.swapZombiePool(mob, pursuing);
+					}
+				}
+				if (inReach && mob.strikeCooldown <= 0) {
+					mob.strikeCooldown = 1.0;
+					const strikeDamage = getMeleeDamage(weaponId);
+					// Blood blows back toward the mob (opposite the hit
+					// facing) so the spray stays in the player's view.
+					playMobDamageDirected(
+						playerX,
+						playerY,
+						playerZ,
+						strikeDamage,
+						-sdx,
+						-sdz,
+					);
+					player?.stats.takeDamage(strikeDamage);
+				}
+			}
 
 			/*
 			 * Preserve the existing behavior exactly. In particular, the walk

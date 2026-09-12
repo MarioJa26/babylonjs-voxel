@@ -23,6 +23,8 @@ export const MOB_COW_SKIN_PATH = "/texture/mobs/cow.png";
 export const MOB_SQUID_SKIN_PATH = "/texture/mobs/squid.png";
 export const MOB_FISH_SKIN_PATH = "/texture/mobs/fish.png";
 export const MOB_KRAKEN_SKIN_PATH = "/texture/mobs/kraken.png";
+export const MOB_ZOMBIE_SKIN_PATH = "/texture/mobs/zombie.png";
+export const MOB_SKELETON_SKIN_PATH = "/texture/mobs/skeleton.png";
 export const MOB_SKIN_SIZE = 128;
 
 /** Pixel rect [x0, y0, x1, y1]; y0 is the TOP edge of the rect. */
@@ -147,3 +149,32 @@ export const KRAKEN_TENTACLE_UVS = [
 	boxUvSet(96, 24, 4, 18, 4),
 	boxUvSet(108, 24, 4, 18, 4),
 ] as const;
+
+// ─── Zombie ─────────────────────────────────────────────────────────────────
+// Humanoid: torso + head + two arms + two legs. Own 128x128 file, so the
+// layout only has to be self-consistent (and match generate-mob-skins.mjs).
+
+/** Zombie torso: box 8x12x4 texels (player-sized). */
+export const ZOMBIE_BODY_UV = boxUvSet(0, 0, 8, 12, 4);
+/** Zombie head: box 8x8x8 texels (player-sized). */
+export const ZOMBIE_HEAD_UV = boxUvSet(0, 32, 8, 8, 8);
+/** Zombie arms: boxes 4x12x4 texels (player-sized). */
+export const ZOMBIE_ARM_L_UV = boxUvSet(48, 32, 4, 12, 4);
+export const ZOMBIE_ARM_R_UV = boxUvSet(68, 32, 4, 12, 4);
+/** Zombie legs: boxes 4x12x4 texels (player-sized). */
+export const ZOMBIE_LEG_L_UV = boxUvSet(48, 56, 4, 12, 4);
+export const ZOMBIE_LEG_R_UV = boxUvSet(80, 56, 4, 12, 4);
+
+// ─── Skeleton ───────────────────────────────────────────────────────────────
+// Same humanoid layout as the zombie (own file).
+
+/** Skeleton ribcage: box 16x12x8 texels. */
+export const SKELETON_BODY_UV = boxUvSet(0, 0, 16, 12, 8);
+/** Skeleton skull: box 10x10x10 texels. */
+export const SKELETON_HEAD_UV = boxUvSet(0, 32, 10, 10, 10);
+/** Skeleton arms: boxes 5x12x5 texels. */
+export const SKELETON_ARM_L_UV = boxUvSet(48, 32, 5, 12, 5);
+export const SKELETON_ARM_R_UV = boxUvSet(68, 32, 5, 12, 5);
+/** Skeleton legs: boxes 6x14x6 texels. */
+export const SKELETON_LEG_L_UV = boxUvSet(48, 56, 6, 14, 6);
+export const SKELETON_LEG_R_UV = boxUvSet(80, 56, 6, 14, 6);

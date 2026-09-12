@@ -1,5 +1,8 @@
 import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
+import { isNightTimeFraction } from "./MobConfig";
+import { Map1 } from "../Maps/Map1";
+import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import {
 	getLightByWorldCoords,
 	resolveBlockAtWorldCoords,
@@ -21,6 +24,19 @@ const MIN_SPAWN_HEIGHT = 1;
 const MAX_SPAWN_HEIGHT = 200;
 
 const _mobSnapshot: Mob[] = [];
+
+/**
+ * True when the world clock is in its night phase. Defaults to true when
+ * there is no environment yet (tests, early boot) so spawning never
+ * deadlocks for lack of a clock.
+ */
+function isNightNow(): boolean {
+	const env = Map1.environment;
+	if (!env) return true;
+	return isNightTimeFraction(
+		env.getTimeOfDayMs() / SETTING_PARAMS.DAY_DURATION_MS,
+	);
+}
 
 export class SpawnCoordinator {
 	#scene: SceneContext;
@@ -111,12 +127,16 @@ export class SpawnCoordinator {
 		// (countsTowardMobCap === false) never block natural spawning.
 		if (this.#registry.getNaturalTotal() >= totalCap) return;
 
+		const night = isNightNow();
 		const attempts = 3;
 		for (let i = 0; i < attempts; i++) {
 			if (this.#registry.getNaturalTotal() >= totalCap) return;
 
 			const config = this.#registry.pickSpawnType();
 			if (!config) return;
+
+			// Night spawners (zombies/skeletons) never roll during the day.
+			if (config.nightSpawn && !night) continue;
 
 			const pos = this.#findSpawnPosition(playerPos, config);
 			if (pos) {
@@ -171,9 +191,13 @@ export class SpawnCoordinator {
 				below.blockId === config.spawnBlockId &&
 				above.blockId === BlockType.Air
 			) {
-				const light = getLightByWorldCoords(wx, wy + 1, wz);
-				const skyLight = (light >> 4) & 0xf;
-				if (skyLight < 8) continue;
+				// Day mobs need open sky; night spawners hunt in the dark, so
+				// they skip the daylight gate (baked skylight can't tell time).
+				if (!config.nightSpawn) {
+					const light = getLightByWorldCoords(wx, wy + 1, wz);
+					const skyLight = (light >> 4) & 0xf;
+					if (skyLight < 8) continue;
+				}
 
 				const spawnY = wy + 1;
 				let tooClose = false;

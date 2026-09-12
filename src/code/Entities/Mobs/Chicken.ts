@@ -18,6 +18,7 @@ import {
 	MOB_CHICKEN_SKIN_PATH,
 } from "./MobSkin";
 import { NeutralMob } from "./NeutralMob";
+import { spawnXpOrbs } from "./XpOrb";
 
 const CHICKEN_MOB_TYPE = "chicken";
 const CHICKEN_CHUNK_ENTITY_TYPE = "chicken_v1";
@@ -209,6 +210,7 @@ export class Chicken extends NeutralMob {
 	onDeath(): void {
 		const pos = this.position;
 		dropMobFoodForType("chicken", pos.x, pos.y, pos.z);
+		spawnXpOrbs(pos.x, pos.y, pos.z, 1, 1);
 	}
 
 	dispose(): void {

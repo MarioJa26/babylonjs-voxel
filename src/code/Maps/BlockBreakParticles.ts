@@ -539,6 +539,74 @@ export function playMobDamage(
 	}
 }
 
+/**
+ * Directional blood burst for when the PLAYER takes a melee hit: the spray
+ * travels along (dirX, dirZ) with a small random spread, so the hit reads
+ * as coming from a direction instead of a generic omnidirectional pop.
+ * Callers pass the mob→player facing negated, blowing the spray back
+ * toward the attacker so it stays in front of the camera. Falls back to
+ * +X when the direction is degenerate.
+ */
+export function playMobDamageDirected(
+	x: number,
+	y: number,
+	z: number,
+	damage: number,
+	dirX: number,
+	dirZ: number,
+): void {
+	if (!billboard || !Number.isFinite(damage) || damage <= 0) return;
+
+	let dx = dirX;
+	let dz = dirZ;
+	const len = Math.sqrt(dx * dx + dz * dz);
+	if (!(len > 0.0001) || !Number.isFinite(len)) {
+		dx = 1;
+		dz = 0;
+	} else {
+		dx /= len;
+		dz /= len;
+	}
+
+	const frame = getBlockFrame(MOB_BLOOD_BLOCK);
+	const light = computeLight(getLightByWorldCoords(x, y, z));
+	const bloodR = light.r * 1.0;
+	const bloodG = light.g * 0.3;
+	const bloodB = light.b * 0.24;
+	const count = Math.min(
+		MOB_DAMAGE_PARTICLES_MAX,
+		Math.max(
+			MOB_DAMAGE_PARTICLES_MIN,
+			Math.ceil(damage * MOB_DAMAGE_PARTICLES_PER_POINT),
+		),
+	);
+
+	for (let i = 0; i < count; i++) {
+		// Forward cone along the hit direction plus lateral jitter.
+		const forward = 0.8 + getPRNGUnit2() * 1.2;
+		const lateral = (getPRNGUnit2() - 0.5) * 1.1;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.18,
+			y + (getPRNGUnit2() - 0.5) * 0.22,
+			z + (getPRNGUnit2() - 0.5) * 0.18,
+			dx * forward - dz * lateral,
+			0.45 + getPRNGUnit2() * 1.1,
+			dz * forward + dx * lateral,
+			0.3 + getPRNGUnit2() * 0.45,
+			0.035 + getPRNGUnit2() * 0.025,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 3,
+			frame,
+			bloodR,
+			bloodG,
+			bloodB,
+			1,
+			1,
+			1,
+		);
+	}
+}
+
 const MOB_DEATH_PARTICLES = 48;
 
 /**

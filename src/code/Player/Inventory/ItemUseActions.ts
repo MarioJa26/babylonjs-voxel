@@ -84,6 +84,8 @@ const SPAWN_EGG_MOB_TYPE_IDS: Readonly<Record<string, number>> = {
 	squid: MobTypeId.Squid,
 	fish: MobTypeId.Fish,
 	kraken: MobTypeId.Kraken,
+	zombie: MobTypeId.Zombie,
+	skeleton: MobTypeId.Skeleton,
 };
 
 function useTool(player: Player): void {
@@ -319,7 +321,7 @@ function useSpawnEgg(player: Player): void {
 			return;
 		}
 	} else {
-		// Land mobs (chicken/sheep/cow): require air headroom.
+		// Land mobs (chicken/sheep/cow/zombie/skeleton): require air headroom.
 		if (
 			getBlockByWorldCoords(cellX, cellY, cellZ) !== BlockType.Air ||
 			getBlockByWorldCoords(cellX, cellY + 1, cellZ) !== BlockType.Air

@@ -15,6 +15,7 @@ import {
 	KRAKEN_TENTACLE_UVS,
 	MOB_KRAKEN_SKIN_PATH,
 } from "./MobSkin";
+import { spawnXpOrbs } from "./XpOrb";
 
 const KRAKEN_MOB_TYPE = "kraken";
 const KRAKEN_CHUNK_ENTITY_TYPE = "kraken_v1";
@@ -180,6 +181,7 @@ export class Kraken extends AquaticMob {
 	onDeath(): void {
 		const pos = this.position;
 		dropMobFoodForType("kraken", pos.x, pos.y, pos.z);
+		spawnXpOrbs(pos.x, pos.y, pos.z, 1, 1);
 	}
 
 	dispose(): void {

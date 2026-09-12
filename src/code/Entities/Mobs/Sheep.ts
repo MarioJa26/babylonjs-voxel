@@ -19,6 +19,7 @@ import {
 	SHEEP_LEG_FR_UV,
 } from "./MobSkin";
 import { NeutralMob } from "./NeutralMob";
+import { spawnXpOrbs } from "./XpOrb";
 
 const SHEEP_MOB_TYPE = "sheep";
 const SHEEP_CHUNK_ENTITY_TYPE = "sheep_v1";
@@ -261,6 +262,7 @@ export class Sheep extends NeutralMob {
 		this.#dropWool();
 		const pos = this.position;
 		dropMobFoodForType("sheep", pos.x, pos.y, pos.z);
+		spawnXpOrbs(pos.x, pos.y, pos.z, 1, 1);
 	}
 
 	protected override getExtraPayload(): Record<string, unknown> {

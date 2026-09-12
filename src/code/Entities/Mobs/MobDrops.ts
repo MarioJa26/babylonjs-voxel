@@ -11,6 +11,10 @@ export const FOOD_RAW_FISH = 1107;
 export const FOOD_CALAMARI = 1108;
 export const FOOD_KRAKEN_MEAT = 1109;
 
+/** Hostile mob drop IDs (see public/data/items.json). */
+export const ITEM_ROTTEN_FLESH = 1110;
+export const ITEM_BONE = 1115;
+
 /** Per-mob food drop ranges, agreed with design: chicken/sheep/fish/squid 1-2, cow 1-3, kraken 3-5. */
 export const MOB_FOOD_DROPS: Readonly<
 	Record<string, { itemId: number; min: number; max: number }>
@@ -79,4 +83,51 @@ export function dropMobFoodForType(
 	const entry = MOB_FOOD_DROPS[mobType];
 	if (!entry) return;
 	dropMobFood(x, y, z, entry.itemId, entry.min, entry.max, player);
+}
+
+/**
+ * Per-hostile item drops (zombies drop rotten flesh, skeletons drop bones).
+ * Skeletons also drop 0-2 arrows (wooden) so bow users restock at night.
+ */
+export const MOB_ITEM_DROPS: Readonly<
+	Record<string, { itemId: number; min: number; max: number }[]>
+> = {
+	zombie: [{ itemId: ITEM_ROTTEN_FLESH, min: 1, max: 2 }],
+	skeleton: [
+		{ itemId: ITEM_BONE, min: 1, max: 2 },
+		{ itemId: 1023, min: 0, max: 2 }, // Wooden Arrow
+	],
+};
+
+/** Drop every configured item stack for a hostile mobType. No-op for unknown types. */
+export function dropMobItemsForType(
+	mobType: string,
+	x: number,
+	y: number,
+	z: number,
+	player?: Player,
+): void {
+	const entries = MOB_ITEM_DROPS[mobType];
+	if (!entries) return;
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i];
+		const count = rollDropCount(entry.min, entry.max);
+		if (count <= 0) continue;
+		try {
+			const item = Item.createById(entry.itemId);
+			item.stackSize = count;
+			dropWorldItem(
+				item,
+				x,
+				y + 0.5,
+				z,
+				(Math.random() - 0.5) * 1.5,
+				2,
+				(Math.random() - 0.5) * 1.5,
+				player ?? Map1.mainPlayer ?? undefined,
+			);
+		} catch (error) {
+			console.warn(`MobDrops: failed to drop item ${entry.itemId}:`, error);
+		}
+	}
 }

@@ -1,4 +1,4 @@
-﻿import type { SceneContext } from "@babylonjs/lite";
+import type { SceneContext } from "@babylonjs/lite";
 import { onSceneDispose } from "@babylonjs/lite";
 import { getArrowTooltipStats } from "@/code/Entities/Arrow/ArrowTypes";
 import {
@@ -93,6 +93,8 @@ export class PlayerHud {
 	#prevHungerPct = -1;
 	#prevStaminaPct = -1;
 	#prevManaPct = -1;
+	#prevXpPct = -1;
+	#prevXpLevel = -1;
 
 	#overlayDiv: HTMLDivElement;
 	#craftingContainer!: HTMLDivElement;
@@ -135,6 +137,8 @@ export class PlayerHud {
 	#hungerBarFill!: HTMLDivElement;
 	#staminaBarFill!: HTMLDivElement;
 	#manaBarFill!: HTMLDivElement;
+	#xpBarFill!: HTMLDivElement;
+	#xpLevelLabel!: HTMLDivElement;
 
 	// Bow draw progress indicator
 	#drawIndicator: HTMLDivElement | null = null;
@@ -324,6 +328,13 @@ export class PlayerHud {
 		this.#hungerBarFill = createBar("hunger"); // Orange
 		this.#staminaBarFill = createBar("stamina"); // Green
 		this.#manaBarFill = createBar("mana"); // Blue
+		this.#xpBarFill = createBar("xp"); // Bright green
+
+		const xpLabel = document.createElement("div");
+		xpLabel.classList.add("xp-level-label");
+		xpLabel.textContent = "Lv 0";
+		container.appendChild(xpLabel);
+		this.#xpLevelLabel = xpLabel;
 
 		document.body.appendChild(container);
 
@@ -1809,6 +1820,22 @@ export class PlayerHud {
 		if (manaPct !== this.#prevManaPct) {
 			this.#prevManaPct = manaPct;
 			this.#manaBarFill.style.transform = `scaleX(${manaPct / 100} )`;
+		}
+
+		const xpNeed = stats.xpForNextLevel();
+		const xpPct =
+			xpNeed > 0
+				? Math.max(0, Math.min(100, Math.round((stats.xp / xpNeed) * 100)))
+				: 0;
+
+		if (xpPct !== this.#prevXpPct) {
+			this.#prevXpPct = xpPct;
+			this.#xpBarFill.style.transform = `scaleX(${xpPct / 100})`;
+		}
+
+		if (stats.xpLevel !== this.#prevXpLevel) {
+			this.#prevXpLevel = stats.xpLevel;
+			this.#xpLevelLabel.textContent = `Lv ${stats.xpLevel}`;
 		}
 	}
 }

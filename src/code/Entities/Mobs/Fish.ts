@@ -16,6 +16,7 @@ import {
 	FISH_TAIL_UV,
 	MOB_FISH_SKIN_PATH,
 } from "./MobSkin";
+import { spawnXpOrbs } from "./XpOrb";
 
 const FISH_MOB_TYPE = "fish";
 const FISH_CHUNK_ENTITY_TYPE = "fish_v1";
@@ -212,6 +213,7 @@ export class Fish extends AquaticMob {
 	onDeath(): void {
 		const pos = this.position;
 		dropMobFoodForType("fish", pos.x, pos.y, pos.z);
+		spawnXpOrbs(pos.x, pos.y, pos.z, 1, 1);
 	}
 
 	dispose(): void {

@@ -43,23 +43,28 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 // final texture space with a half-texel inset so mips never bleed.
 
 /**
- * Walk-swing shader sources for mob legs. Mirrors the player rig's approach
- * (PlayerModel.animateRig): each vertex carries a limb id in normal.x, and the
- * vertex shader rotates leg vertices about the hip pivot by
- * sin(uWalkPhase) * SWING_MAX * uWalkAmp. The per-instance walk phase is
- * passed through the instance-color alpha channel (written by
+ * Walk-swing shader sources for mob limbs. Mirrors the player rig's approach
+ * (PlayerModel.animateRig): each vertex carries a limb id in the color
+ * attribute's R channel, and the vertex shader rotates limb vertices about
+ * their pivot by sin(uWalkPhase) * SWING_MAX * uWalkAmp. The per-instance
+ * walk phase is passed through the instance-color alpha channel (written by
  * MobInstancePool.writeWalkPhase); uWalkAmp is a per-material uniform so a
  * whole species shares the same stride amplitude.
  *
- * The rotation pivots about the X axis (swings the leg forward/back in Z) at
- * HIP_PIVOT_Y — the Y line where the legs meet the body.
+ * Limb tags copy the player convention exactly: 0 = static, 1 = arm-left,
+ * 2 = arm-right, 3 = leg-left, 4 = leg-right. Arms rotate about the
+ * shoulder pivot (uShoulderPivotY), legs about the hip pivot (uHipPivotY),
+ * mirrored by the same signs as the player (arm-L/leg-R in phase, arm-R/
+ * leg-L opposite). The rotation pivots about the X axis (swings the limb
+ * forward/back in Z). uAttackRaise adds a fixed base rotation to both arms
+ * (negative = forward/up, the zombie attack pose); legs ignore it.
  */
-const MOB_LEG_VERTEX_WGSL = /* wgsl */ `
+const MOB_LIMB_VERTEX_WGSL = /* wgsl */ `
 const SWING_MAX : f32 = 0.85;
 
-fn animateMobLegs(p : vec3<f32>, partId : f32, walkPhase : f32) -> vec3<f32> {
-  // partId 0 = static, 3 = leg-left, 4 = leg-right. Only leg parts swing.
-  if (partId < 2.5 || partId > 4.5) {
+fn animateMobLimbs(p : vec3<f32>, partId : f32, walkPhase : f32) -> vec3<f32> {
+  // partId 0 = static (and 5+ reserved): never swings.
+  if (partId < 0.5 || partId > 4.5) {
     return p;
   }
   let amp = shaderUniforms.uWalkAmp;
@@ -67,12 +72,24 @@ fn animateMobLegs(p : vec3<f32>, partId : f32, walkPhase : f32) -> vec3<f32> {
     return p;
   }
   let osc = sin(walkPhase) * SWING_MAX * amp;
-  // Right leg (id 4) in phase with left arm; left leg (id 3) opposite.
-  let ang = osc * select(-1.0, 1.0, partId > 3.5);
+  var ang : f32;
+  var pivot : f32;
+  if (partId < 2.5) {
+    // Arms swing about the shoulder line; left arm (id 1) in phase.
+    // uAttackRaise holds both arms up while attacking (added after the
+    // mirrored swing so the pose stays symmetric).
+    ang = osc * select(-1.0, 1.0, partId < 1.5) + shaderUniforms.uAttackRaise;
+    pivot = shaderUniforms.uShoulderPivotY;
+  } else {
+    // Legs swing about the hip line; right leg (id 4) in phase with
+    // the left arm, left leg (id 3) opposite.
+    ang = osc * select(-1.0, 1.0, partId > 3.5);
+    pivot = shaderUniforms.uHipPivotY;
+  }
   let s = sin(ang);
   let c = cos(ang);
-  let cy = p.y - shaderUniforms.uHipPivotY;
-  return vec3<f32>(p.x, shaderUniforms.uHipPivotY + cy * c - p.z * s, cy * s + p.z * c);
+  let cy = p.y - pivot;
+  return vec3<f32>(p.x, pivot + cy * c - p.z * s, cy * s + p.z * c);
 }
 `;
 
@@ -89,7 +106,7 @@ struct VSOut {
   @location(2) vNormal : vec3<f32>,
 };
 
-${MOB_LEG_VERTEX_WGSL}
+${MOB_LIMB_VERTEX_WGSL}
 
 @vertex
 fn mainVertex(input : VertexInput) -> VSOut {
@@ -101,7 +118,7 @@ fn mainVertex(input : VertexInput) -> VSOut {
   let partId = input.color.r;
   // Per-instance walk phase arrives via the instance-color alpha channel.
   let walkPhase = ${useInstanceColor ? "input.instanceColor.a" : "0.0"};
-  let animated = animateMobLegs(input.position, partId, walkPhase);
+  let animated = animateMobLimbs(input.position, partId, walkPhase);
   out.pos = shaderSystem.viewProjection *
     (instanceWorld * vec4<f32>(animated, 1.0));
   out.vUV = input.uv;
@@ -229,6 +246,19 @@ export function createInstancedMobAtlasMaterial(
 	hipPivotY: number,
 	/** Walk-stride amplitude 0–1 (1 = full SWING_MAX swing). */
 	walkAmp: number,
+	/**
+	 * Y coordinate (mob-local space) of the shoulder pivot line — where arms
+	 * meet the body. Defaults to the hip pivot (no species uses arm tags
+	 * unless it passes its own shoulder line).
+	 */
+	shoulderPivotY?: number,
+	/**
+	 * Fixed base rotation (radians) added to both arms. Negative raises them
+	 * forward/up into the attack pose; 0 (default) keeps the normal swing.
+	 * Per-material, so a species gets an "attack pool" variant by building
+	 * the same parts with a non-zero raise.
+	 */
+	attackRaise?: number,
 ): ShaderMaterial {
 	const material = createShaderMaterial({
 		name,
@@ -238,6 +268,8 @@ export function createInstancedMobAtlasMaterial(
 		uniforms: [
 			"viewProjection",
 			{ name: "uHipPivotY", type: "f32" },
+			{ name: "uShoulderPivotY", type: "f32" },
+			{ name: "uAttackRaise", type: "f32" },
 			{ name: "uWalkAmp", type: "f32" },
 			...(instanceColors
 				? []
@@ -249,6 +281,8 @@ export function createInstancedMobAtlasMaterial(
 	});
 
 	setShaderUniform(material, "uHipPivotY", hipPivotY);
+	setShaderUniform(material, "uShoulderPivotY", shoulderPivotY ?? hipPivotY);
+	setShaderUniform(material, "uAttackRaise", attackRaise ?? 0);
 	setShaderUniform(material, "uWalkAmp", walkAmp);
 
 	if (!instanceColors) {
@@ -416,7 +450,8 @@ export type MobPartSpec = {
 	/**
 	 * Limb tag baked into normal.x at build time (same trick as PlayerModel:
 	 * the fragment shader only reads n.y for lighting, so normal.x is free).
-	 * 0 = static · 3 = leg-left · 4 = leg-right. Parts with no tag are static.
+	 * Player convention: 0 = static · 1 = arm-left · 2 = arm-right ·
+	 * 3 = leg-left · 4 = leg-right. Parts with no tag are static.
 	 */
 	partId?: number;
 };

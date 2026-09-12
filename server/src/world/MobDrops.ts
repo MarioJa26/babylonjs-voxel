@@ -26,6 +26,19 @@ export const MOB_FOOD_DROPS: Readonly<Record<number, MobFoodDrop>> = {
 	[MobTypeId.Kraken]: { itemId: 1109, min: 3, max: 5 },
 };
 
+/**
+ * Per-hostile item drops (mirrors the client's MOB_ITEM_DROPS):
+ * zombies drop rotten flesh (1110), skeletons drop bones (1115) plus
+ * 0-2 wooden arrows (1023) so bow users restock at night.
+ */
+export const MOB_ITEM_DROPS: Readonly<Record<number, MobFoodDrop[]>> = {
+	[MobTypeId.Zombie]: [{ itemId: 1110, min: 1, max: 2 }],
+	[MobTypeId.Skeleton]: [
+		{ itemId: 1115, min: 1, max: 2 },
+		{ itemId: 1023, min: 0, max: 2 },
+	],
+};
+
 export interface RolledFoodDrop {
 	itemId: number;
 	stackSize: number;
@@ -42,4 +55,21 @@ export function rollMobFoodDrop(typeId: number): RolledFoodDrop | null {
 		hi <= lo ? lo : lo + Math.floor(Math.random() * (hi - lo + 1));
 
 	return { itemId: entry.itemId, stackSize };
+}
+
+/** Roll every item drop for a hostile mob type. Empty for unknown types. */
+export function rollMobItemDrops(typeId: number): RolledFoodDrop[] {
+	const entries = MOB_ITEM_DROPS[typeId];
+	if (!entries) return [];
+
+	const drops: RolledFoodDrop[] = [];
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i];
+		const lo = Math.floor(entry.min);
+		const hi = Math.floor(entry.max);
+		const stackSize =
+			hi <= lo ? lo : lo + Math.floor(Math.random() * (hi - lo + 1));
+		if (stackSize > 0) drops.push({ itemId: entry.itemId, stackSize });
+	}
+	return drops;
 }

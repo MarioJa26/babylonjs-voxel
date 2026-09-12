@@ -21,9 +21,14 @@
 import {
 	FALL_DAMAGE_PER_BLOCK,
 	FALL_DAMAGE_THRESHOLD,
+	isHostileTypeId,
 	MOB_SPAWN_CONFIGS,
 	MOB_STATS,
 } from "@/code/Entities/MobConfig";
+import {
+	getMeleeRange,
+	getMobWeaponIdByTypeId,
+} from "@/code/Entities/WeaponStats";
 import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding";
 import {
@@ -100,6 +105,15 @@ export interface ServerMobDeath {
 
 const FLEE_SPEED = 5;
 const FLEE_DURATION_MS = 3000; // How long a mob flees after being damaged
+
+/** Hostile chase start radius (blocks) — mirrors the client's aggro. */
+const HOSTILE_AGGRO_RADIUS_SQ = 16 * 16;
+/** Hostile chase break radius (blocks) — hysteresis vs aggro. */
+const HOSTILE_DEAGGRO_RADIUS_SQ = 32 * 32;
+/** Daylight burn damage per second for sky-exposed hostiles. */
+const DAYLIGHT_BURN_DPS = 2;
+/** Blocks scanned above a hostile's head for the daylight open-sky test. */
+const SKY_EXPOSE_SCAN_HEIGHT = 10;
 
 const MOB_TYPE_IDS = Object.keys(MOB_STATS).map(Number);
 const TOTAL_MOB_CAP = MOB_TYPE_IDS.reduce(
@@ -458,6 +472,7 @@ export class ServerMobSimulation {
 	tick(
 		deltaMs: number,
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
+		isNight = true,
 	): ServerMobEvent[] {
 		const events = this.eventScratch;
 		events.length = 0;
@@ -474,7 +489,7 @@ export class ServerMobSimulation {
 
 		for (const mob of this.mobs.values()) {
 			try {
-				const died = this.updateMob(mob, deltaMs, players, events);
+				const died = this.updateMob(mob, deltaMs, players, events, isNight);
 				if (died) {
 					events.push({ kind: "despawn", mob });
 				}
@@ -498,7 +513,7 @@ export class ServerMobSimulation {
 				this.spawnAccum = 0;
 				const before = events.length;
 				try {
-					this.trySpawn(players, events);
+					this.trySpawn(players, events, isNight);
 				} catch (err) {
 					this.logTickError("trySpawn", null, err);
 				}
@@ -558,12 +573,18 @@ export class ServerMobSimulation {
 		deltaMs: number,
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
 		events: ServerMobEvent[],
+		isNight: boolean,
 	): boolean {
 		const stats = MOB_STATS[mob.typeId];
 
 		// Aquatic mobs use water swimming AI instead of land pathfinding.
 		if (stats.aquatic) {
 			return this.updateAquaticMob(mob, deltaMs, players, events);
+		}
+
+		// Hostiles never flee and hunt players instead of wandering.
+		if (isHostileTypeId(mob.typeId)) {
+			return this.updateHostileMob(mob, deltaMs, players, events, isNight);
 		}
 
 		// Damage-triggered panic: flee from the nearest player for fleeTimer ms,
@@ -648,6 +669,146 @@ export class ServerMobSimulation {
 		}
 
 		return this.settleHeight(mob, stats.feetHeight, deltaMs, events);
+	}
+
+	/**
+	 * Hostile mob AI — chase the nearest player inside the aggro radius and
+	 * hold at the equipped weapon's reach (the client applies the actual
+	 * melee damage; the server only positions). Day burns sky-exposed
+	 * hostiles silently, mirroring the singleplayer HostileMob.
+	 */
+	private updateHostileMob(
+		mob: ServerMob,
+		deltaMs: number,
+		players: ReadonlyArray<{ x: number; y: number; z: number }>,
+		events: ServerMobEvent[],
+		isNight: boolean,
+	): boolean {
+		const stats = MOB_STATS[mob.typeId];
+
+		if (!isNight && this.isSkyExposed(mob, stats.halfHeight)) {
+			const burned = this.damageMob(
+				mob.id,
+				DAYLIGHT_BURN_DPS * deltaMs * MS_TO_SECONDS,
+				false,
+			);
+			if (burned) return true;
+		}
+
+		// mob.fleeing doubles as the chase latch (hysteresis: aggro to
+		// start, wider deaggro to break).
+		const chaseRadiusSq = mob.fleeing
+			? HOSTILE_DEAGGRO_RADIUS_SQ
+			: HOSTILE_AGGRO_RADIUS_SQ;
+		const target = this.findNearestPlayerWithin(mob, players, chaseRadiusSq);
+
+		if (!target) {
+			mob.fleeing = false;
+			mob.headingTimer -= deltaMs;
+			if (mob.headingTimer <= 0) {
+				mob.headingTimer =
+					WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS);
+				mob.yaw = Math.floor(Math.random() * 256);
+				mob.stuckTimer = 0;
+			}
+			this.followWanderPath(mob, stats.feetHeight, deltaMs);
+		} else {
+			mob.fleeing = true;
+			mob.path.length = 0;
+			mob.pathIndex = 0;
+
+			const dx = target.x - mob.x;
+			const dz = target.z - mob.z;
+			mob.yaw = this.vectorToYaw(dx, dz);
+
+			const weaponRange =
+				getMeleeRange(getMobWeaponIdByTypeId(mob.typeId)) + 0.25;
+			const horizontalSq = dx * dx + dz * dz;
+			const verticalGap = Math.abs(target.y - mob.y);
+
+			if (horizontalSq <= weaponRange * weaponRange && verticalGap <= 2.5) {
+				// In reach: hold position, face the player. The client
+				// swings on its own cooldown; the server just stays put.
+				mob.headingTimer = Math.max(mob.headingTimer, 250);
+			} else {
+				const step =
+					stats.speed * 1.15 * (deltaMs / 1000);
+				if (step > 0) {
+					const dist = Math.sqrt(horizontalSq);
+					const nx = mob.x + (dx / (dist || 1)) * step;
+					const nz = mob.z + (dz / (dist || 1)) * step;
+
+					if (
+						!this.canMoveTo(mob, nx, nz, stats.halfHeight, stats.feetHeight)
+					) {
+						mob.yaw = (mob.yaw + 64) & 255;
+						mob.headingTimer = Math.min(mob.headingTimer, 800);
+						mob.stuckTimer += deltaMs;
+						if (mob.stuckTimer > STUCK_MS) {
+							mob.stuckTimer = 0;
+							mob.headingTimer = 0;
+						}
+					} else {
+						mob.x = nx;
+						mob.z = nz;
+						mob.stuckTimer = 0;
+
+						if (
+							this.sampler.sample(
+								nx,
+								Math.floor(mob.y - stats.feetHeight),
+								nz,
+							) === BlockType.Water
+						) {
+							mob.yaw = (mob.yaw + 128) & 255;
+							mob.headingTimer = Math.min(mob.headingTimer, 800);
+						}
+					}
+				}
+			}
+		}
+
+		return this.settleHeight(mob, stats.feetHeight, deltaMs, events);
+	}
+
+	/** Nearest player within radiusSq of the mob, or null. */
+	private findNearestPlayerWithin(
+		mob: ServerMob,
+		players: ReadonlyArray<PlayerPosition>,
+		radiusSq: number,
+	): PlayerPosition | null {
+		let nearest: PlayerPosition | null = null;
+		let nearestDistanceSq = radiusSq;
+
+		for (let index = 0; index < players.length; index++) {
+			const player = players[index];
+			const dx = mob.x - player.x;
+			const dy = mob.y - player.y;
+			const dz = mob.z - player.z;
+			const distanceSq = dx * dx + dy * dy + dz * dz;
+			if (distanceSq < nearestDistanceSq) {
+				nearestDistanceSq = distanceSq;
+				nearest = player;
+			}
+		}
+
+		return nearest;
+	}
+
+	/**
+	 * True when no collidable block covers the mob within
+	 * SKY_EXPOSE_SCAN_HEIGHT above its head. Uncached (streaming) columns
+	 * count as covered so mobs never burn on missing data.
+	 */
+	private isSkyExposed(mob: ServerMob, halfHeight: number): boolean {
+		const headY = Math.floor(mob.y + halfHeight);
+		for (let y = headY + 1; y <= headY + SKY_EXPOSE_SCAN_HEIGHT; y++) {
+			const blockId = this.sampler.sample(mob.x, y, mob.z);
+			if (blockId === null) return false;
+			if (blockId === BlockType.Water) return false;
+			if (isCollidableBlock(blockId)) return false;
+		}
+		return true;
 	}
 
 	/**
@@ -1514,6 +1675,7 @@ export class ServerMobSimulation {
 	private trySpawn(
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
 		events: ServerMobEvent[],
+		isNight: boolean,
 	): void {
 		const player = players[Math.floor(Math.random() * players.length)];
 		if (!player) return;
@@ -1528,7 +1690,7 @@ export class ServerMobSimulation {
 		for (let i = 0; i < SPAWN_ATTEMPTS; i++) {
 			if (this.naturalTotal >= HARD_MOB_CAP) return;
 
-			const typeId = this.pickSpawnType();
+			const typeId = this.pickSpawnType(isNight);
 			if (typeId === null) return;
 
 			const stats = MOB_STATS[typeId];
@@ -1623,26 +1785,32 @@ export class ServerMobSimulation {
 	 * Apply damage to a mob (player projectile hit). Returns true when the
 	 * hit killed the mob — the caller must broadcast the despawn; the mob is
 	 * already removed from the active set (dead mobs are never persisted).
-	 * Kills are recorded for drainDeaths() so the room can spawn food drops.
+	 * Kills are recorded for drainDeaths() so the room can spawn food drops,
+	 * unless recordDeath is false (daylight burns drop nothing).
 	 */
-	damageMob(mobId: number, amount: number): boolean {
+	damageMob(mobId: number, amount: number, recordDeath = true): boolean {
 		const mob = this.mobs.get(mobId);
 		if (!mob) return false;
 
 		mob.hp -= amount;
 		if (mob.hp > 0) {
 			// Survived — trigger a panic response (e.g. sheep flee for a few seconds).
-			mob.fleeTimer = Math.max(mob.fleeTimer, FLEE_DURATION_MS);
+			// Hostiles never flee; their chase latch is untouched.
+			if (!isHostileTypeId(mob.typeId)) {
+				mob.fleeTimer = Math.max(mob.fleeTimer, FLEE_DURATION_MS);
+			}
 			return false;
 		}
 
 		this.removeActiveMob(mob);
-		this.recentDeaths.push({
-			typeId: mob.typeId,
-			x: mob.x,
-			y: mob.y,
-			z: mob.z,
-		});
+		if (recordDeath) {
+			this.recentDeaths.push({
+				typeId: mob.typeId,
+				x: mob.x,
+				y: mob.y,
+				z: mob.z,
+			});
+		}
 		return true;
 	}
 
@@ -1658,12 +1826,15 @@ export class ServerMobSimulation {
 	}
 
 	/** Random species whose natural cap isn't reached yet (equal weights, like the client). */
-	private pickSpawnType(): number | null {
+	private pickSpawnType(isNight: boolean): number | null {
 		let selectedType: number | null = null;
 		let availableCount = 0;
 
 		for (let index = 0; index < MOB_TYPE_IDS.length; index++) {
 			const typeId = MOB_TYPE_IDS[index];
+			// Hostiles (zombies/skeletons) only roll at night.
+			if (!isNight && isHostileTypeId(typeId)) continue;
+
 			const spawnConfig = MOB_SPAWN_CONFIGS[typeId];
 
 			if ((this.naturalTypeCounts.get(typeId) ?? 0) >= spawnConfig.maxCount) {

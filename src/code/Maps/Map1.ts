@@ -1,6 +1,7 @@
 import type { EngineContext, SceneContext } from "@babylonjs/lite";
 import type { MobRegistry } from "../Entities/Mobs/Mob";
 import { preloadMobSkins } from "../Entities/Mobs/MobInstancePool";
+import { XpOrb } from "../Entities/Mobs/XpOrb";
 import { initDistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import { setGameTimeScale } from "../Lib/GameRuntimeState";
 import type { RemoteMobManager } from "../Network/RemoteMobManager";
@@ -97,6 +98,7 @@ export class Map1 {
 
 	public static disposeAll(): void {
 		Map1.mobRegistry?.disposeAll();
+		XpOrb.disposeAll();
 		Map1.mobRegistry = null;
 		Map1.remoteMobManager = null;
 		Map1.environment?.dispose();

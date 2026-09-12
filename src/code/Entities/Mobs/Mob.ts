@@ -34,6 +34,12 @@ export type MobSpawnConfig = {
 	spawnBlockId: number;
 	despawnable?: boolean;
 	spawnYOffset?: number;
+	/**
+	 * True for night spawners (zombies/skeletons): natural spawning only
+	 * runs at night and skips the daylight skylight gate. Spawn eggs
+	 * ignore this and work any time.
+	 */
+	nightSpawn?: boolean;
 };
 
 export class MobRegistry {

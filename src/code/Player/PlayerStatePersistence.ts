@@ -7,6 +7,7 @@ import { worldLocalStorageKey } from "../World/WorldContext";
 import { WorldStorage } from "../World/WorldStorage";
 import type { SavedInventoryState } from "./Inventory/Types/InventoryTypes";
 import type { Player } from "./Player";
+import type { SavedPlayerStats } from "./PlayerStats";
 
 export interface PlayerPersistenceOptions {
 	/**
@@ -22,6 +23,7 @@ export class PlayerStatePersistence {
 		"b102.playerPosition.v1";
 	private static readonly PLAYER_INVENTORY_STORAGE_KEY =
 		"b102.playerInventory.v1";
+	private static readonly PLAYER_STATS_STORAGE_KEY = "b102.playerStats.v1";
 	private static readonly PLAYER_STATE_SAVE_INTERVAL_MS = 15000;
 	private static readonly CHUNK_SAVE_BATCH_SIZE = 32;
 	private static readonly CHUNK_SAVE_NOW_BATCH_SIZE = 64;
@@ -72,6 +74,7 @@ export class PlayerStatePersistence {
 			return;
 		}
 		this.savePosition();
+		this.saveStats();
 		this.requestChunkSave(PlayerStatePersistence.CHUNK_SAVE_BATCH_SIZE);
 		this.lastPositionSaveMs = now;
 	}
@@ -81,6 +84,7 @@ export class PlayerStatePersistence {
 
 		this.savePosition();
 		this.saveInventory();
+		this.saveStats();
 
 		try {
 			await flushModifiedChunks(
@@ -182,10 +186,25 @@ export class PlayerStatePersistence {
 		}
 	}
 
+	private saveStats(): void {
+		if (this.isDisposed || typeof window === "undefined") return;
+
+		try {
+			const statsState = this.player.stats.getSavedStatsState();
+			window.localStorage.setItem(
+				this.storageKey(PlayerStatePersistence.PLAYER_STATS_STORAGE_KEY),
+				JSON.stringify(statsState),
+			);
+		} catch (error) {
+			console.warn("Failed to save player stats to localStorage.", error);
+		}
+	}
+
 	private restoreFromLocalStorage(): void {
 		if (typeof window === "undefined") return;
 		this.restorePosition();
 		this.restoreInventory();
+		this.restoreStats();
 	}
 
 	private restorePosition(): void {
@@ -238,6 +257,24 @@ export class PlayerStatePersistence {
 				"Failed to restore player inventory from localStorage.",
 				error,
 			);
+		}
+	}
+
+	private restoreStats(): void {
+		try {
+			const raw = window.localStorage.getItem(
+				this.storageKey(PlayerStatePersistence.PLAYER_STATS_STORAGE_KEY),
+			);
+			if (!raw) return;
+
+			const savedStats = JSON.parse(raw) satisfies SavedPlayerStats;
+			if (!this.player.stats.restoreSavedStatsState(savedStats)) {
+				console.warn(
+					"Saved player stats data was invalid. Defaults were kept.",
+				);
+			}
+		} catch (error) {
+			console.warn("Failed to restore player stats from localStorage.", error);
 		}
 	}
 }

@@ -169,13 +169,16 @@ function disposeAllPooledItemMaterials(): void {
 const spriteMaterialPool = new Map<string, ShaderMaterial[]>();
 const spriteTextureCache = new Map<string, Promise<Texture2D | null>>();
 
-function acquireSpriteMaterial(iconUrl: string): ShaderMaterial {
+export function acquireSpriteMaterial(iconUrl: string): ShaderMaterial {
 	const reused = spriteMaterialPool.get(iconUrl)?.pop();
 	if (reused) return reused;
 	return createDroppedItemMaterial();
 }
 
-function releaseSpriteMaterial(iconUrl: string, mat: ShaderMaterial): void {
+export function releaseSpriteMaterial(
+	iconUrl: string,
+	mat: ShaderMaterial,
+): void {
 	let total = 0;
 	for (const stack of spriteMaterialPool.values()) total += stack.length;
 	if (total >= MATERIAL_POOL_MAX) {
@@ -335,7 +338,7 @@ let billboardQuadGeometryCache: {
 	indices: Uint32Array;
 } | null = null;
 
-function getBillboardQuadGeometry() {
+export function getBillboardQuadGeometry() {
 	if (billboardQuadGeometryCache) return billboardQuadGeometryCache;
 
 	billboardQuadGeometryCache = {
@@ -415,6 +418,14 @@ export class DroppedItem implements IUsable {
 	// PERF: settled items do not need physics every frame.
 	#sleeping = false;
 
+	// Sprite bob phase (radians) — randomized per item so stacked drops
+	// don't pulse in sync. Visual-only; physics position is untouched.
+	#bobPhase = Math.random() * Math.PI * 2;
+	// Seconds since spawn — the bob amplitude ramps in over the first
+	// second so the mesh eases out of its rest position instead of
+	// jumping mid-swing on the first frame.
+	#bobAge = 0;
+
 	// Remote (server-authoritative) items: the server owns position +
 	// lifetime. The client only renders + interpolates, so local physics is
 	// disabled (kept "sleeping") and position is driven via setRemotePosition().
@@ -450,9 +461,11 @@ export class DroppedItem implements IUsable {
 				if (!item.#sleeping) {
 					item.#updatePhysics(dt);
 				}
-				// Sprites must keep facing the camera even while settled.
+				// Sprites keep facing the camera and bob gently even while
+				// settled, like XP orbs (visual-only: physics stays asleep).
 				if (item.#isSprite) {
 					item.#faceCamera();
+					item.#applyBob(dt);
 				}
 			}
 		});
@@ -461,6 +474,10 @@ export class DroppedItem implements IUsable {
 	static readonly GRAVITY = -18;
 	static readonly STEP_SIZE = 0.2;
 	static readonly EPSILON = 0.001;
+	/** Sprite bob amplitude in blocks (visual-only, matches XpOrb). */
+	static readonly SPRITE_BOB_AMPLITUDE = 0.05;
+	/** Sprite bob angular speed in radians per second (matches XpOrb). */
+	static readonly SPRITE_BOB_SPEED = 3.0;
 	static readonly AIR_DAMPING_PER_SEC = 1.8;
 	static readonly GROUND_DAMPING_PER_SEC = 8.0;
 	static readonly MIN_SPEED = 0.03;
@@ -615,6 +632,10 @@ export class DroppedItem implements IUsable {
 
 				setShaderTexture(this.#material, "diffuseTexture", tex);
 				this.#ensureAddedToScene();
+				// Restart the bob ramp on first show: the icon may have
+				// loaded long after spawn, so the swing could otherwise
+				// reveal the sprite mid-bob instead of at rest.
+				this.#bobAge = 0;
 				this.#boxMesh.visible = true;
 			});
 	}
@@ -643,6 +664,25 @@ export class DroppedItem implements IUsable {
 		this.#boxMesh.rotation.y = Math.atan2(
 			m[12] - this.#position.x,
 			m[14] - this.#position.z,
+		);
+	}
+
+	/**
+	 * Gentle vertical bob for 2D sprite drops (tools, food, eggs, ...),
+	 * matching the XP orb motion. Writes the mesh transform only — the
+	 * physics position, pickup checks, and lighting stay on the true
+	 * resting spot, and the ±0.05 amplitude never leaves the voxel the
+	 * light was sampled from.
+	 */
+	#applyBob(dt: number): void {
+		this.#bobPhase += dt * DroppedItem.SPRITE_BOB_SPEED;
+		this.#bobAge += dt;
+		const ampScale = Math.min(1, this.#bobAge);
+		this.#boxMesh.position.set(
+			this.#position.x,
+			this.#position.y +
+				Math.sin(this.#bobPhase) * DroppedItem.SPRITE_BOB_AMPLITUDE * ampScale,
+			this.#position.z,
 		);
 	}
 

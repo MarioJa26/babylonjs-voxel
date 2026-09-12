@@ -307,6 +307,24 @@
 		"spawnMobType": "kraken"
 	},
 	{
+		"id": 1112,
+		"name": "Zombie Spawn Egg",
+		"description": "Spawns a zombie where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/zombiespawnegg/zombiespawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "zombie"
+	},
+	{
+		"id": 1113,
+		"name": "Skeleton Spawn Egg",
+		"description": "Spawns a skeleton where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/skeletonspawnegg/skeletonspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "skeleton"
+	},
+	{
 		"id": 1104,
 		"name": "Raw Chicken",
 		"description": "Dropped by chickens.\nRestores hunger.",
@@ -359,5 +377,21 @@
 		"maxStack": 64,
 		"useAction": "use_food",
 		"hunger": 50
+	},
+	{
+		"id": 1110,
+		"name": "Rotten Flesh",
+		"description": "Dropped by zombies.\nRestores a little hunger.",
+		"icon": "/texture/items/food/rotten_flesh.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 10
+	},
+	{
+		"id": 1115,
+		"name": "Bone",
+		"description": "Dropped by skeletons.\nPale and light.",
+		"icon": "/texture/items/item/bone/bone.png",
+		"maxStack": 64
 	}
 ]

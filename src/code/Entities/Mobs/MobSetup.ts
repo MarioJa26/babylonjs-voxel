@@ -9,7 +9,9 @@ import { Kraken } from "./Kraken";
 import type { Mob } from "./Mob";
 import { MobRegistry, type MobSpawnConfig } from "./Mob";
 import { Sheep } from "./Sheep";
+import { Skeleton } from "./Skeleton";
 import { Squid } from "./Squid";
+import { Zombie } from "./Zombie";
 
 type MobFactoryEntry = {
 	readonly mobType: string;
@@ -19,6 +21,8 @@ type MobFactoryEntry = {
 		z: number,
 		scene: SceneContext,
 	) => Mob;
+	/** True for night-only natural spawners (see MobSpawnConfig). */
+	readonly nightSpawn?: boolean;
 };
 
 /** Map MobTypeId to mob type name and factory function. */
@@ -47,6 +51,16 @@ const MOB_FACTORIES: Readonly<Partial<Record<number, MobFactoryEntry>>> = {
 		mobType: "kraken",
 		factory: (x, y, z, scene) => new Kraken(x, y, z, scene),
 	},
+	[MobTypeId.Zombie]: {
+		mobType: "zombie",
+		factory: (x, y, z, scene) => new Zombie(x, y, z, scene),
+		nightSpawn: true,
+	},
+	[MobTypeId.Skeleton]: {
+		mobType: "skeleton",
+		factory: (x, y, z, scene) => new Skeleton(x, y, z, scene),
+		nightSpawn: true,
+	},
 };
 
 /**
@@ -73,6 +87,7 @@ function buildClientSpawnConfigs(): readonly MobSpawnConfig[] {
 			...spawnConfig,
 			mobType: factoryEntry.mobType,
 			factory: factoryEntry.factory,
+			nightSpawn: factoryEntry.nightSpawn,
 		};
 	}
 
