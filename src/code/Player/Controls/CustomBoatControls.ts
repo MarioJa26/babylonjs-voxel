@@ -101,11 +101,16 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 		this.#updateMovementAxesFromPressedKeys();
 
 		if (CustomBoatControls.KEY_USE.includes(key)) {
+			this.#player.setUseHeld(true);
 			this.#player.use();
 		}
 	}
 
 	public onKeyUp(key: string) {
+		if (CustomBoatControls.KEY_USE.includes(key)) {
+			this.#player.setUseHeld(false);
+		}
+
 		if (CustomBoatControls.KEY_FLASH.includes(key)) {
 			this.#player.flashlight.toggle();
 		}

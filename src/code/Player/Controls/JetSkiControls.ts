@@ -83,6 +83,10 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
 	}
 
 	public onKeyUp(key: string) {
+		if (JetSkiControls.KEY_USE.includes(key)) {
+			this.#player.setUseHeld(false);
+		}
+
 		if (JetSkiControls.KEY_UP.includes(key)) {
 			if (this.#pressedKeysHas(JetSkiControls.KEY_DOWN)) {
 				this.#inputDirection.y = 1;
@@ -108,6 +112,7 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
 				this.#inputDirection.x = 0;
 			}
 		} else if (JetSkiControls.KEY_USE.includes(key)) {
+			this.#player.setUseHeld(true);
 			this.#player.use();
 		} else if (JetSkiControls.KEY_FLASH.includes(key)) {
 			this.#player.flashlight.toggle();

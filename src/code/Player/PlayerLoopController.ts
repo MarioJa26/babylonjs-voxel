@@ -361,10 +361,6 @@ export class PlayerLoopController {
 		const controls = this.getKeyboardControls();
 		const type = controls.controlType;
 
-		if (type !== "walking" && type !== "customBoat" && type !== "paddleBoat") {
-			return;
-		}
-
 		if (uiOpen) {
 			const c = controls as unknown as {
 				stopBlockBreaking?: () => void;
@@ -372,6 +368,17 @@ export class PlayerLoopController {
 			};
 			c.stopBlockBreaking?.();
 			c.cancelDraw?.();
+			// Opening any UI cancels an in-progress E-hold vacuum.
+			this.playerHud.player.setUseHeld(false);
+			return;
+		}
+
+		// Holding E vacuums up nearby drops (pickup-only; block interactions
+		// stay single-press). Runs for every control scheme, including ones
+		// without a per-frame update below.
+		this.playerHud.player.updateUseHeld();
+
+		if (type !== "walking" && type !== "customBoat" && type !== "paddleBoat") {
 			return;
 		}
 

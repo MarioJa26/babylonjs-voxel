@@ -325,6 +325,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		} else if (WalkingControls.KEY_SNEAK.includes(key)) {
 			this.#controlledEntity.isSneaking = true;
 		} else if (WalkingControls.KEY_USE.includes(key)) {
+			this.#player.setUseHeld(true);
 			this.#player.use();
 		} else if (WalkingControls.KEY_FLASH.includes(key)) {
 			this.#player.flashlight.toggle();
@@ -365,7 +366,11 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		}
 
 		if (WalkingControls.KEY_SNEAK.includes(key)) {
-			this.#controlledEntity.isSneaking = false;
+			this.#player.playerVehicle.isSneaking = false;
+		}
+
+		if (WalkingControls.KEY_USE.includes(key)) {
+			this.#player.setUseHeld(false);
 		}
 
 		if (WalkingControls.MOUSE_WHEEL_UP.includes(key)) {

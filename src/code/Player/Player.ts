@@ -81,6 +81,12 @@ export class Player {
 	#inputController: PlayerInputController;
 	#pickInFlight = false;
 	#interactionsDisposed = false;
+	// E-hold vacuum: while the use key is held, tryPickupItem() repeats on
+	// a throttle so holding E collects every nearby drop. Block
+	// interactions (doors, TNT, mounts) stay single-press only.
+	#useHeld = false;
+	#lastUseRepeatMs = 0;
+	static readonly USE_REPEAT_INTERVAL_MS = 120;
 	#loopController!: PlayerLoopController;
 	#playerBodyMesh: Mesh | null = null;
 	#playerBodyMat: ShaderMaterial | null = null;
@@ -364,15 +370,13 @@ export class Player {
 			return;
 		}
 
+		// Dropped items first (also the hold-to-vacuum path below).
+		// tryPickupItem manages #pickInFlight itself.
+		if (this.tryPickupItem()) return;
+
 		this.#pickInFlight = true;
 
 		try {
-			const dropped = pickDroppedItem(this) ?? DroppedItem.nearestTo(this);
-			if (dropped) {
-				dropped.use(this);
-				return;
-			}
-
 			const blockHit = pickTarget(this);
 			if (!blockHit) return;
 
@@ -467,6 +471,48 @@ export class Player {
 	 */
 	public disposePicker(): void {
 		this.#interactionsDisposed = true;
+	}
+
+	/**
+	 * Pick up a single nearby dropped item (crosshair target first, then
+	 * nearest). True when something was collected. Item-only on purpose:
+	 * the E-hold repeater calls this so holding E vacuums drops without
+	 * re-triggering doors, TNT, or mounts every tick.
+	 */
+	public tryPickupItem(): boolean {
+		if (this.#pickInFlight || this.#interactionsDisposed) return false;
+
+		this.#pickInFlight = true;
+
+		try {
+			const dropped = pickDroppedItem(this) ?? DroppedItem.nearestTo(this);
+			if (!dropped) return false;
+			dropped.use(this);
+			return true;
+		} finally {
+			this.#pickInFlight = false;
+		}
+	}
+
+	/** Track the physical E key state so holding it vacuums up drops. */
+	public setUseHeld(held: boolean): void {
+		this.#useHeld = held;
+		if (held) this.#lastUseRepeatMs = performance.now();
+	}
+
+	/**
+	 * Called every frame from the loop controller: while E is held, collect
+	 * one nearby drop per interval until none are left. Single presses keep
+	 * their one-shot use() behavior (including block interactions).
+	 */
+	public updateUseHeld(): void {
+		if (!this.#useHeld || this.#interactionsDisposed || isUiOpen()) return;
+
+		const now = performance.now();
+		if (now - this.#lastUseRepeatMs < Player.USE_REPEAT_INTERVAL_MS) return;
+		this.#lastUseRepeatMs = now;
+
+		this.tryPickupItem();
 	}
 
 	/**
