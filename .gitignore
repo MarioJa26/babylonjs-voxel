@@ -62,3 +62,4 @@ tools/generate-spawn-egg-icons.mjs
 scripts/far-tile-selftest.ts
 tools/generate-bow-arrow-icons.mjs
 plans/*
+.opencode/*
