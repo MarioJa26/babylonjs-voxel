@@ -54,6 +54,10 @@ import {
  * lookups, no LRU reinsertion, no full-cache visibility sweep, and no
  * object allocation. That machinery only runs on the (rare) frame where
  * the selection actually changes.
+ *
+ * Per-frame writes are limited to what can actually change frame-to-frame
+ * (position, rotation) — scaling is constant per kind, so it's written
+ * once when a mesh is created rather than redundantly every frame.
  */
 
 const FORWARD_DIST = 0.55;
@@ -158,10 +162,6 @@ class HeldItemView {
 		const mesh = this.#activeMesh;
 		if (!mesh) return; // texture/atlas bind still in flight
 
-		if (this.#swingT < SWING_DURATION) {
-			this.#swingT = Math.min(SWING_DURATION, this.#swingT + dt);
-		}
-
 		// Lens straight from the player camera (same source as the block
 		// raycaster — never a possibly-stale matrix).
 		const cam = player.playerCamera.playerCamera;
@@ -194,9 +194,14 @@ class HeldItemView {
 		const upY = 1;
 		const upZ = 0;
 
-		// Swing dip: down a touch and forward along the view.
+		// Swing dip: down a touch and forward along the view. Advancing
+		// swingT and deriving dip from it are combined into one branch
+		// (rather than two separate `swingT < SWING_DURATION` checks) —
+		// nothing in between depends on swingT, so there's no reason to
+		// test it twice on every frame.
 		let dip = 0;
 		if (this.#swingT < SWING_DURATION) {
+			this.#swingT = Math.min(SWING_DURATION, this.#swingT + dt);
 			dip = Math.sin((this.#swingT / SWING_DURATION) * Math.PI);
 		}
 		const dipDown = dip * SWING_DIP;
@@ -222,12 +227,12 @@ class HeldItemView {
 		// billboarding: local +Z ends up pointing at the lens).
 		const yaw = Math.atan2(camX - px, camZ - pz);
 		mesh.position.set(px, py, pz);
+		// Scaling is constant per kind and set once at mesh creation (see
+		// #getSprite/#getCube) — only rotation needs a per-frame write.
 		if (this.#activeKind === "sprite") {
 			mesh.rotation.set(SPRITE_TILT - dip * 0.4, yaw, 0);
-			mesh.scaling.set(SPRITE_SCALE, SPRITE_SCALE, SPRITE_SCALE);
 		} else {
 			mesh.rotation.set(CUBE_PITCH - dip * 0.4, yaw + CUBE_YAW_OFFSET, 0);
-			mesh.scaling.set(CUBE_SCALE, CUBE_SCALE, CUBE_SCALE);
 		}
 	}
 
@@ -283,6 +288,9 @@ class HeldItemView {
 		);
 		mesh.pickable = false;
 		mesh.visible = false;
+		// Scale is constant for the lifetime of this mesh — set once here
+		// instead of every frame in #updateInner.
+		mesh.scaling.set(SPRITE_SCALE, SPRITE_SCALE, SPRITE_SCALE);
 		const material = acquireSpriteMaterial(icon);
 		mesh.material = material;
 		setShaderUniform(material, "uScale", 1);
@@ -340,6 +348,9 @@ class HeldItemView {
 		);
 		mesh.pickable = false;
 		mesh.visible = false;
+		// Scale is constant for the lifetime of this mesh — set once here
+		// instead of every frame in #updateInner.
+		mesh.scaling.set(CUBE_SCALE, CUBE_SCALE, CUBE_SCALE);
 		const material = acquireDroppedItemMaterial(blockId);
 		mesh.material = material;
 
