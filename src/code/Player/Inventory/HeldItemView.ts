@@ -47,8 +47,8 @@ import {
  *
  * Hot-path note: `update()` runs every frame, but the selected hotbar
  * item usually doesn't change frame-to-frame. The active selection is
- * therefore tracked directly (`#activeKind`/`#activeIcon`/
- * `#activeBlockId`/`#activeMesh`) instead of being rebuilt from a
+ * therefore tracked directly (`_activeKind`/`_activeIcon`/
+ * `_activeBlockId`/`_activeMesh`) instead of being rebuilt from a
  * template-string key each call. On an unchanged frame this drops the
  * per-frame cost to a couple of field reads and comparisons — no Map
  * lookups, no LRU reinsertion, no full-cache visibility sweep, and no
@@ -94,59 +94,59 @@ type CubeEntry = {
 };
 
 class HeldItemView {
-	#sprites = new Map<string, SpriteEntry>();
-	#cubes = new Map<string, CubeEntry>();
+	private _sprites = new Map<string, SpriteEntry>();
+	private _cubes = new Map<string, CubeEntry>();
 
 	// Currently-shown selection. Declared up front (fixed hidden class,
 	// no shape transitions) and updated only when the selection changes;
-	// `#activeMesh` is null whenever nothing is visible, including while
+	// `_activeMesh` is null whenever nothing is visible, including while
 	// a newly-selected entry's texture/atlas bind is still in flight.
-	#activeKind: "sprite" | "cube" | null = null;
-	#activeIcon: string | null = null;
-	#activeBlockId: number | null = null;
-	#activeBlockState: number | null = null;
-	#activeMesh: Mesh | null = null;
+	private _activeKind: "sprite" | "cube" | null = null;
+	private _activeIcon: string | null = null;
+	private _activeBlockId: number | null = null;
+	private _activeBlockState: number | null = null;
+	private _activeMesh: Mesh | null = null;
 
-	#swingT = Number.POSITIVE_INFINITY;
-	#disposed = false;
-	#updateFailed = false;
+	private _swingT = Number.POSITIVE_INFINITY;
+	private _disposed = false;
+	private _updateFailed = false;
 
 	constructor() {
 		onSceneDispose(Map1.mainScene, () => {
-			this.#dispose();
+			this._dispose();
 		});
 	}
 
 	/** Punch/mining swing: dip the held item briefly. */
 	swing(): void {
-		if (this.#disposed) return;
-		this.#swingT = 0;
+		if (this._disposed) return;
+		this._swingT = 0;
 	}
 
 	update(player: Player, dt: number): void {
-		if (this.#disposed) return;
+		if (this._disposed) return;
 
 		// A cosmetic feature must never take down the game loop: report
 		// the first failure with context, then keep trying (transient
 		// errors recover on later frames).
 		try {
-			this.#updateInner(player, dt);
+			this._updateInner(player, dt);
 		} catch (error) {
-			if (!this.#updateFailed) {
-				this.#updateFailed = true;
+			if (!this._updateFailed) {
+				this._updateFailed = true;
 				console.error("[HeldItemView] per-frame update failed:", error);
 			}
 		}
 	}
 
-	#updateInner(player: Player, dt: number): void {
+	private _updateInner(player: Player, dt: number): void {
 		const item =
 			player.playerInventory.inventory[0]?.[player.playerHud.selectedHotbarSlot]
 				?.item ?? null;
 
 		// Third-person body is visible instead; empty hands show nothing.
 		if (player.playerCamera.isThirdPerson || item === null) {
-			this.#clearActive();
+			this._clearActive();
 			return;
 		}
 
@@ -156,15 +156,15 @@ class HeldItemView {
 		const blockState = item.blockState ?? 0;
 
 		const changed = useSprite
-			? this.#activeKind !== "sprite" || this.#activeIcon !== item.icon
-			: this.#activeKind !== "cube" ||
-				this.#activeBlockId !== blockId ||
-				this.#activeBlockState !== blockState;
+			? this._activeKind !== "sprite" || this._activeIcon !== item.icon
+			: this._activeKind !== "cube" ||
+				this._activeBlockId !== blockId ||
+				this._activeBlockState !== blockState;
 		if (changed) {
-			this.#select(useSprite, item.icon, blockId, blockState);
+			this._select(useSprite, item.icon, blockId, blockState);
 		}
 
-		const mesh = this.#activeMesh;
+		const mesh = this._activeMesh;
 		if (!mesh) return; // texture/atlas bind still in flight
 
 		// Lens straight from the player camera (same source as the block
@@ -205,9 +205,9 @@ class HeldItemView {
 		// nothing in between depends on swingT, so there's no reason to
 		// test it twice on every frame.
 		let dip = 0;
-		if (this.#swingT < SWING_DURATION) {
-			this.#swingT = Math.min(SWING_DURATION, this.#swingT + dt);
-			dip = Math.sin((this.#swingT / SWING_DURATION) * Math.PI);
+		if (this._swingT < SWING_DURATION) {
+			this._swingT = Math.min(SWING_DURATION, this._swingT + dt);
+			dip = Math.sin((this._swingT / SWING_DURATION) * Math.PI);
 		}
 		const dipDown = dip * SWING_DIP;
 		const dipFwd = dip * SWING_PUSH;
@@ -233,8 +233,8 @@ class HeldItemView {
 		const yaw = Math.atan2(camX - px, camZ - pz);
 		mesh.position.set(px, py, pz);
 		// Scaling is constant per kind and set once at mesh creation (see
-		// #getSprite/#getCube) — only rotation needs a per-frame write.
-		if (this.#activeKind === "sprite") {
+		// _getSprite/_getCube) — only rotation needs a per-frame write.
+		if (this._activeKind === "sprite") {
 			mesh.rotation.set(SPRITE_TILT - dip * 0.4, yaw, 0);
 		} else {
 			mesh.rotation.set(CUBE_PITCH - dip * 0.4, yaw + CUBE_YAW_OFFSET, 0);
@@ -242,14 +242,14 @@ class HeldItemView {
 	}
 
 	/** Hide whatever's currently shown and clear the active selection. */
-	#clearActive(): void {
-		if (this.#activeKind === null) return; // already clear — skip the writes
-		if (this.#activeMesh) this.#activeMesh.visible = false;
-		this.#activeMesh = null;
-		this.#activeKind = null;
-		this.#activeIcon = null;
-		this.#activeBlockId = null;
-		this.#activeBlockState = null;
+	private _clearActive(): void {
+		if (this._activeKind === null) return; // already clear — skip the writes
+		if (this._activeMesh) this._activeMesh.visible = false;
+		this._activeMesh = null;
+		this._activeKind = null;
+		this._activeIcon = null;
+		this._activeBlockId = null;
+		this._activeBlockState = null;
 	}
 
 	/**
@@ -259,38 +259,38 @@ class HeldItemView {
 	 * since at most one mesh is ever visible), then gets-or-creates the
 	 * target entry and shows it immediately if already bound.
 	 */
-	#select(
+	private _select(
 		useSprite: boolean,
 		icon: string,
 		blockId: number,
 		blockState: number,
 	): void {
-		if (this.#activeMesh) this.#activeMesh.visible = false;
-		this.#activeMesh = null;
-		this.#activeKind = useSprite ? "sprite" : "cube";
-		this.#activeIcon = useSprite ? icon : null;
-		this.#activeBlockId = useSprite ? null : blockId;
-		this.#activeBlockState = useSprite ? null : blockState;
+		if (this._activeMesh) this._activeMesh.visible = false;
+		this._activeMesh = null;
+		this._activeKind = useSprite ? "sprite" : "cube";
+		this._activeIcon = useSprite ? icon : null;
+		this._activeBlockId = useSprite ? null : blockId;
+		this._activeBlockState = useSprite ? null : blockState;
 
 		const entry = useSprite
-			? this.#getSprite(icon)
-			: this.#getCube(blockId, blockState);
+			? this._getSprite(icon)
+			: this._getCube(blockId, blockState);
 		if (entry.bound) {
 			entry.mesh.visible = true;
-			this.#activeMesh = entry.mesh;
+			this._activeMesh = entry.mesh;
 		}
 	}
 
-	#getSprite(icon: string): SpriteEntry {
-		let entry = this.#sprites.get(icon);
+	private _getSprite(icon: string): SpriteEntry {
+		let entry = this._sprites.get(icon);
 		if (entry) {
 			// Refresh recency for eviction.
-			this.#sprites.delete(icon);
-			this.#sprites.set(icon, entry);
+			this._sprites.delete(icon);
+			this._sprites.set(icon, entry);
 			return entry;
 		}
 
-		this.#evictIfNeeded();
+		this._evictIfNeeded();
 		const quad = getBillboardQuadGeometry();
 		const mesh = createMeshFromData(
 			Map1.engine,
@@ -303,7 +303,7 @@ class HeldItemView {
 		mesh.pickable = false;
 		mesh.visible = false;
 		// Scale is constant for the lifetime of this mesh — set once here
-		// instead of every frame in #updateInner.
+		// instead of every frame in _updateInner.
 		mesh.scaling.set(SPRITE_SCALE, SPRITE_SCALE, SPRITE_SCALE);
 		const material = acquireSpriteMaterial(icon);
 		mesh.material = material;
@@ -314,7 +314,7 @@ class HeldItemView {
 		// fullbright, so reset to white or icons render black.
 		setShaderVector3(material, "tintColor", [1, 1, 1]);
 		entry = { mesh, material, icon, bound: false, binding: false };
-		this.#sprites.set(icon, entry);
+		this._sprites.set(icon, entry);
 
 		entry.binding = true;
 		void getIconTexture(icon)
@@ -326,32 +326,32 @@ class HeldItemView {
 			.then((tex) => {
 				entry.binding = false;
 				// Drop stale results: a newer entry or session took over.
-				if (this.#disposed || !tex || this.#sprites.get(icon) !== entry) {
+				if (this._disposed || !tex || this._sprites.get(icon) !== entry) {
 					return;
 				}
 				setShaderTexture(material, "diffuseTexture", tex);
 				entry.bound = true;
 				addToScene(Map1.mainScene, mesh);
-				if (this.#activeKind === "sprite" && this.#activeIcon === icon) {
+				if (this._activeKind === "sprite" && this._activeIcon === icon) {
 					mesh.visible = true;
-					this.#activeMesh = mesh;
+					this._activeMesh = mesh;
 				}
 			});
 		return entry;
 	}
 
-	#getCube(blockId: number, blockState: number): CubeEntry {
+	private _getCube(blockId: number, blockState: number): CubeEntry {
 		const key = `${blockId}:${blockState & 63}`;
-		let entry = this.#cubes.get(key);
+		let entry = this._cubes.get(key);
 		if (entry) {
 			// Refresh recency for eviction.
-			this.#cubes.delete(key);
-			this.#cubes.set(key, entry);
-			this.#finishCubeBind(entry);
+			this._cubes.delete(key);
+			this._cubes.set(key, entry);
+			this._finishCubeBind(entry);
 			return entry;
 		}
 
-		this.#evictIfNeeded();
+		this._evictIfNeeded();
 		const cube = getBlockItemGeometry(blockId, blockState);
 		const mesh = createMeshFromData(
 			Map1.engine,
@@ -364,7 +364,7 @@ class HeldItemView {
 		mesh.pickable = false;
 		mesh.visible = false;
 		// Scale is constant for the lifetime of this mesh — set once here
-		// instead of every frame in #updateInner.
+		// instead of every frame in _updateInner.
 		mesh.scaling.set(CUBE_SCALE, CUBE_SCALE, CUBE_SCALE);
 		const material = acquireDroppedItemMaterial(blockId);
 		mesh.material = material;
@@ -384,15 +384,15 @@ class HeldItemView {
 		// voxel darkness so the held item stays readable).
 		setShaderVector3(material, "tintColor", [1, 1, 1]);
 		entry = { mesh, material, blockId, blockState, bound: false };
-		this.#cubes.set(key, entry);
+		this._cubes.set(key, entry);
 
-		this.#finishCubeBind(entry);
+		this._finishCubeBind(entry);
 		return entry;
 	}
 
 	/** Bind the shared atlas to a cube entry once it exists; retried. */
-	#finishCubeBind(entry: CubeEntry): void {
-		if (entry.bound || this.#disposed) return;
+	private _finishCubeBind(entry: CubeEntry): void {
+		if (entry.bound || this._disposed) return;
 		const atlas = getDiffuseTexture2D();
 		if (!atlas) return;
 
@@ -400,73 +400,73 @@ class HeldItemView {
 		entry.bound = true;
 		addToScene(Map1.mainScene, entry.mesh);
 		if (
-			this.#activeKind === "cube" &&
-			this.#activeBlockId === entry.blockId &&
-			this.#activeBlockState === entry.blockState
+			this._activeKind === "cube" &&
+			this._activeBlockId === entry.blockId &&
+			this._activeBlockState === entry.blockState
 		) {
 			entry.mesh.visible = true;
-			this.#activeMesh = entry.mesh;
+			this._activeMesh = entry.mesh;
 		}
 	}
 
 	/** Retire the least-recently shown entry to bound mesh count. */
-	#evictIfNeeded(): void {
-		while (this.#sprites.size + this.#cubes.size >= MAX_ENTRIES) {
-			const oldestSprite = this.#sprites.keys().next();
+	private _evictIfNeeded(): void {
+		while (this._sprites.size + this._cubes.size >= MAX_ENTRIES) {
+			const oldestSprite = this._sprites.keys().next();
 			const spriteKey = oldestSprite.done ? null : oldestSprite.value;
 			if (
 				spriteKey !== null &&
-				!(this.#activeKind === "sprite" && this.#activeIcon === spriteKey)
+				!(this._activeKind === "sprite" && this._activeIcon === spriteKey)
 			) {
-				this.#retireSprite(spriteKey);
+				this._retireSprite(spriteKey);
 				continue;
 			}
-			const oldestCube = this.#cubes.keys().next();
+			const oldestCube = this._cubes.keys().next();
 			const cubeKey = oldestCube.done ? null : oldestCube.value;
 			if (
 				cubeKey !== null &&
 				!(
-					this.#activeKind === "cube" &&
-					this.#cubes.get(cubeKey)?.blockId === this.#activeBlockId &&
-					this.#cubes.get(cubeKey)?.blockState === this.#activeBlockState
+					this._activeKind === "cube" &&
+					this._cubes.get(cubeKey)?.blockId === this._activeBlockId &&
+					this._cubes.get(cubeKey)?.blockState === this._activeBlockState
 				)
 			) {
-				this.#retireCube(cubeKey);
+				this._retireCube(cubeKey);
 				continue;
 			}
 			return;
 		}
 	}
 
-	#retireSprite(icon: string): void {
-		const entry = this.#sprites.get(icon);
+	private _retireSprite(icon: string): void {
+		const entry = this._sprites.get(icon);
 		if (!entry) return;
-		this.#sprites.delete(icon);
-		if (this.#activeMesh === entry.mesh) this.#activeMesh = null;
+		this._sprites.delete(icon);
+		if (this._activeMesh === entry.mesh) this._activeMesh = null;
 		removeFromScene(Map1.mainScene, entry.mesh);
 		releaseSpriteMaterial(entry.icon, entry.material);
 	}
 
-	#retireCube(key: string): void {
-		const entry = this.#cubes.get(key);
+	private _retireCube(key: string): void {
+		const entry = this._cubes.get(key);
 		if (!entry) return;
-		this.#cubes.delete(key);
-		if (this.#activeMesh === entry.mesh) this.#activeMesh = null;
+		this._cubes.delete(key);
+		if (this._activeMesh === entry.mesh) this._activeMesh = null;
 		removeFromScene(Map1.mainScene, entry.mesh);
 		releaseDroppedItemMaterial(entry.blockId, entry.material);
 	}
 
-	#dispose(): void {
-		if (this.#disposed) return;
-		this.#disposed = true;
+	private _dispose(): void {
+		if (this._disposed) return;
+		this._disposed = true;
 
-		for (const icon of [...this.#sprites.keys()]) this.#retireSprite(icon);
-		for (const id of [...this.#cubes.keys()]) this.#retireCube(id);
-		this.#activeMesh = null;
-		this.#activeKind = null;
-		this.#activeIcon = null;
-		this.#activeBlockId = null;
-		this.#activeBlockState = null;
+		for (const icon of [...this._sprites.keys()]) this._retireSprite(icon);
+		for (const id of [...this._cubes.keys()]) this._retireCube(id);
+		this._activeMesh = null;
+		this._activeKind = null;
+		this._activeIcon = null;
+		this._activeBlockId = null;
+		this._activeBlockState = null;
 	}
 }
 

@@ -109,7 +109,7 @@ export class ChunkWorker {
 	private lightSharedInitialized = false;
 
 	// Pre-allocated message objects for light dispatch — avoids spread allocation per call.
-	readonly #lightMutateMsg: LightMutateRequest = {
+	private readonly _lightMutateMsg: LightMutateRequest = {
 		type: WorkerTaskType.LightMutate,
 		chunkId: 0n,
 		headerSlot: 0,
@@ -120,7 +120,7 @@ export class ChunkWorker {
 		newPacked: 0,
 		seq: 0,
 	};
-	readonly #lightEmissionMsg: LightAddEmissionRequest = {
+	private readonly _lightEmissionMsg: LightAddEmissionRequest = {
 		type: WorkerTaskType.LightAddEmission,
 		chunkId: 0n,
 		headerSlot: 0,
@@ -130,13 +130,13 @@ export class ChunkWorker {
 		level: 0,
 		seq: 0,
 	};
-	readonly #lightSkyReconcileMsg: LightSkyReconcileRequest = {
+	private readonly _lightSkyReconcileMsg: LightSkyReconcileRequest = {
 		type: WorkerTaskType.LightSkyReconcile,
 		chunkId: 0n,
 		headerSlot: 0,
 		seq: 0,
 	};
-	readonly #lightPropagateMsg: LightPropagateDeferredRequest = {
+	private readonly _lightPropagateMsg: LightPropagateDeferredRequest = {
 		type: WorkerTaskType.LightPropagateDeferred,
 		chunkId: 0n,
 		headerSlot: 0,
@@ -150,10 +150,10 @@ export class ChunkWorker {
 	// structured clone synchronously before returning, so mutating this
 	// object again on the next call (after the previous postMessage already
 	// returned) is safe — it's the same reasoning already relied on for
-	// #lightMutateMsg etc. Saves one object allocation per remesh dispatch.
+	// _lightMutateMsg etc. Saves one object allocation per remesh dispatch.
 	// SAB-direct: the payload is metadata only — the worker reads center grid
 	// and neighbor borders from the registered SharedArrayBuffers.
-	readonly #voxelMeshMsg: GenerateFullMeshRequest = {
+	private readonly _voxelMeshMsg: GenerateFullMeshRequest = {
 		type: WorkerTaskType.GenerateFullMesh,
 		chunkId: 0n,
 		meshRevision: 0,
@@ -173,7 +173,7 @@ export class ChunkWorker {
 		uniformBlockId: undefined,
 	};
 
-	readonly #relightMeshMsg: RelightMeshRequest = {
+	private readonly _relightMeshMsg: RelightMeshRequest = {
 		type: WorkerTaskType.RelightMesh,
 		chunkId: 0n,
 		meshRevision: 0,
@@ -185,7 +185,7 @@ export class ChunkWorker {
 		chunkY: 0,
 		chunkZ: 0,
 		neighborMask: 0,
-		// Same hidden-class rationale as #voxelMeshMsg above.
+		// Same hidden-class rationale as _voxelMeshMsg above.
 		borderSkirtSides: 0,
 		borderSkirtNearInset: 0,
 	};
@@ -194,7 +194,10 @@ export class ChunkWorker {
 	// mutated in place and postMessage clones synchronously at call time, so
 	// the per-call spread literal ({ type, ...req }) allocation is gone while
 	// the wire bytes stay identical to the old spread output.
-	readonly #lightRegisterMsg: Omit<LightRegisterChunkRequest, "lightSAB"> & {
+	private readonly _lightRegisterMsg: Omit<
+		LightRegisterChunkRequest,
+		"lightSAB"
+	> & {
 		lightSAB: SharedArrayBuffer | null;
 	} = {
 		type: WorkerTaskType.LightRegisterChunk,
@@ -210,7 +213,10 @@ export class ChunkWorker {
 		blockStorageBytesPerElement: 1,
 	};
 
-	readonly #lightUpdateMsg: Omit<LightUpdateChunkBuffersRequest, "lightSAB"> & {
+	private readonly _lightUpdateMsg: Omit<
+		LightUpdateChunkBuffersRequest,
+		"lightSAB"
+	> & {
 		lightSAB: SharedArrayBuffer | null;
 	} = {
 		type: WorkerTaskType.LightUpdateChunkBuffers,
@@ -222,7 +228,7 @@ export class ChunkWorker {
 		blockStorageBytesPerElement: 1,
 	};
 
-	readonly #voxelRegisterMsg: VoxelRegisterChunkRequest = {
+	private readonly _voxelRegisterMsg: VoxelRegisterChunkRequest = {
 		type: WorkerTaskType.VoxelRegisterChunk,
 		chunkId: 0n,
 		chunkX: 0,
@@ -237,7 +243,7 @@ export class ChunkWorker {
 		lightSAB: null,
 	};
 
-	readonly #voxelRegisterBatchMsg: VoxelRegisterChunkBatchRequest = {
+	private readonly _voxelRegisterBatchMsg: VoxelRegisterChunkBatchRequest = {
 		type: WorkerTaskType.VoxelRegisterChunkBatch,
 		chunkIds: new BigInt64Array(0),
 		coords: new Int32Array(0),
@@ -247,7 +253,7 @@ export class ChunkWorker {
 		lightSABs: [],
 	};
 
-	readonly #voxelUpdateMsg: VoxelUpdateChunkBuffersRequest = {
+	private readonly _voxelUpdateMsg: VoxelUpdateChunkBuffersRequest = {
 		type: WorkerTaskType.VoxelUpdateChunkBuffers,
 		chunkId: 0n,
 		chunkX: 0,
@@ -326,7 +332,7 @@ export class ChunkWorker {
 	public postFullRemesh(chunk: Chunk, forcedLod?: number): void {
 		const size = Chunk.SIZE;
 
-		const msg = this.#voxelMeshMsg;
+		const msg = this._voxelMeshMsg;
 		msg.chunkId = chunk.id;
 		msg.meshRevision = chunk.meshRevision;
 		msg.lod = forcedLod ?? chunk.lodLevel ?? 0;
@@ -357,7 +363,7 @@ export class ChunkWorker {
 	 */
 	public postVoxelRecycleBuffers(buffers: ArrayBuffer[]): void {
 		if (buffers.length === 0) return;
-		const msg = this.#recycleBuffersMsg;
+		const msg = this._recycleBuffersMsg;
 		msg.buffers = buffers;
 		this.voxelWorker.postMessage(msg, buffers);
 	}
@@ -371,7 +377,7 @@ export class ChunkWorker {
 	 * full remesh on cache miss (RelightMeshMissMessage).
 	 */
 	public postRelightMesh(chunk: Chunk): void {
-		const msg = this.#relightMeshMsg;
+		const msg = this._relightMeshMsg;
 		msg.chunkId = chunk.id;
 		msg.meshRevision = chunk.meshRevision;
 		msg.lod = chunk.lodLevel ?? 0;
@@ -392,9 +398,9 @@ export class ChunkWorker {
 
 	// Terrain generation stays on terrainWorker
 	// PERF: prebuilt, reused descriptors (same pattern + postMessage-clones-
-	// synchronously rationale as #voxelMeshMsg above) — one object allocation
+	// synchronously rationale as _voxelMeshMsg above) — one object allocation
 	// per instance instead of per generated chunk / recycled result.
-	readonly #terrainGenMsg: GenerateTerrainRequest = {
+	private readonly _terrainGenMsg: GenerateTerrainRequest = {
 		type: WorkerTaskType.GenerateTerrain,
 		chunkId: 0n,
 		chunkX: 0,
@@ -403,7 +409,7 @@ export class ChunkWorker {
 		deferLighting: true,
 	};
 
-	readonly #recycleBuffersMsg: VoxelRecycleBuffersRequest = {
+	private readonly _recycleBuffersMsg: VoxelRecycleBuffersRequest = {
 		type: WorkerTaskType.VoxelRecycleBuffers,
 		buffers: [],
 	};
@@ -412,7 +418,7 @@ export class ChunkWorker {
 		chunk: Chunk,
 		deferLighting: boolean = true,
 	): void {
-		const msg = this.#terrainGenMsg;
+		const msg = this._terrainGenMsg;
 		msg.chunkId = chunk.id;
 		msg.chunkX = chunk.chunkX;
 		msg.chunkY = chunk.chunkY;
@@ -560,7 +566,7 @@ export class ChunkWorker {
 		paletteSAB: SharedArrayBuffer | null;
 		blockStorageBytesPerElement: 1 | 2;
 	}): void {
-		const msg = this.#lightRegisterMsg;
+		const msg = this._lightRegisterMsg;
 		msg.seq = req.seq;
 		msg.chunkId = req.chunkId;
 		msg.chunkX = req.chunkX;
@@ -607,7 +613,7 @@ export class ChunkWorker {
 		lightSAB: SharedArrayBuffer | null;
 		blockStorageBytesPerElement: 1 | 2;
 	}): void {
-		const msg = this.#lightUpdateMsg;
+		const msg = this._lightUpdateMsg;
 		msg.chunkId = req.chunkId;
 		msg.headerSlot = req.headerSlot;
 		msg.blockSAB = req.blockSAB;
@@ -627,7 +633,7 @@ export class ChunkWorker {
 		newPacked: number;
 		seq: number;
 	}): void {
-		const msg = this.#lightMutateMsg;
+		const msg = this._lightMutateMsg;
 		msg.chunkId = req.chunkId;
 		msg.headerSlot = req.headerSlot;
 		msg.x = req.x;
@@ -668,7 +674,7 @@ export class ChunkWorker {
 		level: number;
 		seq: number;
 	}): void {
-		const msg = this.#lightEmissionMsg;
+		const msg = this._lightEmissionMsg;
 		msg.chunkId = req.chunkId;
 		msg.headerSlot = req.headerSlot;
 		msg.x = req.x;
@@ -684,7 +690,7 @@ export class ChunkWorker {
 		headerSlot: number;
 		seq: number;
 	}): void {
-		const msg = this.#lightSkyReconcileMsg;
+		const msg = this._lightSkyReconcileMsg;
 		msg.chunkId = req.chunkId;
 		msg.headerSlot = req.headerSlot;
 		msg.seq = req.seq;
@@ -698,7 +704,7 @@ export class ChunkWorker {
 		seedLength: number;
 		seq: number;
 	}): void {
-		const msg = this.#lightPropagateMsg;
+		const msg = this._lightPropagateMsg;
 		msg.chunkId = req.chunkId;
 		msg.headerSlot = req.headerSlot;
 		msg.seedQueue = req.seedQueue;
@@ -733,7 +739,7 @@ export class ChunkWorker {
 		paletteSAB: SharedArrayBuffer | null;
 		lightSAB: SharedArrayBuffer | null;
 	}): void {
-		const msg = this.#voxelRegisterMsg;
+		const msg = this._voxelRegisterMsg;
 		msg.chunkId = req.chunkId;
 		msg.chunkX = req.chunkX;
 		msg.chunkY = req.chunkY;
@@ -752,7 +758,7 @@ export class ChunkWorker {
 		req: Omit<VoxelRegisterChunkBatchRequest, "type">,
 	): void {
 		if (req.chunkIds.length === 0) return;
-		const msg = this.#voxelRegisterBatchMsg;
+		const msg = this._voxelRegisterBatchMsg;
 		msg.chunkIds = req.chunkIds;
 		msg.coords = req.coords;
 		msg.meta = req.meta;
@@ -797,7 +803,7 @@ export class ChunkWorker {
 		paletteSAB: SharedArrayBuffer | null;
 		lightSAB: SharedArrayBuffer | null;
 	}): void {
-		const msg = this.#voxelUpdateMsg;
+		const msg = this._voxelUpdateMsg;
 		msg.chunkId = req.chunkId;
 		msg.chunkX = req.chunkX;
 		msg.chunkY = req.chunkY;
