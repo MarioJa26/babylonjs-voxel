@@ -1,4 +1,7 @@
+import { ChatHistory } from "@/code/Lib/ChatHistory";
 import { closeUi, openUi, UiFocus } from "@/code/Lib/GameRuntimeState";
+import { Map1 } from "@/code/Maps/Map1";
+import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { getWorldNameFromUrl, worldSeedFor } from "@/code/World/WorldContext";
 import type { Player } from "../Player";
 import { Gamemodes } from "../PlayerStats";
@@ -31,8 +34,8 @@ export class Chat {
 	#isOpen = false;
 	#messages: ChatMessage[] = [];
 	#maxMessages = 100;
-	#history: string[] = [];
-	#historyIndex = -1;
+	#maxVisibleHistory = 30;
+	#history = new ChatHistory();
 
 	constructor(player: Player) {
 		this.#player = player;
@@ -40,14 +43,13 @@ export class Chat {
 		this.#messageList = this.#createMessageList();
 		this.#input = this.#createInput();
 		this.#container.appendChild(this.#messageList);
-		this.#container.appendChild(this.#input);
 		document.body.appendChild(this.#container);
+		document.body.appendChild(this.#input);
 	}
 
 	#createContainer(): HTMLDivElement {
 		const el = document.createElement("div");
 		el.id = "chat-container";
-		el.style.display = "none";
 		return el;
 	}
 
@@ -61,6 +63,7 @@ export class Chat {
 		const el = document.createElement("input");
 		el.id = "chat-input";
 		el.type = "text";
+		el.style.display = "none";
 		el.placeholder = "Type a message...";
 		el.maxLength = 200;
 		el.addEventListener("keydown", (e) => {
@@ -92,8 +95,7 @@ export class Chat {
 			return;
 		}
 
-		this.#history.push(text);
-		this.#historyIndex = this.#history.length;
+		this.#history.add(text);
 		this.#input.value = "";
 
 		if (text.startsWith("/") || text.startsWith("!")) {
@@ -106,21 +108,13 @@ export class Chat {
 	}
 
 	#historyUp(): void {
-		if (this.#history.length === 0) return;
-		if (this.#historyIndex > 0) {
-			this.#historyIndex--;
-			this.#input.value = this.#history[this.#historyIndex];
-		}
+		const prev = this.#history.previous();
+		if (prev !== null) this.#input.value = prev;
 	}
 
 	#historyDown(): void {
-		if (this.#historyIndex < this.#history.length - 1) {
-			this.#historyIndex++;
-			this.#input.value = this.#history[this.#historyIndex];
-		} else {
-			this.#historyIndex = this.#history.length;
-			this.#input.value = "";
-		}
+		const next = this.#history.next();
+		this.#input.value = next ?? "";
 	}
 
 	#handleCommand(text: string): void {
@@ -134,6 +128,7 @@ export class Chat {
 				const gm = this.#parseGamemode(parts[1]);
 				if (gm !== null) {
 					this.#player.stats.gamemode = gm;
+					this.#player.playerHud.updateCreativePaletteVisibility();
 					this.#addSystem(`Gamemode set to ${gamemodeName(gm)}`);
 				} else {
 					this.#addSystem(
@@ -152,6 +147,9 @@ export class Chat {
 				this.#addSystem(`World "${worldName}" seed: ${seed}`);
 				break;
 			}
+			case "time":
+				this.#handleTime(parts.slice(1));
+				break;
 			case "h":
 			case "help":
 				this.#addSystem("Commands:");
@@ -162,6 +160,12 @@ export class Chat {
 					"  !tp <x> <y> <z> - Teleport to coordinates (~ for current)",
 				);
 				this.#addSystem("  !tp <x> <z> - Teleport keeping current y");
+				this.#addSystem(
+					"  !time        - Show the current time of day (0-1000)",
+				);
+				this.#addSystem("  !time <0-1000> - Set the time of day");
+				this.#addSystem("  !time +<amt> - Advance the time of day");
+				this.#addSystem("  !time day    - Set to day");
 				this.#addSystem("  !seed       - Show the current world's seed");
 				this.#addSystem("  !h / !help   - Show this help");
 				break;
@@ -222,6 +226,61 @@ export class Chat {
 		return Number.isNaN(val) ? null : val;
 	}
 
+	#handleTime(args: string[]): void {
+		const env = Map1.environment;
+
+		if (!env) {
+			this.#addSystem("World environment is not ready");
+			return;
+		}
+
+		const arg = args[0];
+
+		if (!arg) {
+			const fraction = env.getTimeOfDayMs() / SETTING_PARAMS.DAY_DURATION_MS;
+			this.#addSystem(
+				`Time: ${Math.round(fraction * 1000)} (${this.#timeLabel(fraction)})`,
+			);
+			return;
+		}
+
+		if (arg.toLowerCase() === "day") {
+			Map1.setTime(0.1);
+			this.#addSystem("Time set to day");
+			return;
+		}
+
+		const isRelative = arg.startsWith("+") || arg.startsWith("-");
+		const numeric = Number.parseFloat(arg);
+
+		if (!Number.isFinite(numeric)) {
+			this.#addSystem("Usage: !time [<0-1000> | +<amount> | day]");
+			return;
+		}
+
+		if (isRelative) {
+			const currentFrac = env.getTimeOfDayMs() / SETTING_PARAMS.DAY_DURATION_MS;
+			const frac = (currentFrac + numeric / 1000) % 1;
+			Map1.setTime(frac);
+			this.#addSystem(
+				`Time advanced to ${Math.round(frac * 1000)} (${this.#timeLabel(frac)})`,
+			);
+		} else {
+			const frac = Math.max(0, Math.min(1000, numeric)) / 1000;
+			Map1.setTime(frac);
+			this.#addSystem(
+				`Time set to ${Math.round(frac * 1000)} (${this.#timeLabel(frac)})`,
+			);
+		}
+	}
+
+	#timeLabel(fraction: number): string {
+		if (fraction < 0.25) return "morning";
+		if (fraction < 0.5) return "day";
+		if (fraction < 0.75) return "evening";
+		return "night";
+	}
+
 	#addMessage(text: string, type: ChatMessage["type"]): void {
 		const msg: ChatMessage = { text, type };
 		this.#messages.push(msg);
@@ -229,15 +288,18 @@ export class Chat {
 			this.#messages.shift();
 		}
 		const el = this.#renderMessage(msg);
-		if (type === "system") {
-			setTimeout(() => {
-				el.classList.add("chat-message--fade");
-				setTimeout(() => {
-					if (el.parentNode) el.parentNode.removeChild(el);
-				}, 1000);
-			}, 4000);
-		}
+		this.#scheduleFade(el, type);
 		this.#trimVisible();
+	}
+
+	#scheduleFade(el: HTMLElement, type: ChatMessage["type"]): void {
+		const delay = type === "system" ? 4000 : 10000;
+		setTimeout(() => {
+			el.classList.add("chat-message--fade");
+			setTimeout(() => {
+				if (el.parentNode) el.parentNode.removeChild(el);
+			}, 1000);
+		}, delay);
 	}
 
 	#addSystem(text: string): void {
@@ -263,21 +325,41 @@ export class Chat {
 		if (this.#isOpen) return;
 		this.#isOpen = true;
 		openUi(UiFocus.chat);
-		this.#container.style.display = "flex";
+		this.#renderHistory();
+		this.#input.style.display = "";
 		this.#input.value = "";
-		this.#historyIndex = this.#history.length;
+		this.#history.reset();
 		this.#input.focus();
 		if (document.pointerLockElement) {
 			document.exitPointerLock();
 		}
 	}
 
+	#renderHistory(): void {
+		// Re-render the recent message history so it is visible while typing.
+		this.#messageList.innerHTML = "";
+		const start = Math.max(0, this.#messages.length - this.#maxVisibleHistory);
+		for (let i = start; i < this.#messages.length; i++) {
+			this.#messageList.appendChild(this.#renderMessage(this.#messages[i]));
+		}
+		this.#messageList.scrollTop = this.#messageList.scrollHeight;
+	}
+
 	close(): void {
 		if (!this.#isOpen) return;
 		this.#isOpen = false;
 		closeUi(UiFocus.chat);
-		this.#container.style.display = "none";
+		// Keep the message list visible as a HUD so messages can fade out;
+		// only hide the input.
+		this.#input.style.display = "none";
 		this.#input.blur();
+		// Restore HUD behavior for the history re-rendered on open().
+		for (const el of Array.from(this.#messageList.children) as HTMLElement[]) {
+			const type = el.classList.contains("chat-message--system")
+				? "system"
+				: "player";
+			this.#scheduleFade(el, type);
+		}
 	}
 
 	toggle(): void {

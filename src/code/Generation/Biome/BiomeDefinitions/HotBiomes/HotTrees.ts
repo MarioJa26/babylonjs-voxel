@@ -1,4 +1,5 @@
 import { getPRNGBySeed } from "@/code/Generation/NoiseAndParameters/Squirrel13";
+import type { PlaceBlockFn } from "@/code/Generation/SurfaceGenerator";
 import type { TreeDefinition } from "../../BiomeTypes";
 import { DIAG_X, DIAG_Z, generateBaobab } from "../../TreeDefinition";
 
@@ -30,13 +31,7 @@ export const SAVANNAH_TREE: TreeDefinition = {
 		worldX: number,
 		worldY: number,
 		worldZ: number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			blockId: number,
-			overwrite?: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seedAsInt: number,
 	): void {
 		const heightHash = getPRNGBySeed(

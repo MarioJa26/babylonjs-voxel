@@ -35,6 +35,11 @@ const DIRS: Array<[number, number, number]> = [
 export function installLightDebugTool(
 	getPlayerPos: () => Vec3Like | undefined,
 ): () => void {
+	// Seed-length tracking in the worker pool is off by default (it costs a
+	// BigInt-keyed Map insert per generated chunk); turn it on for this tool.
+	const pool = ChunkWorkerPool.getInstance();
+	pool.enableDebugLightSeedTracking();
+
 	const onKeyDown = (e: KeyboardEvent): void => {
 		if (e.key !== "F8") return;
 		const pos = getPlayerPos();
@@ -85,8 +90,9 @@ function dumpChunkTable(pcx: number, pcy: number, pcz: number): void {
 		const seedLen = pool.debugLightSeedLength(c.id);
 		const mesh =
 			(c.mesh ? "mesh" : "") +
-			(c.transparentMesh ? "+tmesh" : "") +
-			(c.opaqueMeshData || c.transparentMeshData ? "+data" : "");
+			(c.waterMesh ? "+water" : "") +
+			(c.cutoutMesh ? "+cutout" : "") +
+			(c.opaqueMeshData || c.waterMeshData || c.cutoutMeshData ? "+data" : "");
 		lines.push(
 			`  (${dx > 0 ? "+" : ""}${dx},${dy > 0 ? "+" : ""}${dy},${dz > 0 ? "+" : ""}${dz}) ` +
 				`chunk(${c.chunkX}, ${c.chunkY}, ${c.chunkZ}) id=${c.id} ` +

@@ -3,6 +3,7 @@ import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { createFastNoise3DWithInstance } from "../NoiseAndParameters/FastNoise/FastNoiseFactory";
 import { FractalType } from "../NoiseAndParameters/FastNoise/FastNoiseLite";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
+import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
@@ -11,6 +12,15 @@ const MIN_SPIRE_HEIGHT = 120;
 const MAX_SPIRE_HEIGHT = 600;
 const SUPERELLIPSE_EXP = 2.8;
 const SPIRE_FOOTPRINT = 64;
+
+// PERF: constant — hoisted out of generate(), which ran once per badlands
+// chunk-layer × neighbor dispatch and allocated a fresh literal each time.
+const EDGE_OFFSETS: readonly (readonly [number, number])[] = [
+	[-SPIRE_FOOTPRINT, 0],
+	[SPIRE_FOOTPRINT, 0],
+	[0, -SPIRE_FOOTPRINT],
+	[0, SPIRE_FOOTPRINT],
+];
 
 const TIER_A = [32, 27, 22, 17, 12, 7];
 const TIER_B = [22, 18, 15, 12, 8, 4];
@@ -71,13 +81,7 @@ export class BadlandsSpireFeature implements IWorldFeature {
 		chunkY: number,
 		chunkZ: number,
 		biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seed: number,
 		chunkSize: number,
 		generatingChunkX: number,
@@ -124,13 +128,7 @@ export class BadlandsSpireFeature implements IWorldFeature {
 
 		const centerBiome = getBiome(cx, cz);
 		if (centerBiome.id !== BIOME_ID.BADLANDS) return;
-		const edgeOffsets: [number, number][] = [
-			[-SPIRE_FOOTPRINT, 0],
-			[SPIRE_FOOTPRINT, 0],
-			[0, -SPIRE_FOOTPRINT],
-			[0, SPIRE_FOOTPRINT],
-		];
-		for (const [ox, oz] of edgeOffsets) {
+		for (const [ox, oz] of EDGE_OFFSETS) {
 			if (getBiome(cx + ox, cz + oz).id !== BIOME_ID.BADLANDS) return;
 		}
 
@@ -173,13 +171,7 @@ export class BadlandsSpireFeature implements IWorldFeature {
 		spireHeight: number,
 		tierHeight: number,
 		halfFp: number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		chunkSize: number,
 		seed: number,
 	) {
@@ -217,13 +209,7 @@ export class BadlandsSpireFeature implements IWorldFeature {
 		centerZ: number,
 		noiseOffX: number,
 		noiseOffZ: number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seed: number,
 	) {
 		const spireLocalY = worldY - groundHeight;

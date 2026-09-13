@@ -57,17 +57,27 @@ export function computeRegion(
 	};
 }
 
+// PERF: module-level scratch. Every call site consumes the returned bounds
+// synchronously (AABB gate / loop clamps) and no feature nests another
+// chunkWorldBounds() call while holding a reference, so one shared object
+// replaces ~925 fresh literals per generated chunk-layer.
+const _chunkBoundsScratch: {
+	minX: number;
+	maxX: number;
+	minZ: number;
+	maxZ: number;
+} = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
+
 export function chunkWorldBounds(
 	genChunkX: number,
 	genChunkZ: number,
 	chunkSize: number,
 ): { minX: number; maxX: number; minZ: number; maxZ: number } {
-	return {
-		minX: genChunkX * chunkSize,
-		maxX: (genChunkX + 1) * chunkSize,
-		minZ: genChunkZ * chunkSize,
-		maxZ: (genChunkZ + 1) * chunkSize,
-	};
+	_chunkBoundsScratch.minX = genChunkX * chunkSize;
+	_chunkBoundsScratch.maxX = (genChunkX + 1) * chunkSize;
+	_chunkBoundsScratch.minZ = genChunkZ * chunkSize;
+	_chunkBoundsScratch.maxZ = (genChunkZ + 1) * chunkSize;
+	return _chunkBoundsScratch;
 }
 
 export function aabbOverlaps(

@@ -1,32 +1,38 @@
 import {
 	addToScene,
 	addVec3InPlace,
-	createCapsule,
-	createStandardMaterial,
 	type EngineContext,
 	type Mesh,
 	type SceneContext,
+	type ShaderMaterial,
 	scaleVec3InPlace,
 	scaleVec3ToRef,
 	type Vec3,
 	vec3,
 } from "@babylonjs/lite";
 import { copyVec3, lengthSqVec3, Quaternion, setVec3 } from "@/code/Lib/Math";
-import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
+import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
+	_voxelResolveScratch,
 	Axis,
 	createVoxelColliderBlockSampler,
+	UNLOADED_SOLID_RESOLVE,
 	VoxelAabbCollider,
 	voxelStepUp,
 } from "@/code/World/Collision/VoxelAabbCollider";
+import { playFootstep, playLand } from "../Audio/SurfaceAudio";
 import { CustomBoat } from "../Entities/CustomBoat";
+import {
+	FALL_DAMAGE_PER_BLOCK,
+	FALL_DAMAGE_THRESHOLD,
+} from "../Entities/MobConfig";
 import type { Mount } from "../Entities/Mount";
-import { getFinalTerrainHeight } from "../Generation/TerrainHeightMap";
+import { playLandingDust } from "../Maps/BlockBreakParticles";
 import type { BoatChunk } from "../World/Boat/BoatChunk";
-import { getChunk } from "../World/Chunk/Chunk";
 import {
 	getBlockAndStateByWorldCoords,
 	getBlockByWorldCoords,
+	resolveBlockAtWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
 import {
@@ -34,9 +40,22 @@ import {
 	getFenceDynamicShape,
 	isFenceBlockId,
 } from "../World/Shape/FenceConnect";
+import { getSpawnPosition, isSpawnPrepared } from "../World/SpawnPoint";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import type { IPlayerBody, PlayerBodyControlState } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
+import {
+	applyRigSkin,
+	createPlayerRigMesh,
+	createRigShaderMaterial,
+	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
+	packedLightToLightColor,
+	setRigHeadPitch,
+	setRigLightColor,
+	setRigWalk,
+	WALK_REF_SPEED,
+	WALK_STRIDE_FACTOR,
+} from "./PlayerModel";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
 import { SimpleCharacterController } from "./SimpleCharacterController";
 
@@ -75,30 +94,6 @@ function _rotateVec3ByQuat(
 	out.z = iz * qw + iw * -qz + ix * -qy - iy * -qx;
 }
 
-// Sentinel returned by the player's collision sampler for probes whose chunk
-// is not yet loaded: a solid, full-cube block so the player is held up by
-// unloaded terrain instead of falling through the world while chunks stream in.
-const _unloadedSolid: { blockId: number; blockState: number } = {
-	blockId: BlockType.Cobble,
-	blockState: 0,
-};
-
-// True when the chunk containing the given world coordinate is present and has
-// voxel data. Used to gate collision: an unloaded chunk is treated as solid so
-// the player never falls through terrain that hasn't streamed in.
-function isChunkLoadedAtWorldCoords(
-	worldX: number,
-	worldY: number,
-	worldZ: number,
-): boolean {
-	const chunk = getChunk(
-		worldToChunkCoord(worldX),
-		worldToChunkCoord(worldY),
-		worldToChunkCoord(worldZ),
-	);
-	return !!chunk && chunk.isLoaded && chunk.hasVoxelData;
-}
-
 export class PlayerVehicleMotor implements IPlayerBody {
 	readonly scene: SceneContext;
 	readonly #engine: EngineContext;
@@ -108,7 +103,20 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	public mount: Mount | null = null;
 	public isMounted = false;
 
+	/**
+	 * Fired by step-up movement after an audible step sound so the
+	 * footstep stride cadence restarts (wired by PlayerLoopController).
+	 */
+	public onAudibleStep: (() => void) | null = null;
+
 	#displayCapsule!: Mesh;
+	#displayMat: ShaderMaterial | null = null;
+	#displayLightX = Number.NaN;
+	// Walk-swing state for the display rig.
+	#displayWalkPhase = 0;
+	#displayWalkAmp = 0;
+	#displayLightY = Number.NaN;
+	#displayLightZ = Number.NaN;
 	#characterController!: SimpleCharacterController;
 	#characterOrientation = Quaternion.Identity();
 	#characterGravity: Vec3 = vec3(0, -18, 0);
@@ -122,6 +130,10 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	readonly #upZ = -this.#characterGravity.z / this.#characterGravityLen;
 	#movementLocked = false;
 	#lockedPosition: Vec3 | null = null;
+	// Set when a saved position was restored from local storage (or the
+	// server's SpawnPosition) — tells the loading gate not to teleport the
+	// player over it.
+	#savedPositionRestored = false;
 	readonly #zeroVelocity: Vec3 = vec3(0, 0, 0);
 
 	#collisionBoat: CustomBoat | null = null;
@@ -159,7 +171,14 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	private voxelVelocity: Vec3 = vec3(0, 0, 0);
 	private voxelIsGrounded = false;
 	private prevJumpHeld = false;
+	// Last AIRBORNE `isJumpHeld` rising edge (performance.now ms). A short
+	// grace window lets a press slightly before wall contact still latch.
+	// Grounded presses are ignored on purpose: a single ground jump steered
+	// into a wall must NOT latch — only a second press while airborne latches.
+	private lastJumpPressMs = Number.NEGATIVE_INFINITY;
 	#isClimbing = false;
+	/** Y where the current fall started; NaN when grounded, swimming, flying or climbing. */
+	#fallStartY = Number.NaN;
 	private lastStepUpTime = 0;
 	private now = 0;
 	// Cached per-frame environment queries (reused across substeps).
@@ -194,11 +213,16 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	private readonly stepUpCooldown = 0.01;
 
 	// ── Wall jump / climbing ─────────────────────────────────────────────────
-	// Formalised replacement for the old "jump up a wall" exploit. Touching a
-	// wall is not sticky: tapping jump while airborne and in contact launches a
-	// parkour wall-jump (up impulse + small push off the wall). Gravity arcs
-	// between hops; at zero stamina you can't hop and instead slide down slowly.
+	// Jump-gated grip (strict double-jump press-to-latch). Touching a wall
+	// mid-air is NOT sticky on its own, and a single ground jump steered into
+	// a wall does NOT latch either. Only a fresh Space press while airborne
+	// and in wall contact latches. Once latched, grip slow-slides and a
+	// further distinct Space press wall-hops. Gravity arcs between hops; at
+	// zero stamina you can't hop and instead slide down slowly.
 	private readonly noStaminaSlideSpeed = 0.15; // slow slide while climbing
+	// How long after an airborne jump-press edge wall contact still latches
+	// (ms). Lets a press slightly before contact still grip.
+	private readonly climbLatchWindowMs = 200;
 	// Controlled descent speed while climbing + sneaking (faster than the
 	// out-of-stamina slow slide). Tunable.
 	private readonly climbDownSneakSpeed = 5.0;
@@ -274,13 +298,16 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			},
 			createVoxelColliderBlockSampler(
 				(x, y, z) => {
-					if (!isChunkLoadedAtWorldCoords(x, y, z)) {
+					// PERF: single chunk resolution per voxel (was two: a loaded
+					// check via getChunk + a block/state read). resolveBlockAtWorldCoords
+					// resolves once and reports unloaded so we can treat it as solid.
+					const r = resolveBlockAtWorldCoords(x, y, z);
+					if (r.unloaded) {
 						// Chunk under this probe is not loaded: treat it as solid
 						// terrain so the player collides with / rests on it instead
 						// of falling through into the void while chunks stream in.
-						return _unloadedSolid;
+						return UNLOADED_SOLID_RESOLVE;
 					}
-					const r = getBlockAndStateByWorldCoords(x, y, z);
 					if (!isCollidableBlock(r.blockId)) return null;
 					return r;
 				},
@@ -313,8 +340,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 					const packed = chunk.getBlockLocal(x, y, z);
 					const blockId = packed & 0x3ff;
 					if (!isCollidableBlock(blockId)) return null;
-					const blockState = (packed >>> 10) & 0x3f;
-					return { blockId, blockState };
+					_voxelResolveScratch.blockId = blockId;
+					_voxelResolveScratch.blockState = (packed >>> 10) & 0x3f;
+					return _voxelResolveScratch;
 				},
 				{
 					getFenceDynamicShape,
@@ -344,6 +372,11 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	}
 	public get position(): Vec3 {
 		return this.voxelPosition;
+	}
+
+	/** True when the body is standing on voxel ground (updated by physics). */
+	public get isGrounded(): boolean {
+		return this.voxelIsGrounded;
 	}
 	public get isMovementLocked(): boolean {
 		return this.#movementLocked;
@@ -398,12 +431,43 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	}
 
 	public respawn(): void {
-		const y = getFinalTerrainHeight(0, 0) + 2;
-		this.voxelPosition.y = y;
+		// Until the world spawn is prepared the player has not been teleported
+		// to it yet; snapping to the default (0,0,0) would park the player
+		// inside terrain at the origin and trigger a pre-teleport chunk load.
+		if (!isSpawnPrepared()) return;
+		const spawn = getSpawnPosition();
+		this.voxelPosition.x = spawn.x;
+		this.voxelPosition.y = spawn.y;
+		this.voxelPosition.z = spawn.z;
 		setVec3(this.voxelVelocity, 0, 0, 0);
+		this.#fallStartY = Number.NaN;
+		this.#isClimbing = false;
+		this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+		this.prevJumpHeld = this.isJumpHeld;
 		this.#characterController.setPosition(this.voxelPosition);
 		this.#camera.snapToPlayer(this.voxelPosition);
 		this.#displayCapsule?.position.copyFrom(this.voxelPosition);
+		this.#syncDisplayLight(
+			this.voxelPosition.x,
+			this.voxelPosition.y,
+			this.voxelPosition.z,
+		);
+		this.voxelCollider.syncDebugMesh(this.voxelPosition);
+	}
+
+	public teleportTo(x: number, y: number, z: number): void {
+		this.voxelPosition.x = x;
+		this.voxelPosition.y = y;
+		this.voxelPosition.z = z;
+		setVec3(this.voxelVelocity, 0, 0, 0);
+		this.#fallStartY = Number.NaN;
+		this.#isClimbing = false;
+		this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+		this.prevJumpHeld = this.isJumpHeld;
+		this.#characterController.setPosition(this.voxelPosition);
+		this.#camera.snapToPlayer(this.voxelPosition);
+		this.#displayCapsule?.position.copyFrom(this.voxelPosition);
+		this.#syncDisplayLight(x, y, z);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
 	}
 
@@ -415,28 +479,28 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 	/** Rotate world XZ vector into boat-local XZ. Y unchanged. */
 	#toBoatLocal(world: Vec3, _yaw: number, out: Vec3): void {
-		if (!this.#collisionBoat) {
-			out = world;
+		const boat = this.#collisionBoat;
+
+		if (!boat) {
+			copyVec3(out, world);
 			return;
 		}
 
-		this.#tmp5 = this.voxelPosition;
+		// Do not assign scratch references to voxelPosition.
+		const start = this.voxelPosition;
 
-		this.#tmp6.x = this.#tmp5.x + world.x;
-		this.#tmp6.y = this.#tmp5.y + world.y;
-		this.#tmp6.z = this.#tmp5.z + world.z;
-
-		const localStart = this.#collisionBoat.worldToBoatChunkLocalPoint(
-			this.#tmp5,
-			this.#tmp7,
-		);
-		const localEnd = this.#collisionBoat.worldToBoatChunkLocalPoint(
+		setVec3(
 			this.#tmp6,
-			this.#tmp8,
+			start.x + world.x,
+			start.y + world.y,
+			start.z + world.z,
 		);
+
+		const localStart = boat.worldToBoatChunkLocalPoint(start, this.#tmp7);
+		const localEnd = boat.worldToBoatChunkLocalPoint(this.#tmp6, this.#tmp8);
 
 		if (!localStart || !localEnd) {
-			out = world;
+			copyVec3(out, world);
 			return;
 		}
 
@@ -447,27 +511,28 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 	/** Rotate boat-local XZ vector into world XZ. Y unchanged. */
 	#toWorld(local: Vec3, _yaw: number, out: Vec3): void {
-		if (!this.#collisionBoat) {
-			out = local;
+		const boat = this.#collisionBoat;
+
+		if (!boat) {
+			copyVec3(out, local);
 			return;
 		}
 
-		this.#tmp5 = this.#boatLocalPos;
-		this.#tmp6.x = this.#tmp5.x + local.x;
-		this.#tmp6.y = this.#tmp5.y + local.y;
-		this.#tmp6.z = this.#tmp5.z + local.z;
+		// Do not assign scratch references to #boatLocalPos.
+		const start = this.#boatLocalPos;
 
-		const worldStart = this.#collisionBoat.boatChunkLocalPointToWorld(
-			this.#tmp5,
-			this.#tmp7,
-		);
-		const worldEnd = this.#collisionBoat.boatChunkLocalPointToWorld(
+		setVec3(
 			this.#tmp6,
-			this.#tmp8,
+			start.x + local.x,
+			start.y + local.y,
+			start.z + local.z,
 		);
+
+		const worldStart = boat.boatChunkLocalPointToWorld(start, this.#tmp7);
+		const worldEnd = boat.boatChunkLocalPointToWorld(this.#tmp6, this.#tmp8);
 
 		if (!worldStart || !worldEnd) {
-			out = local;
+			copyVec3(out, local);
 			return;
 		}
 
@@ -491,16 +556,22 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	}
 
 	#flushToWorld(): void {
-		if (!this.#collisionBoat) return;
-		const w = this.#collisionBoat.boatChunkLocalPointToWorld(
+		const boat = this.#collisionBoat;
+		if (!boat) return;
+
+		const world = boat.boatChunkLocalPointToWorld(
 			this.#boatLocalPos,
 			this.#tmp0,
 		);
-		if (!w) {
+
+		if (!world) {
 			this.#collisionBoat = null;
 			return;
 		}
-		this.voxelPosition = w;
+
+		// Important: copy into the stable position object.
+		// Do not replace voxelPosition with #tmp0, because #tmp0 is reused elsewhere.
+		copyVec3(this.voxelPosition, world);
 	}
 
 	/**
@@ -584,18 +655,23 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			const by = Math.floor(local.y);
 			const bz = Math.floor(local.z);
 
-			const blockHere = chunk.getBlockLocal(bx, by, bz);
-			const blockBelow = chunk.getBlockLocal(bx, by - 1, bz);
+			// chunk.getBlockLocal() appears to return a packed block value.
+			// Match the boat collider sampler and mask the block id before testing.
+			const blockHereId = chunk.getBlockLocal(bx, by, bz) & 0x3ff;
+			const blockBelowId = chunk.getBlockLocal(bx, by - 1, bz) & 0x3ff;
 
-			if (isCollidableBlock(blockHere) || isCollidableBlock(blockBelow)) {
+			if (isCollidableBlock(blockHereId) || isCollidableBlock(blockBelowId)) {
 				this.#supportBoat = boat;
-				boat.worldToBoatChunkLocalPoint(
+
+				const supportLocal = boat.worldToBoatChunkLocalPoint(
 					this.voxelPosition,
 					this.#boatSupportLocal,
 				);
-				return true;
+
+				return !!supportLocal;
 			}
 		}
+
 		return false;
 	}
 
@@ -772,6 +848,32 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		}
 	}
 
+	// PERF: bound once per motor. The onStep callback used to be a fresh
+	// closure per axis attempt — up to 2 per physics substep while grounded
+	// and moving. #stepUpVel carries the active velocity object (boat-local or
+	// world) into the single reusable callback.
+	#stepUpVel: Vec3 | null = null;
+	readonly #onStepUp = (_steppedPos: Vec3): void => {
+		if (this.#stepUpVel !== null) this.#stepUpVel.y = 0;
+		this.lastStepUpTime = this.now;
+
+		// Audible step onto the ledge, using the stepped-onto material.
+		// Skipped while riding or flying — boats and flight run through the
+		// same axis mover but shouldn't make walking sounds.
+		if (this.isMounted || this.isFlying) return;
+
+		const blockX = Math.floor(_steppedPos.x);
+		const blockZ = Math.floor(_steppedPos.z);
+		const feetBlockY = Math.floor(_steppedPos.y - this.colliderHalfHeight);
+		for (let d = 0; d <= 2; d++) {
+			const steppedId = getBlockByWorldCoords(blockX, feetBlockY - d, blockZ);
+			if (steppedId === BlockType.Water || isCollidableBlock(steppedId)) {
+				if (playFootstep(steppedId, 0.7)) this.onAudibleStep?.();
+				return;
+			}
+		}
+	};
+
 	#attemptStepUp(
 		pos: Vec3,
 		vel: Vec3,
@@ -779,10 +881,15 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		axis: Axis.X | Axis.Z,
 		delta: number,
 	): boolean {
-		return voxelStepUp(collider, pos, axis, delta, this.stepUpHeight, () => {
-			vel.y = 0;
-			this.lastStepUpTime = this.now;
-		});
+		this.#stepUpVel = vel;
+		return voxelStepUp(
+			collider,
+			pos,
+			axis,
+			delta,
+			this.stepUpHeight,
+			this.#onStepUp,
+		);
 	}
 
 	#moveAxis(
@@ -847,26 +954,26 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 		// +X / -X
 		setVec3(p, pos.x + this.colliderHalfWidth + 0.04, cy, pos.z);
-		const v1 = collider.firstSolidVoxel(p, extents);
+		const v1 = collider.firstSolidVoxelScratch(p, extents);
 		if (v1 && this.#isClimbableWall(v1)) {
 			this.#wallContact = true;
 			return;
 		}
 		setVec3(p, pos.x - this.colliderHalfWidth - 0.04, cy, pos.z);
-		const v2 = collider.firstSolidVoxel(p, extents);
+		const v2 = collider.firstSolidVoxelScratch(p, extents);
 		if (v2 && this.#isClimbableWall(v2)) {
 			this.#wallContact = true;
 			return;
 		}
 		// +Z / -Z
 		setVec3(p, pos.x, cy, pos.z + this.colliderHalfWidth + 0.04);
-		const v3 = collider.firstSolidVoxel(p, extents);
+		const v3 = collider.firstSolidVoxelScratch(p, extents);
 		if (v3 && this.#isClimbableWall(v3)) {
 			this.#wallContact = true;
 			return;
 		}
 		setVec3(p, pos.x, cy, pos.z - this.colliderHalfWidth - 0.04);
-		const v4 = collider.firstSolidVoxel(p, extents);
+		const v4 = collider.firstSolidVoxelScratch(p, extents);
 		if (v4 && this.#isClimbableWall(v4)) {
 			this.#wallContact = true;
 		}
@@ -960,10 +1067,21 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		const activeVel = nowOnBoat ? this.#boatLocalVel : this.voxelVelocity;
 		const activeCol = nowOnBoat ? this.boatVoxelCollider : this.voxelCollider;
 		const activeBoatYaw = nowOnBoat ? this.#collisionBoat!.boatYaw : null;
+		const stepStartY = activePos.y;
 
 		this.voxelIsGrounded = this.#checkGrounded(activePos, activeCol);
 
 		const isInWater = this.frameIsInWater;
+
+		// Jump-press edge, hoisted above the climbing state so entry can be
+		// gated on it. Runs on every substep (including water) so a stale
+		// held state can't leak a false edge when leaving water. Only
+		// AIRBORNE presses arm the latch — a grounded press (the initial
+		// ground jump) is ignored so a single jump can't latch.
+		const jumpPressed = this.isJumpHeld && !this.prevJumpHeld;
+		this.prevJumpHeld = this.isJumpHeld;
+		if (jumpPressed && !this.voxelIsGrounded && !isInWater)
+			this.lastJumpPressMs = this.now;
 
 		// Wall contact is only meaningful for climbing, which can't start while
 		// grounded (and is already tracked once climbing). Skip the 4 side probes
@@ -983,15 +1101,29 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			(this.isClimbing || this.#wallContact) &&
 			this.#hasGroundBelowFeet(activePos, activeCol, this.climbGroundMaxDist);
 
-		// Climbing state: entered while airborne and in wall contact, exited when
-		// the player leaves the wall, lands, or is within 1 block of the ground.
+		// Climbing state: strict double-jump press-to-latch. Entered while
+		// airborne in wall contact only from a recent AIRBORNE jump press.
+		// A single ground jump into a wall does NOT latch. Exited when the
+		// player leaves the wall, lands, or is within 1 block of the ground.
 		// Drives the slow-slide grip and wall-jumps; horizontal movement stays
-		// fully free.
+		// free.
+		// NOTE: quick double-tap Space in non-Survival toggles fly in
+		// WalkingControls (which clears wantJump), so that press never reaches
+		// this latch — quick = fly, slower second press = climb.
+		let latchedThisStep = false;
 		if (this.isClimbing) {
 			if (!this.#wallContact || this.voxelIsGrounded || nearGroundBelow)
 				this.#isClimbing = false;
-		} else if (this.#wallContact && !this.voxelIsGrounded && !nearGroundBelow) {
+		} else if (
+			this.#wallContact &&
+			!this.voxelIsGrounded &&
+			!nearGroundBelow &&
+			this.now - this.lastJumpPressMs <= this.climbLatchWindowMs
+		) {
 			this.#isClimbing = true;
+			// Consume this press for the latch so it doesn't also wall-hop
+			// below; the NEXT distinct press hops.
+			latchedThisStep = jumpPressed;
 		}
 
 		const speed = isInWater
@@ -1059,12 +1191,11 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			activeVel.z *= this.swimHorizontalDrag;
 			this.wantJump = 0;
 		} else {
-			// Wall-jump: a fresh jump press while airborne and touching a wall
-			// launches straight up (like a normal jump). Costs stamina in every
-			// gamemode. Gated on the press edge so holding Space doesn't spam hops.
-			const jumpPressed = this.isJumpHeld && !this.prevJumpHeld;
-			this.prevJumpHeld = this.isJumpHeld;
-
+			// Wall-jump: a fresh jump press while already climbing launches
+			// straight up (like a normal jump). Costs stamina in every
+			// gamemode. Gated on the press edge so holding Space doesn't spam
+			// hops. `jumpPressed` is hoisted above (also feeds climb latching);
+			// a press that latched this substep is consumed and doesn't hop.
 			if (this.wantJump > 0 && this.voxelIsGrounded) {
 				this.wantJump--;
 				const canJump = this.#playerStats.consumeStamina(this.jumpStaminaCost);
@@ -1074,7 +1205,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 					activeVel.y = Math.max(this.jumpImpulse, activeVel.y);
 					this.voxelIsGrounded = false;
 				}
-			} else if (jumpPressed && this.isClimbing) {
+			} else if (jumpPressed && this.isClimbing && !latchedThisStep) {
 				const canJump = this.#playerStats.consumeStamina(this.jumpStaminaCost);
 				if (canJump || this.#playerStats.gamemode === Gamemodes.Creative) {
 					activeVel.y = Math.max(this.jumpImpulse, activeVel.y);
@@ -1122,6 +1253,62 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 		this.voxelIsGrounded = this.#checkGrounded(activePos, activeCol);
 
+		// ── Fall damage (singleplayer + multiplayer) ──────────────────────────
+		// Mirrors NeutralMob/AquaticMob fall tracking (MobConfig thresholds).
+		// Water, flying, climbing and boats all break the fall. Creative still
+		// tracks the fall so landing dust emits, but takes no damage.
+		// Mounted movement is handled by the mount itself.
+		{
+			const isCreative = this.#playerStats.gamemode === Gamemodes.Creative;
+			const shouldResetFall =
+				isInWater ||
+				this.isFlying ||
+				this.#isClimbing ||
+				nowOnBoat ||
+				this.mount !== null;
+			if (shouldResetFall) {
+				this.#fallStartY = Number.NaN;
+			} else if (this.voxelIsGrounded) {
+				if (!Number.isNaN(this.#fallStartY)) {
+					const fallDistance = this.#fallStartY - activePos.y;
+					if (fallDistance > 0.5) {
+						playLandingDust(
+							activePos.x,
+							activePos.y - this.colliderHalfHeight,
+							activePos.z,
+							fallDistance,
+						);
+						// Thud on the ground material (first solid block
+						// below the feet, like the footstep lookup).
+						const landX = Math.floor(activePos.x);
+						const landZ = Math.floor(activePos.z);
+						const feetBlockY = Math.floor(
+							activePos.y - this.colliderHalfHeight,
+						);
+						for (let d = 0; d <= 2; d++) {
+							const landId = getBlockByWorldCoords(
+								landX,
+								feetBlockY - d,
+								landZ,
+							);
+							if (landId === BlockType.Water || isCollidableBlock(landId)) {
+								playLand(landId, fallDistance);
+								break;
+							}
+						}
+					}
+					if (fallDistance > FALL_DAMAGE_THRESHOLD && !isCreative) {
+						this.#playerStats.takeDamage(
+							(fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK,
+						);
+					}
+					this.#fallStartY = Number.NaN;
+				}
+			} else if (Number.isNaN(this.#fallStartY)) {
+				this.#fallStartY = stepStartY;
+			}
+		}
+
 		if (this.isOnBoat()) {
 			this.#flushToWorld();
 			this.#collisionBoat?.worldToBoatChunkLocalPoint(
@@ -1148,6 +1335,25 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			deltaMs !== undefined ? deltaMs / 1000 : undefined,
 		);
 		this.#displayCapsule.position.copyFrom(this.getPositionInternal());
+		this.#syncDisplayLight(
+			this.voxelPosition.x,
+			this.voxelPosition.y,
+			this.voxelPosition.z,
+		);
+		{
+			const v = this.velocity;
+			const hSpeed = Math.hypot(v.x, v.z);
+			const dt = (deltaMs ?? 16.6) / 1000;
+			this.#displayWalkPhase += hSpeed * dt * WALK_STRIDE_FACTOR;
+			const targetAmp = Math.min(1, hSpeed / WALK_REF_SPEED);
+			this.#displayWalkAmp +=
+				(targetAmp - this.#displayWalkAmp) * Math.min(1, dt * 10);
+			const mat = this.#displayMat;
+			if (mat) {
+				setRigWalk(mat, this.#displayWalkPhase, this.#displayWalkAmp);
+				setRigHeadPitch(mat, this.#camera.cameraPitch);
+			}
+		}
 		const rq = this.#displayCapsule.rotationQuaternion;
 		rq.set(
 			this.#characterOrientation.x,
@@ -1171,6 +1377,10 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			setVec3(this.voxelVelocity, 0, 0, 0);
 			this.#characterController.setVelocity(this.#zeroVelocity);
 			this.voxelCollider.syncDebugMesh(this.voxelPosition);
+			this.#fallStartY = Number.NaN;
+			this.#isClimbing = false;
+			this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+			this.prevJumpHeld = this.isJumpHeld;
 			return;
 		}
 
@@ -1225,6 +1435,10 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			mount.update();
 			copyVec3(this.voxelPosition, this.#characterController.getPosition());
 			setVec3(this.voxelVelocity, 0, 0, 0);
+			this.#fallStartY = Number.NaN;
+			this.#isClimbing = false;
+			this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+			this.prevJumpHeld = this.isJumpHeld;
 		} else {
 			if (this.isFlying) {
 				const dv = this.calculateFlyingVelocity(deltaTime);
@@ -1235,6 +1449,10 @@ export class PlayerVehicleMotor implements IPlayerBody {
 				this.#characterController.setPosition(this.voxelPosition);
 				this.#characterController.setVelocity(this.#zeroVelocity);
 				this.voxelCollider.syncDebugMesh(this.voxelPosition);
+				this.#fallStartY = Number.NaN;
+				this.#isClimbing = false;
+				this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+				this.prevJumpHeld = this.isJumpHeld;
 				return;
 			}
 			this.integrateMovement(deltaTime);
@@ -1252,7 +1470,13 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#characterController.setVelocity(this.#zeroVelocity);
 		this.#camera.snapToPlayer(this.#lockedPosition);
 		this.#displayCapsule.position.copyFrom(this.#lockedPosition);
+		this.#syncDisplayLight(
+			this.#lockedPosition.x,
+			this.#lockedPosition.y,
+			this.#lockedPosition.z,
+		);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
+		this.#fallStartY = Number.NaN;
 	}
 
 	public unlockMovement(): void {
@@ -1260,6 +1484,10 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#lockedPosition = null;
 		setVec3(this.voxelVelocity, 0, 0, 0);
 		this.#characterController.setVelocity(this.#zeroVelocity);
+		this.#fallStartY = Number.NaN;
+		this.#isClimbing = false;
+		this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+		this.prevJumpHeld = this.isJumpHeld;
 	}
 
 	public getSavedPosition(): Vec3 {
@@ -1276,18 +1504,62 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		);
 		copyVec3(this.voxelPosition, p);
 		setVec3(this.voxelVelocity, 0, 0, 0);
+		this.#fallStartY = Number.NaN;
+		this.#isClimbing = false;
+		this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
+		this.prevJumpHeld = this.isJumpHeld;
 		this.#characterController.setPosition(p);
 		if (this.#movementLocked) this.#lockedPosition = vec3(p.x, p.y, p.z);
 		this.#camera.snapToPlayer(p);
 		this.#displayCapsule.position.copyFrom(p);
+		this.#syncDisplayLight(p.x, p.y, p.z);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
+		const view = position as { yaw?: unknown; pitch?: unknown };
+		if (
+			typeof view.yaw === "number" &&
+			Number.isFinite(view.yaw) &&
+			typeof view.pitch === "number" &&
+			Number.isFinite(view.pitch)
+		) {
+			// View angles use the network convention (degrees, negative pitch =
+			// looking down); the camera stores radians with the opposite sign.
+			this.#camera.cameraYaw = (view.yaw * Math.PI) / 180;
+			this.#camera.cameraPitch = (-view.pitch * Math.PI) / 180;
+		}
+		this.#savedPositionRestored = true;
 		return true;
+	}
+
+	/** True once a previously saved position has been restored this session. */
+	public hasRestoredSavedPosition(): boolean {
+		return this.#savedPositionRestored;
+	}
+
+	/**
+	 * Current position plus the camera view angles (degrees, network
+	 * convention: negative pitch means looking down).
+	 */
+	public getSavedViewState(): {
+		x: number;
+		y: number;
+		z: number;
+		yaw: number;
+		pitch: number;
+	} {
+		const p = this.getPositionInternal();
+		return {
+			x: p.x,
+			y: p.y,
+			z: p.z,
+			yaw: (this.#camera.cameraYaw * 180) / Math.PI,
+			pitch: (-this.#camera.cameraPitch * 180) / Math.PI,
+		};
 	}
 
 	// ── Integration ───────────────────────────────────────────────────────────
 
 	private initializeCharacter(): void {
-		this.#displayCapsule = this.createCharacterMesh(1.75, 0.6);
+		this.#displayCapsule = this.createCharacterMesh();
 		const start = vec3(0, 165, 0);
 		this.#characterController = new SimpleCharacterController(start);
 		this.configureCharacterController();
@@ -1305,19 +1577,43 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#characterController.maxSlopeCosine = Math.cos((50 * Math.PI) / 180);
 	}
 
-	private createCharacterMesh(height: number, width: number): Mesh {
-		const body = createCapsule(this.#engine, {
-			height,
-			radius: width / 2,
-		});
-		const mat = createStandardMaterial();
-		mat.diffuseColor = [0.2, 0.9, 0.8];
-		mat.disableLighting = true;
+	private createCharacterMesh(): Mesh {
+		const body = createPlayerRigMesh(
+			this.#engine,
+			"playerDisplayRig",
+			"center",
+		);
+		const mat = createRigShaderMaterial("playerDisplayRigMat");
 		body.material = mat;
 		body.pickable = false;
 		body.visible = false;
 		addToScene(this.scene, body);
+		this.#displayMat = mat;
+		applyRigSkin(this.#engine, mat);
 		return body;
+	}
+
+	/** Re-tint the display rig when it crosses into a different voxel. */
+	#syncDisplayLight(x: number, y: number, z: number): void {
+		const mat = this.#displayMat;
+		if (!mat) return;
+		const ly = y + PLAYER_LIGHT_SAMPLE_Y_OFFSET;
+		const lx = Math.floor(x);
+		const lz = Math.floor(z);
+		if (
+			lx === this.#displayLightX &&
+			Math.floor(ly) === this.#displayLightY &&
+			lz === this.#displayLightZ
+		) {
+			return;
+		}
+		this.#displayLightX = lx;
+		this.#displayLightY = Math.floor(ly);
+		this.#displayLightZ = lz;
+		setRigLightColor(
+			mat,
+			packedLightToLightColor(getLightByWorldCoords(x, ly, z)),
+		);
 	}
 
 	private integrateMovement(deltaTime: number): void {
@@ -1428,6 +1724,16 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 	private setVelocityInternal(v: Vec3): void {
 		copyVec3(this.voxelVelocity, v);
+	}
+
+	/**
+	 * Radial knockback from explosions. Adds to the body velocity (m/s);
+	 * the normal physics integration picks it up next frame.
+	 */
+	public addExplosionImpulse(x: number, y: number, z: number): void {
+		this.voxelVelocity.x += x;
+		this.voxelVelocity.y += y;
+		this.voxelVelocity.z += z;
 	}
 
 	/** Current world-space velocity of the player body (m/s). */

@@ -1,3 +1,4 @@
+import { CHUNK_SIZE } from "../Lib/VoxelMath";
 import { BlockType } from "../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "./Biome/BiomeTypes";
 import {
@@ -64,6 +65,23 @@ import {
 	type TerrainNoiseGrid,
 } from "./TerrainHeightMap";
 
+export type PlaceBlockFn = (
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+	overwrite?: boolean,
+) => void;
+
+/**
+ * Max vertical deviation of the TRUE generated surface (the 3D density sign
+ * flip found by findTopSurfaceY) from the 2D heightmap estimate. Outside this
+ * window getDensity early-returns the plain baseHeight-y term, so no sign
+ * transition can occur. Consumers that reason about burial from the cheap 2D
+ * heightmap alone (e.g. streaming-time cave culling) must allow for this lift.
+ */
+export const SURFACE_DENSITY_INFLUENCE_RANGE = 32;
+
 export type SurfaceGenerationResult = {
 	topSunlightMask: Uint8Array;
 	topSurfaceYMap: Int16Array;
@@ -93,6 +111,8 @@ type FloraColumnCacheEntry = {
 	topSurfaceY: number;
 	treeNoiseValue: number;
 };
+
+type XZCacheKey = number | string;
 
 // Reusable scratch buffers for findlinge generation (max counts: 23/23/25).
 const _findlingeWx = new Float32Array(23);
@@ -130,11 +150,39 @@ const _scratchSunlightMask = new Uint8Array(_scratchArea);
 const _scratchTopSurfaceYMap = new Int16Array(_scratchArea);
 _scratchTopSurfaceYMap.fill(CAVE_NO_SURFACE_Y);
 
+export type ColumnPrepassQuery = {
+	entry: ColumnPrepassCacheEntry;
+	localX: number;
+	localZ: number;
+};
+// Reused by ColumnPrepassResolver (structure ground sampling) — every
+// ground() call would otherwise allocate {entry,localX,localZ}. Safe because
+// SurfaceGenerator is single-threaded and callers consume synchronously.
+const _columnQueryScratch: ColumnPrepassQuery = {
+	entry: null as unknown as ColumnPrepassCacheEntry,
+	localX: 0,
+	localZ: 0,
+};
+
 export class SurfaceGenerator {
 	private params: GenerationParamsType;
 
 	private static treeNoise: (x: number, z: number) => number;
 	private static densityNoise: (x: number, y: number, z: number) => number;
+
+	/**
+	 * Public flora-noise accessors for the far-tile LOD system: they expose
+	 * the exact per-column tree probability used by real generation
+	 * (getOrBuildFloraColumnInfo), so distant tiles can stamp trees at the
+	 * same world positions without duplicating noise setup.
+	 */
+	public static getTreeNoiseValue(worldX: number, worldZ: number): number {
+		return (SurfaceGenerator.treeNoise(worldX, worldZ) + 1) * 0.5;
+	}
+
+	public static getSeedAsInt(): number {
+		return SurfaceGenerator.seedAsInt;
+	}
 
 	private cheeseNoise: (x: number, y: number, z: number) => number;
 	private tunnelNoise: (x: number, y: number, z: number) => number;
@@ -143,7 +191,8 @@ export class SurfaceGenerator {
 	private static readonly DENSITY_BASE_AMPLITUDE = 32;
 	private static readonly DENSITY_OVERHANG_AMPLITUDE = 64;
 	private static readonly DENSITY_CLIFF_AMPLITUDE = 32;
-	private static readonly DENSITY_INFLUENCE_RANGE = 32;
+	private static readonly DENSITY_INFLUENCE_RANGE =
+		SURFACE_DENSITY_INFLUENCE_RANGE;
 
 	/**
 	 * Important:
@@ -179,6 +228,11 @@ export class SurfaceGenerator {
 		GenerationParams.CHUNK_SIZE * 2;
 	private static readonly MAX_STRUCTURE_BELOW_SURFACE = 24;
 
+	// How far outside the chunk the flora scan looks for trees that overflow
+	// the border. Drives both the scan window and the width of the neighbor
+	// strip prepasses (must stay < CHUNK_SIZE for the owner-offset math).
+	private static readonly FLORA_SCAN_RADIUS = 6;
+
 	/**
 	 * Per-construction cached maximum of all features' maxAboveSurface
 	 * values.  Falls back to MAX_STRUCTURE_ABOVE_SURFACE for features
@@ -199,7 +253,7 @@ export class SurfaceGenerator {
 	/**
 	 * Direct-mapped cache of expensive horizontal column prepass data.
 	 *
-	 * Keyed by (chunkX, chunkZ) packed into a number.
+	 * Keyed by (chunkX, chunkZ) packed into a collision-safe number.
 	 */
 	// PERF: column prepasses are a pure function of (chunkX, chunkZ) and cost
 	// ~2.8ms to build (findTopSurfaceY). Storing them in a persistent Map
@@ -207,14 +261,68 @@ export class SurfaceGenerator {
 	// generation, where row-major order + flora's wide scan window previously
 	// evicted and rebuilt the same prepasses many times.
 	private static readonly columnCache = new Map<
-		number,
+		XZCacheKey,
 		ColumnPrepassCacheEntry
 	>();
+
+	// PERF: flora only ever consumes a ±SCAN_RADIUS border strip of each
+	// neighbor's prepass, but resolving one used to build the neighbor's FULL
+	// 32x32 prepass (~2.8ms of findTopSurfaceY work) — 8 of them per chunk in
+	// the worst case (~22ms spike on frontier chunks whose neighbors aren't
+	// cached yet). Strip prepasses compute only the consumed band. They are
+	// keyed by relative offset (9 canonical shapes: W/E/N/S strips and 4
+	// corners), stored separately from full prepasses, and never promoted into
+	// columnCache — the neighbor's own generateTerrain still builds the full
+	// entry exactly once when it generates.
+	private static readonly floraStripCaches: Map<
+		XZCacheKey,
+		ColumnPrepassCacheEntry
+	>[] = Array.from(
+		{ length: 9 },
+		() => new Map<XZCacheKey, ColumnPrepassCacheEntry>(),
+	);
+	private static readonly FLORA_STRIP_CACHE_PER_SHAPE_MAX = 64;
 
 	// PERF: flora-column data is a pure function of (worldX, worldZ). A
 	// persistent Map (built once per column) avoids the direct-mapped cache's
 	// hash-collision evictions that thrashed during bulk area generation.
-	private static readonly floraCache = new Map<number, FloraColumnCacheEntry>();
+	private static readonly floraCache = new Map<
+		XZCacheKey,
+		FloraColumnCacheEntry
+	>();
+
+	// PERF: Cap cache sizes to prevent unbounded memory growth during long
+	// play sessions. Each columnCache entry holds ~15KB of typed arrays;
+	// floraCache entries are small but grow with explored terrain. FIFO
+	// eviction preserves the bulk-generation locality that makes caching
+	// effective while bounding peak memory.
+	private static readonly COLUMN_CACHE_MAX = 4096;
+	private static readonly FLORA_CACHE_MAX = 8192;
+
+	// Collision-safe XZ cache key packing. Fast path packs two signed 26-bit
+	// integers into one exact JS number (max value 2^52-1 < MAX_SAFE_INTEGER);
+	// coordinates beyond that range fall back to a unique string key.
+	private static readonly KEY_AXIS_BITS = 26;
+	private static readonly KEY_AXIS_SIZE = 1 << SurfaceGenerator.KEY_AXIS_BITS;
+	private static readonly KEY_AXIS_BIAS = SurfaceGenerator.KEY_AXIS_SIZE >>> 1;
+	private static readonly KEY_AXIS_MIN = -SurfaceGenerator.KEY_AXIS_BIAS;
+	private static readonly KEY_AXIS_MAX = SurfaceGenerator.KEY_AXIS_BIAS - 1;
+
+	private static evictCacheIfFull<K>(
+		cache: Map<K, unknown>,
+		maxSize: number,
+	): void {
+		if (cache.size <= maxSize) return;
+		// FIFO eviction: delete oldest 25% of entries. Map iteration order
+		// is insertion order, so this evicts the oldest entries first.
+		const targetEvict = Math.max(1, maxSize >> 2);
+		let evicted = 0;
+		for (const key of cache.keys()) {
+			cache.delete(key);
+			evicted++;
+			if (evicted >= targetEvict || cache.size <= maxSize) break;
+		}
+	}
 
 	private chunk_size: number;
 	private riverGenerator: RiverGenerator;
@@ -329,42 +437,41 @@ export class SurfaceGenerator {
 		);
 	}
 
-	private packXZKey(x: number, z: number): number {
-		let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263)) | 0;
-		h = Math.imul(h ^ (h >>> 13), 1274126177);
-		return (h ^ (h >>> 16)) >>> 0;
+	private packXZKey(x: number, z: number): XZCacheKey {
+		// Fast path: bijective packing of two signed 26-bit ints into one
+		// exact number (max 2^52-1 < Number.MAX_SAFE_INTEGER).
+		if (
+			x >= SurfaceGenerator.KEY_AXIS_MIN &&
+			x <= SurfaceGenerator.KEY_AXIS_MAX &&
+			z >= SurfaceGenerator.KEY_AXIS_MIN &&
+			z <= SurfaceGenerator.KEY_AXIS_MAX
+		) {
+			return (
+				(x + SurfaceGenerator.KEY_AXIS_BIAS) * SurfaceGenerator.KEY_AXIS_SIZE +
+				(z + SurfaceGenerator.KEY_AXIS_BIAS)
+			);
+		}
+
+		// Slow path: unique string key for extremely large coordinates.
+		return `${x},${z}`;
 	}
 
-	private getColumnPrepassKey(chunkX: number, chunkZ: number): number {
-		// Chunk coords are small; direct shift-pack is bijective within ±32768.
-		return (((chunkX & 0xffff) << 16) | (chunkZ & 0xffff)) >>> 0;
+	private getColumnPrepassKey(chunkX: number, chunkZ: number): XZCacheKey {
+		return this.packXZKey(chunkX, chunkZ);
 	}
 
-	/**
-	 * Resolve the column prepass that contains the given world column, returning
-	 * the prepass entry plus the column's local indices within it. The prepass
-	 * is built on demand (it is also built by the terrain path), so the first
-	 * caller pays the build cost and every subsequent caller hits the cache.
-	 *
-	 * Used by the flora loop to look up border-column data without recomputing
-	 * `findTopSurfaceY` (which would otherwise duplicate the ~130 noise calls
-	 * that the prepass already does once per (chunkX, chunkZ) globally).
-	 */
-	private resolveColumnPrepassForWorld(
+	/** Zero-alloc variant — writes into `out` instead of allocating. */
+	private resolveColumnPrepassForWorldToRef(
 		worldX: number,
 		worldZ: number,
-	): {
-		entry: ColumnPrepassCacheEntry;
-		localX: number;
-		localZ: number;
-	} {
-		const CHUNK_SIZE = this.params.CHUNK_SIZE;
+		out: ColumnPrepassQuery,
+	): ColumnPrepassQuery {
 		const chunkX = Math.floor(worldX / CHUNK_SIZE);
 		const chunkZ = Math.floor(worldZ / CHUNK_SIZE);
-		const entry = this.getOrBuildColumnPrepass(chunkX, chunkZ);
-		const localX = worldX - chunkX * CHUNK_SIZE;
-		const localZ = worldZ - chunkZ * CHUNK_SIZE;
-		return { entry, localX, localZ };
+		out.entry = this.getOrBuildColumnPrepass(chunkX, chunkZ);
+		out.localX = worldX - chunkX * CHUNK_SIZE;
+		out.localZ = worldZ - chunkZ * CHUNK_SIZE;
+		return out;
 	}
 
 	/**
@@ -382,7 +489,6 @@ export class SurfaceGenerator {
 			return cached;
 		}
 
-		const CHUNK_SIZE = this.params.CHUNK_SIZE;
 		const SEA_LEVEL = this.params.SEA_LEVEL;
 		const chunkWorldX = chunkX * CHUNK_SIZE;
 		const chunkWorldZ = chunkZ * CHUNK_SIZE;
@@ -564,11 +670,198 @@ export class SurfaceGenerator {
 		};
 
 		SurfaceGenerator.columnCache.set(key, built);
+		SurfaceGenerator.evictCacheIfFull(
+			SurfaceGenerator.columnCache,
+			SurfaceGenerator.COLUMN_CACHE_MAX,
+		);
 
 		return built;
 	}
 
-	private getFloraColumnKey(worldX: number, worldZ: number): number {
+	/**
+	 * Flora-scoped neighbor prepass: returns the neighbor's FULL cached prepass
+	 * when present, otherwise builds (and caches) only the border strip the
+	 * flora scan can actually reach — a SCAN_RADIUS-wide band on the side
+	 * facing the generating chunk (or a SCAN_RADIUS x SCAN_RADIUS corner for
+	 * diagonals). Unconsumed fields (terrainHeightMap / riverNoiseMap /
+	 * cliffNoiseMap) are zero-length: generateFlora reads topSurfaceYMap and
+	 * isBeachMap exclusively, and every other consumer goes through
+	 * getOrBuildColumnPrepass, which always yields a full entry.
+	 *
+	 * Output values are bit-identical to what the full build produces for the
+	 * same columns (same noise paths, same yFreqMap derived from the NEIGHBOR
+	 * chunk origin, same beach halo fallbacks).
+	 */
+	private getOrBuildFloraStripPrepass(
+		chunkX: number,
+		chunkZ: number,
+		relOffsetX: number,
+		relOffsetZ: number,
+	): ColumnPrepassCacheEntry {
+		const key = this.getColumnPrepassKey(chunkX, chunkZ);
+
+		const full = SurfaceGenerator.columnCache.get(key);
+		if (full) return full;
+
+		const shape = relOffsetX + 1 + (relOffsetZ + 1) * 3;
+		const cache = SurfaceGenerator.floraStripCaches[shape];
+		const cached = cache.get(key);
+		if (cached) return cached;
+
+		const SEA_LEVEL = this.params.SEA_LEVEL;
+		const chunkWorldX = chunkX * CHUNK_SIZE;
+		const chunkWorldZ = chunkZ * CHUNK_SIZE;
+		const area = CHUNK_SIZE * CHUNK_SIZE;
+		const NO_SURFACE_Y = CAVE_NO_SURFACE_Y;
+
+		// Canonical consumed region in neighbor-local coordinates.
+		const stripMinX =
+			relOffsetX === -1 ? CHUNK_SIZE - SurfaceGenerator.FLORA_SCAN_RADIUS : 0;
+		const stripMaxX =
+			relOffsetX === 1 ? SurfaceGenerator.FLORA_SCAN_RADIUS : CHUNK_SIZE;
+		const stripMinZ =
+			relOffsetZ === -1 ? CHUNK_SIZE - SurfaceGenerator.FLORA_SCAN_RADIUS : 0;
+		const stripMaxZ =
+			relOffsetZ === 1 ? SurfaceGenerator.FLORA_SCAN_RADIUS : CHUNK_SIZE;
+
+		prefetchChunkCorners(chunkWorldX, chunkWorldZ);
+
+		const useNoiseGrid = CHUNK_SIZE <= _GRID_EDGE - _GRID_HALO * 2;
+		if (useNoiseGrid) {
+			fillTerrainNoiseGrid(
+				chunkWorldX,
+				chunkWorldZ,
+				_GRID_HALO,
+				CHUNK_SIZE,
+				_terrainNoiseGrid,
+			);
+		}
+
+		// Only the two maps generateFlora consumes are materialized at full
+		// width; everything else stays zero-length.
+		const terrainHeightMap = new Int32Array(0);
+		const riverNoiseMap = new Float32Array(0);
+		const topSurfaceYMap = new Int16Array(area);
+		const isBeachMap = new Uint8Array(area);
+		const cliffNoiseMap = new Float32Array(0);
+		topSurfaceYMap.fill(NO_SURFACE_Y);
+
+		let minSurfaceY = Number.POSITIVE_INFINITY;
+		let maxSurfaceY = Number.NEGATIVE_INFINITY;
+
+		const treeMod = SurfaceGenerator.treeNoise(
+			chunkWorldX * 0.00001,
+			chunkWorldZ * 0.00001,
+		);
+		const yFreqMap = 0.04 + treeMod * 0.02;
+
+		// PASS 1 (strip): terrain/rivers/top-surface maps.
+		for (let localX = stripMinX; localX < stripMaxX; localX++) {
+			const worldX = chunkWorldX + localX;
+
+			for (let localZ = stripMinZ; localZ < stripMaxZ; localZ++) {
+				const worldZ = chunkWorldZ + localZ;
+				const columnIndex = localX + localZ * CHUNK_SIZE;
+
+				const terrainHeight = useNoiseGrid
+					? getFinalTerrainHeightFromGrid(worldX, worldZ, _terrainNoiseGrid)
+					: getFinalTerrainHeight(worldX, worldZ);
+				const cliffNoise = this.sampleCliffNoise(worldX, terrainHeight, worldZ);
+
+				const topSurfaceY = this.findTopSurfaceY(
+					worldX,
+					worldZ,
+					terrainHeight,
+					yFreqMap,
+					cliffNoise,
+				);
+
+				topSurfaceYMap[columnIndex] = topSurfaceY;
+
+				if (topSurfaceY !== NO_SURFACE_Y) {
+					if (topSurfaceY < minSurfaceY) minSurfaceY = topSurfaceY;
+					if (topSurfaceY > maxSurfaceY) maxSurfaceY = topSurfaceY;
+				}
+			}
+		}
+
+		if (minSurfaceY === Number.POSITIVE_INFINITY) {
+			minSurfaceY = NO_SURFACE_Y;
+			maxSurfaceY = NO_SURFACE_Y;
+		}
+
+		// PASS 2 (strip): beach map. Strips store no terrain-height map, so
+		// all four halo lookups resolve through the noise grid (chunk +
+		// 1-block halo coverage) or the scalar fallback.
+		for (let localX = stripMinX; localX < stripMaxX; localX++) {
+			const worldX = chunkWorldX + localX;
+
+			for (let localZ = stripMinZ; localZ < stripMaxZ; localZ++) {
+				const columnIndex = localX + localZ * CHUNK_SIZE;
+				const topSurfaceY = topSurfaceYMap[columnIndex];
+
+				if (
+					topSurfaceY === NO_SURFACE_Y ||
+					topSurfaceY < SEA_LEVEL - 2 ||
+					topSurfaceY > SEA_LEVEL + 2
+				) {
+					continue;
+				}
+
+				const worldZ = chunkWorldZ + localZ;
+				// Strips store no terrain-height map, so all four halo lookups
+				// resolve through the noise grid (chunk + 1-block halo
+				// coverage) or the scalar fallback.
+				const left = this.heightAt(worldX - 1, worldZ, useNoiseGrid);
+				const right = this.heightAt(worldX + 1, worldZ, useNoiseGrid);
+				const down = this.heightAt(worldX, worldZ - 1, useNoiseGrid);
+				const up = this.heightAt(worldX, worldZ + 1, useNoiseGrid);
+
+				if (
+					left <= SEA_LEVEL ||
+					right <= SEA_LEVEL ||
+					down <= SEA_LEVEL ||
+					up <= SEA_LEVEL
+				) {
+					isBeachMap[columnIndex] = 1;
+				}
+			}
+		}
+
+		const built: ColumnPrepassCacheEntry = {
+			terrainHeightMap,
+			riverNoiseMap,
+			yFreqMap,
+			topSurfaceYMap,
+			isBeachMap,
+			cliffNoiseMap,
+			minSurfaceY,
+			maxSurfaceY,
+		};
+
+		cache.set(key, built);
+		SurfaceGenerator.evictCacheIfFull(
+			cache,
+			SurfaceGenerator.FLORA_STRIP_CACHE_PER_SHAPE_MAX,
+		);
+
+		return built;
+	}
+
+	/**
+	 * Grid-or-scalar terrain height used by the strip beach pass.
+	 */
+	private heightAt(
+		worldX: number,
+		worldZ: number,
+		useNoiseGrid: boolean,
+	): number {
+		return useNoiseGrid
+			? getFinalTerrainHeightFromGrid(worldX, worldZ, _terrainNoiseGrid)
+			: getFinalTerrainHeight(worldX, worldZ);
+	}
+
+	private getFloraColumnKey(worldX: number, worldZ: number): XZCacheKey {
 		return this.packXZKey(worldX, worldZ);
 	}
 
@@ -619,6 +912,10 @@ export class SurfaceGenerator {
 		};
 
 		SurfaceGenerator.floraCache.set(key, built);
+		SurfaceGenerator.evictCacheIfFull(
+			SurfaceGenerator.floraCache,
+			SurfaceGenerator.FLORA_CACHE_MAX,
+		);
 
 		return built;
 	}
@@ -637,13 +934,7 @@ export class SurfaceGenerator {
 		chunkY: number,
 		chunkZ: number,
 		biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow?: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 
 		columnBaseLocal: (lx: number, lz: number) => number,
 		placeColumnLocal: (
@@ -725,7 +1016,6 @@ export class SurfaceGenerator {
 			ow?: boolean,
 		) => void,
 	): SurfaceGenerationResult {
-		const CHUNK_SIZE = this.params.CHUNK_SIZE;
 		const SEA_LEVEL = this.params.SEA_LEVEL;
 		const NO_SURFACE_Y = CAVE_NO_SURFACE_Y;
 		const INFLUENCE = SurfaceGenerator.DENSITY_INFLUENCE_RANGE;
@@ -1072,73 +1362,84 @@ export class SurfaceGenerator {
 		_chunkY: number,
 		chunkZ: number,
 		_biome: Biome,
-		placeBlock: (x: number, y: number, z: number, id: number) => void,
-	) {
-		const SCAN_RADIUS = 6;
+		placeBlock: PlaceBlockFn,
+	): void {
+		const SCAN_RADIUS = SurfaceGenerator.FLORA_SCAN_RADIUS;
 		const chunkSize = this.chunk_size;
 		const chunkWorldX = chunkX * chunkSize;
 		const chunkWorldZ = chunkZ * chunkSize;
+		const seaLevel = this.params.SEA_LEVEL;
 		const NO_SURFACE_Y = CAVE_NO_SURFACE_Y;
-		// O(1) cache hit — generateTerrain already built this entry.
-		const columnPrepass = this.getOrBuildColumnPrepass(chunkX, chunkZ);
 
-		for (
-			let localX = -SCAN_RADIUS;
-			localX < chunkSize + SCAN_RADIUS;
-			localX++
-		) {
+		// generateTerrain already built this entry.
+		const centerPrepass = this.getOrBuildColumnPrepass(chunkX, chunkZ);
+
+		// Flora scan radius is smaller than a chunk, so this scan can only touch
+		// the current chunk plus its 8 direct neighbors. Pre-resolve those once.
+		// Neighbors resolve to full prepasses when already cached; otherwise only
+		// the consumed border strip is built instead of the whole 32x32 prepass.
+		const prepasses = new Array<ColumnPrepassCacheEntry>(9);
+
+		for (let oz = -1; oz <= 1; oz++) {
+			for (let ox = -1; ox <= 1; ox++) {
+				const prepassIndex = ox + 1 + (oz + 1) * 3;
+				prepasses[prepassIndex] =
+					ox === 0 && oz === 0
+						? centerPrepass
+						: this.getOrBuildFloraStripPrepass(
+								chunkX + ox,
+								chunkZ + oz,
+								ox,
+								oz,
+							);
+			}
+		}
+
+		const scanMin = -SCAN_RADIUS;
+		const scanMax = chunkSize + SCAN_RADIUS;
+
+		for (let localX = scanMin; localX < scanMax; localX++) {
 			const worldX = chunkWorldX + localX;
 
-			for (
-				let localZ = -SCAN_RADIUS;
-				localZ < chunkSize + SCAN_RADIUS;
-				localZ++
-			) {
+			// Since SCAN_RADIUS < chunkSize, ownership can be resolved with two
+			// comparisons instead of Math.floor(worldX / chunkSize).
+			const ownerOffsetX = localX < 0 ? -1 : localX >= chunkSize ? 1 : 0;
+			const ownerIndexX = ownerOffsetX + 1;
+			const colLocalX = localX - ownerOffsetX * chunkSize;
+			const insideX = ownerOffsetX === 0;
+
+			for (let localZ = scanMin; localZ < scanMax; localZ++) {
 				const worldZ = chunkWorldZ + localZ;
 
-				const isInsideChunkColumn =
-					localX >= 0 &&
-					localX < chunkSize &&
-					localZ >= 0 &&
-					localZ < chunkSize;
+				const ownerOffsetZ = localZ < 0 ? -1 : localZ >= chunkSize ? 1 : 0;
+				const ownerIndexZ = ownerOffsetZ + 1;
+				const colLocalZ = localZ - ownerOffsetZ * chunkSize;
+				const isInsideChunkColumn = insideX && ownerOffsetZ === 0;
 
-				// PERF: Resolve the owning column prepass once per column with
-				// zero allocation — previously each border column built a fresh
-				// {entry, localX, localZ} object (twice per column) and border
-				// prepasses were looked up once per check. Border columns read
-				// from the neighbouring chunk's prepass (shared globally, already
-				// built by terrain generation), avoiding the slow `findTopSurfaceY`
-				// path inside `getOrBuildFloraColumnInfo` (~130 noise calls).
-				const prepassEntry: ColumnPrepassCacheEntry = isInsideChunkColumn
-					? columnPrepass
-					: this.getOrBuildColumnPrepass(
-							Math.floor(worldX / chunkSize),
-							Math.floor(worldZ / chunkSize),
-						);
-				const colLocalX = isInsideChunkColumn
-					? localX
-					: worldX - Math.floor(worldX / chunkSize) * chunkSize;
-				const colLocalZ = isInsideChunkColumn
-					? localZ
-					: worldZ - Math.floor(worldZ / chunkSize) * chunkSize;
+				const prepassEntry = prepasses[ownerIndexX + ownerIndexZ * 3];
 
-				const sv =
-					prepassEntry.topSurfaceYMap[colLocalX + colLocalZ * chunkSize];
-				if (sv === NO_SURFACE_Y || sv < this.params.SEA_LEVEL) continue;
-				const knownTopSurfaceY: number = sv;
+				const columnIndex = colLocalX + colLocalZ * chunkSize;
+				const surfaceYFromPrepass = prepassEntry.topSurfaceYMap[columnIndex];
+
+				if (
+					surfaceYFromPrepass === NO_SURFACE_Y ||
+					surfaceYFromPrepass < seaLevel
+				) {
+					continue;
+				}
 
 				const column = this.getOrBuildFloraColumnInfo(
 					worldX,
 					worldZ,
-					knownTopSurfaceY,
+					surfaceYFromPrepass,
 				);
 
 				const colBiome = column.biome;
-
 				const surfaceY = column.topSurfaceY;
-				if (surfaceY === NO_SURFACE_Y) continue;
 
-				if (surfaceY < this.params.SEA_LEVEL) continue;
+				if (surfaceY === NO_SURFACE_Y || surfaceY < seaLevel) {
+					continue;
+				}
 
 				if (
 					this.riverGenerator.isRiver(
@@ -1151,24 +1452,21 @@ export class SurfaceGenerator {
 					continue;
 				}
 
-				// Beach flag — read from prepass instead of calling isBeachLocation
-				// (which fires 4 getFinalTerrainHeight lookups per column).
-				const isBeach =
-					prepassEntry.isBeachMap[colLocalX + colLocalZ * chunkSize] === 1;
+				// Beach flag comes from the owning chunk prepass.
+				const isBeach = prepassEntry.isBeachMap[columnIndex] === 1;
+
 				const topBlockId =
-					isBeach &&
-					surfaceY >= this.params.SEA_LEVEL - 2 &&
-					surfaceY <= this.params.SEA_LEVEL + 2
+					isBeach && surfaceY >= seaLevel - 2 && surfaceY <= seaLevel + 2
 						? colBiome.beachBlock
 						: colBiome.topBlock;
 
-				// Trees are gated by canSpawnTrees + noise density check
 				if (colBiome.canSpawnTrees) {
 					if (column.treeNoiseValue < colBiome.treeDensity) {
 						const treeDefinition = colBiome.getTreeForBlock(
 							topBlockId,
 							column.treeNoiseValue,
 						);
+
 						treeDefinition?.generate(
 							worldX,
 							surfaceY + 1,
@@ -1177,40 +1475,38 @@ export class SurfaceGenerator {
 							SurfaceGenerator.seedAsInt,
 						);
 
-						//Skip grass
+						// Preserve original behavior: tree columns skip grass/findlinge.
 						continue;
 					}
 				}
 
-				// Grass (id 64) spawns on grass blocks (id 15) using noise density.
-				// treeNoiseValue is [0,1]; threshold of 0.6 gives ~60% coverage.
-				if (isInsideChunkColumn) {
-					const GRASS_DENSITY = _biome.grassDensity;
-					if (column.treeNoiseValue < GRASS_DENSITY) {
-						if (
-							topBlockId === BlockType.Grass001 ||
-							topBlockId === BlockType.RockyTerrain02 ||
-							topBlockId === BlockType.ConcreteMoss ||
-							topBlockId === BlockType.RockyTerrain02
-						) {
-							placeBlock(worldX, surfaceY + 1, worldZ, BlockType.Grass006Cross);
-						} else {
-							if (topBlockId === 65)
-								placeBlock(worldX, surfaceY + 1, worldZ, 66);
-						}
-					}
+				// Grass and findlinge only spawn from columns inside this chunk,
+				// while trees may be scanned outside the chunk to avoid border cuts.
+				if (!isInsideChunkColumn) {
+					continue;
+				}
 
-					// Findlinge (glacial erratics) — noise-displaced irregular boulders.
-					const findlingeChance = colBiome.findlingChance ?? 0.00005;
-					if (findlingeChance > 0) {
-						this.generateFindlinge(
-							worldX,
-							worldZ,
-							surfaceY,
-							colBiome,
-							placeBlock,
-						);
+				if (column.treeNoiseValue < _biome.grassDensity) {
+					if (
+						topBlockId === BlockType.Grass001 ||
+						topBlockId === BlockType.RockyTerrain02 ||
+						topBlockId === BlockType.ConcreteMoss
+					) {
+						placeBlock(worldX, surfaceY + 1, worldZ, BlockType.Grass006Cross);
+					} else if (topBlockId === 65) {
+						placeBlock(worldX, surfaceY + 1, worldZ, 66);
 					}
+				}
+
+				const findlingeChance = colBiome.findlingChance ?? 0.00005;
+				if (findlingeChance > 0) {
+					this.generateFindlinge(
+						worldX,
+						worldZ,
+						surfaceY,
+						colBiome,
+						placeBlock,
+					);
 				}
 			}
 		}
@@ -1221,7 +1517,7 @@ export class SurfaceGenerator {
 		worldZ: number,
 		surfaceY: number,
 		colBiome: Biome,
-		placeBlock: (x: number, y: number, z: number, id: number) => void,
+		placeBlock: PlaceBlockFn,
 	): void {
 		const findlingeChance = colBiome.findlingChance ?? 0.00005;
 		const h = this.hashColumn(worldX, worldZ, SurfaceGenerator.seedAsInt);
@@ -1360,13 +1656,7 @@ export class SurfaceGenerator {
 		chunkY: number,
 		chunkZ: number,
 		biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 	): void {
 		generateStructures(
 			chunkX,
@@ -1378,7 +1668,11 @@ export class SurfaceGenerator {
 			SurfaceGenerator.seedAsInt,
 			placeBlock,
 			(worldX: number, worldZ: number) =>
-				this.resolveColumnPrepassForWorld(worldX, worldZ),
+				this.resolveColumnPrepassForWorldToRef(
+					worldX,
+					worldZ,
+					_columnQueryScratch,
+				),
 		);
 	}
 

@@ -1,6 +1,7 @@
 // World/MeshPipeline/core/CustomShapeEmitter.ts
 
 import { unpackBlockId } from "../../Chunk/DataStructures/BlockEncoding";
+import { WATER_BLOCK_ID } from "../../Chunk/Worker/ChunkMesherConstants";
 import {
 	FACE_NX,
 	FACE_NY,
@@ -129,6 +130,15 @@ function isWaterGlassInterface(curr: ParsedBlock, nbr: ParsedBlock): boolean {
  * so the adjacent chunk's own mesher handles the outward-facing side.
  */
 export function emitCustomShapes(session: MeshBuildSession): void {
+	// Downsampled builds (LOD4+) skip custom geometry entirely: fences,
+	// crosses and multi-box shapes are invisible at those distances and the
+	// forced-cube greedy path already covers their cells.
+	if (session.lodStep > 1) return;
+
+	// Plain terrain (no crosses/fences/multi-box anywhere in the chunk)
+	// skips the whole 34^3 volume walk.
+	if (session.needsCustomCount === 0) return;
+
 	const size = session.size;
 	const getBlock = session.getBlock;
 	const getLight = session.getLight;
@@ -138,6 +148,15 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 	const ps2 = session.ps2;
 	const opaqueOut = session.quadOpaque;
 	const transparentOut = session.quadTransparent;
+	const waterOut = session.quadWater ?? transparentOut;
+	const cutoutOut = session.quadCutout ?? transparentOut;
+
+	// Hoisted out of the per-cell loop: this only closes over the
+	// loop-invariant getBlock (computeFenceNeighborMask supplies its own
+	// nx/ny/nz), so allocating it per fence block was pure GC churn in any
+	// fence-heavy region.
+	const fenceGetBlock = (nx: number, ny: number, nz: number): number =>
+		getBlock(nx, ny, nz, 0);
 
 	for (let y = -1; y <= size; y++) {
 		const rowBaseY = (y + 1) * ps;
@@ -157,7 +176,12 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 				const flags = getCachedFlags(packed);
 
 				const blockId = getCachedBlockId(packed);
-				const out = flags & FLAG_WATER_GLASS ? transparentOut : opaqueOut;
+				const out =
+					flags & FLAG_WATER_GLASS
+						? blockId === WATER_BLOCK_ID
+							? waterOut
+							: cutoutOut
+						: opaqueOut;
 
 				const baseLight = getLight(x, y, z, 0);
 
@@ -200,9 +224,7 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 				}
 
 				if (flags & FLAG_CUSTOM_FENCE) {
-					const neighborMask = computeFenceNeighborMask(x, y, z, (nx, ny, nz) =>
-						getBlock(nx, ny, nz, 0),
-					);
+					const neighborMask = computeFenceNeighborMask(x, y, z, fenceGetBlock);
 					const fenceShape = getFenceDynamicShape(neighborMask);
 
 					for (let i = 0; i < fenceShape.boxes.length; i++) {

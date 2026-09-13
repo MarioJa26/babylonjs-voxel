@@ -1,8 +1,13 @@
 import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
+import { frameProfiler } from "@/code/Lib/FrameProfiler";
+import { isNightTimeFraction } from "./MobConfig";
+import { Map1 } from "../Maps/Map1";
+import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import {
-	getBlockByWorldCoords,
 	getLightByWorldCoords,
+	resolveBlockAtWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
+import { BlockType } from "../World/Texture/BlockType";
 import type { Mob, MobRegistry, MobSpawnConfig } from "./Mobs/Mob";
 
 const SPAWN_MIN_RADIUS = 24;
@@ -19,6 +24,19 @@ const MIN_SPAWN_HEIGHT = 1;
 const MAX_SPAWN_HEIGHT = 200;
 
 const _mobSnapshot: Mob[] = [];
+
+/**
+ * True when the world clock is in its night phase. Defaults to true when
+ * there is no environment yet (tests, early boot) so spawning never
+ * deadlocks for lack of a clock.
+ */
+function isNightNow(): boolean {
+	const env = Map1.environment;
+	if (!env) return true;
+	return isNightTimeFraction(
+		env.getTimeOfDayMs() / SETTING_PARAMS.DAY_DURATION_MS,
+	);
+}
 
 export class SpawnCoordinator {
 	#scene: SceneContext;
@@ -38,7 +56,9 @@ export class SpawnCoordinator {
 
 		onBeforeRender(this.#scene, () => {
 			if (this.#disposed) return;
+			frameProfiler.begin("mobSpawn");
 			this.#tick();
+			frameProfiler.end("mobSpawn");
 		});
 	}
 
@@ -103,14 +123,20 @@ export class SpawnCoordinator {
 
 	#trySpawn(playerPos: Vec3): void {
 		const totalCap = this.#getTotalCap();
-		if (this.#registry.getTotalCount() >= totalCap) return;
+		// Only naturally spawned mobs count toward the cap; spawn-egg mobs
+		// (countsTowardMobCap === false) never block natural spawning.
+		if (this.#registry.getNaturalTotal() >= totalCap) return;
 
+		const night = isNightNow();
 		const attempts = 3;
 		for (let i = 0; i < attempts; i++) {
-			if (this.#registry.getTotalCount() >= totalCap) return;
+			if (this.#registry.getNaturalTotal() >= totalCap) return;
 
 			const config = this.#registry.pickSpawnType();
 			if (!config) return;
+
+			// Night spawners (zombies/skeletons) never roll during the day.
+			if (config.nightSpawn && !night) continue;
 
 			const pos = this.#findSpawnPosition(playerPos, config);
 			if (pos) {
@@ -144,14 +170,34 @@ export class SpawnCoordinator {
 			_mobSnapshot.push(mob);
 		}
 
-		for (let wy = MAX_SPAWN_HEIGHT; wy >= MIN_SPAWN_HEIGHT; wy--) {
-			const blockBelow = getBlockByWorldCoords(wx, wy, wz);
-			const blockAbove = getBlockByWorldCoords(wx, wy + 1, wz);
+		// Water mobs (squid/fish/kraken): spawn inside water column
+		const isWaterSpawn = config.spawnBlockId === BlockType.Water;
+		if (isWaterSpawn) {
+			return this.#findWaterSpawnPosition(wx, wz, config);
+		}
 
-			if (blockBelow === config.spawnBlockId && blockAbove === 0) {
-				const light = getLightByWorldCoords(wx, wy + 1, wz);
-				const skyLight = (light >> 4) & 0xf;
-				if (skyLight < 8) continue;
+		for (let wy = MAX_SPAWN_HEIGHT; wy >= MIN_SPAWN_HEIGHT; wy--) {
+			// resolveBlockAtWorldCoords reports unloaded cells (chunk
+			// missing, not loaded, or no voxel data). For a spawn scan
+			// those cells aren't candidates — bail out of the column
+			// entirely instead of spending the rest of the Y range
+			// evaluating unloaded terrain as air.
+			const below = resolveBlockAtWorldCoords(wx, wy, wz);
+			if (!below.loaded) return null;
+			const above = resolveBlockAtWorldCoords(wx, wy + 1, wz);
+			if (!above.loaded) return null;
+
+			if (
+				below.blockId === config.spawnBlockId &&
+				above.blockId === BlockType.Air
+			) {
+				// Day mobs need open sky; night spawners hunt in the dark, so
+				// they skip the daylight gate (baked skylight can't tell time).
+				if (!config.nightSpawn) {
+					const light = getLightByWorldCoords(wx, wy + 1, wz);
+					const skyLight = (light >> 4) & 0xf;
+					if (skyLight < 8) continue;
+				}
 
 				const spawnY = wy + 1;
 				let tooClose = false;
@@ -175,6 +221,54 @@ export class SpawnCoordinator {
 			}
 		}
 
+		return null;
+	}
+
+	#findWaterSpawnPosition(
+		wx: number,
+		wz: number,
+		config: MobSpawnConfig,
+	): { x: number; y: number; z: number } | null {
+		// Scan around sea level for a water column; kraken prefers deeper water
+		const SEA_LEVEL = 62;
+		const isKraken = config.mobType === "kraken";
+		const yStart = isKraken ? SEA_LEVEL - 2 : SEA_LEVEL + 2;
+		const yEnd = isKraken ? SEA_LEVEL - 12 : SEA_LEVEL - 4;
+
+		for (let wy = yStart; wy >= yEnd; wy--) {
+			// Same as the land scan: bail out of the column when a cell
+			// is unloaded so we don't keep scanning against "air" until
+			// the streaming frontier rolls in.
+			const block = resolveBlockAtWorldCoords(wx, wy, wz);
+			if (!block.loaded) return null;
+			const above = resolveBlockAtWorldCoords(wx, wy + 1, wz);
+			if (!above.loaded) return null;
+			if (
+				block.blockId !== BlockType.Water ||
+				above.blockId !== BlockType.Water
+			) {
+				continue; // need water + water above
+			}
+
+			let tooClose = false;
+			for (let i = 0; i < _mobSnapshot.length; i++) {
+				const existing = _mobSnapshot[i];
+				if (!existing) continue;
+				const dx = existing.position.x - wx;
+				const dz = existing.position.z - wz;
+				if (dx * dx + dz * dz < 9) {
+					tooClose = true;
+					break;
+				}
+			}
+			if (tooClose) continue;
+
+			return {
+				x: wx + 0.5,
+				y: wy + (config.spawnYOffset ?? 0.5),
+				z: wz + 0.5,
+			};
+		}
 		return null;
 	}
 }

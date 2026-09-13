@@ -1,23 +1,18 @@
 import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
-import { packChunkKey } from "../Storage/ChunkKey";
-import { deserializeMeshPair } from "../Storage/MeshSerializer";
 import {
 	type SavedChunkData,
 	type SavedChunkEntityData,
 	WorldStorage,
 } from "../WorldStorage";
-import { addChunkDisposeHook, Chunk, getChunk } from "./Chunk";
-import { createMeshFromData } from "./ChunkMesher";
+import { addChunkDisposeHook, Chunk, getChunk, getChunkFast } from "./Chunk";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { packCoords } from "./DataStructures/ChunkCoords";
-import type { MeshData } from "./DataStructures/MeshData";
 import { ChunkEntityRegistry } from "./Loading/ChunkEntityRegistry";
 import { ChunkHydration } from "./Loading/ChunkHydration";
 import { ChunkLoadingDebug } from "./Loading/ChunkLoadingDebug";
 import { ChunkPersistenceCoordinator } from "./Loading/ChunkPersistenceCoordinator";
 import { ChunkProcessScheduler } from "./Loading/ChunkProcessScheduler";
-import { ChunkReadiness } from "./Loading/ChunkReadinessAdapter";
 import {
 	ChunkStreamingController,
 	type QueuedChunkRequest,
@@ -27,7 +22,6 @@ import type {
 	ChunkLoadingDebugStats,
 	InFlightProcessState,
 } from "./Loading/ChunkTypes";
-// After
 import {
 	ChunkWorldMutations,
 	getBlockStateByWorldCoords as getBlockStateFromMutations,
@@ -64,7 +58,7 @@ type DynamicBlockProviderEntry = {
 	mutator?: DynamicBlockMutator;
 };
 
-type DynamicBlockQueryOptions = {
+export type DynamicBlockQueryOptions = {
 	ignoredDynamicBlockProviders?: ReadonlySet<symbol>;
 };
 
@@ -78,64 +72,7 @@ const _neighborBuffer: (Chunk | undefined)[] = new Array(6);
 
 const _queuedIdSet: Set<bigint> = new Set();
 
-interface SelectedSavedMesh {
-	opaque: MeshData | null;
-	transparent: MeshData | null;
-}
-
-// OPFS mesh cache: chunkId (bigint) -> deserialized mesh pair from OPFS.
-// Populated by prefetchOpfsMeshes (called by ChunkProcessScheduler in parallel
-// with IDB voxel loads) and read by applyLoadedChunkFromSavedData. Persists
-// across process cycles — prefetchOpfsMeshes skips reads for already-cached
-// entries to avoid redundant OPFS I/O when budget splitting causes re-entry.
-const opfsMeshCache = new Map<bigint, SelectedSavedMesh>();
-let opfsCacheHydratedThisCycle = 0;
-let opfsCacheMissedThisCycle = 0;
-
 const _entityPayloadMap = new Map<bigint, SavedChunkEntityData[]>();
-
-// PERF: ring buffer for prefetch request info — avoids unbounded growth
-// when budget splitting causes re-entry across many frames. Old entries
-// are dropped once all pending promises for the cycle have settled.
-const _prefetchReqInfoHead = 0;
-let _prefetchReqInfoTail = 0;
-const _PREFAETCH_REQ_CAP = 512;
-const _prefetchReqInfo = new Array<{
-	chunkId: bigint;
-	key: bigint;
-	lod: number;
-}>(_PREFAETCH_REQ_CAP);
-for (let i = 0; i < _PREFAETCH_REQ_CAP; i++) {
-	_prefetchReqInfo[i] = { chunkId: 0n, key: 0n, lod: 0 };
-}
-const prefetchPromisesThisCycle = 0;
-const _prefetchPromises: Promise<void>[] = [];
-
-function _prefetchOnReadOk(
-	idx: number,
-	bytes: Uint8Array | null | undefined,
-): void {
-	if (!bytes) {
-		opfsCacheMissedThisCycle++;
-		return;
-	}
-	const info = _prefetchReqInfo[idx % _PREFAETCH_REQ_CAP];
-	const mesh = deserializeMeshPair(bytes, info.lod);
-	if (mesh) {
-		opfsMeshCache.set(info.chunkId, mesh);
-		opfsCacheHydratedThisCycle++;
-	} else {
-		opfsCacheMissedThisCycle++;
-	}
-}
-
-function _prefetchOnReadErr(idx: number, err: unknown): void {
-	const info = _prefetchReqInfo[idx % _PREFAETCH_REQ_CAP];
-	console.warn(
-		`[ChunkLoadingSystem] OPFS read failed for chunk ${info.chunkId}:`,
-		err,
-	);
-}
 
 const debugStats: ChunkLoadingDebugStats = {
 	loadQueueLength: 0,
@@ -161,19 +98,19 @@ const debugStats: ChunkLoadingDebugStats = {
 	totalHydrated: 0,
 	totalUnloaded: 0,
 	totalSaved: 0,
-	lastOpfsHits: 0,
-	lastOpfsMisses: 0,
-	totalOpfsHits: 0,
-	totalOpfsMisses: 0,
-	opfsUsedBytes: 0,
-	opfsTotalBytes: 0,
-	opfsSlotCount: 0,
-	opfsEvictionCount: 0,
+	lastUpdateAroundMs: 0,
+	lastReconcileMs: 0,
+	lastShellMs: 0,
+	lastUndergroundMs: 0,
+	lastRefreshMs: 0,
+	lastSortMs: 0,
+	lastUnloadScanMs: 0,
+	totalUpdateAroundMs: 0,
 };
 
 const chunkEntityRegistry = new ChunkEntityRegistry<ChunkBoundEntity>({
-	getChunkId: (entity) => getEntityChunkId(entity),
-	serialize: (entity) => serializeEntityForReload(entity),
+	getChunkId: getEntityChunkId,
+	serialize: serializeEntityForReload,
 	dispose: (entity) => {
 		entity.unload();
 	},
@@ -193,7 +130,7 @@ const chunkHydration = new ChunkHydration({
 const streamingController = new ChunkStreamingController({
 	getLoadQueue: () => loadQueue,
 	getUnloadQueueSet: () => unloadQueueSet,
-	onQueueSnapshotChanged: () => refreshQueueDebugSnapshot(),
+	onQueueSnapshotChanged: refreshQueueDebugSnapshot,
 });
 
 addChunkDisposeHook((chunk) => {
@@ -208,26 +145,14 @@ const worldMutations = new ChunkWorldMutations({
 	},
 });
 
-const readiness = new ChunkReadiness({
-	isChunkLoaded: (chunk: Chunk) => chunk.isLoaded && chunk.hasVoxelData,
-	isChunkLod0Ready: (chunk: Chunk) => {
-		if (chunk.lodLevel === undefined || chunk.lodLevel === null) {
-			return false;
-		}
-		return chunk.isLoaded && chunk.hasVoxelData && chunk.lodLevel === 0;
-	},
-});
-
 const persistenceCoordinator = new ChunkPersistenceCoordinator({
 	getModifiedChunks: () => Chunk.chunkInstances.values(),
-	getChunkEntityPayloads: () => collectChunkEntityPayloads(),
-	getChunkSaveBatchSize: () => getUnloadBatchSize(),
-	getChunkEntitySaveBatchSize: () => getUnloadBatchSize(),
+	getChunkEntityPayloads: collectChunkEntityPayloads,
+	getChunkSaveBatchSize: getUnloadBatchSize,
+	getChunkEntitySaveBatchSize: getUnloadBatchSize,
 });
 
-// PERF: Block edits (incl. every water-sim tick) used to trigger an immediate
-// OPFS save per block via Chunk.onBlockModified — a spreading pool of N blocks
-// serialized N async writes. Debounce into a single batched save per 500 ms;
+// PERF: Debounce block-edit saves into a single batched save per 500 ms;
 // unloads and the periodic flush (PlayerStatePersistence) still persist chunks.
 const BLOCK_EDIT_SAVE_DEBOUNCE_MS = 500;
 const pendingBlockEditSaveIds = new Set<bigint>();
@@ -270,30 +195,29 @@ const processScheduler = new ChunkProcessScheduler({
 	getDesiredState: (chunkId) => streamingController.getDesiredState(chunkId),
 
 	unloadChunkBoundEntitiesForChunk: (chunk) =>
-		unloadChunkBoundEntitiesForChunkImpl(chunk),
+		chunkEntityRegistry.unloadEntitiesForChunk(chunk),
 
-	applyLoadedChunkFromSavedData: (state, request, savedData) =>
-		applyLoadedChunkFromSavedData(state, request, savedData),
-
-	prefetchOpfsMeshes: (requests) => prefetchOpfsMeshes(requests),
-
-	resetOpfsMeshCache: () => resetCycleOpfsCache(),
-
-	applyHydratedChunkFromSavedData: (chunk, savedData) =>
-		applyHydratedChunkFromSavedData(chunk, savedData),
+	applyLoadedChunkFromSavedData,
+	applyHydratedChunkFromSavedData,
 
 	scheduleTerrainGenerationBatch: (chunks) =>
 		ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(chunks),
 
-	updateSliceDebugStats: (state) => updateSliceDebugStats(state),
+	updateSliceDebugStats,
+	finalizeProcessState,
 
-	finalizeProcessState: (state) => finalizeProcessState(state),
-
-	onQueueSnapshotChanged: () => refreshQueueDebugSnapshot(),
+	onQueueSnapshotChanged: refreshQueueDebugSnapshot,
 
 	onLoadRequestsDequeued: (requests) =>
 		streamingController.onLoadRequestsDequeued(requests),
+	recycleQueuedRequests: (requests) =>
+		streamingController.recycleQueuedRequests(requests),
 });
+
+// After each processQueues continuation slice, pump remote generation.
+processScheduler.onContinuationSlice = () => {
+	ChunkWorkerPool.getInstance().pumpRemoteGeneration();
+};
 
 function isEntityAlive(entity: ChunkBoundEntity): boolean {
 	return !(entity.isAlive && !entity.isAlive());
@@ -363,14 +287,6 @@ function getNeighbors(chunk: Chunk): (Chunk | undefined)[] {
 	return n;
 }
 
-function applyMeshToChunk(chunk: Chunk, mesh: SelectedSavedMesh | null): void {
-	if (!mesh || (!mesh.opaque && !mesh.transparent)) {
-		return;
-	}
-
-	createMeshFromData(chunk, mesh.opaque, mesh.transparent);
-}
-
 function refreshQueueDebugSnapshot(): void {
 	debug.refreshQueueSnapshot({
 		loadQueueLength: loadQueue.length,
@@ -384,61 +300,11 @@ function refreshQueueDebugSnapshot(): void {
 	debugStats.loadBatchLimit = getLoadBatchSize();
 	debugStats.unloadBatchLimit = getUnloadBatchSize();
 	debugStats.frameBudgetMs = getProcessFrameBudgetMs();
-
-	refreshOpfsPrefetchSnapshot();
 }
 
 export function getDebugStats(): ChunkLoadingDebugStats {
 	refreshQueueDebugSnapshot();
 	return debugStats;
-}
-
-let lastOpfsHitCount = 0;
-let lastOpfsMissCount = 0;
-let lastOpfsRefreshMs = 0;
-const OPFS_REFRESH_INTERVAL_MS = 250;
-
-export async function refreshOpfsDebugStats(): Promise<void> {
-	// Throttle: OPFS stats require a worker round-trip.
-	const now = performance.now();
-	if (now - lastOpfsRefreshMs < OPFS_REFRESH_INTERVAL_MS) return;
-	lastOpfsRefreshMs = now;
-
-	const client = ChunkWorkerPool.getInstance().getOpfsClient();
-	if (!client) {
-		debugStats.opfsTotalBytes = 0;
-		debugStats.opfsUsedBytes = 0;
-		debugStats.opfsSlotCount = 0;
-		debugStats.opfsEvictionCount = 0;
-		return;
-	}
-
-	try {
-		const stats = await client.getStats();
-		debugStats.opfsTotalBytes = stats.totalBytes;
-		debugStats.opfsUsedBytes = stats.usedBytes;
-		debugStats.opfsSlotCount = stats.slotCount;
-		debugStats.opfsEvictionCount = stats.evictionCount;
-
-		// Cumulative deltas (worker tracks totals; we accumulate UI-side).
-		const newHits = stats.hitCount - lastOpfsHitCount;
-		const newMisses = stats.missCount - lastOpfsMissCount;
-		if (newHits > 0) debugStats.totalOpfsHits += newHits;
-		if (newMisses > 0) debugStats.totalOpfsMisses += newMisses;
-
-		lastOpfsHitCount = stats.hitCount;
-		lastOpfsMissCount = stats.missCount;
-	} catch {
-		// worker may be transiently unavailable; leave previous values
-	}
-}
-
-function refreshOpfsPrefetchSnapshot(): void {
-	// lastOpfsHits / lastOpfsMisses are per-process-cycle values captured
-	// in prefetchOpfsMeshes(). Snapshot them here so the HUD sees fresh
-	// values on each frame.
-	debugStats.lastOpfsHits = opfsCacheHydratedThisCycle;
-	debugStats.lastOpfsMisses = opfsCacheMissedThisCycle;
 }
 
 function buildQueuedIdSet(): Set<bigint> {
@@ -464,6 +330,7 @@ export function validateChunksAround(
 	verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 ): void {
 	const queuedIds = buildQueuedIdSet();
+
 	const missing: Array<{
 		chunkX: number;
 		chunkY: number;
@@ -478,48 +345,47 @@ export function validateChunksAround(
 	const minChunkY = SETTING_PARAMS.MIN_CHUNK_Y;
 	const maxChunkY = minChunkY + SETTING_PARAMS.MAX_CHUNK_HEIGHT - 1;
 
-	for (
-		let y = Math.max(minChunkY, centerChunkY - verticalRadius);
-		y <= Math.min(maxChunkY, centerChunkY + verticalRadius);
-		y++
-	) {
-		for (
-			let x = centerChunkX - horizontalRadius;
-			x <= centerChunkX + horizontalRadius;
-			x++
-		) {
-			for (
-				let z = centerChunkZ - horizontalRadius;
-				z <= centerChunkZ + horizontalRadius;
-				z++
-			) {
-				const chunk = getChunk(x, y, z);
-				// PERF: reuse the already-fetched chunk's BigInt id instead of
-				// re-packing coords (packCoords is a costly BigInt op). Only pack
-				// when the chunk doesn't exist yet.
-				const chunkId = chunk ? chunk.id : packCoords(x, y, z);
+	const startY = Math.max(minChunkY, centerChunkY - verticalRadius);
+	const endY = Math.min(maxChunkY, centerChunkY + verticalRadius);
+	const startX = centerChunkX - horizontalRadius;
+	const endX = centerChunkX + horizontalRadius;
+	const startZ = centerChunkZ - horizontalRadius;
+	const endZ = centerChunkZ + horizontalRadius;
 
-				const isLoaded = !!chunk?.isLoaded;
-				const isQueued = queuedIds.has(chunkId);
-				const isUnloading = !!chunk && unloadQueueSet.has(chunk);
-				// desiredStates is keyed by numericId and only contains entries
-				// for chunks that exist, so a missing chunk implies no desired state.
+	for (let y = startY; y <= endY; y++) {
+		for (let x = startX; x <= endX; x++) {
+			for (let z = startZ; z <= endZ; z++) {
+				const chunk = getChunk(x, y, z);
+
+				// A non-existent chunk cannot have desired state because
+				// desired state is keyed by chunk.numericId from existing chunks.
+				if (!chunk) {
+					continue;
+				}
+
 				const hasDesiredState =
-					!!chunk &&
 					streamingController.getDesiredState(chunk.numericId) !== undefined;
 
-				if (hasDesiredState && !isLoaded && !isQueued && !isUnloading) {
-					missing.push({
-						chunkX: x,
-						chunkY: y,
-						chunkZ: z,
-						chunkId,
-						isLoaded,
-						isQueued,
-						isUnloading,
-						hasDesiredState,
-					});
+				if (!hasDesiredState || chunk.isLoaded || unloadQueueSet.has(chunk)) {
+					continue;
 				}
+
+				const chunkId = chunk.id;
+
+				if (queuedIds.has(chunkId)) {
+					continue;
+				}
+
+				missing.push({
+					chunkX: x,
+					chunkY: y,
+					chunkZ: z,
+					chunkId,
+					isLoaded: false,
+					isQueued: false,
+					isUnloading: false,
+					hasDesiredState: true,
+				});
 			}
 		}
 	}
@@ -529,11 +395,13 @@ export function validateChunksAround(
 	}
 }
 
-export function processFrameBudgetedStreamingWork(
+export async function processFrameBudgetedStreamingWork(
 	playerChunkX: number,
 	playerChunkY: number,
 	playerChunkZ: number,
-): void {
+): Promise<void> {
+	const sliceStart = performance.now();
+
 	streamingController.processLoadedRefreshQueue(
 		playerChunkX,
 		playerChunkY,
@@ -542,6 +410,23 @@ export function processFrameBudgetedStreamingWork(
 		SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 		255,
 	);
+
+	if (!processScheduler.processing) {
+		await processScheduler.processQueues();
+	}
+
+	// Always pump remote generation every frame. This sends queued chunks
+	// to the server. Even if processQueues hasn't reached ScheduleGeneration
+	// yet, pumping is a no-op when the queue is empty.
+	const pool = ChunkWorkerPool.getInstance();
+	if (performance.now() - sliceStart > getProcessFrameBudgetMs() * 4) {
+		// The streaming slice already consumed its share of the frame —
+		// defer the remote pump to a macrotask so its IndexedDB read + apply
+		// work lands outside the render frame instead of stacking into it.
+		setTimeout(() => pool.pumpRemoteGeneration(), 0);
+	} else {
+		pool.pumpRemoteGeneration();
+	}
 }
 
 export function registerChunkEntityLoader(
@@ -636,12 +521,6 @@ function tryMutateDynamicBlock(
 	return false;
 }
 
-async function unloadChunkBoundEntitiesForChunkImpl(
-	chunk: Chunk,
-): Promise<void> {
-	await chunkEntityRegistry.unloadEntitiesForChunk(chunk);
-}
-
 export function flushModifiedChunks(
 	maxChunks = getUnloadBatchSize(),
 ): Promise<void> {
@@ -652,33 +531,11 @@ export function flushChunkBoundEntities(): Promise<void> {
 	return persistenceCoordinator.flushChunkBoundEntities(getUnloadBatchSize());
 }
 
-export async function flushOpfsStorage(): Promise<void> {
-	const client = ChunkWorkerPool.getInstance().getOpfsClient();
-	if (!client) return;
-	try {
-		await client.flush();
-	} catch (error) {
-		console.log(error);
-	}
-}
-
 function scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
 	const pool = ChunkWorkerPool.getInstance();
 
 	pool.scheduleRemesh(chunk, true);
 
-	const n = getNeighbors(chunk);
-
-	if (n[0]) pool.scheduleRemesh(n[0], true);
-	if (n[1]) pool.scheduleRemesh(n[1], true);
-	if (n[2]) pool.scheduleRemesh(n[2], true);
-	if (n[3]) pool.scheduleRemesh(n[3], true);
-	if (n[4]) pool.scheduleRemesh(n[4], true);
-	if (n[5]) pool.scheduleRemesh(n[5], true);
-}
-
-function scheduleNeighborsOnlyRemesh(chunk: Chunk): void {
-	const pool = ChunkWorkerPool.getInstance();
 	const n = getNeighbors(chunk);
 
 	if (n[0]) pool.scheduleRemesh(n[0], true);
@@ -716,9 +573,28 @@ export async function updateChunksAround(
 		playerWorldZ,
 	);
 
+	syncStreamingTimings();
+
 	if (!processScheduler.processing) {
 		void processScheduler.processQueues();
 	}
+}
+
+function syncStreamingTimings(): void {
+	const t = streamingController.getLastTimings();
+	debugStats.lastUpdateAroundMs = t.updateAroundMs;
+	debugStats.lastReconcileMs = t.reconcileMs;
+	debugStats.lastShellMs = t.shellMs;
+	debugStats.lastUndergroundMs = t.undergroundMs;
+	debugStats.lastRefreshMs = t.refreshMs;
+	debugStats.lastSortMs = t.sortMs;
+	debugStats.lastUnloadScanMs = t.unloadMs;
+	debugStats.totalUpdateAroundMs += t.updateAroundMs;
+	refreshQueueDebugSnapshot();
+}
+
+export function getStreamingTimings() {
+	return streamingController.getLastTimings();
 }
 
 function updateSliceDebugStats(state: InFlightProcessState): void {
@@ -747,25 +623,10 @@ function applyHydratedChunkFromSavedData(
 	chunk: Chunk,
 	savedData: SavedChunkData,
 ): void {
-	// Mesh lookup is purely OPFS-based (see applyLoadedChunkFromSavedData).
-	// Hydration re-runs never re-fetch OPFS; the chunk already has whatever
-	// mesh it had after applyLoadedChunkFromSavedData, and the worker pool
-	// will overwrite/regenerate as needed.
 	chunkHydration.applyHydratedChunkFromSavedData(chunk, savedData, true);
 }
 
-function loadFarLodChunk(
-	state: InFlightProcessState,
-	chunk: Chunk,
-	selectedMesh: SelectedSavedMesh | null,
-	hasDesiredMesh: boolean,
-): void {
-	if (hasDesiredMesh) {
-		chunk.loadLodOnlyFromStorage(false);
-		applyMeshToChunk(chunk, selectedMesh);
-		return;
-	}
-
+function loadFarLodChunk(state: InFlightProcessState, chunk: Chunk): void {
 	chunk.loadLodOnlyFromStorage(false);
 
 	if (!state.chunksNeedingFullHydration.has(chunk.id)) {
@@ -776,34 +637,16 @@ function loadFarLodChunk(
 	}
 }
 
-function loadNearLodChunk(
-	chunk: Chunk,
-	savedData: SavedChunkData,
-	selectedMesh: SelectedSavedMesh | null,
-	hasDesiredMesh: boolean,
-	targetLod: number,
-): void {
+function loadNearLodChunk(chunk: Chunk, savedData: SavedChunkData): void {
 	chunk.loadFromStorage(
 		savedData.blocks,
 		savedData.palette,
 		savedData.isUniform,
 		savedData.uniformBlockId,
 		savedData.lightArray,
-		!hasDesiredMesh,
+		true,
 		true,
 	);
-
-	if (!hasDesiredMesh) {
-		return;
-	}
-
-	applyMeshToChunk(chunk, selectedMesh);
-
-	if (targetLod <= 1) {
-		// Chunk already has a valid mesh from OPFS — only remesh
-		// neighbors so they update face culling for this newly loaded chunk.
-		scheduleNeighborsOnlyRemesh(chunk);
-	}
 }
 
 function applyLoadedChunkFromSavedData(
@@ -814,73 +657,34 @@ function applyLoadedChunkFromSavedData(
 	const chunk = request.chunk;
 	const targetLod = request.desiredLod;
 
-	state.loadedFromStorageCount++;
-	chunk.lodLevel = targetLod;
-
-	// Mesh comes from OPFS, populated by prefetchOpfsMeshes in parallel with
-	// the IDB voxel load. If absent, loadNearLodChunk will fall through to
-	// remesh, which writes the freshly generated mesh to OPFS for next time.
-	const selectedMesh = opfsMeshCache.get(chunk.id) ?? null;
-	const hasDesiredMesh = !!selectedMesh;
-
-	if (targetLod >= 2) {
-		loadFarLodChunk(state, chunk, selectedMesh, hasDesiredMesh);
+	// Multiplayer: a local save is at best a copy of an older server
+	// snapshot — another player may have edited this chunk since it was
+	// saved (even while it was unloaded). Never apply stored voxel data
+	// without the server's confirmation. This covers BOTH loading stages:
+	// near chunks (which would skip generation entirely once loaded) and
+	// far chunks (which would otherwise feed stale voxel data through the
+	// hydration stage — ApplyHydration applies the saved data without any
+	// server request). Route to generation instead, which in remote mode
+	// sends the chunk's version to the server so it can confirm the local
+	// copy (ChunkUnchanged) or return the authoritative data.
+	if (ChunkWorkerPool.getInstance().isRemoteGenerationEnabled()) {
+		if (!chunk.isLoaded && !state.chunksToGenerateIds.has(chunk.id)) {
+			chunk.isTerrainScheduled = true;
+			state.chunksToGenerateIds.add(chunk.id);
+			state.chunksToGenerate.push(chunk);
+		}
 		return;
 	}
 
-	loadNearLodChunk(chunk, savedData, selectedMesh, hasDesiredMesh, targetLod);
-}
+	state.loadedFromStorageCount++;
+	chunk.lodLevel = targetLod;
 
-async function prefetchOpfsMeshes(
-	requests: QueuedChunkRequest[],
-): Promise<void> {
-	// Reset cycle counters.
-	opfsCacheHydratedThisCycle = 0;
-	opfsCacheMissedThisCycle = 0;
-
-	const client = await ChunkWorkerPool.getInstance().ensureOpfsReady();
-	if (!client) return;
-
-	_prefetchPromises.length = 0;
-
-	for (const request of requests) {
-		const chunk = request.chunk;
-		const lod = request.desiredLod;
-
-		// Skip OPFS read if the mesh is already in cache (e.g., from a
-		// previous cycle that was budget-exceeded before apply).
-		if (opfsMeshCache.has(chunk.id)) {
-			opfsCacheHydratedThisCycle++;
-			continue;
-		}
-
-		const key = packChunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-		const idx = _prefetchReqInfoTail;
-		_prefetchReqInfo[idx] = { chunkId: chunk.id, key, lod };
-		_prefetchReqInfoTail = (idx + 1) & (_PREFAETCH_REQ_CAP - 1);
-		_prefetchPromises.push(
-			client.readMesh(key, lod).then(
-				(bytes) => _prefetchOnReadOk(idx, bytes),
-				(err) => _prefetchOnReadErr(idx, err),
-			),
-		);
+	if (targetLod >= 2) {
+		loadFarLodChunk(state, chunk);
+		return;
 	}
-	await Promise.all(_prefetchPromises);
-}
 
-function resetCycleOpfsCache(): void {
-	// The OPFS mesh cache is persistent across cycles. PrefetchOpfsMeshes
-	// skips reads for already-cached entries, so re-entry is O(1).  Prune
-	// entries for loaded chunks (whose mesh has already been applied) to
-	// reclaim memory and keep the cached set tight for budget-split re-entry.
-	if (opfsMeshCache.size > 64) {
-		for (const [id] of opfsMeshCache) {
-			const chunk = Chunk.chunkInstances.get(id);
-			if (chunk?.isLoaded) {
-				opfsMeshCache.delete(id);
-			}
-		}
-	}
+	loadNearLodChunk(chunk, savedData);
 }
 
 export function deleteBlock(worldX: number, worldY: number, worldZ: number) {
@@ -957,9 +761,54 @@ export function getBlockAndStateByWorldCoordsInto(
 		out.blockState = sample.blockState;
 		return out;
 	}
-	out.blockId = worldMutations.getBlockByWorldCoords(worldX, worldY, worldZ);
-	out.blockState = getBlockStateFromMutations(worldX, worldY, worldZ);
+	// PERF: single resolveCoords for both fields (was two: one for the block
+	// id, one for the state), avoiding a redundant BigInt packCoords getChunk
+	// on every chunk-boundary crossing.
+	worldMutations.getBlockAndStateAtWorldCoordsInto(worldX, worldY, worldZ, out);
 	return out;
+}
+
+export type ResolvedBlock = {
+	blockId: number;
+	blockState: number;
+	loaded: boolean;
+	unloaded: boolean;
+};
+
+const _resolvedBlockScratch: ResolvedBlock = {
+	blockId: 0,
+	blockState: 0,
+	loaded: false,
+	unloaded: false,
+};
+
+// PERF: single-resolve collidable-block lookup for the player collision
+// sampler.  Resolves the chunk once (cached) and reports whether it is
+// unloaded so the caller can treat it as solid terrain — replacing the old
+// isChunkLoadedAtWorldCoords() + getBlockAndStateByWorldCoords() pair, which
+// resolved the chunk twice per voxel.
+export function resolveBlockAtWorldCoords(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+	options?: DynamicBlockQueryOptions,
+): ResolvedBlock {
+	const sample = sampleDynamicBlock(worldX, worldY, worldZ, options);
+	if (sample) {
+		_resolvedBlockScratch.blockId = sample.blockId;
+		_resolvedBlockScratch.blockState = sample.blockState;
+		_resolvedBlockScratch.loaded = true;
+		_resolvedBlockScratch.unloaded = false;
+		return _resolvedBlockScratch;
+	}
+	worldMutations.getBlockAndStateAtWorldCoordsInto(
+		worldX,
+		worldY,
+		worldZ,
+		_resolvedBlockScratch,
+	);
+	_resolvedBlockScratch.unloaded = !_resolvedBlockScratch.loaded;
+	return _resolvedBlockScratch;
 }
 
 const _blockAndStateScratch: BlockAndStateOut = { blockId: 0, blockState: 0 };
@@ -993,45 +842,15 @@ export function getLightByWorldCoords(
 	const chunkX = worldToChunkCoord(worldX);
 	const chunkY = worldToChunkCoord(worldY);
 	const chunkZ = worldToChunkCoord(worldZ);
-	const chunk = getChunk(chunkX, chunkY, chunkZ);
+	// PERF: cached chunk lookup avoids the BigInt packCoords getChunk on the
+	// common (same/recent chunk) case.
+	const chunk = getChunkFast(chunkX, chunkY, chunkZ);
 
 	if (!chunk?.isLoaded) {
 		return 15 << Chunk.SKY_LIGHT_SHIFT;
 	}
 
 	return worldMutations.getLightByWorldCoords(worldX, worldY, worldZ);
-}
-
-export function areChunksLoadedAround(
-	chunkX: number,
-	chunkY: number,
-	chunkZ: number,
-	horizontalRadius = 1,
-	verticalRadius = 0,
-): boolean {
-	return readiness.areChunksLoadedAround(
-		chunkX,
-		chunkY,
-		chunkZ,
-		horizontalRadius,
-		verticalRadius,
-	);
-}
-
-export function areChunksLod0ReadyAround(
-	chunkX: number,
-	chunkY: number,
-	chunkZ: number,
-	horizontalRadius = 1,
-	verticalRadius = 0,
-): boolean {
-	return readiness.areChunksLod0ReadyAround(
-		chunkX,
-		chunkY,
-		chunkZ,
-		horizontalRadius,
-		verticalRadius,
-	);
 }
 
 function collectChunkEntityPayloads(): ReadonlyMap<
@@ -1059,3 +878,8 @@ function collectChunkEntityPayloads(): ReadonlyMap<
 
 	return entitiesByChunk;
 }
+
+export {
+	areChunksLoadedAround,
+	areChunksLod0ReadyAround,
+} from "./Loading/ChunkReadiness";

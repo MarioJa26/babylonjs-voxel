@@ -6,6 +6,7 @@ export const enum TaskType {
 	LodPrecompute,
 	DistantTerrain,
 	Relight,
+	FarTile,
 }
 
 export const enum WorkerTaskType {
@@ -16,13 +17,18 @@ export const enum WorkerTaskType {
 	GenerateDistantTerrain,
 	InitDistantTerrainShared,
 	WorkerReady,
+	// --- Far-tile LOD tasks (LOD6+) ---
+	GenerateFarTile,
 	// --- Light worker tasks ---
 	InitLightShared,
 	LightSetClosedFaceMask,
 	LightRegisterChunk,
+	LightRegisterChunkBatch,
 	LightUnregisterChunk,
+	LightUnregisterChunkBatch,
 	LightUpdateChunkBuffers,
 	LightMutate,
+	LightMutateBatch,
 	LightAddEmission,
 	LightSkyReconcile,
 	LightPropagateDeferred,
@@ -30,8 +36,11 @@ export const enum WorkerTaskType {
 	InitWorkerChannel,
 	// --- Voxel-worker registration (SAB-direct mesh borders) ---
 	VoxelRegisterChunk,
+	VoxelRegisterChunkBatch,
 	VoxelUnregisterChunk,
+	VoxelUnregisterChunkBatch,
 	VoxelUpdateChunkBuffers,
+	VoxelRecycleBuffers,
 	// --- World bootstrap ---
 	SetWorldSeed,
 }
@@ -104,6 +113,14 @@ export type GenerateFullMeshRequest = {
 	uniformBlockId?: number;
 
 	chunk_size: number;
+
+	/**
+	 * Border-skirt ownership for downsampled builds (bit per side:
+	 * 1=-X, 2=+X, 4=-Z, 8=+Z). Computed on the main thread from neighbor
+	 * LODs so exactly one chunk owns each boundary plane's skirt.
+	 */
+	borderSkirtSides?: number;
+	borderSkirtNearInset?: number;
 };
 
 /**
@@ -127,6 +144,9 @@ export type RelightMeshRequest = {
 	chunkY: number;
 	chunkZ: number;
 	neighborMask: number;
+
+	borderSkirtSides?: number;
+	borderSkirtNearInset?: number;
 };
 
 export type DistantTerrainTask = {
@@ -157,6 +177,24 @@ export type GenerateDistantTerrainRequest = {
 	renderDistance: number;
 };
 
+export type GenerateFarTileRequest = {
+	type: WorkerTaskType.GenerateFarTile;
+	requestId: number;
+	levelIndex: number;
+	tileX: number;
+	tileZ: number;
+};
+
+export type FarTileGeneratedMessage = {
+	type: WorkerTaskType.GenerateFarTile;
+	requestId: number;
+	levelIndex: number;
+	tileX: number;
+	tileZ: number;
+	opaqueFaces: Uint32Array;
+	waterFaces: Uint32Array;
+};
+
 export type SetWorldSeedRequest = {
 	type: WorkerTaskType.SetWorldSeed;
 	/** Seed string fed to the generator (world name derived). */
@@ -169,18 +207,25 @@ export type WorkerRequestData =
 	| RelightMeshRequest
 	| GenerateDistantTerrainRequest
 	| InitDistantTerrainSharedRequest
+	| GenerateFarTileRequest
 	| InitLightSharedRequest
 	| LightSetClosedFaceMaskRequest
 	| LightRegisterChunkRequest
+	| LightRegisterChunkBatchRequest
 	| LightUnregisterChunkRequest
+	| LightUnregisterChunkBatchRequest
 	| LightUpdateChunkBuffersRequest
 	| LightMutateRequest
+	| LightMutateBatchRequest
 	| LightAddEmissionRequest
 	| LightSkyReconcileRequest
 	| LightPropagateDeferredRequest
 	| VoxelRegisterChunkRequest
+	| VoxelRegisterChunkBatchRequest
 	| VoxelUnregisterChunkRequest
+	| VoxelUnregisterChunkBatchRequest
 	| VoxelUpdateChunkBuffersRequest
+	| VoxelRecycleBuffersRequest
 	| SetWorldSeedRequest;
 
 /* =========================================================
@@ -209,11 +254,26 @@ export type LightRegisterChunkRequest = {
 	lightSAB: SharedArrayBuffer;
 	paletteSAB: SharedArrayBuffer | null;
 	blockStorageBytesPerElement: 1 | 2;
+	// True when a deferred-lighting refinement is already queued for this
+	// chunk: its BFS is always followed by an explicit sky-reconcile request,
+	// so running the O(volume) sky scan at registration time as well just
+	// doubles the most expensive pass on the light worker.
+	skipSkyReconcile?: boolean;
+};
+
+export type LightRegisterChunkBatchRequest = {
+	type: WorkerTaskType.LightRegisterChunkBatch;
+	chunks: Array<Omit<LightRegisterChunkRequest, "type">>;
 };
 
 export type LightUnregisterChunkRequest = {
 	type: WorkerTaskType.LightUnregisterChunk;
 	chunkId: bigint;
+};
+
+export type LightUnregisterChunkBatchRequest = {
+	type: WorkerTaskType.LightUnregisterChunkBatch;
+	chunkIds: bigint[];
 };
 
 export type LightUpdateChunkBuffersRequest = {
@@ -235,6 +295,20 @@ export type LightMutateRequest = {
 	z: number;
 	oldPacked: number;
 	newPacked: number;
+	seq: number;
+};
+
+/**
+ * Batched light mutations for a single chunk: flat [x,y,z,oldPacked,
+ * newPacked] quintuples sharing one chunkId/headerSlot/seq. Posted
+ * zero-copy (transferred buffer). Handled by looping the same lightMutate
+ * core as single requests, with a single LightDirty reply per chunk.
+ */
+export type LightMutateBatchRequest = {
+	type: WorkerTaskType.LightMutateBatch;
+	chunkId: bigint;
+	headerSlot: number;
+	muts: Uint32Array;
 	seq: number;
 };
 
@@ -301,11 +375,29 @@ export type VoxelRegisterChunkRequest = {
 	lightSAB: SharedArrayBuffer | null;
 };
 
+export type VoxelRegisterChunkBatchRequest = {
+	type: WorkerTaskType.VoxelRegisterChunkBatch;
+	chunkIds: BigInt64Array;
+	// SoA batch: flat chunkX, chunkY, chunkZ per entry (Int32 — coords can be negative).
+	coords: Int32Array;
+	// isUniform(0|1), uniformBlockId, blockStorageBytesPerElement per entry.
+	meta: Uint32Array;
+	blockSABs: Array<SharedArrayBuffer | null>;
+	paletteSABs: Array<SharedArrayBuffer | null>;
+	lightSABs: Array<SharedArrayBuffer | null>;
+};
+
 export type VoxelUnregisterChunkRequest = {
 	type: WorkerTaskType.VoxelUnregisterChunk;
 	chunkX: number;
 	chunkY: number;
 	chunkZ: number;
+};
+
+export type VoxelUnregisterChunkBatchRequest = {
+	type: WorkerTaskType.VoxelUnregisterChunkBatch;
+	// SoA batch: flat chunkX, chunkY, chunkZ per entry (Int32 — coords can be negative).
+	coords: Int32Array;
 };
 
 export type VoxelUpdateChunkBuffersRequest = {
@@ -322,6 +414,18 @@ export type VoxelUpdateChunkBuffersRequest = {
 	lightSAB: SharedArrayBuffer | null;
 };
 
+/**
+ * Main thread → voxel worker: mesh output buffers whose consumers are done
+ * with them, transferred back so the worker can reuse them instead of
+ * slicing fresh ones per response. Only ever sent for results the main
+ * thread DROPPED (stale revision / unknown chunk / LOD skip) — applied
+ * results stay alive in the LOD caches and must never be recycled.
+ */
+export type VoxelRecycleBuffersRequest = {
+	type: WorkerTaskType.VoxelRecycleBuffers;
+	buffers: ArrayBuffer[];
+};
+
 /* =========================================================
  * Responses sent FROM the worker
  * ========================================================= */
@@ -331,7 +435,8 @@ export type FullMeshMessage = {
 	meshRevision: number;
 	lod: number;
 	opaque: MeshData | null;
-	transparent: MeshData | null;
+	water: MeshData | null;
+	cutout: MeshData | null;
 };
 
 export type TerrainGeneratedMessage = {
@@ -373,6 +478,7 @@ export type WorkerResponseData =
 	| TerrainGeneratedMessage
 	| RelightMeshMissMessage
 	| DistantTerrainGeneratedMessage
+	| FarTileGeneratedMessage
 	| { type: WorkerTaskType.InitDistantTerrainShared } // ← ack only, no payload
 	| { type: WorkerTaskType.InitLightShared } // ← ack only
 	| { type: WorkerTaskType.LightSetClosedFaceMask } // ← ack only
@@ -384,5 +490,6 @@ export type MeshWorkerResponse = {
 	meshRevision: number;
 	lod: number;
 	opaque: MeshData | null;
-	transparent: MeshData | null;
+	water: MeshData | null;
+	cutout: MeshData | null;
 };

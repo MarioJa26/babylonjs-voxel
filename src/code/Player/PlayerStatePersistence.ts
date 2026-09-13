@@ -1,19 +1,29 @@
-import { onSceneDispose, type SceneContext, type Vec3 } from "@babylonjs/lite";
+import { onSceneDispose, type SceneContext } from "@babylonjs/lite";
 import {
 	flushChunkBoundEntities,
 	flushModifiedChunks,
-	flushOpfsStorage,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { worldLocalStorageKey } from "../World/WorldContext";
-import type { SavedInventoryState } from "./Inventory/PlayerInventory";
+import { WorldStorage } from "../World/WorldStorage";
+import type { SavedInventoryState } from "./Inventory/Types/InventoryTypes";
 import type { Player } from "./Player";
-import { Gamemodes } from "./PlayerStats";
+import type { SavedPlayerStats } from "./PlayerStats";
+
+export interface PlayerPersistenceOptions {
+	/**
+	 * Save/restore the player position from localStorage. Disable for
+	 * multiplayer, where the server is position-authoritative — the
+	 * inventory is still persisted client-side.
+	 */
+	readonly persistPosition?: boolean;
+}
 
 export class PlayerStatePersistence {
 	private static readonly PLAYER_POSITION_STORAGE_KEY =
 		"b102.playerPosition.v1";
 	private static readonly PLAYER_INVENTORY_STORAGE_KEY =
 		"b102.playerInventory.v1";
+	private static readonly PLAYER_STATS_STORAGE_KEY = "b102.playerStats.v1";
 	private static readonly PLAYER_STATE_SAVE_INTERVAL_MS = 15000;
 	private static readonly CHUNK_SAVE_BATCH_SIZE = 32;
 	private static readonly CHUNK_SAVE_NOW_BATCH_SIZE = 64;
@@ -39,6 +49,7 @@ export class PlayerStatePersistence {
 		private readonly scene: SceneContext,
 		private readonly player: Player,
 		private readonly worldName: string,
+		private readonly options: PlayerPersistenceOptions = {},
 	) {
 		this.restoreFromLocalStorage();
 		this.setupPersistence();
@@ -63,6 +74,7 @@ export class PlayerStatePersistence {
 			return;
 		}
 		this.savePosition();
+		this.saveStats();
 		this.requestChunkSave(PlayerStatePersistence.CHUNK_SAVE_BATCH_SIZE);
 		this.lastPositionSaveMs = now;
 	}
@@ -72,13 +84,14 @@ export class PlayerStatePersistence {
 
 		this.savePosition();
 		this.saveInventory();
+		this.saveStats();
 
 		try {
 			await flushModifiedChunks(
 				PlayerStatePersistence.CHUNK_SAVE_NOW_BATCH_SIZE,
 			);
 			await flushChunkBoundEntities();
-			await flushOpfsStorage();
+			await WorldStorage.flush();
 		} catch (err) {
 			console.warn("Failed to persist chunks on save-now.", err);
 		}
@@ -143,11 +156,12 @@ export class PlayerStatePersistence {
 	}
 
 	private savePosition(): void {
+		if (!this.options.persistPosition) return;
 		if (this.isDisposed || typeof window === "undefined") return;
 		if (this.player.playerVehicle.isMovementLocked) return;
 
 		try {
-			const positionState = this.player.playerVehicle.getSavedPosition();
+			const positionState = this.player.playerVehicle.getSavedViewState();
 			window.localStorage.setItem(
 				this.storageKey(PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY),
 				JSON.stringify(positionState),
@@ -172,20 +186,42 @@ export class PlayerStatePersistence {
 		}
 	}
 
+	private saveStats(): void {
+		if (this.isDisposed || typeof window === "undefined") return;
+
+		try {
+			const statsState = this.player.stats.getSavedStatsState();
+			window.localStorage.setItem(
+				this.storageKey(PlayerStatePersistence.PLAYER_STATS_STORAGE_KEY),
+				JSON.stringify(statsState),
+			);
+		} catch (error) {
+			console.warn("Failed to save player stats to localStorage.", error);
+		}
+	}
+
 	private restoreFromLocalStorage(): void {
 		if (typeof window === "undefined") return;
 		this.restorePosition();
 		this.restoreInventory();
+		this.restoreStats();
 	}
 
 	private restorePosition(): void {
+		if (!this.options.persistPosition) return;
 		try {
 			const raw = window.localStorage.getItem(
 				this.storageKey(PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY),
 			);
 			if (!raw) return;
 
-			const savedPosition = JSON.parse(raw) satisfies Vec3;
+			const savedPosition = JSON.parse(raw) satisfies {
+				x: number;
+				y: number;
+				z: number;
+				yaw?: number;
+				pitch?: number;
+			};
 			if (this.player.playerVehicle.restoreSavedPosition(savedPosition)) {
 				this.player.playerVehicle.updateCameraAndVisuals();
 			} else {
@@ -202,8 +238,6 @@ export class PlayerStatePersistence {
 	}
 
 	private restoreInventory(): void {
-		if (this.player.stats.gamemode === Gamemodes.Creative) return;
-
 		try {
 			const raw = window.localStorage.getItem(
 				this.storageKey(PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY),
@@ -223,6 +257,24 @@ export class PlayerStatePersistence {
 				"Failed to restore player inventory from localStorage.",
 				error,
 			);
+		}
+	}
+
+	private restoreStats(): void {
+		try {
+			const raw = window.localStorage.getItem(
+				this.storageKey(PlayerStatePersistence.PLAYER_STATS_STORAGE_KEY),
+			);
+			if (!raw) return;
+
+			const savedStats = JSON.parse(raw) satisfies SavedPlayerStats;
+			if (!this.player.stats.restoreSavedStatsState(savedStats)) {
+				console.warn(
+					"Saved player stats data was invalid. Defaults were kept.",
+				);
+			}
+		} catch (error) {
+			console.warn("Failed to restore player stats from localStorage.", error);
 		}
 	}
 }

@@ -7,25 +7,53 @@ import { BlockHighlight } from "../BlockHighlight/BlockHighlight";
 import type { BlockRaycastHit } from "../BlockHighlight/BlockRaycaster";
 import {
 	type PlacementHit,
-	pickTarget,
-	pickWaterTarget,
 	getPlacementHit as raycastGetPlacementHit,
 	getPlacementPosition as raycastGetPlacementPosition,
 	pickBlock as raycastPickBlock,
+	pickTarget as raycastPickTarget,
+	pickWaterTarget as raycastPickWaterTarget,
 } from "../BlockHighlight/BlockRaycaster";
+import type { CrosshairVisualOptions } from "./CrosshairOptions";
 import { CrosshairUI } from "./CrosshairUI";
+
+type LiteForwardRayCamera = {
+	getForwardRay?: (distance: number) => unknown;
+};
+
+type LiteRayPickScene = {
+	pickWithRay?: (
+		ray: unknown,
+		predicate?: (mesh: Mesh) => boolean,
+		fast?: boolean,
+	) => {
+		pickedMesh?: Mesh | null;
+		thinInstanceIndex?: number;
+	} | null;
+};
 
 export class Crosshair {
 	readonly #ui: CrosshairUI;
 	readonly #highlight: BlockHighlight;
 
-	constructor() {
-		this.#ui = new CrosshairUI();
+	static readonly #usableMeshPredicate = (mesh: Mesh): boolean => {
+		const meta = mesh.metadata;
+		return meta instanceof MetadataContainer && meta.has("use");
+	};
+
+	static readonly #mobMeshPredicate = (mesh: Mesh): boolean => {
+		const meta = mesh.metadata;
+		return meta instanceof MetadataContainer && meta.has("mob");
+	};
+
+	constructor(options?: Partial<CrosshairVisualOptions>) {
+		this.#ui = new CrosshairUI(options);
 		this.#highlight = new BlockHighlight();
 
 		// Pointer lock requires a user gesture; at startup it will reject — ignore.
-		const canvasEl = document.querySelector("canvas");
-		canvasEl?.requestPointerLock?.()?.catch?.(() => {});
+		document
+			.querySelector("canvas")
+			?.requestPointerLock?.()
+			?.catch?.(() => {});
 	}
 
 	/** Set the pre-computed pick target hit from PlayerLoopController. */
@@ -38,24 +66,52 @@ export class Crosshair {
 	setCrosshair(id: string): void {
 		this.#ui.setCrosshair(id);
 	}
+
+	getCrosshairId(): string {
+		return this.#ui.getCrosshairId();
+	}
+
+	setCrosshairSize(sizePx: number): void {
+		this.#ui.setSize(sizePx);
+	}
+
+	setCrosshairColor(hex: string): void {
+		this.#ui.setColor(hex);
+	}
+
+	setCrosshairVisible(visible: boolean): void {
+		this.#ui.setVisible(visible);
+	}
+
+	setHitmarkerEnabled(enabled: boolean): void {
+		this.#ui.setHitmarkerEnabled(enabled);
+	}
+
+	/** Apply a full visual option set (used at boot and by settings menus). */
+	applyCrosshairOptions(options: Partial<CrosshairVisualOptions>): void {
+		this.#ui.applyVisualOptions(options);
+	}
+
 	showHitMarker(): void {
 		this.#ui.showHitMarker();
 	}
 
-	// ─── Static raycasting API (unchanged public surface) ────────────────────
+	// ─── Static raycasting API ───────────────────────────────────────────────
 
 	/** Allocation-free pickTarget — writes into caller-provided vector. Returns true on hit. */
 	static pickTargetInto(player: Player, target: Vec3): boolean {
-		const hit = pickTarget(player);
+		const hit = raycastPickTarget(player);
 		if (!hit) return false;
+
 		setVec3(target, hit.x, hit.y, hit.z);
 		return true;
 	}
 
 	/** Allocation-free pickWaterPlacementTarget — writes into caller-provided vector. */
 	static pickWaterPlacementTargetInto(player: Player, target: Vec3): boolean {
-		const hit = pickWaterTarget(player);
+		const hit = raycastPickWaterTarget(player);
 		if (!hit) return false;
+
 		setVec3(target, hit.x, hit.y, hit.z);
 		return true;
 	}
@@ -65,21 +121,25 @@ export class Crosshair {
 	}
 
 	static pickTarget(player: Player): Vec3 | null {
-		const hit = pickTarget(player);
+		const hit = raycastPickTarget(player);
 		if (!hit) return null;
-		// Caller gets a fresh Vector3 — pickTarget's shared object must not escape.
+
+		// Caller gets a fresh Vector3 — raycastPickTarget's shared object must not escape.
 		return vec3(hit.x, hit.y, hit.z);
 	}
 
 	static pickWaterPlacementTarget(player: Player): Vec3 | null {
-		const hit = pickWaterTarget(player);
+		const hit = raycastPickWaterTarget(player);
 		if (!hit) return null;
+
+		// Caller gets a fresh Vector3 — raycastPickWaterTarget's shared object must not escape.
 		return vec3(hit.x, hit.y, hit.z);
 	}
 
 	static getPlacementPosition(player: Player): Vec3 | null {
 		const pos = raycastGetPlacementPosition(player);
 		if (!pos) return null;
+
 		// getPlacementPosition returns a shared Vector3 — copy it for the caller.
 		return vec3(pos.x, pos.y, pos.z);
 	}
@@ -87,6 +147,7 @@ export class Crosshair {
 	static getPlacementHit(player: Player): PlacementHit | null {
 		const hit = raycastGetPlacementHit(player);
 		if (!hit) return null;
+
 		// Clone mutable fields so callers retain a stable snapshot.
 		return {
 			pos: vec3(hit.pos.x, hit.pos.y, hit.pos.z),
@@ -103,44 +164,50 @@ export class Crosshair {
 		player: Player,
 		maxDistance = REACH_DISTANCE,
 	): Mesh | null {
-		return Crosshair.#rayMarchFirstMesh(player, maxDistance, (mesh) => {
-			const meta = mesh.metadata;
-			return meta instanceof MetadataContainer && meta.has("use");
-		});
+		return (
+			Crosshair.#rayMarchFirstInfo(
+				player,
+				maxDistance,
+				Crosshair.#usableMeshPredicate,
+			)?.pickedMesh ?? null
+		);
 	}
 
-	static pickMobMesh(
+	/** Pick a mob, resolving thin-instanced meshes to the owning instance. */
+	static pickMobTarget(
 		player: Player,
 		maxDistance = REACH_DISTANCE,
-	): Mesh | null {
-		return Crosshair.#rayMarchFirstMesh(player, maxDistance, (mesh) => {
-			const meta = mesh.metadata;
-			return meta instanceof MetadataContainer && meta.has("mob");
-		});
+	): { mesh: Mesh; thinInstanceIndex: number } | null {
+		const info = Crosshair.#rayMarchFirstInfo(
+			player,
+			maxDistance,
+			Crosshair.#mobMeshPredicate,
+		);
+
+		if (!info?.pickedMesh) return null;
+
+		return {
+			mesh: info.pickedMesh,
+			thinInstanceIndex: info.thinInstanceIndex ?? -1,
+		};
 	}
 
 	// ─── Mesh ray pick ──────────────────────────────────────────────────────
 
-	static #rayMarchFirstMesh(
+	static #rayMarchFirstInfo(
 		player: Player,
 		maxDistance: number,
 		predicate?: (mesh: Mesh) => boolean,
-	): Mesh | null {
+	): { pickedMesh?: Mesh | null; thinInstanceIndex?: number } | null {
 		// TODO(Lite API): mesh ray picking (getForwardRay / pickWithRay) is not
 		// available in Lite yet; kept as a best-effort dynamic dispatch.
-		const camera = player.playerCamera.playerCamera as unknown as {
-			getForwardRay?: (d: number) => unknown;
-		};
-		const scene = player.sceneRef as unknown as {
-			pickWithRay?: (
-				ray: unknown,
-				predicate?: (mesh: Mesh) => boolean,
-				fast?: boolean,
-			) => { pickedMesh?: Mesh | null } | null;
-		};
-		const tempRay = camera.getForwardRay?.(maxDistance);
-		if (!tempRay || !scene.pickWithRay) return null;
-		const hit = scene.pickWithRay(tempRay, predicate, true);
-		return hit?.pickedMesh ?? null;
+		const camera = player.playerCamera
+			.playerCamera as unknown as LiteForwardRayCamera;
+		const scene = player.sceneRef as unknown as LiteRayPickScene;
+
+		const ray = camera.getForwardRay?.(maxDistance);
+		if (!ray || !scene.pickWithRay) return null;
+
+		return scene.pickWithRay(ray, predicate, true) ?? null;
 	}
 }

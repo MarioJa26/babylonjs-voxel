@@ -1,5 +1,5 @@
 import { addVec3ToRef, type Mesh, type Quat, type Vec3 } from "@babylonjs/lite";
-import { Quaternion, vec3Zero, vec4 } from "@/code/Lib/Math";
+import { Quaternion, vec3Zero } from "@/code/Lib/Math";
 import type { IControls } from "../Interface/IControls";
 import type { IMountable } from "../Interface/IMountable";
 import type { IPlayerBody } from "../Player/PlayerBody";
@@ -8,8 +8,11 @@ import type MountOptions from "./MountOptions";
 /**
  * Minimal interface for the Player properties that Mount needs.
  * Avoids a direct import of Player, breaking the Mount ↔ Player cycle.
+ *
+ * Exported so the owner (Player) can register the `isMountableUser`
+ * predicate below without importing Player back into this module.
  */
-interface IMountableUser {
+export interface IMountableUser {
 	readonly playerVehicle: IPlayerBody;
 	readonly playerCamera: { zoomIn(): void; zoomOut(): void };
 	keyboardControls: IControls<unknown>;
@@ -29,6 +32,10 @@ export class Mount implements IMountable {
 	#physicsDisabled = false;
 	#scratchPos = vec3Zero();
 	#scratchRot = new Quaternion(0, 0, 0, 1);
+	// PERF: reused vehicle-rotation input — updateMountedPosition runs every
+	// frame while mounted, and vec4()/Quaternion.Identity() each allocated a
+	// fresh object per call.
+	#scratchVehicleRot = new Quaternion(0, 0, 0, 1);
 
 	/**
 	 * Predicate to check if a value is a mountable user.
@@ -78,9 +85,13 @@ export class Mount implements IMountable {
 		const player = this.user;
 		const vehicle = player.playerVehicle;
 
-		//Prevent stuck keys on remount
+		// Prevent stuck keys on scheme switch: clear the outgoing (vehicle)
+		// keys and the incoming (walking) keys. A movement key held across
+		// the transition (e.g. W held while pressing E) would otherwise stay
+		// stuck in the other scheme's set and drive input with no key held.
 		player.keyboardControls.pressedKeys.clear();
 		player.keyboardControls = player.defaultKeyboardControls;
+		player.keyboardControls.pressedKeys.clear();
 		vehicle.clearControlState();
 
 		if (this.#physicsDisabled && vehicle.characterController) {
@@ -142,6 +153,11 @@ export class Mount implements IMountable {
 			return false;
 		}
 
+		// Prevent stuck keys on scheme switch (see dismount): a key held
+		// while boarding must not linger in either scheme's pressed set.
+		player.keyboardControls.pressedKeys.clear();
+		this.#keyBoardControls.pressedKeys.clear();
+
 		this.user = player;
 		this.user.keyboardControls = this.#keyBoardControls;
 		player.playerVehicle.mount = this;
@@ -162,10 +178,17 @@ export class Mount implements IMountable {
 
 		playerBody.characterController.setPosition(this.#scratchPos);
 		const rp = this.vehicle.rotationQuaternion;
-		const vehicleRotation: any = rp
-			? vec4(rp.x, rp.y, rp.z, rp.w)
-			: Quaternion.Identity();
-		vehicleRotation.multiplyToRef(this.#mountRotationOffset, this.#scratchRot);
+		if (rp) {
+			this.#scratchVehicleRot.copyFromFloats(rp.x, rp.y, rp.z, rp.w);
+		} else {
+			this.#scratchVehicleRot.copyFromFloats(0, 0, 0, 1);
+		}
+		// mountRotationOffset is the lightweight Quat shape; the math helper
+		// only reads x/y/z/w, so a structural cast keeps this alloc-free.
+		this.#scratchVehicleRot.multiplyToRef(
+			this.#mountRotationOffset as unknown as Quaternion,
+			this.#scratchRot,
+		);
 		playerBody.displayCapsule.rotationQuaternion.copyFrom(this.#scratchRot);
 	}
 

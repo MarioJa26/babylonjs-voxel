@@ -11,6 +11,7 @@ import {
 	vec3,
 } from "@babylonjs/lite";
 import { copyVec3, Quaternion, setVec3 } from "@/code/Lib/Math";
+import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
 import { Axis } from "./VoxelAabbCollider";
 
 type IsSolidBlockAt = (x: number, y: number, z: number) => boolean;
@@ -79,10 +80,8 @@ export class VoxelObbCollider {
 	public setHalfExtents(halfExtents: Vec3): void {
 		copyVec3(this.#halfExtents, halfExtents);
 
-		// Rebuild the debug wireframe so its dimensions match updated extents.
 		if (this.#debugMesh) {
-			disposeMeshGpu(this.#debugMesh);
-			this.#debugMesh = null;
+			this.#disposeDebugMesh();
 			if (VoxelObbCollider.#debugEnabled) {
 				this.#ensureDebugMesh();
 			}
@@ -276,12 +275,20 @@ export class VoxelObbCollider {
 
 	public dispose(): void {
 		VoxelObbCollider.#debugColliders.delete(this);
-		if (this.#debugMesh) {
-			disposeMeshGpu(this.#debugMesh);
-			this.#debugMesh = null;
-		}
-		this.#debugMesh = null;
+		this.#disposeDebugMesh();
 		this.#debugOptions = null;
+	}
+
+	#disposeDebugMesh(): void {
+		if (!this.#debugMesh) return;
+		const mesh = this.#debugMesh;
+		this.#debugMesh = null;
+		const engine = (this.#debugOptions?.scene?.surface as any)?.engine;
+		if (engine) {
+			void onGpuWorkDone(engine).then(() => disposeMeshGpu(mesh));
+		} else {
+			disposeMeshGpu(mesh);
+		}
 	}
 
 	public static toggleDebugEnabled(): void {
@@ -293,8 +300,7 @@ export class VoxelObbCollider {
 		VoxelObbCollider.#debugColliders.forEach((collider) => {
 			if (enabled) collider.#ensureDebugMesh();
 			else if (collider.#debugMesh) {
-				disposeMeshGpu(collider.#debugMesh);
-				collider.#debugMesh = null;
+				collider.#disposeDebugMesh();
 			}
 		});
 	}

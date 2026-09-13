@@ -1,5 +1,14 @@
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 
+/**
+ * Highest per-chunk LOD band index. LOD4+ use geometric downsampling in the
+ * mesher (lodStep = 1 << (lod - 3)). Anything beyond this distance falls to
+ * DistantOnly (no chunk creation).
+ */
+export const MAX_CHUNK_LOD = 5;
+/** lodLevel assigned by the fallback rule when no band matches. */
+export const DISTANT_LOD_LEVEL = MAX_CHUNK_LOD + 1;
+
 export type ChunkLodCoordinates = {
 	chunkX: number;
 	chunkY: number;
@@ -11,10 +20,14 @@ export type ChunkLodRadii = {
 	lod1HorizontalRadius: number;
 	lod2HorizontalRadius: number;
 	lod3HorizontalRadius: number;
+	lod4HorizontalRadius: number;
+	lod5HorizontalRadius: number;
 	lod0VerticalRadius: number;
 	lod1VerticalRadius: number;
 	lod2VerticalRadius: number;
 	lod3VerticalRadius: number;
+	lod4VerticalRadius: number;
+	lod5VerticalRadius: number;
 };
 
 export type ChunkLodDistance = {
@@ -67,45 +80,17 @@ export class Lod0ChunkCreationRule implements ChunkLodCreationRule {
 	}
 }
 
-export class Lod1ChunkCreationRule implements ChunkLodCreationRule {
-	public readonly lodLevel = 1;
+/**
+ * Generic square band rule shared by every non-zero LOD ring. Matches when
+ * the chunk lies within BOTH radii of the player; rules are evaluated
+ * innermost-first, so each band only receives chunks its inner neighbors
+ * rejected.
+ */
+export class BandChunkCreationRule implements ChunkLodCreationRule {
 	public readonly allowsChunkCreation = true;
 
 	public constructor(
-		private readonly horizontalRadius: number,
-		private readonly verticalRadius: number,
-	) {}
-
-	public matches(distance: ChunkLodDistance): boolean {
-		return (
-			distance.horizontalDist <= this.horizontalRadius &&
-			distance.verticalDist <= this.verticalRadius
-		);
-	}
-}
-
-export class Lod2ChunkCreationRule implements ChunkLodCreationRule {
-	public readonly lodLevel = 2;
-	public readonly allowsChunkCreation = true;
-
-	public constructor(
-		private readonly horizontalRadius: number,
-		private readonly verticalRadius: number,
-	) {}
-
-	public matches(distance: ChunkLodDistance): boolean {
-		return (
-			distance.horizontalDist <= this.horizontalRadius &&
-			distance.verticalDist <= this.verticalRadius
-		);
-	}
-}
-
-export class Lod3ChunkCreationRule implements ChunkLodCreationRule {
-	public readonly lodLevel = 3;
-	public readonly allowsChunkCreation = true;
-
-	public constructor(
+		public readonly lodLevel: number,
 		private readonly horizontalRadius: number,
 		private readonly verticalRadius: number,
 	) {}
@@ -121,7 +106,7 @@ export class Lod3ChunkCreationRule implements ChunkLodCreationRule {
 export class DistantOnlyChunkCreationRule implements ChunkLodCreationRule {
 	public readonly allowsChunkCreation = false;
 
-	public constructor(public readonly lodLevel = 4) {}
+	public constructor(public readonly lodLevel = DISTANT_LOD_LEVEL) {}
 
 	public matches(_distance: ChunkLodDistance): boolean {
 		return true;
@@ -134,52 +119,134 @@ export class ChunkLodRuleSet {
 		verticalRadius: number,
 		revision: number = 0,
 	): ChunkLodRuleSet {
+		const horizontalOffsets = [
+			SETTING_PARAMS.LOD_0_OFFSET,
+			SETTING_PARAMS.LOD_1_OFFSET,
+			SETTING_PARAMS.LOD_2_OFFSET,
+			SETTING_PARAMS.LOD_3_OFFSET,
+			SETTING_PARAMS.LOD_4_OFFSET,
+			SETTING_PARAMS.LOD_5_OFFSET,
+		];
+
+		const verticalOffsets = [
+			SETTING_PARAMS.LOD_VERTICAL_0_OFFSET,
+			SETTING_PARAMS.LOD_VERTICAL_1_OFFSET,
+			SETTING_PARAMS.LOD_VERTICAL_2_OFFSET,
+			SETTING_PARAMS.LOD_VERTICAL_3_OFFSET,
+			SETTING_PARAMS.LOD_VERTICAL_4_OFFSET,
+			SETTING_PARAMS.LOD_VERTICAL_5_OFFSET,
+		];
+
+		const horizontalRadii = horizontalOffsets.map(
+			(offset) => renderDistance + offset,
+		);
+
+		const verticalRadii = verticalOffsets.map(
+			(offset) => verticalRadius + offset,
+		);
+
 		const radii: ChunkLodRadii = {
-			lod0HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_0_OFFSET,
-			lod1HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_1_OFFSET,
-			lod2HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_2_OFFSET,
-			lod3HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_3_OFFSET,
-			lod0VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_0_OFFSET,
-			lod1VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_1_OFFSET,
-			lod2VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_2_OFFSET,
-			lod3VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_3_OFFSET,
+			lod0HorizontalRadius: horizontalRadii[0],
+			lod1HorizontalRadius: horizontalRadii[1],
+			lod2HorizontalRadius: horizontalRadii[2],
+			lod3HorizontalRadius: horizontalRadii[3],
+			lod4HorizontalRadius: horizontalRadii[4],
+			lod5HorizontalRadius: horizontalRadii[5],
+			lod0VerticalRadius: verticalRadii[0],
+			lod1VerticalRadius: verticalRadii[1],
+			lod2VerticalRadius: verticalRadii[2],
+			lod3VerticalRadius: verticalRadii[3],
+			lod4VerticalRadius: verticalRadii[4],
+			lod5VerticalRadius: verticalRadii[5],
 		};
+
+		const rules: ChunkLodCreationRule[] = [
+			new Lod0ChunkCreationRule(horizontalRadii[0], verticalRadii[0]),
+		];
+
+		for (let lod = 1; lod <= MAX_CHUNK_LOD; lod++) {
+			rules.push(
+				new BandChunkCreationRule(
+					lod,
+					horizontalRadii[lod],
+					verticalRadii[lod],
+				),
+			);
+		}
+
+		rules.push(new DistantOnlyChunkCreationRule(DISTANT_LOD_LEVEL));
 
 		return new ChunkLodRuleSet(
 			radii,
-			[
-				new Lod0ChunkCreationRule(
-					radii.lod0HorizontalRadius,
-					radii.lod0VerticalRadius,
-				),
-				new Lod1ChunkCreationRule(
-					radii.lod1HorizontalRadius,
-					radii.lod1VerticalRadius,
-				),
-				new Lod2ChunkCreationRule(
-					radii.lod2HorizontalRadius,
-					radii.lod2VerticalRadius,
-				),
-				new Lod3ChunkCreationRule(
-					radii.lod3HorizontalRadius,
-					radii.lod3VerticalRadius,
-				),
-				new DistantOnlyChunkCreationRule(4),
-			],
+			rules,
+			horizontalRadii,
+			verticalRadii,
 			revision,
+			SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE,
 		);
 	}
 
 	public constructor(
 		public readonly radii: ChunkLodRadii,
 		private readonly rules: ChunkLodCreationRule[],
+		/** Per-band horizontal radii indexed by lodLevel (0..MAX_CHUNK_LOD). */
+		private readonly horizontalRadiiArr: number[],
+		/** Per-band vertical radii indexed by lodLevel (0..MAX_CHUNK_LOD). */
+		private readonly verticalRadiiArr: number[],
 		/**
 		 * Monotonic counter bumped by callers (typically ChunkStreamingController)
 		 * when the rule set is rebuilt. Consumers that cache decisions derived
 		 * from this rule set can use `revision` to invalidate their cache.
 		 */
 		public readonly revision: number = 0,
+		/**
+		 * Vertical window (in chunks, from the player) in which underground
+		 * chunks are desired. Outdoor sets use CAVE_VERTICAL_RENDER_DISTANCE;
+		 * cave-mode sets widen it to their lod0 vertical radius. When omitted,
+		 * consumers fall back to deriving a window from the vertical radii.
+		 */
+		public readonly undergroundVerticalCap?: number,
 	) {}
+
+	/** Widest chunk-creating horizontal band of this rule set. */
+	public maxHorizontalRadius(): number {
+		let m = this.horizontalRadiiArr[0] ?? 0;
+		for (let i = 1; i < this.horizontalRadiiArr.length; i++) {
+			const v = this.horizontalRadiiArr[i];
+			if (v > m) m = v;
+		}
+		return m;
+	}
+
+	/** Widest chunk-creating vertical band of this rule set. */
+	public maxVerticalRadius(): number {
+		let m = this.verticalRadiiArr[0] ?? 0;
+		for (let i = 1; i < this.verticalRadiiArr.length; i++) {
+			const v = this.verticalRadiiArr[i];
+			if (v > m) m = v;
+		}
+		return m;
+	}
+
+	public horizontalRadiusFor(lod: number): number {
+		return this.horizontalRadiiArr[lod] ?? Number.MAX_SAFE_INTEGER;
+	}
+
+	public verticalRadiusFor(lod: number): number {
+		return this.verticalRadiiArr[lod] ?? Number.MAX_SAFE_INTEGER;
+	}
+
+	/**
+	 * Innermost band whose HORIZONTAL radius contains hDist, ignoring vertical
+	 * distance. Used for underground (cave) chunks, whose depth range is
+	 * governed by streaming caps rather than vertical LOD bands.
+	 */
+	public horizontalLodForDistance(hDist: number): number {
+		for (let lod = 0; lod <= MAX_CHUNK_LOD; lod++) {
+			if (hDist <= this.horizontalRadiiArr[lod]) return lod;
+		}
+		return DISTANT_LOD_LEVEL;
+	}
 
 	// PERF: reused across resolveWithDistance calls (single-threaded) so we
 	// never allocate a ChunkLodDistance object for rule matching.
@@ -202,7 +269,7 @@ export class ChunkLodRuleSet {
 		const fallback = this.rules[this.rules.length - 1];
 		_scratchDecision.horizontalDist = horizontalDist;
 		_scratchDecision.verticalDist = verticalDist;
-		_scratchDecision.lodLevel = fallback?.lodLevel ?? 4;
+		_scratchDecision.lodLevel = fallback?.lodLevel ?? DISTANT_LOD_LEVEL;
 		_scratchDecision.allowsChunkCreation =
 			fallback?.allowsChunkCreation ?? false;
 		return _scratchDecision;
@@ -279,42 +346,25 @@ export class ChunkLodRuleSet {
 			return baseDecision;
 		}
 
+		if (
+			previousLod < 0 ||
+			previousLod > MAX_CHUNK_LOD ||
+			!Number.isInteger(previousLod)
+		) {
+			return baseDecision;
+		}
+
 		const horizontalLeaveBuffer = 1;
 		const verticalLeaveBuffer = 1;
 
-		const previousBandAllowsCreation = previousLod >= 0 && previousLod <= 3;
-
-		let withinPreviousBandWithBuffer = false;
-		switch (previousLod) {
-			case 0:
-				withinPreviousBandWithBuffer =
-					horizontalDist <=
-						this.radii.lod0HorizontalRadius + horizontalLeaveBuffer &&
-					verticalDist <= this.radii.lod0VerticalRadius + verticalLeaveBuffer;
-				break;
-			case 1:
-				withinPreviousBandWithBuffer =
-					horizontalDist <=
-						this.radii.lod1HorizontalRadius + horizontalLeaveBuffer &&
-					verticalDist <= this.radii.lod1VerticalRadius + verticalLeaveBuffer;
-				break;
-			case 2:
-				withinPreviousBandWithBuffer =
-					horizontalDist <=
-						this.radii.lod2HorizontalRadius + horizontalLeaveBuffer &&
-					verticalDist <= this.radii.lod2VerticalRadius + verticalLeaveBuffer;
-				break;
-			case 3:
-				withinPreviousBandWithBuffer =
-					horizontalDist <=
-						this.radii.lod3HorizontalRadius + horizontalLeaveBuffer &&
-					verticalDist <= this.radii.lod3VerticalRadius + verticalLeaveBuffer;
-				break;
-		}
+		const withinPreviousBandWithBuffer =
+			horizontalDist <=
+				this.horizontalRadiiArr[previousLod] + horizontalLeaveBuffer &&
+			verticalDist <= this.verticalRadiiArr[previousLod] + verticalLeaveBuffer;
 
 		if (withinPreviousBandWithBuffer && previousLod < baseDecision.lodLevel) {
 			baseDecision.lodLevel = previousLod;
-			baseDecision.allowsChunkCreation = previousBandAllowsCreation;
+			baseDecision.allowsChunkCreation = true;
 			return baseDecision;
 		}
 

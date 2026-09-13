@@ -1,4 +1,5 @@
 import { getPRNGBySeed } from "@/code/Generation/NoiseAndParameters/Squirrel13";
+import type { PlaceBlockFn } from "@/code/Generation/SurfaceGenerator";
 import type { TreeDefinition } from "../../BiomeTypes";
 import { DIR_X, DIR_Z } from "../../TreeDefinition";
 
@@ -35,13 +36,7 @@ function placedisc(
 	r: number,
 	blockId: number,
 	overwrite: boolean,
-	placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		id: number,
-		ow?: boolean,
-	) => void,
+	placeBlock: PlaceBlockFn,
 ): void {
 	const rSq = r * r;
 	for (let x = -r; x <= r; x++) {
@@ -63,13 +58,7 @@ function placeDiscHoley(
 	blockId: number,
 	skip: number,
 	seedAsInt: number,
-	placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		id: number,
-		ow?: boolean,
-	) => void,
+	placeBlock: PlaceBlockFn,
 ): void {
 	const rSq = r * r;
 	for (let x = -r; x <= r; x++) {

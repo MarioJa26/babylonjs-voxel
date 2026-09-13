@@ -1,24 +1,19 @@
-import {
-	createFreeCamera,
-	type FreeCamera,
-	type Vec3,
-	vec3,
-} from "@babylonjs/lite";
+import { createFreeCamera, type FreeCamera, type Vec3 } from "@babylonjs/lite";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 
 /**
- * Lite (native) port of PlayerCamera.
+ * Lite native port of PlayerCamera.
  * Third-person follow camera. Drives a Lite `FreeCamera`'s
- * `position`/`target` (ObservableVec3) directly.
+ * `position`/`target` ObservableVec3 directly.
  */
 export class PlayerCamera {
 	#playerCamera: FreeCamera;
+
 	#followDistance = 0.001;
 	#eyeHeight = 1.8;
 
-	// Smoothed vertical eye height (world units). Kept between moves so the
-	// camera eases up steep steps instead of snapping a full block at once.
-	// Lazily initialised on the first snap so the very first frame is exact.
+	// Smoothed vertical eye height in world units.
+	// Lazily initialized so the first move/snap is exact.
 	#smoothedEyeY: number = this.#eyeHeight;
 	readonly #verticalSmoothSpeed = 36;
 
@@ -27,102 +22,165 @@ export class PlayerCamera {
 	readonly #maxPitch = Math.PI / 2 - 0.003;
 	public mouseSensitivity = 0.003;
 
+	// Explosion screen shake. 0 = steady, 1 = full trauma. Decays in
+	// moveWithPlayer; offset scales with trauma² for a punchy falloff.
+	#trauma = 0;
+	readonly #traumaDecayPerSec = 1.4;
+	readonly #traumaMaxOffset = 0.45;
+
 	readonly #minZoom = 0.01;
 	readonly #maxZoom = 10000;
-	readonly #zoomSpeed = 20.333;
+	readonly #zoomSpeed = 5.0;
+
+	// Cached unit forward vector. Updated only when yaw/pitch changes.
+	#forwardX = 0;
+	#forwardY = 0;
+	#forwardZ = 1;
 
 	constructor() {
 		this.#playerCamera = createFreeCamera(
 			{ x: 0, y: this.#eyeHeight, z: 0 },
 			{ x: 0, y: this.#eyeHeight, z: 1 },
 		);
+
 		this.#playerCamera.fov = SETTING_PARAMS.CAMERA_FOV * (Math.PI / 180);
 		this.#playerCamera.nearPlane = 0.1;
-		this.#playerCamera.farPlane = 13000;
+		// Must exceed the far-tile horizon (FAR_TILE_DISTANCE chunks) so the
+		// full 512-chunk render distance stays inside the frustum.
+		this.#playerCamera.farPlane = 20000;
 	}
 
 	/**
 	 * Follow `characterPosition`. When `deltaSeconds` is provided the vertical
-	 * eye height is exponentially eased toward the player (so block steps don't
-	 * jerk the view); horizontal tracking stays exact. Omitted/zero delta snaps
-	 * immediately — used for teleports.
+	 * eye height is exponentially eased toward the player, so block steps do not
+	 * jerk the view. Horizontal tracking stays exact. Omitted/zero delta snaps
+	 * immediately, which is used for teleports.
 	 */
 	public moveWithPlayer(characterPosition: Vec3, deltaSeconds?: number): void {
-		const cosP = Math.cos(this.#cameraPitch);
-		const fx = Math.sin(this.#cameraYaw) * cosP;
-		const fy = -Math.sin(this.#cameraPitch);
-		const fz = Math.cos(this.#cameraYaw) * cosP;
-
 		const eye = this.#followDistance > this.#minZoom ? this.#eyeHeight : 0.66;
 		const targetY = characterPosition.y + eye;
 
-		let cy = targetY;
-		if (
-			deltaSeconds !== undefined &&
-			deltaSeconds > 0 &&
-			this.#smoothedEyeY !== null
-		) {
+		let cameraY = targetY;
+
+		if (deltaSeconds !== undefined && deltaSeconds > 0) {
 			this.#smoothedEyeY +=
 				(targetY - this.#smoothedEyeY) *
 				(1 - Math.exp(-this.#verticalSmoothSpeed * deltaSeconds));
-			cy = this.#smoothedEyeY;
+
+			cameraY = this.#smoothedEyeY;
 		} else {
 			this.#smoothedEyeY = targetY;
 		}
 
+		const distance = this.#followDistance;
+
+		let shakeX = 0;
+		let shakeY = 0;
+		let shakeZ = 0;
+		if (this.#trauma > 0) {
+			if (deltaSeconds !== undefined && deltaSeconds > 0) {
+				this.#trauma = Math.max(
+					0,
+					this.#trauma - this.#traumaDecayPerSec * deltaSeconds,
+				);
+			}
+			const s = this.#trauma * this.#trauma * this.#traumaMaxOffset;
+			shakeX = (Math.random() * 2 - 1) * s;
+			shakeY = (Math.random() * 2 - 1) * s;
+			shakeZ = (Math.random() * 2 - 1) * s;
+		}
+
 		this.#playerCamera.position.set(
-			characterPosition.x - fx * this.#followDistance,
-			cy - fy * this.#followDistance,
-			characterPosition.z - fz * this.#followDistance,
+			characterPosition.x - this.#forwardX * distance + shakeX,
+			cameraY - this.#forwardY * distance + shakeY,
+			characterPosition.z - this.#forwardZ * distance + shakeZ,
 		);
-		this.#playerCamera.target.set(characterPosition.x, cy, characterPosition.z);
+
+		this.#playerCamera.target.set(
+			characterPosition.x + shakeX * 0.5,
+			cameraY + shakeY * 0.5,
+			characterPosition.z + shakeZ * 0.5,
+		);
 	}
 
-	/** Snap the camera straight to a position (respawn / save restore / locks). */
+	/**
+	 * Add explosion shake trauma (0..1, clamps). Near blasts pass ~1,
+	 * distant ones scale down by the caller.
+	 */
+	public addTrauma(amount: number): void {
+		this.#trauma = Math.min(1, Math.max(0, this.#trauma + amount));
+	}
+
+	/** Snap the camera straight to a position, for respawn / save restore / locks. */
 	public snapToPlayer(characterPosition: Vec3): void {
 		this.moveWithPlayer(characterPosition, 0);
 	}
 
 	public handleMouseMovement(deltaX: number, deltaY: number): void {
-		this.#cameraYaw -= -deltaX * this.mouseSensitivity;
+		this.#cameraYaw += deltaX * this.mouseSensitivity;
 		this.#cameraPitch += deltaY * this.mouseSensitivity;
-		this.#cameraPitch = Math.max(
-			-this.#maxPitch,
-			Math.min(this.#maxPitch, this.#cameraPitch),
-		);
+
+		if (this.#cameraPitch > this.#maxPitch) {
+			this.#cameraPitch = this.#maxPitch;
+		} else if (this.#cameraPitch < -this.#maxPitch) {
+			this.#cameraPitch = -this.#maxPitch;
+		}
+
+		this.#updateForwardCache();
 	}
 
 	public zoomIn(): void {
-		if (this.#followDistance - this.#zoomSpeed > this.#minZoom)
-			this.#followDistance -= this.#zoomSpeed;
-		else this.#followDistance = this.#minZoom;
+		this.#followDistance = Math.max(
+			this.#minZoom,
+			this.#followDistance - this.#zoomSpeed,
+		);
 	}
 
 	public zoomOut(): void {
-		if (this.#followDistance + this.#zoomSpeed < this.#maxZoom)
-			this.#followDistance += this.#zoomSpeed;
-		else this.#followDistance = this.#maxZoom;
+		this.#followDistance = Math.min(
+			this.#maxZoom,
+			this.#followDistance + this.#zoomSpeed,
+		);
 	}
 
 	public get cameraYaw(): number {
 		return this.#cameraYaw;
 	}
 
+	public set cameraYaw(value: number) {
+		this.#cameraYaw = value;
+		this.#updateForwardCache();
+	}
+
 	public get cameraPitch(): number {
 		return this.#cameraPitch;
 	}
 
-	/** Full 3D unit vector pointing in the direction the camera is looking. */
-	public getForwardDirection(): Vec3 {
-		const cosP = Math.cos(this.#cameraPitch);
-		return vec3(
-			Math.sin(this.#cameraYaw) * cosP,
-			-Math.sin(this.#cameraPitch),
-			Math.cos(this.#cameraYaw) * cosP,
-		);
+	public set cameraPitch(value: number) {
+		if (value > this.#maxPitch) {
+			value = this.#maxPitch;
+		} else if (value < -this.#maxPitch) {
+			value = -this.#maxPitch;
+		}
+		this.#cameraPitch = value;
+		this.#updateForwardCache();
 	}
 
-	/** True when zoomed out far enough to see the player body (third-person). */
+	/** Full 3D unit vector pointing in the direction the camera is looking. */
+	// PERF: shared scratch — callers consume immediately; avoids a fresh
+	// {x,y,z} literal per call (currently throttled debug-HUD only, but this
+	// is a getter future hot paths will reach for).
+	#getForwardScratch: Vec3 = { x: 0, y: 0, z: 0 };
+
+	public getForwardDirection(): Vec3 {
+		const s = this.#getForwardScratch;
+		s.x = this.#forwardX;
+		s.y = this.#forwardY;
+		s.z = this.#forwardZ;
+		return s;
+	}
+
+	/** True when zoomed out far enough to see the player body, meaning third-person. */
 	public get isThirdPerson(): boolean {
 		return this.#followDistance > 0.5;
 	}
@@ -132,12 +190,39 @@ export class PlayerCamera {
 	}
 
 	public set fov(value: number) {
+		this.#baseFov = value;
 		this.#playerCamera.fov = value * (Math.PI / 180);
 	}
 
+	/** Base (unzoomed) FOV in degrees. Updated by the fov setter. */
+	#baseFov = SETTING_PARAMS.CAMERA_FOV;
+
+	/**
+	 * Apply a bow-draw zoom effect. At full draw (progress = 1) the FOV narrows
+	 * to ~87% of the base FOV, mimicking Minecraft's bow-aim zoom.
+	 * @param drawProgress 0 = no zoom, 1 = full draw zoom.
+	 */
+	public setBowZoom(drawProgress: number): void {
+		const t = drawProgress < 0 ? 0 : drawProgress > 1 ? 1 : drawProgress;
+		// Ease-out curve so most of the zoom happens in the first half of the draw
+		const zoomFactor = 1 - 0.22 * (t * t);
+		this.#playerCamera.fov = this.#baseFov * zoomFactor * (Math.PI / 180);
+	}
+
+	/** Restore the camera to the base FOV (no zoom). */
+	public clearBowZoom(): void {
+		this.#playerCamera.fov = this.#baseFov * (Math.PI / 180);
+	}
+
+	#positionScratch: Vec3 = { x: 0, y: 0, z: 0 };
+
 	public get position(): Vec3 {
-		const p = this.#playerCamera.position;
-		return { x: p.x, y: p.y, z: p.z };
+		const position = this.#playerCamera.position;
+		const s = this.#positionScratch;
+		s.x = position.x;
+		s.y = position.y;
+		s.z = position.z;
+		return s;
 	}
 
 	public set position(position: Vec3) {
@@ -146,5 +231,13 @@ export class PlayerCamera {
 
 	public set target(target: Vec3) {
 		this.#playerCamera.target.set(target.x, target.y, target.z);
+	}
+
+	#updateForwardCache(): void {
+		const cosPitch = Math.cos(this.#cameraPitch);
+
+		this.#forwardX = Math.sin(this.#cameraYaw) * cosPitch;
+		this.#forwardY = -Math.sin(this.#cameraPitch);
+		this.#forwardZ = Math.cos(this.#cameraYaw) * cosPitch;
 	}
 }

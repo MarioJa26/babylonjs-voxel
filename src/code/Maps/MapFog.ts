@@ -1,11 +1,18 @@
 import { type FogConfig, type SceneContext, setFog } from "@babylonjs/lite";
+import { farTileReachBlocks } from "@/code/World/FarTiles/FarTileLadder";
 
 export default class MapFog {
 	public static readonly fogStartUnderWater = 1;
 	public static readonly fogEndUnderWater = 100;
 
+	// Above-water fog reaches the far-tile horizon when far tiles are active;
+	// otherwise the legacy 1100-block cap applies.
+	private static get computedFogEndAboveWater(): number {
+		const farReach = farTileReachBlocks();
+		return farReach > 0 ? Math.max(1100, farReach * 1.05) : 1100;
+	}
+
 	public static readonly fogStartAboveWater = 1;
-	public static readonly fogEndAboveWater = 1100;
 	private static fogStartOverride: number | null = null;
 	private static fogEndOverride: number | null = null;
 
@@ -28,7 +35,9 @@ export default class MapFog {
 
 	public static getFogEnd(isUnderWater: boolean): number {
 		if (MapFog.fogEndOverride !== null) return MapFog.fogEndOverride;
-		return isUnderWater ? MapFog.fogEndUnderWater : MapFog.fogEndAboveWater;
+		return isUnderWater
+			? MapFog.fogEndUnderWater
+			: MapFog.computedFogEndAboveWater;
 	}
 
 	private static readonly fogColorAboveWater: [number, number, number] = [

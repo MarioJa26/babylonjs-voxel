@@ -1,16 +1,26 @@
 import { Chunk } from "./Chunk/Chunk";
-import { ChunkWorkerPool } from "./Chunk/ChunkWorkerPool";
 import { GLOBAL_VALUES } from "./GLOBAL_VALUES";
-import { packChunkKey } from "./Storage/ChunkKey";
-import type { OpfsClient } from "./Storage/OpfsClient";
+import type { SpawnPosition } from "./SpawnPoint";
+import {
+	type ChunkReadCoord,
+	type ChunkWrite,
+	isCacheResetError,
+	LevelDbChunkStore,
+	packChunkKeyNumeric,
+} from "./Storage/LevelDbChunkStore";
 import {
 	deserializeEntities,
-	type HydratedVoxelData,
+	deserializeVoxelDataShared,
 	type SavedChunkData,
 	type SavedChunkEntityData,
 	serializeEntities,
 	serializeVoxelData,
 } from "./Storage/VoxelSerializer";
+import {
+	getServerNameFromUrl,
+	getWorldNameFromUrl,
+	mpLocalCacheName,
+} from "./WorldContext";
 
 export type { SavedChunkData, SavedChunkEntityData };
 
@@ -18,186 +28,161 @@ export type LoadChunkOptions = {
 	includeVoxelData?: boolean;
 };
 
-const VOXEL_SENTINEL = 255;
-const ENTITY_SENTINEL = 254;
-
-// PERF: gzip's worst-case expansion on already-small, already-typed voxel/
-// light buffers is a handful of stored-block headers (~5 bytes per 64KB) plus
-// the fixed 18-byte gzip header/trailer. 512 bytes of headroom on top of the
-// uncompressed input size is generous and means the common case never grows
-// the output buffer at all.
-const GZIP_SAFETY_MARGIN = 512;
+const ENTITY_PREFIX = "entity:";
 
 /**
- * PERF: doubling-growth helper shared by compress()'s output accumulator.
- * Only exercised if a chunk's compressed output somehow exceeds the safety
- * margin above (should not happen in practice for voxel/light payloads).
+ * Existence marker for loadChunk/loadChunks with includeVoxelData: false.
+ * Never mutated by any consumer (only used as a truthy signal that the chunk
+ * exists in storage), so a single shared instance avoids one allocation per
+ * found chunk on pure existence checks.
  */
-function ensureCapacity(
-	buf: Uint8Array<ArrayBufferLike>,
-	needed: number,
-): Uint8Array<ArrayBufferLike> {
-	if (buf.length >= needed) return buf;
-	let newLen = buf.length * 2;
-	while (newLen < needed) newLen *= 2;
-	const grown = new Uint8Array(newLen);
-	grown.set(buf);
-	return grown;
-}
+const CHUNK_EXISTS_WITHOUT_BLOCKS: SavedChunkData = { blocks: null };
 
 class WorldStorageImpl {
+	private store: LevelDbChunkStore | null = null;
 	private initPromise: Promise<void> | null = null;
 
-	initialize(): Promise<void> {
+	initialize(storeNameOverride?: string): Promise<void> {
 		if (this.initPromise) return this.initPromise;
 		this.initPromise = (async () => {
-			/*
 			try {
-				await this.clearOldOpfsData();
-			} catch (err) {
-				console.warn("[WorldStorage] OPFS clear failed:", err);
+				// In multiplayer the page is /server/<nick>; use a fresh ephemeral
+				// cache name per session so the connect-time IndexedDB clear() is
+				// instant (the old fixed "__mp__" store accumulated server chunks
+				// across sessions and made clear() take ~45s).
+				const worldName =
+					storeNameOverride ??
+					(getServerNameFromUrl()
+						? mpLocalCacheName()
+						: getWorldNameFromUrl()) ??
+					"default";
+				console.log(`[WorldStorage] Initializing for world: ${worldName}`);
+
+				const store = new LevelDbChunkStore(worldName, "./saves");
+				await store.open();
+
+				this.store = store;
+
+				console.log(
+					`[WorldStorage] Initialized successfully, isReady=${store.isReady}`,
+				);
+			} catch (error) {
+				// Drop the cached promise so a failed open can be retried by a
+				// later call instead of poisoning every future getStore().
+				this.store = null;
+				this.initPromise = null;
+				throw error;
 			}
-				*/
 		})();
 		return this.initPromise;
 	}
 
-	private async getClient(): Promise<OpfsClient | null> {
+	private async getStore(): Promise<LevelDbChunkStore | null> {
+		// Once initialized, `this.store` is set — skip the extra await on
+		// `initPromise` (an `await` on an already-resolved promise still
+		// costs a microtask hop) on this called-per-chunk hot path.
+		if (this.store) return this.store;
 		await this.initialize();
-		const pool = ChunkWorkerPool.getInstance();
-		return await pool.ensureOpfsReady();
+		return this.store;
 	}
-
-	// -------------------------------------------------------------------------
-	// Compression helpers (kept from old WorldStorage)
-	// -------------------------------------------------------------------------
-
-	private async compress(data: Uint8Array | Uint16Array): Promise<Uint8Array> {
-		const inputBytes = new Uint8Array(
-			data.buffer,
-			data.byteOffset,
-			data.byteLength,
-		);
-		const chunk =
-			data.buffer instanceof SharedArrayBuffer
-				? new Uint8Array(inputBytes)
-				: inputBytes;
-		const readable = new ReadableStream<Uint8Array>({
-			start(controller) {
-				controller.enqueue(chunk);
-				controller.close();
-			},
-		});
-		const reader = readable
-			.pipeThrough(
-				new CompressionStream("gzip") as unknown as ReadableWritablePair<
-					Uint8Array,
-					Uint8Array
-				>,
-			)
-			.getReader();
-
-		// PERF: pre-size the output buffer instead of accumulating an array of
-		// stream chunks and doing a second full copy pass to merge them
-		// afterward. Decompression takes a different approach — it reads the
-		// gzip trailer's ISIZE field for exact sizing; compression can't know
-		// its exact output size ahead of time, but a generous upper bound
-		// avoids the common-case growth/copy entirely.
-		let outBuf: Uint8Array<ArrayBufferLike> = new Uint8Array(
-			inputBytes.byteLength + GZIP_SAFETY_MARGIN,
-		);
-		let offset = 0;
-		try {
-			while (true) {
-				const { value, done } = await reader.read();
-				if (done) break;
-				if (offset + value.byteLength > outBuf.length) {
-					outBuf = ensureCapacity(outBuf, offset + value.byteLength);
-				}
-				outBuf.set(value, offset);
-				offset += value.byteLength;
-			}
-		} finally {
-			reader.releaseLock();
-		}
-		return offset === outBuf.length ? outBuf : outBuf.slice(0, offset);
-	}
-
-	private detachSharedArrayBuffer<T extends ArrayBufferView>(view: T): T {
-		if (!view || !(view.buffer instanceof SharedArrayBuffer)) return view;
-		if (view instanceof Uint16Array) {
-			const copy = new Uint16Array(view.length);
-			copy.set(view);
-			return copy as unknown as T;
-		}
-		if (view instanceof Uint8Array) {
-			const copy = new Uint8Array(view.length);
-			copy.set(view);
-			return copy as unknown as T;
-		}
-		const copy = new Uint8Array(view.byteLength);
-		copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
-		return copy as unknown as T;
-	}
-
-	private packKey(chunkX: number, chunkY: number, chunkZ: number): bigint {
-		return packChunkKey(chunkX, chunkY, chunkZ);
-	}
-
-	// -------------------------------------------------------------------------
-	// Public API
-	// -------------------------------------------------------------------------
 
 	async saveChunk(chunk: Chunk): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
 		if (chunk.isBoatChunk) return;
 		if (!chunk.isModified && !chunk.isLightDirty) return;
 
-		const client = await this.getClient();
-		if (!client) return;
+		const store = this.store ?? (await this.getStore());
+		if (!store) return;
 
-		await this.saveChunkWithClient(client, chunk);
+		const blob = packChunkBlob(chunk);
+
+		try {
+			await store.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob);
+			chunk.isModified = false;
+			chunk.isLightDirty = false;
+		} catch (error) {
+			if (isCacheResetError(error)) return;
+			console.warn("[WorldStorage] chunk save failed:", error);
+		}
 	}
 
 	async saveChunks(chunks: Chunk[]): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
 
-		const toSave: Chunk[] = [];
+		const store = this.store ?? (await this.getStore());
+		if (!store) return;
 
-		for (let i = 0; i < chunks.length; i++) {
+		const writes: ChunkWrite[] = [];
+		const savedChunks: Chunk[] = [];
+
+		for (let i = 0, n = chunks.length; i < n; i++) {
 			const chunk = chunks[i];
+
 			if (chunk.isBoatChunk) continue;
-			if (chunk.isModified || chunk.isLightDirty) {
-				toSave.push(chunk);
-			}
+			if (!chunk.isModified && !chunk.isLightDirty) continue;
+
+			writes.push({
+				cx: chunk.chunkX,
+				cy: chunk.chunkY,
+				cz: chunk.chunkZ,
+				blob: packChunkBlob(chunk),
+			});
+			savedChunks.push(chunk);
 		}
 
-		if (toSave.length === 0) return;
+		if (writes.length === 0) return;
 
-		const client = await this.getClient();
-		if (!client) return;
+		try {
+			await store.writeChunks(writes);
+			await store.flush();
 
-		const concurrency = Math.max(
-			1,
-			Math.min(4, Math.floor(navigator.hardwareConcurrency || 4)),
-		);
-
-		await mapLimit(toSave, concurrency, async (chunk) => {
-			await this.saveChunkWithClient(client, chunk);
-		});
-
-		await client.flush();
+			for (let i = 0, n = savedChunks.length; i < n; i++) {
+				const chunk = savedChunks[i];
+				chunk.isModified = false;
+				chunk.isLightDirty = false;
+			}
+		} catch (error) {
+			if (isCacheResetError(error)) return;
+			console.warn("[WorldStorage] chunk batch save failed:", error);
+		}
 	}
 
 	async saveAllModifiedChunks(): Promise<void> {
-		const modified: Chunk[] = [];
+		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
+
+		const store = this.store ?? (await this.getStore());
+		if (!store) return;
+
+		const writes: ChunkWrite[] = [];
+		const savedChunks: Chunk[] = [];
+
 		for (const chunk of Chunk.chunkInstances.values()) {
-			if (chunk.needsPersistence() && !chunk.isBoatChunk) {
-				modified.push(chunk);
-			}
+			if (!chunk.needsPersistence()) continue;
+			if (chunk.isBoatChunk) continue;
+
+			writes.push({
+				cx: chunk.chunkX,
+				cy: chunk.chunkY,
+				cz: chunk.chunkZ,
+				blob: packChunkBlob(chunk),
+			});
+			savedChunks.push(chunk);
 		}
-		if (modified.length > 0) {
-			await this.saveChunks(modified);
+
+		if (writes.length === 0) return;
+
+		try {
+			await store.writeChunks(writes);
+			await store.flush();
+
+			for (let i = 0, n = savedChunks.length; i < n; i++) {
+				const chunk = savedChunks[i];
+				chunk.isModified = false;
+				chunk.isLightDirty = false;
+			}
+		} catch (error) {
+			if (isCacheResetError(error)) return;
+			console.warn("[WorldStorage] save all modified chunks failed:", error);
 		}
 	}
 
@@ -207,31 +192,35 @@ class WorldStorageImpl {
 	): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
 
-		const client = await this.getClient();
-		if (!client) return;
+		const store = this.store ?? (await this.getStore());
+		if (!store) return;
+
+		const [cx, cy, cz] = chunkIdToCoords(chunkId);
+		const key = `${ENTITY_PREFIX}${cx},${cy},${cz}`;
 
 		if (entities.length === 0) {
-			try {
-				await client.removeVoxel(chunkId, ENTITY_SENTINEL);
-			} catch {}
-		} else {
-			const bytes = serializeEntities(entities);
-			try {
-				await client.writeVoxel(chunkId, ENTITY_SENTINEL, bytes);
-			} catch (err) {
-				console.error("[WorldStorage] Entity write failed:", err);
-			}
+			// All entities removed — delete the stored payload so a later
+			// load cannot resurrect stale entities.
+			await store.deleteMeta(key);
+			return;
 		}
+
+		const bytes = serializeEntities(entities);
+		await store.setMetaBytes(key, bytes);
 	}
 
 	async loadChunkEntities(chunkId: bigint): Promise<SavedChunkEntityData[]> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING) return [];
-		const client = await this.getClient();
-		if (!client) return [];
+		const store = this.store ?? (await this.getStore());
+		if (!store) return [];
+
+		const [cx, cy, cz] = chunkIdToCoords(chunkId);
+		const key = `${ENTITY_PREFIX}${cx},${cy},${cz}`;
+		const bytes = await store.getMetaBytes(key);
+
+		if (!bytes) return [];
 
 		try {
-			const bytes = await client.readVoxel(chunkId, ENTITY_SENTINEL);
-			if (!bytes) return [];
 			return deserializeEntities(bytes);
 		} catch {
 			return [];
@@ -243,176 +232,235 @@ class WorldStorageImpl {
 		options?: LoadChunkOptions,
 	): Promise<SavedChunkData | null> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING) return null;
+		const store = this.store ?? (await this.getStore());
+		if (!store) return null;
 
-		const client = await this.getClient();
-		if (!client) return null;
+		const [cx, cy, cz] = chunkIdToCoords(chunkId);
+		const includeVoxelData = options?.includeVoxelData ?? true;
 
-		try {
-			const includeVoxelData = options?.includeVoxelData ?? true;
-			if (!includeVoxelData) {
-				const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
-				if (!bytes) return null;
-				const data: SavedChunkData = { blocks: null };
-				return data;
-			}
-			const hydrated = await client.readVoxelDecompressed(
-				chunkId,
-				VOXEL_SENTINEL,
-			);
-			if (!hydrated) return null;
-			return hydrateResultToSavedData(hydrated);
-		} catch (err) {
-			console.warn("[WorldStorage] OPFS voxel read failed:", err);
-			return null;
+		if (!includeVoxelData) {
+			const exists = await store.hasChunk(cx, cy, cz);
+			return exists ? CHUNK_EXISTS_WITHOUT_BLOCKS : null;
 		}
+
+		const blob = await store.readChunk(cx, cy, cz);
+		if (!blob) return null;
+		return deserializeVoxelDataShared(blob);
 	}
 
-	/**
-	 * PERF: accepts an optional pre-existing map to populate in place. Callers
-	 * that maintain a reusable scratch map (e.g. ChunkProcessScheduler's
-	 * per-slice near/far/hydrate maps) can pass it in directly instead of
-	 * receiving a freshly allocated Map every call and copying entries out of
-	 * it — this method does not clear outMap itself, so the caller is
-	 * responsible for clearing it beforehand if overwrite (rather than merge)
-	 * semantics are wanted.
-	 */
 	async loadChunks(
 		chunkIds: bigint[],
 		options?: LoadChunkOptions,
 		outMap?: Map<bigint, SavedChunkData>,
 	): Promise<Map<bigint, SavedChunkData>> {
 		const result = outMap ?? new Map<bigint, SavedChunkData>();
+		const n = chunkIds.length;
 
-		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING || chunkIds.length === 0) {
+		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING || n === 0) {
 			return result;
 		}
 
-		const client = await this.getClient();
-		if (!client) return result;
+		const store = this.store ?? (await this.getStore());
+		if (!store) return result;
 
 		const includeVoxelData = options?.includeVoxelData ?? true;
-		const hits: { chunkId: bigint; data: SavedChunkData }[] = [];
+		const coords: ChunkReadCoord[] = new Array(n);
+		const out: ChunkCoordsOut = { cx: 0, cy: 0, cz: 0 };
 
-		const hardwareConcurrency = Math.floor(navigator.hardwareConcurrency || 4);
-
-		const readConcurrency = Math.max(2, Math.min(16, hardwareConcurrency * 2));
-
-		if (!includeVoxelData) {
-			await mapLimit(chunkIds, readConcurrency, async (chunkId) => {
-				try {
-					const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
-					if (!bytes) return;
-					hits.push({ chunkId, data: { blocks: null } });
-				} catch (err) {
-					console.warn(
-						`[WorldStorage] Failed to read chunk ${chunkId.toString()}, ${err}`,
-					);
-				}
-			});
-		} else {
-			await mapLimit(chunkIds, readConcurrency, async (chunkId) => {
-				try {
-					const hydrated = await client.readVoxelDecompressed(
-						chunkId,
-						VOXEL_SENTINEL,
-					);
-					if (!hydrated) return;
-					hits.push({ chunkId, data: hydrateResultToSavedData(hydrated) });
-				} catch (err) {
-					console.warn(
-						`[WorldStorage] Failed to read chunk ${chunkId.toString()}, ${err}`,
-					);
-				}
-			});
+		for (let i = 0; i < n; i++) {
+			const id = chunkIds[i];
+			chunkIdToCoordsOut(id, out);
+			coords[i] = { id, cx: out.cx, cy: out.cy, cz: out.cz };
 		}
 
-		if (hits.length === 0) return result;
+		if (!includeVoxelData) {
+			// Use numeric hasChunks to avoid string alloc per entry
+			const hasNumeric = await (
+				store as unknown as {
+					hasChunksNumeric?: (
+						c: readonly ChunkReadCoord[],
+					) => Promise<Set<number>>;
+				}
+			).hasChunksNumeric?.(coords);
+			if (hasNumeric) {
+				for (let i = 0; i < n; i++) {
+					const c = coords[i];
+					const nk = packChunkKeyNumeric(c.cx, c.cy, c.cz);
+					if (hasNumeric.has(nk))
+						result.set(c.id!, CHUNK_EXISTS_WITHOUT_BLOCKS);
+				}
+			} else {
+				// fallback string path
+				for (let i = 0; i < n; i++)
+					coords[i].key = `${coords[i].cx},${coords[i].cy},${coords[i].cz}`;
+				const existing = await store.hasChunks(coords);
+				for (let i = 0; i < n; i++)
+					if (existing.has(coords[i].key!))
+						result.set(coords[i].id!, CHUNK_EXISTS_WITHOUT_BLOCKS);
+			}
+			return result;
+		}
 
-		for (let i = 0; i < hits.length; i++) {
-			result.set(hits[i].chunkId, hits[i].data);
+		// Prefer numeric read to avoid per-entry string keys
+		const storeAny = store as unknown as {
+			readChunksNumeric?: (
+				c: readonly ChunkReadCoord[],
+			) => Promise<Map<number, Uint8Array>>;
+		};
+		if (storeAny.readChunksNumeric) {
+			const readResults = await storeAny.readChunksNumeric(coords);
+			for (let i = 0; i < n; i++) {
+				const c = coords[i];
+				const nk = packChunkKeyNumeric(c.cx, c.cy, c.cz);
+				const blob = readResults.get(nk);
+				if (blob) result.set(c.id!, deserializeVoxelDataShared(blob));
+			}
+		} else {
+			for (let i = 0; i < n; i++)
+				coords[i].key = `${coords[i].cx},${coords[i].cy},${coords[i].cz}`;
+			const readResults = await store.readChunks(coords);
+			for (let i = 0; i < n; i++) {
+				const blob = readResults.get(coords[i].key!);
+				if (blob) result.set(coords[i].id!, deserializeVoxelDataShared(blob));
+			}
 		}
 
 		return result;
 	}
 
-	private async saveChunkWithClient(
-		client: OpfsClient,
-		chunk: Chunk,
-	): Promise<void> {
-		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
-		if (chunk.isBoatChunk) return;
-		if (!chunk.isModified && !chunk.isLightDirty) return;
+	async flush(): Promise<void> {
+		const store = this.store ?? (await this.getStore());
+		if (!store) return;
+		await store.flush();
+	}
 
-		const key = this.packKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-		const blocks = chunk.block_array;
-		const light = chunk.light_array;
+	/**
+	 * Persist the prepared world spawn point so the spawn search/prepare step
+	 * never runs again for this world.
+	 */
+	async saveSpawnPoint(p: SpawnPosition): Promise<void> {
+		const store = this.store ?? (await this.getStore());
+		if (!store) return;
+		await store.setMeta("spawn", JSON.stringify(p));
+	}
 
-		const [compressedBlocks, compressedLight] = await Promise.all([
-			blocks ? this.compress(blocks) : Promise.resolve(null),
-			light ? this.compress(light) : Promise.resolve(null),
-		]);
-
-		const bytes = serializeVoxelData(
-			compressedBlocks,
-			chunk.palette ? this.detachSharedArrayBuffer(chunk.palette) : null,
-			chunk.isUniform,
-			chunk.uniformBlockId,
-			compressedLight,
-			true,
-		);
-
+	/**
+	 * Load a previously prepared spawn point, or null if the world has not
+	 * had one prepared yet.
+	 */
+	async loadSpawnPoint(): Promise<SpawnPosition | null> {
+		const store = this.store ?? (await this.getStore());
+		if (!store) return null;
+		const v = await store.getMeta("spawn");
+		if (!v) return null;
 		try {
-			await client.writeVoxel(key, VOXEL_SENTINEL, bytes);
-			chunk.isModified = false;
-			chunk.isLightDirty = false;
-		} catch (err) {
-			console.error("[WorldStorage] OPFS voxel write failed:", err);
-		}
-	}
-}
-/**
- * Convert a HydratedVoxelData (SAB-backed structured result from the OPFS
- * worker) into SavedChunkData that Chunk.loadFromStorage can consume.
- * The TypedArray views are backed by SharedArrayBuffer so ensureSharedBacking
- * becomes a no-op — no main-thread copy is needed.
- */
-function hydrateResultToSavedData(h: HydratedVoxelData): SavedChunkData {
-	return {
-		blocks: h.blocksSAB
-			? h.blockBytesPerElement === 2
-				? new Uint16Array(h.blocksSAB)
-				: new Uint8Array(h.blocksSAB)
-			: null,
-		palette: h.paletteSAB ? new Uint16Array(h.paletteSAB) : null,
-		isUniform: h.isUniform || undefined,
-		uniformBlockId: h.uniformBlockId || undefined,
-		lightArray: h.lightSAB ? new Uint8Array(h.lightSAB) : undefined,
-		compressed: false,
-	};
-}
-
-async function mapLimit<T>(
-	items: readonly T[],
-	limit: number,
-	fn: (item: T, index: number) => Promise<void>,
-): Promise<void> {
-	if (items.length === 0) return;
-
-	let nextIndex = 0;
-	const workerCount = Math.min(limit, items.length);
-
-	const workers = new Array<Promise<void>>(workerCount);
-
-	for (let worker = 0; worker < workerCount; worker++) {
-		workers[worker] = (async () => {
-			while (true) {
-				const index = nextIndex++;
-				if (index >= items.length) return;
-				await fn(items[index], index);
+			const p = JSON.parse(v) as Partial<SpawnPosition>;
+			if (
+				typeof p.x === "number" &&
+				typeof p.y === "number" &&
+				typeof p.z === "number"
+			) {
+				return { x: p.x, y: p.y, z: p.z };
 			}
-		})();
+		} catch {
+			// ignore malformed payloads
+		}
+		return null;
 	}
 
-	await Promise.all(workers);
+	/**
+	 * Wipe the local chunk store (IndexedDB + memory cache). Used on
+	 * connecting to a server so saved terrain from previous sessions can
+	 * never be served back as if it were server data.
+	 */
+	async clearLocalChunkCache(): Promise<void> {
+		const store = this.store ?? (await this.getStore());
+		if (!store) return;
+		// discardPendingWrites: queued local saves are wiped anyway, so
+		// commit-then-erase would be wasted I/O on reconnect.
+		await store.clear({ discardPendingWrites: true });
+	}
 }
+
+/**
+ * Build the storage blob for a chunk. Shared by saveChunk/saveChunks so
+ * there's a single implementation to keep correct (and a single call site
+ * for the JIT to specialize).
+ */
+function packChunkBlob(chunk: Chunk): Uint8Array {
+	const blocks = chunk.block_array;
+	const palette = chunk.palette;
+	const light = chunk.light_array;
+
+	const blockBytes = blocks
+		? new Uint8Array(blocks.buffer, blocks.byteOffset, blocks.byteLength)
+		: null;
+
+	const paletteWords = palette
+		? new Uint16Array(
+				palette.buffer,
+				palette.byteOffset,
+				palette.byteLength >> 1,
+			)
+		: null;
+
+	const lightBytes = light
+		? new Uint8Array(light.buffer, light.byteOffset, light.byteLength)
+		: null;
+
+	return serializeVoxelData(
+		blockBytes,
+		paletteWords,
+		chunk.isUniform,
+		chunk.uniformBlockId,
+		lightBytes,
+		false,
+	);
+}
+
+// Hoisted once — BigInt ops are non-SMI and heap-allocated in V8, so the
+// decoder bridges bigint→Number exactly once per call: one mask + one shift
+// split the packed id into two Numbers, and every field below is extracted
+// with pure SMI bit ops. Field layout matches packCoords: x = bits 0..20,
+// y = bits 21..41, z = bits 42..62; each axis stores value + 2^20 biased,
+// so a field is negative when its raw value is below 2^20.
+const LOW32_MASK = 0xffffffffn;
+const BIAS_NUM = 1_048_576; // 2^20
+
+interface ChunkCoordsOut {
+	cx: number;
+	cy: number;
+	cz: number;
+}
+
+const _coordsOutScratch: ChunkCoordsOut = { cx: 0, cy: 0, cz: 0 };
+
+function chunkIdToCoords(chunkId: bigint): [number, number, number] {
+	chunkIdToCoordsOut(chunkId, _coordsOutScratch);
+	const s = _coordsOutScratch;
+	return [s.cx, s.cy, s.cz];
+}
+
+/**
+ * Tuple-free variant of chunkIdToCoords for bulk decode loops: writes into a
+ * reusable out object instead of allocating a fresh tuple per chunk id.
+ */
+function chunkIdToCoordsOut(
+	chunkId: bigint,
+	out: ChunkCoordsOut,
+): ChunkCoordsOut {
+	const lo = Number(chunkId & LOW32_MASK);
+	const hi = Number((chunkId >> 32n) & LOW32_MASK);
+
+	// packCoords stores value + 2^20 per field (offset binary), so the
+	// inverse is an unconditional bias subtraction — matching
+	// ChunkCoords.unpackChunkCoords. The previous sign-bit-conditional
+	// variant mis-decoded every negative coordinate as raw + 2^20.
+	out.cx = (lo & 0x1fffff) - BIAS_NUM;
+	out.cy = (((lo >>> 21) | (hi << 11)) & 0x1fffff) - BIAS_NUM;
+	out.cz = (hi >>> 10) - BIAS_NUM;
+
+	return out;
+}
+
 export const WorldStorage = new WorldStorageImpl();

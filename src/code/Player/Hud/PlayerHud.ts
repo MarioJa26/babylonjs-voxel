@@ -1,5 +1,6 @@
-﻿import type { SceneContext } from "@babylonjs/lite";
+import type { SceneContext } from "@babylonjs/lite";
 import { onSceneDispose } from "@babylonjs/lite";
+import { getArrowTooltipStats } from "@/code/Entities/Arrow/ArrowTypes";
 import {
 	closeUi,
 	isUiOpen,
@@ -7,25 +8,40 @@ import {
 	UiFocus,
 } from "@/code/Lib/GameRuntimeState";
 import { Map1 } from "@/code/Maps/Map1";
+import { ContainerRejectReason } from "@/code/Network/protocol/messages";
+import type {
+	RemoteContainerRejection,
+	RemoteContainerSlotUpdate,
+	RemoteContainerState,
+} from "@/code/Network/RemoteContainerManager";
+import { getToolTooltipStats } from "@/code/Player/Inventory/ProceduralTools";
+import { loadGameSettings } from "@/code/UI/GameSettings";
 import {
 	buildBlockInventorySlots,
+	createEmptyInventory,
 	getBlockInventory,
 	type SavedBlockInventory,
 	saveBlockInventory,
 	serializeBlockSlots,
 } from "@/code/World/BlockInventory/BlockInventoryManager";
+import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import MapFog from "../../Maps/MapFog";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 import { MasonRecipes } from "../Crafting/CraftingManager";
 import { CraftMenu } from "../Crafting/CraftMenu/CraftMenu";
+import { CreativePalette } from "../Inventory/CreativePalette";
 import { Item } from "../Inventory/Item";
 import type { ItemSlot } from "../Inventory/ItemSlot";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
+import { PLAYER_LIGHT_SAMPLE_Y_OFFSET } from "../PlayerModel";
+import { Gamemodes } from "../PlayerStats";
+import { ArmorPanel } from "./ArmorPanel";
 import { Chat } from "./Chat";
 import { Crosshair } from "./Crosshair/Crosshair";
+import { PlayerPreview } from "./PlayerPreview";
 
 export class PlayerHud {
 	#scene: SceneContext;
@@ -57,6 +73,14 @@ export class PlayerHud {
 	#woodCrateBlockPos: { x: number; y: number; z: number } | null = null;
 	#woodCrateSlots: ItemSlot[][] | null = null;
 	#woodCrateSavedState: SavedBlockInventory | null = null;
+	// Multiplayer (server-authoritative crate): when true the grid mirrors
+	// the server snapshot and every local edit is pushed as a slot delta.
+	#woodCrateRemote = false;
+	#woodCrateLoading = false;
+	#woodCrateVersion = 0;
+	#woodCrateApplyingRemote = false;
+	#woodCrateLastSent: { itemId: number; stackSize: number }[][] | null = null;
+	#woodCrateInventoryObserverId: number | null = null;
 
 	#selectedHotbarSlot = 0;
 	#hotbarSlots: HTMLDivElement[] = [];
@@ -69,13 +93,25 @@ export class PlayerHud {
 	#prevHungerPct = -1;
 	#prevStaminaPct = -1;
 	#prevManaPct = -1;
+	#prevXpPct = -1;
+	#prevXpLevel = -1;
 
 	#overlayDiv: HTMLDivElement;
 	#craftingContainer!: HTMLDivElement;
 	#mainInventoryContainer!: HTMLDivElement;
+	#creativePalette: CreativePalette | null = null;
+	#playerPreview = new PlayerPreview(() => {
+		// Sample the voxel light at chest height (below the head) so the
+		// preview is lit like the spot the player is standing in — and never
+		// goes dark when the head clips a ceiling mid-jump.
+		const p = this.#player.position;
+		return getLightByWorldCoords(p.x, p.y + PLAYER_LIGHT_SAMPLE_Y_OFFSET, p.z);
+	});
+	#armorPanel = new ArmorPanel();
 
 	static debugPanelDiv: HTMLDivElement;
 	static debugPanelVisible = true;
+	static #hudHidden = false;
 	private static infoRows: {
 		[key: string]: {
 			container: HTMLDivElement;
@@ -85,12 +121,28 @@ export class PlayerHud {
 		};
 	} = {};
 	private static itemTooltipDiv: HTMLDivElement;
-	private static itemTooltipMouseMove?: (e: MouseEvent) => void;
+
+	// Tooltip positioning: one persistent mousemove listener buffers cursor
+	// coords, and a single rAF callback applies them via transform. Transform
+	// writes never invalidate layout, so hovering items can no longer force
+	// the engine's per-frame resize read into a synchronous layout flush.
+	// (Previously every mousemove wrote left/top and listeners were swapped
+	// per hover — 128 forced layouts in a 4.85s capture.)
+	static #tooltipPendingX = 0;
+	static #tooltipPendingY = 0;
+	static #tooltipRafId: number | null = null;
+	static #tooltipVisible = false;
 
 	#healthBarFill!: HTMLDivElement;
 	#hungerBarFill!: HTMLDivElement;
 	#staminaBarFill!: HTMLDivElement;
 	#manaBarFill!: HTMLDivElement;
+	#xpBarFill!: HTMLDivElement;
+	#xpLevelLabel!: HTMLDivElement;
+
+	// Bow draw progress indicator
+	#drawIndicator: HTMLDivElement | null = null;
+	#drawFill: HTMLDivElement | null = null;
 
 	readonly #chat: Chat;
 
@@ -99,12 +151,14 @@ export class PlayerHud {
 		this.#player = player;
 		PlayerHud.#inventory = player.playerInventory;
 		this.#craftMenu = new CraftMenu(player.playerInventory);
-		this.crossHair = new Crosshair();
+		// Apply persisted crosshair visuals (style/size/color/visibility).
+		this.crossHair = new Crosshair(loadGameSettings());
 		this.#overlayDiv = this.initializeHUD();
 		this.createHotbarUI();
 		this.createStatsUI();
 		this.initializeDebugPanel();
 		this.initializeTooltip();
+		this.initializeDrawIndicator();
 
 		PlayerHud.#inventory.onInventoryChangedObservable.add(() => {
 			if (this.#inventoryOpen) {
@@ -142,6 +196,11 @@ export class PlayerHud {
 		this.#craftingContainer = document.createElement("div");
 		this.#craftingContainer.classList.add("crafting-container");
 
+		const previewColumn = document.createElement("div");
+		previewColumn.classList.add("preview-column");
+		previewColumn.appendChild(this.#playerPreview.container);
+		previewColumn.appendChild(this.#armorPanel.container);
+		contentWrapper.appendChild(previewColumn);
 		contentWrapper.appendChild(inventoryUI);
 		contentWrapper.appendChild(this.#craftingContainer);
 
@@ -150,6 +209,10 @@ export class PlayerHud {
 		document.body.appendChild(overlayDiv);
 
 		onSceneDispose(this.#scene, () => {
+			this.#playerPreview.dispose();
+			this.#armorPanel.dispose();
+			this.#creativePalette?.dispose();
+			this.#creativePalette = null;
 			overlayDiv.remove();
 			document.exitPointerLock();
 		});
@@ -163,56 +226,85 @@ export class PlayerHud {
 		this.#mainInventoryContainer = inventoryContainer;
 
 		const inventory = PlayerHud.#inventory.inventory;
+		const fragment = document.createDocumentFragment();
+
 		for (let row = inventory.length - 1; row >= 1; row--) {
 			const rowContainer = document.createElement("div");
 			rowContainer.classList.add("inventory-row");
 
-			for (let col = 0; col < inventory[row].length; col++) {
-				const slot = this.getSlot(col, row);
+			const invRow = inventory[row];
+
+			for (let col = 0, len = invRow.length; col < len; col++) {
+				const slot = invRow[col].divItemSlot;
 				if (!slot) continue;
+
 				slot.addEventListener("dblclick", () => {
-					const item = PlayerHud.#inventory.inventory[row][col].item;
+					const item = invRow[col].item;
 					if (item) {
 						this.#craftMenu.addItemToFirstFreeSearchSlot(item.itemId);
 					}
 				});
+
 				rowContainer.appendChild(slot);
 			}
-			inventoryContainer.appendChild(rowContainer);
+
+			fragment.appendChild(rowContainer);
 		}
+
+		inventoryContainer.appendChild(fragment);
+
+		// Minecraft-style creative palette below the storage rows: scrollable,
+		// lists every registered item, copies on take / destroys on drop.
+		const palette = new CreativePalette(PlayerHud.#inventory);
+		this.#creativePalette = palette;
+		inventoryContainer.appendChild(palette.container);
+		void palette.build();
+		this.updateCreativePaletteVisibility();
+
 		return inventoryContainer;
 	}
 	private createHotbarUI(): HTMLDivElement {
 		const existingWrapper = document.getElementById("hotbar-wrapper");
 		if (existingWrapper) {
-			existingWrapper.remove(); // Remove old one to rebuild with new scene context
+			existingWrapper.remove();
 		}
+
 		const hotbarWrapper = document.createElement("div");
 		hotbarWrapper.id = "hotbar-wrapper";
 		hotbarWrapper.classList.add("hotbar-wrapper");
-		// Create item name display
-		PlayerHud.#heldItemNameDiv.classList.add("held-item-name");
+
+		const nameDiv = PlayerHud.#heldItemNameDiv;
+		nameDiv.classList.add("held-item-name");
 
 		const hotbarContainer = document.createElement("div");
 		hotbarContainer.classList.add("hotbar-container");
 
 		const hotbarRow = PlayerHud.#inventory.inventory[0];
-		for (let col = 0; col < hotbarRow.length; col++) {
-			const slot = this.getSlot(col, 0);
+		const fragment = document.createDocumentFragment();
+
+		this.#hotbarSlots.length = 0;
+
+		for (let col = 0, len = hotbarRow.length; col < len; col++) {
+			const slot = hotbarRow[col].divItemSlot;
 			if (!slot) continue;
-			hotbarContainer.appendChild(slot);
-			this.#hotbarSlots.push(slot); // Store every slot
+
+			fragment.appendChild(slot);
+			this.#hotbarSlots.push(slot);
 		}
 
-		hotbarWrapper.appendChild(PlayerHud.#heldItemNameDiv);
+		hotbarContainer.appendChild(fragment);
+
+		hotbarWrapper.appendChild(nameDiv);
 		hotbarWrapper.appendChild(hotbarContainer);
 
 		this.updateHotbarSelection();
+
 		document.body.appendChild(hotbarWrapper);
 
 		onSceneDispose(this.#scene, () => {
 			hotbarWrapper.remove();
 		});
+
 		return hotbarContainer;
 	}
 
@@ -236,6 +328,13 @@ export class PlayerHud {
 		this.#hungerBarFill = createBar("hunger"); // Orange
 		this.#staminaBarFill = createBar("stamina"); // Green
 		this.#manaBarFill = createBar("mana"); // Blue
+		this.#xpBarFill = createBar("xp"); // Bright green
+
+		const xpLabel = document.createElement("div");
+		xpLabel.classList.add("xp-level-label");
+		xpLabel.textContent = "Lv 0";
+		container.appendChild(xpLabel);
+		this.#xpLevelLabel = xpLabel;
 
 		document.body.appendChild(container);
 
@@ -244,8 +343,87 @@ export class PlayerHud {
 		});
 	}
 
+	/**
+	 * Create the bow draw progress indicator — a small bar centered just below
+	 * the crosshair. Hidden by default; shown while drawing.
+	 */
+	private initializeDrawIndicator(): void {
+		const indicator = document.createElement("div");
+		indicator.classList.add("bow-draw-indicator");
+		indicator.id = "bow-draw-indicator";
+
+		const fill = document.createElement("div");
+		fill.classList.add("bow-draw-fill");
+
+		indicator.appendChild(fill);
+		document.body.appendChild(indicator);
+
+		this.#drawIndicator = indicator;
+		this.#drawFill = fill;
+
+		onSceneDispose(this.#scene, () => {
+			indicator.remove();
+		});
+	}
+
+	readonly #drawStartColor = { r: 244, g: 67, b: 54 }; // #4caf50
+	readonly #drawEndColor = { r: 76, g: 175, b: 80 }; // #f44336
+
+	#lastDrawProgress = -1;
+	#drawIndicatorVisible = false;
+	/**
+	 * Update the bow draw progress indicator.
+	 * @param progress 0 = hidden, 0-1 = fill percentage.
+	 */
+	public updateDrawProgress(progress: number): void {
+		if (!this.#drawIndicator || !this.#drawFill) return;
+
+		if (progress <= 0) {
+			if (this.#drawIndicatorVisible) {
+				this.#drawIndicator.classList.remove("visible");
+				this.#drawIndicatorVisible = false;
+			}
+
+			if (this.#lastDrawProgress !== 0) {
+				this.#drawFill.style.transform = "scaleX(0)";
+				this.#lastDrawProgress = 0;
+			}
+
+			return;
+		}
+
+		const pct = Math.min(1, progress);
+
+		// Avoid redundant DOM/style updates.
+		if (pct === this.#lastDrawProgress) return;
+
+		if (!this.#drawIndicatorVisible) {
+			this.#drawIndicator.classList.add("visible");
+			this.#drawIndicatorVisible = true;
+		}
+
+		this.#lastDrawProgress = pct;
+
+		this.#drawFill.style.transform = `scaleX(${pct})`;
+
+		const { r: r1, g: g1, b: b1 } = this.#drawStartColor;
+		const { r: r2, g: g2, b: b2 } = this.#drawEndColor;
+
+		const r = Math.round(r1 + (r2 - r1) * pct);
+		const g = Math.round(g1 + (g2 - g1) * pct);
+		const b = Math.round(b1 + (b2 - b1) * pct);
+
+		this.#drawFill.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+	}
+
 	private getSlot(column: number, row: number): HTMLDivElement | null {
 		return PlayerHud.#inventory.inventory[row][column].divItemSlot;
+	}
+
+	public updateCreativePaletteVisibility(): void {
+		if (!this.#creativePalette) return;
+		const show = this.#player.stats.gamemode === Gamemodes.Creative;
+		this.#creativePalette.container.style.display = show ? "" : "none";
 	}
 
 	public toggleInventory(): void {
@@ -267,6 +445,10 @@ export class PlayerHud {
 			this.#craftMenu.updateCraftingAvailability();
 			PlayerHud.#heldItemNameDiv.classList.remove("visible");
 			this.#overlayDiv.style.display = "flex";
+			this.#playerPreview.show();
+			this.updateCreativePaletteVisibility();
+			this.updateDrawProgress(0);
+			this.#player.playerCamera.clearBowZoom();
 			this.#exitPointerLock();
 		} else {
 			closeUi(UiFocus.inventory);
@@ -274,6 +456,7 @@ export class PlayerHud {
 			// (Tab, Escape, or the close button) so world interactions work again.
 			this.#activateWalkingControls();
 			this.#overlayDiv.style.display = "none";
+			this.#playerPreview.hide();
 			this.#craftMenu.closePicker();
 			// Only re-grab the mouse if no other overlay is still open.
 			if (!isUiOpen()) this.#enterPointerLock();
@@ -345,16 +528,55 @@ export class PlayerHud {
 		this.#woodCrateBlockPos = { x, y, z };
 		openUi(UiFocus.woodCrate);
 
-		// Load saved state and build live slots
-		const saved = getBlockInventory(x, y, z);
-		this.#woodCrateSavedState = saved;
-		this.#woodCrateSlots = buildBlockInventorySlots(saved);
+		const net = this.#player.networkManager;
+		const remote = net?.isConnected === true ? net : null;
+		if (remote) {
+			// Server-authoritative: open with an empty grid, then fill it
+			// from the ContainerState snapshot. Edits made before the
+			// snapshot arrives are not sent (loading gate in pushCrateDiff).
+			this.#woodCrateRemote = true;
+			this.#woodCrateLoading = true;
+			this.#woodCrateVersion = 0;
+			const empty = createEmptyInventory(3, 6);
+			this.#woodCrateSavedState = empty;
+			this.#woodCrateSlots = buildBlockInventorySlots(empty);
+			this.#attachCrateSlotListeners();
+			this.#woodCrateLastSent = PlayerHud.emptyCrateSnapshot();
+		} else {
+			// Load saved state and build live slots
+			const saved = getBlockInventory(x, y, z);
+			this.#woodCrateSavedState = saved;
+			this.#woodCrateSlots = buildBlockInventorySlots(saved);
+			this.#attachCrateSlotListeners();
+		}
 
 		if (!this.#woodCrateDiv) {
 			this.#woodCrateDiv = this.createWoodCrateUI();
 		} else {
 			// Rebuild the block inventory content
 			this.#refreshWoodCrateContent();
+		}
+
+		if (remote) {
+			remote.containers.setCallbacks({
+				onState: (state) => this.#onRemoteCrateState(state),
+				onSlotUpdate: (update) => this.#applyRemoteCrateCell(update),
+				onRejected: (rejection) => this.#onRemoteCrateRejected(rejection),
+			});
+			void remote.containers.open(x, y, z).then(
+				(state) => {
+					if (this.#woodCrateOpen && this.#woodCrateLoading) {
+						this.#onRemoteCrateState(state);
+					}
+				},
+				() => {
+					// Rejection details arrive via onRejected; a timeout or
+					// disconnect just closes the loading UI quietly.
+					if (this.#woodCrateOpen && this.#woodCrateLoading) {
+						this.hideWoodCrateUI();
+					}
+				},
+			);
 		}
 
 		// Switch to inventory controls for Q-drop and cross-inventory drag
@@ -396,68 +618,328 @@ export class PlayerHud {
 			this.#woodCrateClickHandler,
 			true,
 		);
+
+		// Catch-all for inventory-system mutations that bypass slot setters:
+		// Q-drop (and similar consume paths) edit hovered crate items in
+		// place, so no onChanged fires. Every such path ends with
+		// onInventoryChangedObservable, where we repair + push the diff.
+		this.#woodCrateInventoryObserverId =
+			PlayerHud.#inventory.onInventoryChangedObservable.add(() =>
+				this.#onInventorySystemChanged(),
+			);
 	}
 
 	public hideWoodCrateUI(): void {
 		if (!this.#woodCrateOpen) return;
+
 		this.#woodCrateOpen = false;
 
-		// Persist block inventory
-		if (this.#woodCrateBlockPos && this.#woodCrateSlots) {
+		if (this.#woodCrateRemote) {
+			// Server already has every accepted delta; just unsubscribe.
+			const net = this.#player.networkManager;
+			if (this.#woodCrateBlockPos) {
+				const { x, y, z } = this.#woodCrateBlockPos;
+				try {
+					net?.containers.sendClose(x, y, z);
+				} catch {
+					// Close is best-effort; the server also cleans up on leave.
+				}
+			}
+			try {
+				net?.containers.setCallbacks({});
+			} catch {
+				// ignore
+			}
+			this.#woodCrateRemote = false;
+			this.#woodCrateLoading = false;
+			this.#woodCrateLastSent = null;
+		} else if (this.#woodCrateBlockPos && this.#woodCrateSlots) {
 			const saved = serializeBlockSlots(this.#woodCrateSlots);
 			const { x, y, z } = this.#woodCrateBlockPos;
 			saveBlockInventory(x, y, z, saved);
 		}
 
-		// Clear live slot references
 		this.#woodCrateSlots = null;
 		this.#woodCrateSavedState = null;
 		this.#woodCrateBlockPos = null;
 
 		closeUi(UiFocus.woodCrate);
+
 		if (this.#woodCrateDiv) {
 			this.#woodCrateDiv.style.display = "none";
 		}
 
-		// Move player inventory slots back to main inventory container
-		if (this.#mainInventoryContainer) {
+		const main = this.#mainInventoryContainer;
+		if (main) {
 			const inventory = PlayerHud.#inventory.inventory;
-			const rows =
-				this.#mainInventoryContainer.querySelectorAll(".inventory-row");
+			const rows = main.children;
+
 			for (let row = inventory.length - 1; row >= 1; row--) {
-				const rowDiv = rows[inventory.length - 1 - row];
+				const rowDiv = rows[inventory.length - 1 - row] as
+					| HTMLElement
+					| undefined;
 				if (!rowDiv) continue;
-				for (let col = 0; col < inventory[row].length; col++) {
-					const slot = inventory[row][col];
-					rowDiv.appendChild(slot.divItemSlot);
+
+				const invRow = inventory[row];
+				for (let col = 0, len = invRow.length; col < len; col++) {
+					rowDiv.appendChild(invRow[col].divItemSlot);
 				}
 			}
 		}
 
 		this.#activateWalkingControls();
 
-		// Remove Escape/Tab key listeners
-		if (this.#woodCrateKeyHandler) {
-			window.removeEventListener("keydown", this.#woodCrateKeyHandler, true);
-			window.removeEventListener("keyup", this.#woodCrateKeyHandler, true);
+		const keyHandler = this.#woodCrateKeyHandler;
+		if (keyHandler) {
+			window.removeEventListener("keydown", keyHandler, true);
+			window.removeEventListener("keyup", keyHandler, true);
 			this.#woodCrateKeyHandler = undefined;
 		}
 
-		// Remove shift-click handler
-		if (this.#woodCrateClickHandler && this.#woodCrateDiv) {
-			this.#woodCrateDiv.removeEventListener(
-				"click",
-				this.#woodCrateClickHandler,
-				true,
-			);
+		const clickHandler = this.#woodCrateClickHandler;
+		const div = this.#woodCrateDiv;
+		if (clickHandler && div) {
+			div.removeEventListener("click", clickHandler, true);
 			this.#woodCrateClickHandler = undefined;
 		}
 
-		if (!isUiOpen()) this.#enterPointerLock();
+		if (this.#woodCrateInventoryObserverId !== null) {
+			PlayerHud.#inventory.onInventoryChangedObservable.remove(
+				this.#woodCrateInventoryObserverId,
+			);
+			this.#woodCrateInventoryObserverId = null;
+		}
+
+		if (!isUiOpen()) {
+			this.#enterPointerLock();
+		}
 	}
 
 	public get isWoodCrateOpen(): boolean {
 		return this.#woodCrateOpen;
+	}
+
+	/**
+	 * Catch-all for inventory-system mutations (Q-drop, stack consumes) that
+	 * edit crate items in place without touching slot setters. Repairs
+	 * depleted/detached crate items, then pushes the diff (remote only —
+	 * pushCrateDiff gates on remote/loading itself).
+	 */
+	#onInventorySystemChanged(): void {
+		if (!this.#woodCrateOpen || !this.#woodCrateSlots) return;
+		this.#repairCrateSlots();
+		this.#pushCrateDiff();
+	}
+
+	/**
+	 * Q-drop depletes the hovered item in place and its delete path only
+	 * knows the player grid, so a fully-dropped crate item is left behind as
+	 * a detached 0-stack ghost. Clear those (and re-attach renders that lost
+	 * their DOM parent) so the grid — and the next diff — reflect reality.
+	 */
+	#repairCrateSlots(): void {
+		const grid = this.#woodCrateSlots;
+		if (!grid) return;
+		for (const row of grid) {
+			for (const slot of row) {
+				const item = slot.item;
+				if (!item) continue;
+				if (item.stackSize <= 0) {
+					slot.clearItemSlots();
+				} else if (item.div.parentElement !== slot.divItemSlot) {
+					// Content unchanged — re-render only, no server write
+					// (the diff against last-sent stays clean).
+					slot.item = item;
+				}
+			}
+		}
+	}
+
+	// ─── Server-authoritative crate sync ────────────────────────────────
+
+	private static emptyCrateSnapshot(): {
+		itemId: number;
+		stackSize: number;
+	}[][] {
+		const rows: { itemId: number; stackSize: number }[][] = [];
+		for (let r = 0; r < 6; r++) {
+			const row: { itemId: number; stackSize: number }[] = [];
+			for (let c = 0; c < 3; c++) row.push({ itemId: 0, stackSize: 0 });
+			rows.push(row);
+		}
+		return rows;
+	}
+
+	/** Attach live-delta listeners to the current crate grid. */
+	#attachCrateSlotListeners(): void {
+		const grid = this.#woodCrateSlots;
+		if (!grid) return;
+		for (const row of grid) {
+			for (const slot of row) {
+				slot.onChanged = () => this.#pushCrateDiff();
+			}
+		}
+	}
+
+	/**
+	 * Diff the live crate grid against the last-sent snapshot and push every
+	 * changed cell to the server. No-op in singleplayer, while loading, or
+	 * while applying a remote update (the snapshot is updated alongside).
+	 */
+	#pushCrateDiff(): void {
+		if (
+			!this.#woodCrateOpen ||
+			!this.#woodCrateRemote ||
+			this.#woodCrateLoading ||
+			this.#woodCrateApplyingRemote
+		) {
+			return;
+		}
+		const net = this.#player.networkManager;
+		if (net?.isConnected !== true) return;
+		const pos = this.#woodCrateBlockPos;
+		const grid = this.#woodCrateSlots;
+		const last = this.#woodCrateLastSent;
+		if (!pos || !grid || !last) return;
+		for (let r = 0; r < grid.length; r++) {
+			const gridRow = grid[r];
+			const lastRow = last[r];
+			if (!gridRow || !lastRow) continue;
+			for (let c = 0; c < gridRow.length; c++) {
+				const slot = gridRow[c];
+				const prev = lastRow[c];
+				if (!slot || !prev) continue;
+				const item = slot.item;
+				const curItemId = item?.itemId ?? 0;
+				const curStack = item?.stackSize ?? 0;
+				if (prev.itemId === curItemId && prev.stackSize === curStack) {
+					continue;
+				}
+				lastRow[c] = { itemId: curItemId, stackSize: curStack };
+				net.containers.sendSetSlot(
+					pos.x,
+					pos.y,
+					pos.z,
+					r,
+					c,
+					curItemId,
+					curStack,
+				);
+			}
+		}
+	}
+
+	/** Apply a full authoritative snapshot (open response / re-sync). */
+	#onRemoteCrateState(state: RemoteContainerState): void {
+		if (!this.#woodCrateOpen || !this.#woodCrateRemote) return;
+		const pos = this.#woodCrateBlockPos;
+		if (!pos || state.x !== pos.x || state.y !== pos.y || state.z !== pos.z) {
+			return;
+		}
+		if (
+			!this.#woodCrateLoading &&
+			state.version <= this.#woodCrateVersion &&
+			this.#woodCrateSlots
+		) {
+			return;
+		}
+		if (
+			state.width < 1 ||
+			state.width > 8 ||
+			state.height < 1 ||
+			state.height > 8 ||
+			state.slots.length !== state.width * state.height
+		) {
+			return;
+		}
+		this.#woodCrateVersion = state.version;
+		const saved: SavedBlockInventory = {
+			width: state.width,
+			height: state.height,
+			slots: [],
+		};
+		const last = PlayerHud.emptyCrateSnapshot();
+		for (let r = 0; r < state.height; r++) {
+			const savedRow: SavedBlockInventory["slots"][number] = [];
+			for (let c = 0; c < state.width; c++) {
+				const s = state.slots[r * state.width + c];
+				if (r < 6 && c < 3)
+					last[r][c] = { itemId: s.itemId, stackSize: s.stackSize };
+				savedRow.push(
+					s.itemId === 0 ? null : { itemId: s.itemId, stackSize: s.stackSize },
+				);
+			}
+			saved.slots.push(savedRow);
+		}
+		this.#woodCrateSavedState = saved;
+		this.#woodCrateSlots = buildBlockInventorySlots(saved);
+		this.#attachCrateSlotListeners();
+		this.#woodCrateLastSent = last;
+		this.#woodCrateLoading = false;
+		this.#refreshWoodCrateContent();
+	}
+
+	/** Apply one authoritative slot delta from another viewer (or our echo). */
+	#applyRemoteCrateCell(update: RemoteContainerSlotUpdate): void {
+		if (!this.#woodCrateOpen || !this.#woodCrateRemote) return;
+		const pos = this.#woodCrateBlockPos;
+		if (
+			!pos ||
+			update.x !== pos.x ||
+			update.y !== pos.y ||
+			update.z !== pos.z
+		) {
+			return;
+		}
+		if (update.version < this.#woodCrateVersion) return;
+		this.#woodCrateVersion = update.version;
+		const slot = this.#woodCrateSlots?.[update.row]?.[update.col];
+		const lastRow = this.#woodCrateLastSent?.[update.row];
+		if (!slot || !lastRow?.[update.col]) return;
+		lastRow[update.col] = {
+			itemId: update.itemId,
+			stackSize: update.stackSize,
+		};
+		this.#woodCrateApplyingRemote = true;
+		try {
+			if (update.itemId === 0) {
+				slot.clearItemSlots();
+			} else {
+				try {
+					const item = Item.createById(update.itemId, update.row, update.col);
+					item.stackSize = update.stackSize;
+					slot.item = item;
+				} catch {
+					// Unknown item id — render empty rather than crashing.
+					slot.clearItemSlots();
+				}
+			}
+		} finally {
+			this.#woodCrateApplyingRemote = false;
+		}
+	}
+
+	/** The server refused the open/write (or the crate is gone): close up. */
+	#onRemoteCrateRejected(rejection: RemoteContainerRejection): void {
+		if (!this.#woodCrateOpen || !this.#woodCrateRemote) return;
+		const pos = this.#woodCrateBlockPos;
+		if (
+			!pos ||
+			rejection.x !== pos.x ||
+			rejection.y !== pos.y ||
+			rejection.z !== pos.z
+		) {
+			return;
+		}
+		const net = this.#player.networkManager;
+		let detail = "is no longer available";
+		if (rejection.reason === ContainerRejectReason.TooFar) {
+			detail = "is too far away";
+		} else if (rejection.reason === ContainerRejectReason.NotCrate) {
+			detail = "is not a crate";
+		}
+		this.hideWoodCrateUI();
+		net?.notifySystemMessage(`Crate ${detail} — closed`);
 	}
 
 	#moveItemBetweenCrateAndInventory(slot: ItemSlot): boolean {
@@ -465,69 +947,38 @@ export class PlayerHud {
 		if (!item) return false;
 
 		const inventory = PlayerHud.#inventory.inventory;
-		const isInInventory =
-			slot.row > 0 || (slot.row === 0 && inventory[0]?.includes(slot));
-		const isInCrate =
-			this.#woodCrateSlots?.some((row) => row.includes(slot)) ?? false;
+		const crateSlots = this.#woodCrateSlots;
+
+		const isInCrate = crateSlots
+			? this.slotExistsInRows(slot, crateSlots)
+			: false;
+
+		const isInInventory = !isInCrate && this.slotExistsInRows(slot, inventory);
 
 		if (!isInInventory && !isInCrate) return false;
 
-		if (isInInventory) {
-			// Move from inventory to crate
-			if (!this.#woodCrateSlots) return false;
+		const targetRows = isInCrate ? inventory : crateSlots;
+		if (!targetRows) return false;
 
-			// Try to stack with existing items in crate
-			for (const row of this.#woodCrateSlots) {
-				for (const crateSlot of row) {
-					if (crateSlot.item && crateSlot.item.itemId === item.itemId) {
-						const remainder = Item.stackItemAtoB(item, crateSlot.item);
-						if (remainder === 0) {
-							slot.clearItemSlots();
-							return true;
-						}
-					}
-				}
-			}
+		// First try to stack into existing stacks.
+		if (this.tryStackItemIntoRows(slot, item, targetRows)) {
+			// In-place stack merges bypass slot setters — push explicitly.
+			this.#pushCrateDiff();
+			return true;
+		}
 
-			// Try to move to empty slot in crate
-			for (const row of this.#woodCrateSlots) {
-				for (const crateSlot of row) {
-					if (!crateSlot.item) {
-						slot.clearItemSlots();
-						item.row = crateSlot.row;
-						item.col = crateSlot.col;
-						crateSlot.divItemSlot.appendChild(item.div);
-						crateSlot.item = item;
-						return true;
-					}
-				}
-			}
-		} else if (isInCrate) {
-			// Move from crate to inventory
-			// Try to stack with existing items in inventory
-			for (let row = inventory.length - 1; row >= 0; row--) {
-				for (const invSlot of inventory[row]) {
-					if (invSlot.item && invSlot.item.itemId === item.itemId) {
-						const remainder = Item.stackItemAtoB(item, invSlot.item);
-						if (remainder === 0) {
-							slot.clearItemSlots();
-							return true;
-						}
-					}
-				}
-			}
+		// Then try to move into the first empty slot.
+		const moved = this.tryMoveItemToEmptySlot(slot, item, targetRows);
+		if (moved) this.#pushCrateDiff();
+		return moved;
+	}
+	private slotExistsInRows(slot: ItemSlot, rows: ItemSlot[][]): boolean {
+		for (let row = 0, rowCount = rows.length; row < rowCount; row++) {
+			const slots = rows[row];
 
-			// Try to move to empty slot in inventory
-			for (let row = inventory.length - 1; row >= 0; row--) {
-				for (const invSlot of inventory[row]) {
-					if (!invSlot.item) {
-						slot.clearItemSlots();
-						item.row = invSlot.row;
-						item.col = invSlot.col;
-						invSlot.divItemSlot.appendChild(item.div);
-						invSlot.item = item;
-						return true;
-					}
+			for (let col = 0, colCount = slots.length; col < colCount; col++) {
+				if (slots[col] === slot) {
+					return true;
 				}
 			}
 		}
@@ -535,6 +986,62 @@ export class PlayerHud {
 		return false;
 	}
 
+	private tryStackItemIntoRows(
+		sourceSlot: ItemSlot,
+		item: Item,
+		targetRows: ItemSlot[][],
+	): boolean {
+		for (let row = targetRows.length - 1; row >= 0; row--) {
+			const slots = targetRows[row];
+
+			for (let col = 0, colCount = slots.length; col < colCount; col++) {
+				const targetItem = slots[col].item;
+
+				if (!targetItem || targetItem.itemId !== item.itemId) {
+					continue;
+				}
+
+				const remainder = Item.stackItemAtoB(item, targetItem);
+
+				if (remainder === 0) {
+					sourceSlot.clearItemSlots();
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	private tryMoveItemToEmptySlot(
+		sourceSlot: ItemSlot,
+		item: Item,
+		targetRows: ItemSlot[][],
+	): boolean {
+		for (let row = targetRows.length - 1; row >= 0; row--) {
+			const slots = targetRows[row];
+
+			for (let col = 0, colCount = slots.length; col < colCount; col++) {
+				const targetSlot = slots[col];
+
+				if (targetSlot.item) {
+					continue;
+				}
+
+				sourceSlot.clearItemSlots();
+
+				item.row = targetSlot.row;
+				item.col = targetSlot.col;
+
+				targetSlot.divItemSlot.appendChild(item.div);
+				targetSlot.item = item;
+
+				return true;
+			}
+		}
+
+		return false;
+	}
 	private createWoodCrateUI(): HTMLDivElement {
 		const overlay = document.createElement("div");
 		overlay.id = "woodcrate-overlay";
@@ -616,32 +1123,45 @@ export class PlayerHud {
 
 	#refreshWoodCrateContent(): void {
 		const blockGrid = this.#woodCrateBlockGrid;
-		if (!blockGrid || !this.#woodCrateSlots) return;
-		blockGrid.innerHTML = "";
-		for (const row of this.#woodCrateSlots) {
+		const crateSlots = this.#woodCrateSlots;
+
+		if (!blockGrid || !crateSlots) return;
+
+		const blockFragment = document.createDocumentFragment();
+
+		for (let r = 0, rowCount = crateSlots.length; r < rowCount; r++) {
+			const row = crateSlots[r];
 			const rowDiv = document.createElement("div");
 			rowDiv.classList.add("woodcrate-row--vertical");
-			for (const slot of row) {
-				rowDiv.appendChild(slot.divItemSlot);
+
+			for (let c = 0, colCount = row.length; c < colCount; c++) {
+				rowDiv.appendChild(row[c].divItemSlot);
 			}
-			blockGrid.appendChild(rowDiv);
+
+			blockFragment.appendChild(rowDiv);
 		}
 
-		// Also rebuild the player inventory grid — slot divs were moved back
-		// to the main inventory container on the last close.
+		blockGrid.replaceChildren(blockFragment);
+
 		const playerGrid = this.#woodCratePlayerGrid;
 		if (!playerGrid) return;
-		playerGrid.innerHTML = "";
+
 		const inventory = PlayerHud.#inventory.inventory;
+		const playerFragment = document.createDocumentFragment();
+
 		for (let row = inventory.length - 1; row >= 1; row--) {
 			const rowDiv = document.createElement("div");
 			rowDiv.classList.add("inventory-row");
-			for (let col = 0; col < inventory[row].length; col++) {
-				const slot = inventory[row][col];
-				rowDiv.appendChild(slot.divItemSlot);
+
+			const invRow = inventory[row];
+			for (let col = 0, len = invRow.length; col < len; col++) {
+				rowDiv.appendChild(invRow[col].divItemSlot);
 			}
-			playerGrid.appendChild(rowDiv);
+
+			playerFragment.appendChild(rowDiv);
 		}
+
+		playerGrid.replaceChildren(playerFragment);
 	}
 
 	private createMasonTableUI(): HTMLDivElement {
@@ -885,131 +1405,66 @@ export class PlayerHud {
 		this.updateHotbarSelection();
 	}
 	private updateHotbarSelection(): void {
-		this.#hotbarSlots.forEach((slot, index) => {
-			slot.classList.toggle("selected", index === this.#selectedHotbarSlot);
-		});
+		const selected = this.#selectedHotbarSlot;
+		const hotbarSlots = this.#hotbarSlots;
 
-		// Clear any existing fade-out timeout
-		if (this.#heldItemNameTimeout) {
-			clearTimeout(this.#heldItemNameTimeout);
+		for (let i = 0, len = hotbarSlots.length; i < len; i++) {
+			const slot = hotbarSlots[i];
+			const shouldBeSelected = i === selected;
+
+			if (slot.classList.contains("selected") !== shouldBeSelected) {
+				slot.classList.toggle("selected", shouldBeSelected);
+			}
 		}
 
-		// Update held item name display
-		const itemSlot =
-			PlayerHud.#inventory.inventory[0][this.#selectedHotbarSlot];
+		if (this.#heldItemNameTimeout) {
+			clearTimeout(this.#heldItemNameTimeout);
+			this.#heldItemNameTimeout = undefined;
+		}
+
+		const itemSlot = PlayerHud.#inventory.inventory[0][selected];
 		const item = itemSlot?.item;
-		if (PlayerHud.#heldItemNameDiv) {
-			const itemName = item ? item.name : "";
-			PlayerHud.#heldItemNameDiv.innerText = itemName;
+		const itemName = item ? item.name : "";
+		const nameDiv = PlayerHud.#heldItemNameDiv;
 
-			if (itemName) {
-				PlayerHud.#heldItemNameDiv.classList.add("visible");
-				this.#heldItemNameTimeout = window.setTimeout(() => {
-					PlayerHud.#heldItemNameDiv.classList.remove("visible");
-				}, 2000);
+		if ((nameDiv.dataset.itemName ?? "") !== itemName) {
+			nameDiv.dataset.itemName = itemName;
+			nameDiv.textContent = itemName;
+			this.#heldItemNameDivCachedWidth = 0;
+		}
 
-				// PERF: Cache heldItemNameDiv width to avoid second getBoundingClientRect().
-				if (this.#heldItemNameDivCachedWidth === 0) {
-					this.#heldItemNameDivCachedWidth =
-						PlayerHud.#heldItemNameDiv.getBoundingClientRect().width;
-				}
-				const slotRect = itemSlot.divItemSlot.getBoundingClientRect();
-				const widthOffset =
-					slotRect.left +
-					slotRect.width / 2 -
-					this.#heldItemNameDivCachedWidth / 2;
+		if (!itemName) {
+			nameDiv.classList.remove("visible");
+			return;
+		}
 
-				PlayerHud.#heldItemNameDiv.style.left = `${widthOffset}px`;
-			} else {
-				PlayerHud.#heldItemNameDiv.classList.remove("visible");
-			}
+		nameDiv.classList.add("visible");
+
+		this.#heldItemNameTimeout = window.setTimeout(() => {
+			nameDiv.classList.remove("visible");
+		}, 2000);
+
+		if (this.#heldItemNameDivCachedWidth === 0) {
+			this.#heldItemNameDivCachedWidth = nameDiv.getBoundingClientRect().width;
+		}
+
+		const slotRect = itemSlot.divItemSlot.getBoundingClientRect();
+		const widthOffset =
+			slotRect.left +
+			slotRect.width * 0.5 -
+			this.#heldItemNameDivCachedWidth * 0.5;
+
+		const left = `${widthOffset}px`;
+		if (nameDiv.style.left !== left) {
+			nameDiv.style.left = left;
 		}
 	}
 
 	private initializeDebugPanel(): void {
 		if (PlayerHud.debugPanelDiv) return;
 
-		const style = document.createElement("style");
-		style.textContent = `
-			.debug-info-container {
-				display: flex;
-				flex-direction: column;
-				gap: 1px;
-			}
-			.debug-row {
-				display: flex;
-				gap: 4px;
-				line-height: 1.3;
-			}
-			.debug-key {
-				font-weight: bold;
-				color: #e0e0e0;
-				-webkit-text-stroke: 0.6px #000;
-				text-stroke: 0.6px #000;
-				paint-order: stroke fill;
-				text-shadow:
-					-1px -1px 0 #000,
-					 1px -1px 0 #000,
-					-1px  1px 0 #000,
-					 1px  1px 0 #000,
-					 0px  1px 0 #000,
-					 0px -1px 0 #000,
-					-1px  0px 0 #000,
-					 1px  0px 0 #000;
-			}
-			.debug-value {
-				color: #fff;
-				-webkit-text-stroke: 0.4px #000;
-				text-stroke: 0.4px #000;
-				paint-order: stroke fill;
-				text-shadow:
-					-1px -1px 0 #000,
-					 1px -1px 0 #000,
-					-1px  1px 0 #000,
-					 1px  1px 0 #000,
-					 0px  1px 0 #000,
-					 0px -1px 0 #000,
-					-1px  0px 0 #000,
-					 1px  0px 0 #000;
-			}
-			.debug-key[data-cat="performance"] { color: #00ff88; }
-			.debug-key[data-cat="position"]    { color: #44aaff; }
-			.debug-key[data-cat="world"]       { color: #ffcc44; }
-			.debug-key[data-cat="chunks"]      { color: #ff8844; }
-			.debug-key[data-cat="workers"]     { color: #cc66ff; }
-			.debug-key[data-cat="stats"]       { color: #ff6688; }
-			.debug-key[data-cat="biome"]       { color: #88ff44; }
-			.debug-key[data-cat="mobs"]        { color: #44ffff; }
-			.debug-slider-label {
-				color: #ffcc44;
-				font-weight: bold;
-				-webkit-text-stroke: 0.6px #000;
-				text-stroke: 0.6px #000;
-				paint-order: stroke fill;
-				text-shadow:
-					-1px -1px 0 #000,
-					 1px -1px 0 #000,
-					-1px  1px 0 #000,
-					 1px  1px 0 #000,
-					 0px  1px 0 #000,
-					 0px -1px 0 #000,
-					-1px  0px 0 #000,
-					 1px  0px 0 #000;
-			}
-		`;
-		document.head.appendChild(style);
-
 		const div = document.createElement("div");
-		div.style.position = "absolute";
-		div.style.top = "10px";
-		div.style.left = "10px";
-		div.style.padding = "10px";
-		div.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
-		div.style.fontFamily = "monospace";
-		div.style.fontSize = "14px";
-		div.style.zIndex = "100";
-		div.style.display = "block";
-		div.style.borderRadius = "5px";
+		div.id = "debug-panel";
 		document.body.appendChild(div);
 		PlayerHud.debugPanelDiv = div;
 
@@ -1105,6 +1560,16 @@ export class PlayerHud {
 		div.appendChild(wetnessSlider);
 	}
 
+	/** Toggle visibility of all persistent HUD elements via the `hud-hidden` body class. */
+	public static toggleHud(): void {
+		PlayerHud.#hudHidden = !PlayerHud.#hudHidden;
+		document.body.classList.toggle("hud-hidden", PlayerHud.#hudHidden);
+	}
+
+	public static get isHudHidden(): boolean {
+		return PlayerHud.#hudHidden;
+	}
+
 	public static toggleDebugInfo(): void {
 		if (PlayerHud.debugPanelDiv) {
 			if (PlayerHud.debugPanelVisible) {
@@ -1117,6 +1582,7 @@ export class PlayerHud {
 
 	public static showDebugPanel(): void {
 		if (PlayerHud.debugPanelDiv) {
+			PlayerHud.removeDebugInfo("Faces");
 			PlayerHud.debugPanelDiv.style.display = "block";
 			PlayerHud.debugPanelVisible = true;
 		}
@@ -1134,51 +1600,58 @@ export class PlayerHud {
 		value: string | number,
 		category?: string,
 	): void {
-		if (!PlayerHud.debugPanelDiv) return;
+		const panel = PlayerHud.debugPanelDiv;
+		if (!panel) return;
 
 		const stringValue = String(value);
-
 		const row = PlayerHud.infoRows[key];
 
-		if (!row) {
-			const container = document.createElement("div");
-			container.className = "debug-row";
-
-			const keySpan = document.createElement("span");
-			keySpan.className = "debug-key";
-			if (category) keySpan.dataset.cat = category;
-			keySpan.textContent = `${key}: `;
-
-			const valueSpan = document.createElement("span");
-			valueSpan.className = "debug-value";
-			valueSpan.textContent = stringValue;
-
-			container.appendChild(keySpan);
-			container.appendChild(valueSpan);
-
-			let textContainer = PlayerHud.debugPanelDiv.querySelector(
-				".debug-info-container",
-			) as HTMLDivElement;
-
-			if (!textContainer) {
-				textContainer = document.createElement("div");
-				textContainer.className = "debug-info-container";
-				PlayerHud.debugPanelDiv.prepend(textContainer);
-			}
-
-			textContainer.appendChild(container);
-
-			PlayerHud.infoRows[key] = {
-				container,
-				valueNode: valueSpan as unknown as Text,
-				valueSpan,
-				keySpan,
-			};
-		} else {
+		if (row) {
 			if (row.valueSpan && row.valueSpan.textContent !== stringValue) {
 				row.valueSpan.textContent = stringValue;
 			}
+			return;
 		}
+
+		const container = document.createElement("div");
+		container.className = "debug-row";
+
+		const keySpan = document.createElement("span");
+		keySpan.className = "debug-key";
+		if (category) keySpan.dataset.cat = category;
+		keySpan.textContent = `${key}: `;
+
+		const valueSpan = document.createElement("span");
+		valueSpan.className = "debug-value";
+		valueSpan.textContent = stringValue;
+
+		container.appendChild(keySpan);
+		container.appendChild(valueSpan);
+
+		let textContainer = panel.firstElementChild as HTMLDivElement | null;
+
+		if (textContainer?.className !== "debug-info-container") {
+			textContainer = document.createElement("div");
+			textContainer.className = "debug-info-container";
+			panel.prepend(textContainer);
+		}
+
+		textContainer.appendChild(container);
+
+		PlayerHud.infoRows[key] = {
+			container,
+			valueNode: valueSpan.firstChild as Text,
+			valueSpan,
+			keySpan,
+		};
+	}
+
+	public static removeDebugInfo(key: string): void {
+		const row = PlayerHud.infoRows[key];
+		if (!row) return;
+
+		row.container.remove();
+		delete PlayerHud.infoRows[key];
 	}
 
 	private initializeTooltip(): void {
@@ -1186,62 +1659,110 @@ export class PlayerHud {
 
 		const tooltip = document.createElement("div");
 		tooltip.id = "item-tooltip";
-		tooltip.style.display = "none";
 		document.body.appendChild(tooltip);
 		PlayerHud.itemTooltipDiv = tooltip;
+
+		// Bound once for the tooltip's lifetime. While the tooltip is hidden
+		// this only writes two numbers per event.
+		document.addEventListener("mousemove", PlayerHud.#onTooltipMouseMove);
 	}
 
 	public static showItemTooltip(text: string, event: MouseEvent): void {
-		if (!PlayerHud.itemTooltipDiv) return;
+		const tooltip = PlayerHud.itemTooltipDiv;
+		if (!tooltip) return;
 
 		const item = PlayerInventory.currentlyHoveredSlot?.item;
-		PlayerHud.itemTooltipDiv.innerHTML = "";
+
 		if (item) {
-			const nameDiv = document.createElement("div");
-			nameDiv.className = "item-tooltip-name";
-			nameDiv.textContent = item.name;
-			PlayerHud.itemTooltipDiv.appendChild(nameDiv);
+			if (tooltip.dataset.itemName !== item.name) {
+				tooltip.dataset.itemName = item.name;
+				tooltip.dataset.itemDesc = item.description ?? "";
 
-			if (item.description) {
-				const descDiv = document.createElement("div");
-				descDiv.className = "item-tooltip-desc";
-				descDiv.textContent = item.description;
-				PlayerHud.itemTooltipDiv.appendChild(descDiv);
+				let nameDiv = tooltip.firstElementChild as HTMLDivElement | null;
+				if (nameDiv?.className !== "item-tooltip-name") {
+					tooltip.textContent = "";
+
+					nameDiv = document.createElement("div");
+					nameDiv.className = "item-tooltip-name";
+					tooltip.appendChild(nameDiv);
+				}
+
+				nameDiv.textContent = item.name;
+
+				const arrowStats = getArrowTooltipStats(item.itemId);
+				const toolStats = getToolTooltipStats(item.itemId);
+				const stats = [arrowStats, toolStats].filter(Boolean).join("\n");
+				const desc = stats ? `${item.description}\n${stats}` : item.description;
+				let descDiv = nameDiv.nextElementSibling as HTMLDivElement | null;
+
+				if (desc) {
+					if (descDiv?.className !== "item-tooltip-desc") {
+						descDiv = document.createElement("div");
+						descDiv.className = "item-tooltip-desc";
+						tooltip.appendChild(descDiv);
+					}
+
+					descDiv.textContent = desc;
+				} else if (descDiv) {
+					descDiv.remove();
+				}
 			}
-		} else {
-			PlayerHud.itemTooltipDiv.textContent = text;
+		} else if (tooltip.dataset.fallbackText !== text) {
+			tooltip.dataset.itemName = "";
+			tooltip.dataset.itemDesc = "";
+			tooltip.dataset.fallbackText = text;
+			tooltip.textContent = text;
 		}
 
-		PlayerHud.itemTooltipDiv.style.display = "block";
+		PlayerHud.#tooltipVisible = true;
+		tooltip.classList.add("visible");
 
-		// Update position immediately and then follow the cursor
-		const updatePos = (e: MouseEvent) => {
-			const offsetX = 12;
-			const offsetY = 32;
-			PlayerHud.itemTooltipDiv.style.left = `${e.clientX + offsetX}px`;
-			PlayerHud.itemTooltipDiv.style.top = `${e.clientY - offsetY}px`;
-		};
-
-		// Set initial position from the original event
-		updatePos(event);
-
-		// Remove any previous listener to avoid duplicates
-		if (PlayerHud.itemTooltipMouseMove) {
-			document.removeEventListener("mousemove", PlayerHud.itemTooltipMouseMove);
-		}
-
-		PlayerHud.itemTooltipMouseMove = updatePos;
-		document.addEventListener("mousemove", PlayerHud.itemTooltipMouseMove);
+		// Place immediately from this event so the tooltip never appears at a
+		// stale position; a transform write does not invalidate layout.
+		PlayerHud.#tooltipPendingX = event.clientX + 12;
+		PlayerHud.#tooltipPendingY = event.clientY - 32;
+		PlayerHud.#applyTooltipPosition();
 	}
 
+	static #onTooltipMouseMove = (event: MouseEvent): void => {
+		PlayerHud.#tooltipPendingX = event.clientX + 12;
+		PlayerHud.#tooltipPendingY = event.clientY - 32;
+
+		if (!PlayerHud.#tooltipVisible) {
+			// Drop any pending write for a tooltip that is no longer shown.
+			if (PlayerHud.#tooltipRafId !== null) {
+				cancelAnimationFrame(PlayerHud.#tooltipRafId);
+				PlayerHud.#tooltipRafId = null;
+			}
+			return;
+		}
+
+		if (PlayerHud.#tooltipRafId === null) {
+			PlayerHud.#tooltipRafId = requestAnimationFrame(
+				PlayerHud.#applyTooltipPosition,
+			);
+		}
+	};
+
+	static #applyTooltipPosition = (): void => {
+		PlayerHud.#tooltipRafId = null;
+
+		const tooltip = PlayerHud.itemTooltipDiv;
+		if (!tooltip || !PlayerHud.#tooltipVisible) return;
+
+		tooltip.style.transform = `translate3d(${PlayerHud.#tooltipPendingX}px, ${PlayerHud.#tooltipPendingY}px, 0)`;
+	};
+
 	public static hideItemTooltip(): void {
-		if (!PlayerHud.itemTooltipDiv) return;
+		const tooltip = PlayerHud.itemTooltipDiv;
+		if (!tooltip) return;
 
-		PlayerHud.itemTooltipDiv.style.display = "none";
+		PlayerHud.#tooltipVisible = false;
+		tooltip.classList.remove("visible");
 
-		if (PlayerHud.itemTooltipMouseMove) {
-			document.removeEventListener("mousemove", PlayerHud.itemTooltipMouseMove);
-			PlayerHud.itemTooltipMouseMove = undefined;
+		if (PlayerHud.#tooltipRafId !== null) {
+			cancelAnimationFrame(PlayerHud.#tooltipRafId);
+			PlayerHud.#tooltipRafId = null;
 		}
 	}
 
@@ -1249,26 +1770,72 @@ export class PlayerHud {
 		const stats = this.#player.stats;
 		if (!stats) return;
 
-		// PERF: Only write to DOM when stat percentages actually change.
-		const healthPct = (stats.health / stats.maxHealth) * 100;
+		const healthPct =
+			stats.maxHealth > 0
+				? Math.max(
+						0,
+						Math.min(100, Math.round((stats.health / stats.maxHealth) * 100)),
+					)
+				: 0;
+
 		if (healthPct !== this.#prevHealthPct) {
 			this.#prevHealthPct = healthPct;
-			this.#healthBarFill.style.width = `${healthPct}%`;
+			this.#healthBarFill.style.transform = `scaleX(${healthPct / 100})`;
 		}
-		const hungerPct = (stats.hunger / stats.maxHunger) * 100;
+
+		const hungerPct =
+			stats.maxHunger > 0
+				? Math.max(
+						0,
+						Math.min(100, Math.round((stats.hunger / stats.maxHunger) * 100)),
+					)
+				: 0;
+
 		if (hungerPct !== this.#prevHungerPct) {
 			this.#prevHungerPct = hungerPct;
-			this.#hungerBarFill.style.width = `${hungerPct}%`;
+			this.#hungerBarFill.style.transform = `scaleX(${hungerPct / 100})`;
 		}
-		const staminaPct = (stats.stamina / stats.maxStamina) * 100;
+
+		const staminaPct =
+			stats.maxStamina > 0
+				? Math.max(
+						0,
+						Math.min(100, Math.round((stats.stamina / stats.maxStamina) * 100)),
+					)
+				: 0;
+
 		if (staminaPct !== this.#prevStaminaPct) {
 			this.#prevStaminaPct = staminaPct;
-			this.#staminaBarFill.style.width = `${staminaPct}%`;
+			this.#staminaBarFill.style.transform = `scaleX(${staminaPct / 100})`;
 		}
-		const manaPct = (stats.mana / stats.maxMana) * 100;
+
+		const manaPct =
+			stats.maxMana > 0
+				? Math.max(
+						0,
+						Math.min(100, Math.round((stats.mana / stats.maxMana) * 100)),
+					)
+				: 0;
+
 		if (manaPct !== this.#prevManaPct) {
 			this.#prevManaPct = manaPct;
-			this.#manaBarFill.style.width = `${manaPct}%`;
+			this.#manaBarFill.style.transform = `scaleX(${manaPct / 100} )`;
+		}
+
+		const xpNeed = stats.xpForNextLevel();
+		const xpPct =
+			xpNeed > 0
+				? Math.max(0, Math.min(100, Math.round((stats.xp / xpNeed) * 100)))
+				: 0;
+
+		if (xpPct !== this.#prevXpPct) {
+			this.#prevXpPct = xpPct;
+			this.#xpBarFill.style.transform = `scaleX(${xpPct / 100})`;
+		}
+
+		if (stats.xpLevel !== this.#prevXpLevel) {
+			this.#prevXpLevel = stats.xpLevel;
+			this.#xpLevelLabel.textContent = `Lv ${stats.xpLevel}`;
 		}
 	}
 }

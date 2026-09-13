@@ -1,5 +1,10 @@
 # Dependencies
 /node_modules
+/server/node_modules
+/server/dist
+/server/*.log
+/server/server-data
+/server/test-db
 /public/models
 /public/environment
 /src/App.vue
@@ -13,6 +18,8 @@ convert.bat
 /public/texture/*
 !/public/texture/diffuse_atlas.png
 !/public/texture/normal_atlas.png
+!/public/texture/player/
+!/public/texture/player/skin.png
 
 *.zip
 *.env
@@ -44,3 +51,14 @@ Thumbs.db
 # Build info
 *.tsbuildinfo
 graphify-out/
+src/code_bundle.txt
+code_js_bundle.txt
+src/composer.bat
+
+/.tmp*
+tools/generate-coal-icon.mjs
+tools/generate-spawn-egg-icons.mjs
+/scripts
+scripts/far-tile-selftest.ts
+tools/generate-bow-arrow-icons.mjs
+plans/*

@@ -3,6 +3,7 @@ import type {
 	ColumnPrepassResolver,
 	IWorldFeature,
 } from "../Structure/IWorldFeature";
+import type { PlaceBlockFn } from "../SurfaceGenerator";
 
 const STRUCTURE_SEARCH_RADIUS = 2;
 
@@ -14,49 +15,41 @@ export function generateStructures(
 	biome: Biome,
 	features: IWorldFeature[],
 	seedAsInt: number,
-	placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		id: number,
-		ow: boolean,
-	) => void,
+	placeBlock: PlaceBlockFn,
 	columnPrepassResolver?: ColumnPrepassResolver,
 ): void {
 	const chunkMinY = chunkY * chunkSize;
 	const chunkMaxY = chunkMinY + chunkSize - 1;
 
-	let hasRelevantFeature = false;
-	for (let i = 0; i < features.length; i++) {
-		const b = features[i].verticalBounds;
+	const featureCount = features.length;
+	if (featureCount === 0) return;
+
+	const relevantFeatures: IWorldFeature[] = [];
+
+	for (let i = 0; i < featureCount; i++) {
+		const feature = features[i];
+		const bounds = feature.verticalBounds;
+
 		if (
-			b === undefined ||
-			!(chunkMaxY < b.minWorldY || chunkMinY > b.maxWorldY)
+			bounds === undefined ||
+			(chunkMaxY >= bounds.minWorldY && chunkMinY <= bounds.maxWorldY)
 		) {
-			hasRelevantFeature = true;
-			break;
+			relevantFeatures.push(feature);
 		}
 	}
-	if (!hasRelevantFeature) return;
 
-	for (
-		let cx = chunkX - STRUCTURE_SEARCH_RADIUS;
-		cx <= chunkX + STRUCTURE_SEARCH_RADIUS;
-		cx++
-	) {
-		for (
-			let cz = chunkZ - STRUCTURE_SEARCH_RADIUS;
-			cz <= chunkZ + STRUCTURE_SEARCH_RADIUS;
-			cz++
-		) {
-			for (let i = 0; i < features.length; i++) {
-				const feature = features[i];
-				const bounds = feature.verticalBounds;
-				if (bounds !== undefined) {
-					if (chunkMaxY < bounds.minWorldY) continue;
-					if (chunkMinY > bounds.maxWorldY) continue;
-				}
-				feature.generate(
+	const relevantFeatureCount = relevantFeatures.length;
+	if (relevantFeatureCount === 0) return;
+
+	const minSearchChunkX = chunkX - STRUCTURE_SEARCH_RADIUS;
+	const maxSearchChunkX = chunkX + STRUCTURE_SEARCH_RADIUS;
+	const minSearchChunkZ = chunkZ - STRUCTURE_SEARCH_RADIUS;
+	const maxSearchChunkZ = chunkZ + STRUCTURE_SEARCH_RADIUS;
+
+	for (let cx = minSearchChunkX; cx <= maxSearchChunkX; cx++) {
+		for (let cz = minSearchChunkZ; cz <= maxSearchChunkZ; cz++) {
+			for (let i = 0; i < relevantFeatureCount; i++) {
+				relevantFeatures[i].generate(
 					cx,
 					chunkY,
 					cz,

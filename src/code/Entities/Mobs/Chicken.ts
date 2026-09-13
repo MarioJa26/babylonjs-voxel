@@ -1,25 +1,136 @@
-import {
-	addToScene,
-	createMeshFromData,
-	type LiteMetadata,
-	type Mesh,
-	removeFromScene,
-	type SceneContext,
-	vec3,
-} from "@babylonjs/lite";
+import { type SceneContext, vec3 } from "@babylonjs/lite";
 import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
-import type { Player } from "../../Player/Player";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
-
-import { MetadataContainer } from "../MetadataContainer";
-import { buildBoxGeometry, createMobColorMaterial } from "./MobMesh";
+import { getMobStats, MobTypeId } from "../MobConfig";
+import { dropMobFoodForType } from "./MobDrops";
+import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
+import { registerMobLight, unregisterMobLight } from "./MobLighting";
+import type { MobPartSpec } from "./MobMesh";
+import {
+	CHICKEN_BEAK_UV,
+	CHICKEN_BODY_UV,
+	CHICKEN_HEAD_UV,
+	CHICKEN_LEG_L_UV,
+	CHICKEN_LEG_R_UV,
+	CHICKEN_WING_L_UV,
+	CHICKEN_WING_R_UV,
+	MOB_CHICKEN_SKIN_PATH,
+} from "./MobSkin";
 import { NeutralMob } from "./NeutralMob";
+import { spawnXpOrbs } from "./XpOrb";
 
-const BODY_WIDTH = 0.5;
-const BODY_HEIGHT = 0.4;
-const BODY_DEPTH = 0.3;
-const HEAD_SIZE = 0.2;
+const CHICKEN_MOB_TYPE = "chicken";
+const CHICKEN_CHUNK_ENTITY_TYPE = "chicken_v1";
+const CHICKEN_STATS = getMobStats(MobTypeId.Chicken);
+const CHICKEN_DEFAULT_HP = CHICKEN_STATS.hp;
+const CHICKEN_WANDER_SPEED = CHICKEN_STATS.speed;
+
+// Chicken anatomy: body + head + beak + two wings + two legs. Every chicken
+// renders through this ONE shared thin-instanced mesh (1 draw call total).
+// UVs reference the editable skin layout in MobSkin.ts.
+const CHICKEN_PARTS: readonly MobPartSpec[] = [
+	{
+		width: 0.5,
+		height: 0.4,
+		depth: 0.3,
+		x: 0,
+		y: 0,
+		z: 0,
+		uv: CHICKEN_BODY_UV,
+	},
+	{
+		width: 0.22,
+		height: 0.28,
+		depth: 0.24,
+		x: 0,
+		y: 0.3,
+		z: 0.13,
+		uv: CHICKEN_HEAD_UV,
+	},
+	{
+		width: 0.1,
+		height: 0.08,
+		depth: 0.12,
+		x: 0,
+		y: 0.28,
+		z: 0.3,
+		uv: CHICKEN_BEAK_UV,
+	},
+	{
+		width: 0.06,
+		height: 0.26,
+		depth: 0.34,
+		x: -0.285,
+		y: 0.03,
+		z: -0.02,
+		uv: CHICKEN_WING_L_UV,
+	},
+	{
+		width: 0.06,
+		height: 0.26,
+		depth: 0.34,
+		x: 0.285,
+		y: 0.03,
+		z: -0.02,
+		uv: CHICKEN_WING_R_UV,
+	},
+	{
+		width: 0.07,
+		height: 0.25,
+		depth: 0.07,
+		x: -0.09,
+		y: -0.325,
+		z: 0,
+		uv: CHICKEN_LEG_L_UV,
+		partId: 3,
+	},
+	{
+		width: 0.07,
+		height: 0.25,
+		depth: 0.07,
+		x: 0.09,
+		y: -0.325,
+		z: 0,
+		uv: CHICKEN_LEG_R_UV,
+		partId: 4,
+	},
+];
+
+// Collider spans the whole animal so feet rest exactly on the ground.
+export const CHICKEN_HIT_HALF = { x: 0.31, y: 0.45, z: 0.3 };
+const CHICKEN_BODY_HALF_SIZE = vec3(
+	CHICKEN_HIT_HALF.x,
+	CHICKEN_HIT_HALF.y,
+	CHICKEN_HIT_HALF.z,
+);
+
+// Hip pivot Y: legs span y ∈ [-0.45, -0.2]; the body underside is at y = -0.2,
+// so the leg-body joint (rotation pivot) sits at y = -0.2.
+const CHICKEN_HIP_PIVOT_Y = -0.2;
+const CHICKEN_WALK_AMP = 0.7;
+
+let bodyPool: MobInstancePool | null = null;
+
+function getBodyPool(): MobInstancePool {
+	bodyPool ??= new MobInstancePool({
+		name: "chickenInstances",
+		parts: CHICKEN_PARTS,
+		skinPath: MOB_CHICKEN_SKIN_PATH,
+		// Instance colors required: walk phase is packed into the alpha channel.
+		instanceColors: true,
+		tint: Color3.White(),
+		hipPivotY: CHICKEN_HIP_PIVOT_Y,
+		walkAmp: CHICKEN_WALK_AMP,
+	});
+	return bodyPool;
+}
+
+/** Shared instance pool — remote (server-authoritative) chickens render
+ * through the same textured instanced mesh as local ones. */
+export function getChickenInstancePool(): MobInstancePool {
+	return getBodyPool();
+}
 
 type ChickenSerializedPayload = {
 	position: { x: number; y: number; z: number };
@@ -27,16 +138,13 @@ type ChickenSerializedPayload = {
 };
 
 export class Chicken extends NeutralMob {
-	readonly mobType = "chicken";
-	readonly CHUNK_ENTITY_TYPE = "chicken_v1";
+	readonly mobType = CHICKEN_MOB_TYPE;
+	readonly CHUNK_ENTITY_TYPE = CHICKEN_CHUNK_ENTITY_TYPE;
 
 	static #chunkLoaderRegistered = false;
 	static #chunkReloadScene: SceneContext | null = null;
 
-	#headMesh: Mesh;
-	#headMaterial: ReturnType<typeof createMobColorMaterial>;
-	#bodyMesh: Mesh;
-	#bodyMaterial: ReturnType<typeof createMobColorMaterial>;
+	#bodySlot: InstanceSlotHandle;
 
 	constructor(
 		x: number,
@@ -46,102 +154,69 @@ export class Chicken extends NeutralMob {
 		hp?: number,
 	) {
 		super(
-			hp ?? 4,
+			hp ?? CHICKEN_DEFAULT_HP,
 			scene,
-			vec3(BODY_WIDTH * 0.5, BODY_HEIGHT * 0.5, BODY_DEPTH * 0.5),
+			CHICKEN_BODY_HALF_SIZE,
+			CHICKEN_STATS.feetHeight,
 		);
 
-		// Body mesh
-		const bodyGeo = buildBoxGeometry(BODY_WIDTH, BODY_HEIGHT, BODY_DEPTH);
-		this.#bodyMesh = createMeshFromData(
-			Map1.engine,
-			"chickenBody",
-			bodyGeo.positions,
-			bodyGeo.normals,
-			bodyGeo.indices,
-		);
-		this.#bodyMesh.position.set(x, y, z);
-		this.#bodyMesh.pickable = true;
-		this.#bodyMesh.renderOrder = 1;
+		this.setPosition(x, y, z);
 
-		this.#bodyMaterial = createMobColorMaterial(
-			Color3.White(),
-			"chickenBodyMat",
-		);
-		this.#bodyMesh.material = this.#bodyMaterial;
-
-		// Head mesh
-		const headGeo = buildBoxGeometry(HEAD_SIZE, HEAD_SIZE, HEAD_SIZE);
-		this.#headMesh = createMeshFromData(
-			Map1.engine,
-			"chickenHead",
-			headGeo.positions,
-			headGeo.normals,
-			headGeo.indices,
-		);
-		this.#headMesh.parent = this.#bodyMesh;
-		this.#headMesh.position.set(
-			0,
-			BODY_HEIGHT * 0.5 + HEAD_SIZE * 0.3,
-			BODY_DEPTH * 0.45,
-		);
-		this.#headMesh.pickable = false;
-		this.#headMesh.renderOrder = 1;
-
-		this.#headMaterial = createMobColorMaterial(
-			new Color3(0.95, 0.95, 0.85),
-			"chickenHeadMat",
-		);
-		this.#headMesh.material = this.#headMaterial;
-
-		addToScene(Map1.mainScene, this.#bodyMesh);
-
-		// Wire up body mesh to base class
-		const meta = new MetadataContainer();
-		this.#bodyMesh.metadata = meta as unknown as LiteMetadata;
-		this.setBodyMesh(this.#bodyMesh);
-		meta.set("use", (player: Player) => this.use(player));
+		this.#bodySlot = getBodyPool().acquire(this);
+		getBodyPool().writeColor(this.#bodySlot, 1, 1, 1, 0);
+		this.syncToInstances();
+		this.finalizeRegistration();
+		registerMobLight({
+			pool: getBodyPool(),
+			slot: this.#bodySlot,
+			getPos: () => this.position,
+			baseColor: [1, 1, 1],
+			owner: this,
+		});
 	}
 
-	// --- Abstract implementations ---
+	protected override syncToInstances(): void {
+		const pos = this.position;
+		const pool = getBodyPool();
+
+		pool.writeMatrix(this.#bodySlot, pos.x, pos.y, pos.z, this.facingYaw);
+		pool.writeWalkPhase(this.#bodySlot, this.walkPhase);
+	}
 
 	configureChunkLoader(scene: SceneContext): void {
 		Chicken.#chunkReloadScene = scene;
+
 		if (Chicken.#chunkLoaderRegistered) return;
 		Chicken.#chunkLoaderRegistered = true;
 
-		registerChunkEntityLoader(this.CHUNK_ENTITY_TYPE, (payload: unknown) => {
-			const s = Chicken.#chunkReloadScene;
-			if (!s) return;
+		registerChunkEntityLoader(CHICKEN_CHUNK_ENTITY_TYPE, (payload: unknown) => {
+			const reloadScene = Chicken.#chunkReloadScene;
+			if (!reloadScene) return;
+
 			const data = payload as ChickenSerializedPayload | undefined;
-			if (!data?.position) return;
+			const position = data?.position;
+			if (!position) return;
 
 			Map1.mobRegistry?.addMob(
-				new Chicken(
-					data.position.x,
-					data.position.y,
-					data.position.z,
-					s,
-					data.hp,
-				),
+				new Chicken(position.x, position.y, position.z, reloadScene, data.hp),
 			);
 		});
 	}
 
 	getWanderSpeed(): number {
-		return 1.8;
+		return CHICKEN_WANDER_SPEED;
 	}
 
 	onDeath(): void {
-		// No drops
+		const pos = this.position;
+		dropMobFoodForType("chicken", pos.x, pos.y, pos.z);
+		spawnXpOrbs(pos.x, pos.y, pos.z, 1, 1);
 	}
-
-	// --- Cleanup ---
 
 	dispose(): void {
 		if (this.isDisposed) return;
-		removeFromScene(Map1.mainScene, this.#headMesh);
-		removeFromScene(Map1.mainScene, this.#bodyMesh);
+		unregisterMobLight(this.#bodySlot);
+		getBodyPool().release(this.#bodySlot);
 		super.dispose();
 	}
 }

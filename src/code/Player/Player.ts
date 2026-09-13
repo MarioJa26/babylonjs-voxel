@@ -1,19 +1,19 @@
 import type {
 	EngineContext,
-	GpuPicker,
 	Mesh,
 	SceneContext,
+	ShaderMaterial,
 	Vec3,
 } from "@babylonjs/lite";
-import {
-	addToScene,
-	createCapsule,
-	createGpuPicker,
-	createStandardMaterial,
-	disposePicker,
-} from "@babylonjs/lite";
+import { addToScene } from "@babylonjs/lite";
+import { CustomBoat } from "@/code/Entities/CustomBoat";
+import { type IMountableUser, Mount } from "@/code/Entities/Mount";
+import { igniteTnt } from "@/code/Entities/PrimedTnt";
 import { Map1 } from "@/code/Maps/Map1";
+import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
+import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { tntBlastRadius } from "@/code/World/ExplosionSim";
 import { BlockType } from "@/code/World/Texture/BlockType";
 import type { IControls } from "../Interface/IControls";
 import { getIsPaused, isUiOpen, setIsPaused } from "../Lib/GameRuntimeState";
@@ -22,30 +22,52 @@ import {
 	pickDroppedItem,
 	pickTarget,
 } from "./Hud/BlockHighlight/BlockRaycaster";
+import {
+	setOnExplosion,
+	setOnTntIgnite,
+} from "./Hud/BlockHighlight/BreakingBlockHandler";
 import { PauseMenu } from "./Hud/PauseMenu";
 import { PlayerHud } from "./Hud/PlayerHud";
 import { DroppedItem } from "./Inventory/DroppedItem";
+import { setOnBlockPlaced } from "./Inventory/Item";
 import { PlayerInventory } from "./Inventory/PlayerInventory";
 import { PlayerBodyControlState } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
 import { PlayerFlashLight } from "./PlayerFlashLight";
 import { PlayerInputController } from "./PlayerInputController";
 import { PlayerLoopController } from "./PlayerLoopController";
+import {
+	applyRigSkin,
+	createPlayerRigMesh,
+	createRigShaderMaterial,
+	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
+	packedLightToLightColor,
+	setRigHeadPitch,
+	setRigLightColor,
+	setRigWalk,
+	WALK_REF_SPEED,
+	WALK_STRIDE_FACTOR,
+} from "./PlayerModel";
 import { PlayerStats } from "./PlayerStats";
 import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
 
+// Mount ↔ Player bridge: Mount must not import Player (cycle), so the
+// Player module registers the structural predicate Mount.mount() gates on.
+// Without this, mount() refuses every rider and boats can never be driven.
+Mount.isMountableUser = (value: unknown): value is IMountableUser =>
+	typeof value === "object" &&
+	value !== null &&
+	"playerVehicle" in value &&
+	"playerCamera" in value &&
+	"keyboardControls" in value &&
+	"defaultKeyboardControls" in value;
+
 /**
- * Lite (native) port of the Player — Phase B slice.
+ * Lite (native) port of the Player.
  *
- * Wires the existing gameplay clusters (PlayerHud, PlayerInputController,
- * WalkingControls, PlayerInventory, BreakingBlockHandler, ItemUseActions,
- * DroppedItem) into the Babylon Lite runtime:
- *   - movement is owned by `PlayerVehicle` (driven by WalkingControls flags via
- *     the voxel AABB collider)
- *   - per-frame: move, update distant terrain, raycast a target for the
- *     crosshair highlight, tick WalkingControls (block breaking), refresh HUD
- *
- * Phase C (mobs/boats/mounts) and the full PlayerLoopController are deferred.
+ * Wires gameplay clusters into the Babylon Lite runtime:
+ *   - movement is owned by `PlayerVehicleMotor`
+ *   - per-frame: move, update terrain/player body, refresh HUD/controller loop
  */
 export class Player {
 	#playerCamera: PlayerCamera;
@@ -57,13 +79,35 @@ export class Player {
 	#playerHud!: PlayerHud;
 	#pauseMenu!: PauseMenu;
 	#inputController: PlayerInputController;
-	#picker: GpuPicker | null = null;
 	#pickInFlight = false;
+	#interactionsDisposed = false;
+	// E-hold vacuum: while the use key is held, tryPickupItem() repeats on
+	// a throttle so holding E collects every nearby drop. Block
+	// interactions (doors, TNT, mounts) stay single-press only.
+	#useHeld = false;
+	#lastUseRepeatMs = 0;
+	static readonly USE_REPEAT_INTERVAL_MS = 120;
 	#loopController!: PlayerLoopController;
 	#playerBodyMesh: Mesh | null = null;
+	#playerBodyMat: ShaderMaterial | null = null;
+	#bodySkinBound = false;
+	// Third-person body facing: derived from movement (Minecraft-style).
+	#lastBodyX = Number.NaN;
+	#lastBodyZ = Number.NaN;
+	#bodyYaw = 0;
+	// Voxel-light sampling cache (re-tint on voxel change OR every 250ms so
+	// the day/night sun factor updates while standing still).
+	#bodyLightX = Number.NaN;
+	#bodyLightY = Number.NaN;
+	#bodyLightZ = Number.NaN;
+	#bodyLightSampleMs = Number.NEGATIVE_INFINITY;
+	// Walk-swing state for the third-person rig.
+	#bodyWalkPhase = 0;
+	#bodyWalkAmp = 0;
 
-	// Current keyboard control scheme (WalkingControls, or InventoryControls
-	// while the inventory overlay is open).
+	networkManager?: import("../Network/NetworkManager").NetworkManager;
+
+	// Current keyboard control scheme.
 	keyboardControls: IControls<unknown>;
 
 	constructor(
@@ -74,6 +118,7 @@ export class Player {
 	) {
 		this.#playerCamera = playerCam;
 		this.#stats = new PlayerStats();
+
 		this.#playerVehicle = new PlayerVehicleMotor({
 			scene,
 			engine,
@@ -81,8 +126,10 @@ export class Player {
 			controls: new PlayerBodyControlState(),
 			playerStats: this.#stats,
 		});
+
 		this.#walkingControls = new WalkingControls(this);
 		this.keyboardControls = this.#walkingControls;
+
 		this.#flashlight = new PlayerFlashLight(scene, playerCam.playerCamera);
 		this.#playerInventory = new PlayerInventory(scene, this, 10, 10);
 
@@ -93,20 +140,19 @@ export class Player {
 			() => this.keyboardControls,
 			() => this.#onPauseRequested(),
 		);
-		this.#inputController.bind();
 
-		this.#picker = createGpuPicker(scene);
+		this.#inputController.bind();
 	}
 
 	/**
-	 * Build the HUD (crosshair + inventory + stats). Deferred until after
-	 * `Map1.initPromise` so the highlight/`BlockBreakingVisuals` meshes can use
-	 * `Map1.engine`, which is only ready once the world has initialised.
+	 * Build the HUD once the world has initialized.
 	 */
 	public createHud(scene: SceneContext): void {
 		if (this.#playerHud) return;
+
 		this.#playerHud = new PlayerHud(scene, this);
 		this.#createPlayerBody(scene);
+
 		this.#loopController = new PlayerLoopController(
 			scene,
 			this.#playerVehicle,
@@ -116,59 +162,154 @@ export class Player {
 			() => this.keyboardControls,
 			() => this.position,
 		);
+
 		this.#loopController.bind();
+
 		this.#pauseMenu = new PauseMenu(() => this.#resume(), this);
+		this.#pauseMenu.setLeaveServerCallback(() => {
+			this.networkManager?.disconnect();
+			window.location.href = "/";
+		});
 	}
 
-	/** Visible player capsule (third-person). Lite-native mesh + unlit material. */
+	/** Visible Minecraft-style player model for third-person mode. */
 	#createPlayerBody(scene: SceneContext): void {
-		const body = createCapsule(this.engine, { height: 1.8, radius: 0.3 });
-		const mat = createStandardMaterial();
-		mat.diffuseColor = [0.2, 0.6, 1.0];
-		mat.emissiveColor = [0.0, 0.0, 0.0];
-		mat.disableLighting = true;
+		const body = createPlayerRigMesh(this.engine, "playerBodyRig", "center");
+		const mat = createRigShaderMaterial("playerBodyRigMat");
+
 		body.material = mat;
 		body.pickable = false;
+		// Hidden until the skin texture binds (unbound sampler = invalid pass).
 		body.visible = false;
+
 		addToScene(scene, body);
 		this.#playerBodyMesh = body;
+		this.#playerBodyMat = mat;
+
+		applyRigSkin(this.engine, mat, () => {
+			this.#bodySkinBound = true;
+		});
 	}
 
-	/** Recompute spawn height against the loaded terrain (call after map init). */
+	/** Recompute spawn height against the loaded terrain. */
 	public respawn(): void {
 		this.#playerVehicle.respawn();
 	}
 
 	public tick(deltaMs: number): void {
-		if (getIsPaused()) return;
-		if (!this.#loopController) return;
+		if (getIsPaused() || !this.#loopController) return;
+
 		this.#loopController.tick(deltaMs);
-		this.#updatePlayerBody();
+		this.#updatePlayerBody(deltaMs);
 	}
 
-	#updatePlayerBody(): void {
-		if (!this.#playerBodyMesh) return;
-		const visible = this.#playerCamera.isThirdPerson;
-		this.#playerBodyMesh.visible = visible;
-		if (!visible) return;
-		const p = this.position;
-		this.#playerBodyMesh.position.set(p.x, p.y, p.z);
+	#updatePlayerBody(deltaMs: number): void {
+		const body = this.#playerBodyMesh;
+		if (!body) return;
+
+		// Walk swing: phase advances with ground speed; amplitude eases toward
+		// full stride at WALK_REF_SPEED and decays back to the rest pose.
+		{
+			const v = this.velocity;
+			const hSpeed = Math.hypot(v.x, v.z);
+			const dt = deltaMs / 1000;
+			this.#bodyWalkPhase += hSpeed * dt * WALK_STRIDE_FACTOR;
+			const targetAmp = Math.min(1, hSpeed / WALK_REF_SPEED);
+			this.#bodyWalkAmp +=
+				(targetAmp - this.#bodyWalkAmp) * Math.min(1, dt * 10);
+			const mat = this.#playerBodyMat;
+			if (mat) {
+				setRigWalk(mat, this.#bodyWalkPhase, this.#bodyWalkAmp);
+				setRigHeadPitch(mat, this.#playerCamera.cameraPitch);
+			}
+		}
+
+		// Don't render until the skin texture is bound (unbound sampler would
+		// produce an invalid pass), and only in third person.
+		const visible = this.#playerCamera.isThirdPerson && this.#bodySkinBound;
+		body.visible = visible;
+
+		if (!visible) {
+			this.#lastBodyX = Number.NaN;
+			return;
+		}
+
+		const { x, y, z } = this.position;
+		body.position.set(x, y, z);
+
+		// Re-tint the model when it crosses into a different voxel so its
+		// brightness follows the light the player actually stands in — and
+		// re-sample on a short interval so the day/night sun factor keeps
+		// updating even while standing still.
+		{
+			const lx = Math.floor(x);
+			const ly = Math.floor(y + PLAYER_LIGHT_SAMPLE_Y_OFFSET);
+			const lz = Math.floor(z);
+			const nowMs = performance.now();
+			if (
+				lx !== this.#bodyLightX ||
+				ly !== this.#bodyLightY ||
+				lz !== this.#bodyLightZ ||
+				nowMs - this.#bodyLightSampleMs > 250
+			) {
+				this.#bodyLightX = lx;
+				this.#bodyLightY = ly;
+				this.#bodyLightZ = lz;
+				this.#bodyLightSampleMs = nowMs;
+				const mat = this.#playerBodyMat;
+				if (mat) {
+					setRigLightColor(
+						mat,
+						packedLightToLightColor(
+							getLightByWorldCoords(x, y + PLAYER_LIGHT_SAMPLE_Y_OFFSET, z),
+						),
+					);
+				}
+			}
+		}
+
+		// Face the movement direction (Minecraft-style), smoothing through the
+		// shortest arc so the model never spins the long way around.
+		if (!Number.isNaN(this.#lastBodyX)) {
+			const dx = x - this.#lastBodyX;
+			const dz = z - this.#lastBodyZ;
+			if (dx * dx + dz * dz > 1e-6) {
+				const targetYaw = Math.atan2(dx, dz);
+				const diff = Math.atan2(
+					targetYaw - this.#bodyYaw,
+					Math.cos(targetYaw - this.#bodyYaw),
+				);
+				this.#bodyYaw += diff * 0.25;
+				body.rotation.y = this.#bodyYaw;
+			}
+		}
+		this.#lastBodyX = x;
+		this.#lastBodyZ = z;
 	}
 
 	#onPauseRequested(): void {
-		// Never open the pause menu while a non-blocking overlay (inventory,
-		// mason table) is open — those keep the world running and just free the
-		// mouse. Only a genuine pause request (Esc with no menu) reaches here.
 		if (getIsPaused() || isUiOpen() || !this.#pauseMenu) return;
-		setIsPaused(true);
-		Map1.isPaused = true;
-		this.#pauseMenu.show();
-		if (document.pointerLockElement) document.exitPointerLock();
+
+		const isMultiplayer = this.networkManager !== undefined;
+
+		if (!isMultiplayer) {
+			setIsPaused(true);
+			Map1.isPaused = true;
+		}
+
+		this.#pauseMenu.show(isMultiplayer);
+
+		if (document.pointerLockElement) {
+			document.exitPointerLock();
+		}
 	}
 
 	#resume(): void {
-		setIsPaused(false);
-		Map1.isPaused = false;
+		if (!this.networkManager) {
+			setIsPaused(false);
+			Map1.isPaused = false;
+		}
+
 		this.#pauseMenu.hide();
 		this.canvas.requestPointerLock();
 	}
@@ -177,13 +318,11 @@ export class Player {
 		this.keyboardControls?.handleKeyEvent(key, isKeyDown);
 	}
 
-	// ─── public surface consumed by WalkingControls / PlayerHud ─────────────
-
 	public get position(): Vec3 {
 		return this.#playerVehicle.position;
 	}
 
-	/** Current world-space velocity of the player body (m/s). */
+	/** Current world-space velocity of the player body, in m/s. */
 	public get velocity(): Vec3 {
 		return this.#playerVehicle.velocity;
 	}
@@ -220,68 +359,187 @@ export class Player {
 		return this.scene;
 	}
 
-	/** KEY_USE ('e') — interact with the usable mesh under the crosshair. */
+	/** KEY_USE ('e') — interact with the usable target under the crosshair. */
 	public use(): void {
-		if (this.#pickInFlight || !this.#picker) return;
+		if (this.#pickInFlight || this.#interactionsDisposed) return;
+
+		// While riding a boat, E always dismounts (the wheel toggles drive
+		// mode, so re-pressing E on the wheel remounts on the next press).
+		if (this.#playerVehicle.isMounted && this.#playerVehicle.mount) {
+			this.#playerVehicle.mount.dismount();
+			return;
+		}
+
+		// Dropped items first (also the hold-to-vacuum path below).
+		// tryPickupItem manages #pickInFlight itself.
+		if (this.tryPickupItem()) return;
+
 		this.#pickInFlight = true;
 
-		// Crosshair is screen-centre; pick there in CSS pixels relative to canvas.
-		const _x = this.canvas.clientWidth / 2;
-		const _y = this.canvas.clientHeight / 2;
+		try {
+			const blockHit = pickTarget(this);
+			if (!blockHit) return;
 
-		// Pick up the dropped item the player is looking at (within reach).
-		// Falls back to the nearest item if none is directly targeted.
-		const dropped = pickDroppedItem(this) ?? DroppedItem.nearestTo(this);
-		if (dropped) {
-			dropped.use(this);
-			this.#pickInFlight = false;
-			return;
-		}
+			switch (blockHit.blockId) {
+				case BlockType.MasonTable:
+					if (this.#playerHud.isMasonTableOpen) {
+						this.#playerHud.hideMasonTableUI();
+					} else {
+						this.#playerHud.showMasonTableUI();
+					}
+					return;
 
-		// No usable mesh hit — fall back to block interaction.
-		const blockHit = pickTarget(this);
-		const blockId = blockHit?.blockId;
-		if (blockId === BlockType.MasonTable) {
-			if (this.#playerHud.isMasonTableOpen) {
-				this.#playerHud.hideMasonTableUI();
-			} else {
-				this.#playerHud.showMasonTableUI();
+				case BlockType.BoatCreator: {
+					// Wheel on a boat: mount that boat instead of creating one.
+					const dynamicContext = blockHit.dynamicContext as {
+						kind?: unknown;
+						boatChunk?: BoatChunk;
+					} | null;
+					if (
+						dynamicContext?.kind === "boatChunk" &&
+						dynamicContext.boatChunk
+					) {
+						const wheelBoat = CustomBoat.getBoatForChunk(
+							dynamicContext.boatChunk,
+						);
+						if (wheelBoat) {
+							wheelBoat.mount.mount(this);
+						}
+						return;
+					}
+
+					const x = Math.floor(blockHit.x);
+					const y = Math.floor(blockHit.y);
+					const z = Math.floor(blockHit.z);
+
+					const boat = tryCreateBoatFromMarker(this, x, y, z);
+					if (boat) {
+						boat.mount.mount(this);
+					}
+					return;
+				}
+
+				case BlockType.WoodCrate: {
+					if (this.#playerHud.isWoodCrateOpen) {
+						this.#playerHud.hideWoodCrateUI();
+						return;
+					}
+
+					const x = Math.floor(blockHit.x);
+					const y = Math.floor(blockHit.y);
+					const z = Math.floor(blockHit.z);
+
+					this.#playerHud.showWoodCrateUI(x, y, z);
+					return;
+				}
+
+				case BlockType.Tnt: {
+					const x = Math.floor(blockHit.x);
+					const y = Math.floor(blockHit.y);
+					const z = Math.floor(blockHit.z);
+
+					igniteTnt(x, y, z);
+					return;
+				}
+
+				default: {
+					// Ignitable TNT mason variants (slab, half wall) don't
+					// match the full-block case above — same E-ignite path,
+					// with the blast radius coming from the block itself.
+					if (tntBlastRadius(blockHit.blockId) === null) {
+						return;
+					}
+
+					const x = Math.floor(blockHit.x);
+					const y = Math.floor(blockHit.y);
+					const z = Math.floor(blockHit.z);
+
+					igniteTnt(x, y, z);
+					return;
+				}
 			}
+		} finally {
 			this.#pickInFlight = false;
-			return;
 		}
-		if (blockId === BlockType.BoatCreator && blockHit) {
-			tryCreateBoatFromMarker(
-				this,
-				Math.floor(blockHit.x),
-				Math.floor(blockHit.y),
-				Math.floor(blockHit.z),
-			);
-			this.#pickInFlight = false;
-			return;
-		}
-		if (blockId === BlockType.WoodCrate && blockHit) {
-			if (this.#playerHud.isWoodCrateOpen) {
-				this.#playerHud.hideWoodCrateUI();
-			} else {
-				this.#playerHud.showWoodCrateUI(
-					Math.floor(blockHit.x),
-					Math.floor(blockHit.y),
-					Math.floor(blockHit.z),
-				);
-			}
-			this.#pickInFlight = false;
-			return;
-		}
-
-		this.#pickInFlight = false;
 	}
 
-	/** Release GPU picker resources. */
+	/**
+	 * Kept for API compatibility.
+	 *
+	 * The previous implementation allocated a GPU picker but never used it for
+	 * picking. This now simply disables future interactions after disposal.
+	 */
 	public disposePicker(): void {
-		if (this.#picker) {
-			disposePicker(this.#picker);
-			this.#picker = null;
+		this.#interactionsDisposed = true;
+	}
+
+	/**
+	 * Pick up a single nearby dropped item (crosshair target first, then
+	 * nearest). True when something was collected. Item-only on purpose:
+	 * the E-hold repeater calls this so holding E vacuums drops without
+	 * re-triggering doors, TNT, or mounts every tick.
+	 */
+	public tryPickupItem(): boolean {
+		if (this.#pickInFlight || this.#interactionsDisposed) return false;
+
+		this.#pickInFlight = true;
+
+		try {
+			const dropped = pickDroppedItem(this) ?? DroppedItem.nearestTo(this);
+			if (!dropped) return false;
+			dropped.use(this);
+			return true;
+		} finally {
+			this.#pickInFlight = false;
 		}
+	}
+
+	/** Track the physical E key state so holding it vacuums up drops. */
+	public setUseHeld(held: boolean): void {
+		this.#useHeld = held;
+		if (held) this.#lastUseRepeatMs = performance.now();
+	}
+
+	/**
+	 * Called every frame from the loop controller: while E is held, collect
+	 * one nearby drop per interval until none are left. Single presses keep
+	 * their one-shot use() behavior (including block interactions).
+	 */
+	public updateUseHeld(): void {
+		if (!this.#useHeld || this.#interactionsDisposed || isUiOpen()) return;
+
+		const now = performance.now();
+		if (now - this.#lastUseRepeatMs < Player.USE_REPEAT_INTERVAL_MS) return;
+		this.#lastUseRepeatMs = now;
+
+		this.tryPickupItem();
+	}
+
+	/**
+	 * Wire block edit callbacks for multiplayer.
+	 * Called by TestScene when multiplayer is active.
+	 */
+	public setDefaultBlockEditCallbacks(net: {
+		onBlockPlaced: (
+			x: number,
+			y: number,
+			z: number,
+			blockId: number,
+			blockState: number,
+		) => void;
+		onBlockBroken: (x: number, y: number, z: number, blockId: number) => void;
+		onExplosion: (x: number, y: number, z: number, radius: number) => void;
+		onTntIgnite: (
+			x: number,
+			y: number,
+			z: number,
+			fuse: number,
+			radius: number,
+		) => void;
+	}): void {
+		setOnBlockPlaced(net.onBlockPlaced);
+		this.#walkingControls.setOnBlockBroken(net.onBlockBroken);
+		setOnExplosion(net.onExplosion);
+		setOnTntIgnite(net.onTntIgnite);
 	}
 }

@@ -1,6 +1,7 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import type { Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
+import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
@@ -12,13 +13,7 @@ export class FossilBedFeature implements IWorldFeature {
 		_chunkY: number,
 		chunkZ: number,
 		_biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seed: number,
 		chunkSize: number,
 		generatingChunkX: number,

@@ -2,71 +2,78 @@
 
 import type { GreedyFaceDescriptor } from "../types/MeshTypes";
 
-import { greedyMesh, type WritableNumberArray } from "./GreedyPipeline";
+import { greedyMesh } from "./GreedyPipeline";
 import { VoxelFaceEmitterAdapter } from "./VoxelFaceEmitterAdapter";
-import { extractSliceMask } from "./VoxelMaskExtractor";
+import {
+	extractAllSliceMasksX,
+	extractAllSliceMasksY,
+	extractAllSliceMasksZ,
+} from "./VoxelMaskExtractor";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
+type EmitFaceCallback = (desc: GreedyFaceDescriptor) => void;
+
 /**
- * Drives the greedy mesher across all 3 axes (X, Y, Z),
- * using the stateless VoxelMaskExtractor and VoxelFaceEmitterAdapter.
+ * Drives the greedy mesher across all 3 axes (X, Y, Z).
  *
- * This is the "middle layer" of the voxel meshing pipeline:
+ * Masks are pre-extracted per axis in ONE contiguous sweep
+ * (extractAllSliceMasks*) into the session's reusable mask/light banks, then
+ * greedyMesh runs in banked mode over the precomputed slices. This replaces
+ * the old per-slice extraction callbacks whose strided grid walks dominated
+ * worker profiles.
  *
- * Input:
- *   - session → padded block/light grids + scratch buffers + quad outputs
- *
- * Output:
- *   - session.quadOpaque / session.quadTransparent filled with quads
- *
- * The adapter instance is cached per session (pipeline), so the closures
- * below are created once per worker instead of once per chunk build.
+ * The adapter instance is cached per session, so the face-emitter closures
+ * are allocated once per worker pipeline, not once per chunk build.
  */
 export class VoxelGreedyAdapter {
 	private readonly _session: MeshBuildSession;
-	private faceEmitter: VoxelFaceEmitterAdapter;
-	// PERF: Pre-create closures once instead of re-creating per axis per build.
-	private readonly _extractMask: (
-		slice: number,
-		maskBuf: WritableNumberArray,
-		lightBuf: WritableNumberArray,
-	) => void;
-	private readonly _emitFace: (desc: GreedyFaceDescriptor) => void;
-	// Set by build() before each axis run so the closures capture a number, not
-	// a closure parameter — avoids per-axis closure re-creation.
-	private _currentAxis = 0;
+
+	private readonly _emitFaceX: EmitFaceCallback;
+	private readonly _emitFaceY: EmitFaceCallback;
+	private readonly _emitFaceZ: EmitFaceCallback;
 
 	constructor(session: MeshBuildSession) {
 		this._session = session;
-		this.faceEmitter = new VoxelFaceEmitterAdapter(session);
+		const faceEmitter = new VoxelFaceEmitterAdapter(session);
 
-		this._extractMask = (
-			slice: number,
-			maskBuf: WritableNumberArray,
-			lightBuf: WritableNumberArray,
-		) => {
-			extractSliceMask(
-				this._session,
-				this._currentAxis,
-				slice,
-				maskBuf,
-				lightBuf,
-			);
+		// Axis-specialized emitter callbacks.
+		// These are still closures, but they are created once and avoid a
+		// mutable current-axis field in the hot greedy path.
+		this._emitFaceX = (desc: GreedyFaceDescriptor): void => {
+			faceEmitter.emitVoxelFace(0, desc);
 		};
 
-		this._emitFace = (desc: GreedyFaceDescriptor) => {
-			this.faceEmitter.emitVoxelFace(this._currentAxis, desc);
+		this._emitFaceY = (desc: GreedyFaceDescriptor): void => {
+			faceEmitter.emitVoxelFace(1, desc);
+		};
+
+		this._emitFaceZ = (desc: GreedyFaceDescriptor): void => {
+			faceEmitter.emitVoxelFace(2, desc);
 		};
 	}
 
 	/**
 	 * Runs greedy meshing on all 3 axes.
-	 * Emits quads for ALL voxel faces into the session's quad buffers.
+	 * Emits quads for all voxel faces into the session's quad buffers.
 	 */
 	public build(): void {
-		for (let axis = 0; axis < 3; axis++) {
-			this._currentAxis = axis;
-			greedyMesh(this._session, this._extractMask, this._emitFace);
-		}
+		const session = this._session;
+		// Bank layout follows the greedy grid (compacted when lodStep > 1),
+		// matching what the stride-aware extractors write.
+		const gridSize =
+			session.meshGridSize > 0 ? session.meshGridSize : session.size;
+		const bankLength = (gridSize + 1) * gridSize * gridSize;
+
+		const maskBank = session.ensureMaskBank(bankLength);
+		const lightBank = session.ensureLightBank(bankLength);
+
+		extractAllSliceMasksX(session, maskBank, lightBank);
+		greedyMesh(session, null, this._emitFaceX, maskBank, lightBank);
+
+		extractAllSliceMasksY(session, maskBank, lightBank);
+		greedyMesh(session, null, this._emitFaceY, maskBank, lightBank);
+
+		extractAllSliceMasksZ(session, maskBank, lightBank);
+		greedyMesh(session, null, this._emitFaceZ, maskBank, lightBank);
 	}
 }

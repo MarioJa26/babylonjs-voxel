@@ -1,49 +1,46 @@
-export class PaletteExpander {
-	expandPalette(
-		packed: Uint8Array,
-		palette: ArrayLike<number>,
-		totalBlocks: number,
-	): Uint8Array | Uint16Array {
-		const needsUint16 = this.isUint16(palette);
+export function expandPalette(
+	packed: Uint8Array,
+	palette: ArrayLike<number>,
+	totalBlocks: number,
+): Uint8Array | Uint16Array {
+	const expanded: Uint8Array | Uint16Array = isUint16(palette)
+		? new Uint16Array(totalBlocks)
+		: new Uint8Array(totalBlocks);
 
-		const expanded = needsUint16
-			? new Uint16Array(totalBlocks)
-			: new Uint8Array(totalBlocks);
+	const packedLength = (totalBlocks + 1) >>> 1;
+	let blockIndex = 0;
 
-		// Each byte holds 2 nibbles
-		const packedLen = (totalBlocks + 1) >> 1;
-		for (let packedIdx = 0; packedIdx < packedLen; packedIdx++) {
-			const byte = packed[packedIdx];
-			const blockIdx0 = packedIdx * 2;
-			const blockIdx1 = packedIdx * 2 + 1;
+	for (let packedIndex = 0; packedIndex < packedLength; packedIndex++) {
+		const value = packed[packedIndex];
 
-			expanded[blockIdx0] = palette[byte & 0xf];
-			if (blockIdx1 < totalBlocks) {
-				expanded[blockIdx1] = palette[(byte >> 4) & 0xf];
-			}
+		expanded[blockIndex++] = palette[value & 0x0f];
+
+		if (blockIndex < totalBlocks) {
+			expanded[blockIndex++] = palette[value >>> 4];
 		}
-
-		return expanded;
 	}
 
-	isUint16(palette: ArrayLike<number> | null | undefined): boolean {
-		// Check if palette exists first
-		if (!palette) {
-			return false;
-		}
+	return expanded;
+}
 
-		// Then check type
-		if (palette instanceof Uint16Array) {
-			return true;
-		}
-
-		// Then iterate safely
-		for (let i = 0; i < palette.length; i++) {
-			if (palette[i] > 255) {
-				return true;
-			}
-		}
-
+export function isUint16(
+	palette: ArrayLike<number> | null | undefined,
+): boolean {
+	if (!palette) {
 		return false;
 	}
+
+	if (palette instanceof Uint16Array) {
+		return true;
+	}
+
+	const length = palette.length;
+
+	for (let index = 0; index < length; index++) {
+		if (palette[index] > 0xff) {
+			return true;
+		}
+	}
+
+	return false;
 }

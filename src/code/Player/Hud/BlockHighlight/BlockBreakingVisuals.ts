@@ -33,122 +33,138 @@ fn mainFragment() -> @location(0) vec4<f32> {
 
 type BoxLike = { min: readonly number[]; max: readonly number[] };
 
-function addBox(
-	positions: number[],
-	normals: number[],
-	indices: number[],
-	x0: number,
-	y0: number,
-	z0: number,
-	x1: number,
-	y1: number,
-	z1: number,
-): void {
-	const faces: Array<{
-		n: [number, number, number];
-		v: Array<[number, number, number]>;
-	}> = [
-		{
-			n: [1, 0, 0],
-			v: [
-				[x1, y0, z0],
-				[x1, y0, z1],
-				[x1, y1, z1],
-				[x1, y1, z0],
-			],
-		},
-		{
-			n: [-1, 0, 0],
-			v: [
-				[x0, y0, z1],
-				[x0, y0, z0],
-				[x0, y1, z0],
-				[x0, y1, z1],
-			],
-		},
-		{
-			n: [0, 1, 0],
-			v: [
-				[x0, y1, z0],
-				[x1, y1, z0],
-				[x1, y1, z1],
-				[x0, y1, z1],
-			],
-		},
-		{
-			n: [0, -1, 0],
-			v: [
-				[x0, y0, z1],
-				[x1, y0, z1],
-				[x1, y0, z0],
-				[x0, y0, z0],
-			],
-		},
-		{
-			n: [0, 0, 1],
-			v: [
-				[x0, y0, z1],
-				[x1, y0, z1],
-				[x1, y1, z1],
-				[x0, y1, z1],
-			],
-		},
-		{
-			n: [0, 0, -1],
-			v: [
-				[x1, y0, z0],
-				[x0, y0, z0],
-				[x0, y1, z0],
-				[x1, y1, z0],
-			],
-		},
-	];
+type BoxesGeometry = {
+	positions: Float32Array;
+	normals: Float32Array;
+	indices: Uint32Array;
+};
 
-	for (const face of faces) {
-		const base = positions.length / 3;
-		for (let i = 0; i < 4; i++) {
-			positions.push(face.v[i][0], face.v[i][1], face.v[i][2]);
-			normals.push(face.n[0], face.n[1], face.n[2]);
-		}
-		indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
-	}
-}
-
-function buildBoxesGeometry(
-	boxes: readonly BoxLike[],
-	inflation: number,
-): { positions: Float32Array; normals: Float32Array; indices: Uint32Array } {
-	const positions: number[] = [];
-	const normals: number[] = [];
-	const indices: number[] = [];
-	const h = inflation / 2;
-	for (const box of boxes) {
-		addBox(
-			positions,
-			normals,
-			indices,
-			box.min[0] - h,
-			box.min[1] - h,
-			box.min[2] - h,
-			box.max[0] + h,
-			box.max[1] + h,
-			box.max[2] + h,
-		);
-	}
-	return {
-		positions: new Float32Array(positions),
-		normals: new Float32Array(normals),
-		indices: new Uint32Array(indices),
+type BoatBlockContext = {
+	boatChunk: {
+		visualRoot: unknown;
+		center: { x: number; y: number; z: number };
 	};
-}
+	localX: number;
+	localY: number;
+	localZ: number;
+};
+
+const CRACK_STAGE_COUNT = 10;
+const CRACK_INFLATION = 0.06;
 
 let scene: SceneContext;
 
 let crackMaterials: ShaderMaterial[] = [];
-let crackMeshes: Mesh[] = [];
-let _usedCrackMeshes: Mesh[] = [];
+let crackMesh: Mesh | null = null;
 
-let crackGeometryKey = -1;
+let crackGeometryBlockId = -1;
+let crackGeometryBlockState = -1;
+
+const scratchHit = {
+	x: 0,
+	y: 0,
+	z: 0,
+	nx: 0,
+	ny: 0,
+	nz: 0,
+	t: 0,
+	blockId: 0,
+	blockState: 0,
+	dynamicContext: undefined as unknown,
+} as BlockRaycastHit;
+
+function buildBoxesGeometry(
+	boxes: readonly BoxLike[],
+	inflation: number,
+): BoxesGeometry {
+	const boxCount = boxes.length;
+	const positions = new Float32Array(boxCount * 24 * 3);
+	const normals = new Float32Array(boxCount * 24 * 3);
+	const indices = new Uint32Array(boxCount * 36);
+
+	const h = inflation * 0.5;
+
+	let p = 0;
+	let n = 0;
+	let ii = 0;
+	let base = 0;
+
+	function writeVertex(
+		x: number,
+		y: number,
+		z: number,
+		nx: number,
+		ny: number,
+		nz: number,
+	): void {
+		positions[p++] = x;
+		positions[p++] = y;
+		positions[p++] = z;
+
+		normals[n++] = nx;
+		normals[n++] = ny;
+		normals[n++] = nz;
+	}
+
+	function writeFace(
+		nx: number,
+		ny: number,
+		nz: number,
+		x0: number,
+		y0: number,
+		z0: number,
+		x1: number,
+		y1: number,
+		z1: number,
+		x2: number,
+		y2: number,
+		z2: number,
+		x3: number,
+		y3: number,
+		z3: number,
+	): void {
+		const b = base;
+
+		writeVertex(x0, y0, z0, nx, ny, nz);
+		writeVertex(x1, y1, z1, nx, ny, nz);
+		writeVertex(x2, y2, z2, nx, ny, nz);
+		writeVertex(x3, y3, z3, nx, ny, nz);
+
+		indices[ii++] = b;
+		indices[ii++] = b + 1;
+		indices[ii++] = b + 2;
+		indices[ii++] = b;
+		indices[ii++] = b + 2;
+		indices[ii++] = b + 3;
+
+		base += 4;
+	}
+
+	for (let b = 0; b < boxCount; b++) {
+		const box = boxes[b];
+
+		const x0 = box.min[0] - h;
+		const y0 = box.min[1] - h;
+		const z0 = box.min[2] - h;
+		const x1 = box.max[0] + h;
+		const y1 = box.max[1] + h;
+		const z1 = box.max[2] + h;
+
+		writeFace(1, 0, 0, x1, y0, z0, x1, y0, z1, x1, y1, z1, x1, y1, z0);
+
+		writeFace(-1, 0, 0, x0, y0, z1, x0, y0, z0, x0, y1, z0, x0, y1, z1);
+
+		writeFace(0, 1, 0, x0, y1, z0, x1, y1, z0, x1, y1, z1, x0, y1, z1);
+
+		writeFace(0, -1, 0, x0, y0, z1, x1, y0, z1, x1, y0, z0, x0, y0, z0);
+
+		writeFace(0, 0, 1, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1);
+
+		writeFace(0, 0, -1, x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0);
+	}
+
+	return { positions, normals, indices };
+}
 
 export function initializeBlockBreakingVisuals(
 	targetScene: SceneContext,
@@ -156,13 +172,11 @@ export function initializeBlockBreakingVisuals(
 	scene = targetScene;
 
 	crackMaterials = [];
-	crackMeshes = [];
-	_usedCrackMeshes = [];
-	crackGeometryKey = -1;
+	crackMesh = null;
+	crackGeometryBlockId = -1;
+	crackGeometryBlockState = -1;
 
-	const unit = buildBoxesGeometry([{ min: [0, 0, 0], max: [2, 1, 1] }], 0.06);
-
-	for (let i = 0; i < 10; i++) {
+	for (let i = 0; i < CRACK_STAGE_COUNT; i++) {
 		const mat = createShaderMaterial({
 			name: `crackMat${i}`,
 			vertexSource: crackVertexWGSL,
@@ -173,99 +187,112 @@ export function initializeBlockBreakingVisuals(
 			depthWrite: false,
 			backFaceCulling: false,
 		});
-		setShaderUniform(mat, "uCrackStage", i / 9);
-		crackMaterials.push(mat);
 
-		const mesh = createMeshFromData(
-			Map1.engine,
-			`crackMesh${i}`,
-			unit.positions,
-			unit.normals,
-			unit.indices,
-		);
-		mesh.material = mat;
-		mesh.pickable = false;
-		mesh.visible = false;
-		addToScene(scene, mesh);
-		crackMeshes.push(mesh);
+		setShaderUniform(mat, "uCrackStage", i / (CRACK_STAGE_COUNT - 1));
+		crackMaterials.push(mat);
 	}
+
+	const unit = buildBoxesGeometry(
+		[{ min: [0, 0, 0], max: [2, 1, 1] }],
+		CRACK_INFLATION,
+	);
+
+	const mesh = createMeshFromData(
+		Map1.engine,
+		"crackMesh",
+		unit.positions,
+		unit.normals,
+		unit.indices,
+	);
+
+	mesh.material = crackMaterials[0];
+	mesh.pickable = false;
+	mesh.visible = false;
+
+	addToScene(scene, mesh);
+	crackMesh = mesh;
 }
 
 function ensureCrackGeometry(blockId: number, blockState: number): void {
-	const key = (blockId << 6) | blockState;
-	if (key === crackGeometryKey) return;
+	const mesh = crackMesh;
+	if (!mesh) return;
 
+	if (
+		blockId === crackGeometryBlockId &&
+		blockState === crackGeometryBlockState
+	) {
+		return;
+	}
+
+	const transformedBoxes = getTransformedShapeBoxes(blockId, blockState);
 	const boxes: BoxLike[] = [];
-	for (const box of getTransformedShapeBoxes(blockId, blockState)) {
+
+	for (let i = 0; i < transformedBoxes.length; i++) {
+		const box = transformedBoxes[i];
+
 		const w = box.max[0] - box.min[0];
 		const h = box.max[1] - box.min[1];
 		const d = box.max[2] - box.min[2];
-		if (w <= 0 || h <= 0 || d <= 0) continue;
-		boxes.push({ min: box.min, max: box.max });
+
+		if (w > 0 && h > 0 && d > 0) {
+			boxes.push({ min: box.min, max: box.max });
+		}
 	}
 
 	const geo =
 		boxes.length > 0
-			? buildBoxesGeometry(boxes, 0.06)
-			: buildBoxesGeometry([{ min: [0, 0, 0], max: [1, 1, 1] }], 0.06);
+			? buildBoxesGeometry(boxes, CRACK_INFLATION)
+			: buildBoxesGeometry(
+					[{ min: [0, 0, 0], max: [1, 1, 1] }],
+					CRACK_INFLATION,
+				);
 
-	for (const mesh of crackMeshes) {
-		resizeMeshGeometry(
-			Map1.engine,
-			mesh,
-			geo.positions,
-			geo.normals,
-			geo.indices,
-		);
-	}
+	resizeMeshGeometry(
+		Map1.engine,
+		mesh,
+		geo.positions,
+		geo.normals,
+		geo.indices,
+	);
 
-	crackGeometryKey = key;
+	crackGeometryBlockId = blockId;
+	crackGeometryBlockState = blockState;
 }
 
 export function updateBlockBreakingVisuals(
 	progress: number,
 	targetBlock: BlockRaycastHit,
 ): void {
-	const stage = Math.max(0, Math.min(9, Math.floor(progress * 10)));
+	const mesh = crackMesh;
+	if (!mesh) return;
+
+	const stage = Math.max(
+		0,
+		Math.min(CRACK_STAGE_COUNT - 1, Math.floor(progress * CRACK_STAGE_COUNT)),
+	);
 
 	ensureCrackGeometry(targetBlock.blockId, targetBlock.blockState);
 
-	for (let i = 0; i < crackMeshes.length; i++) {
-		crackMeshes[i].visible = i === stage;
-	}
-
-	const target = crackMeshes[stage];
+	mesh.material = crackMaterials[stage];
+	mesh.visible = true;
 
 	const boatContext = asBoatBlockContext(targetBlock.dynamicContext);
 	if (boatContext) {
-		// Parent the crack overlay to the boat's visual root so it inherits the
-		// boat's full transform (rotation + translation). Position it at the
-		// block's LOCAL center (un-floored) so it is not clamped to the world grid
-		// and rotates naturally with the boat.
-		target.parent = boatContext.boatChunk.visualRoot as never;
-		target.position.set(
+		mesh.parent = boatContext.boatChunk.visualRoot as never;
+		mesh.position.set(
 			boatContext.localX - boatContext.boatChunk.center.x,
 			boatContext.localY - boatContext.boatChunk.center.y,
 			boatContext.localZ - boatContext.boatChunk.center.z,
 		);
 	} else {
-		target.parent = null;
-		target.position.set(targetBlock.x, targetBlock.y, targetBlock.z);
+		mesh.parent = null;
+		mesh.position.set(targetBlock.x, targetBlock.y, targetBlock.z);
 	}
-
-	_usedCrackMeshes = [target];
 }
 
-function asBoatBlockContext(context: unknown): {
-	boatChunk: {
-		visualRoot: unknown;
-		center: { x: number; y: number; z: number };
-	};
-	localX: number;
-	localY: number;
-	localZ: number;
-} | null {
+function asBoatBlockContext(context: unknown): BoatBlockContext | null {
 	if (!context || typeof context !== "object") return null;
+
 	const value = context as {
 		kind?: string;
 		boatChunk?: {
@@ -276,7 +303,9 @@ function asBoatBlockContext(context: unknown): {
 		localY?: number;
 		localZ?: number;
 	};
+
 	if (value.kind !== "boatChunk" || !value.boatChunk?.center) return null;
+
 	if (
 		typeof value.localX !== "number" ||
 		typeof value.localY !== "number" ||
@@ -284,10 +313,12 @@ function asBoatBlockContext(context: unknown): {
 	) {
 		return null;
 	}
-	const center = value.boatChunk.center;
-	const boatChunk = value.boatChunk;
+
 	return {
-		boatChunk: { visualRoot: boatChunk.visualRoot, center },
+		boatChunk: {
+			visualRoot: value.boatChunk.visualRoot,
+			center: value.boatChunk.center,
+		},
 		localX: value.localX,
 		localY: value.localY,
 		localZ: value.localZ,
@@ -295,9 +326,8 @@ function asBoatBlockContext(context: unknown): {
 }
 
 export function resetBlockBreakingVisuals(): void {
-	_usedCrackMeshes = [];
-	for (const mesh of crackMeshes) {
-		mesh.visible = false;
+	if (crackMesh) {
+		crackMesh.visible = false;
 	}
 }
 
@@ -313,16 +343,13 @@ export function updateCrackingState(
 		resetBlockBreakingVisuals();
 		return;
 	}
-	updateBlockBreakingVisuals(progress, {
-		x: block.x,
-		y: block.y,
-		z: block.z,
-		nx: 0,
-		ny: 0,
-		nz: 0,
-		t: 0,
-		blockId,
-		blockState,
-		dynamicContext,
-	} as BlockRaycastHit);
+
+	scratchHit.x = block.x;
+	scratchHit.y = block.y;
+	scratchHit.z = block.z;
+	scratchHit.blockId = blockId;
+	scratchHit.blockState = blockState;
+	scratchHit.dynamicContext = dynamicContext;
+
+	updateBlockBreakingVisuals(progress, scratchHit);
 }

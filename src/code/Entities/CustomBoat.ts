@@ -19,6 +19,7 @@ import type { IUsable } from "../Interface/IUsable";
 import { CustomBoatControls } from "../Player/Controls/CustomBoatControls";
 import type { Player } from "../Player/Player";
 import {
+	type DynamicBlockQueryOptions,
 	type DynamicBlockSample,
 	getBlockByWorldCoords,
 	registerChunkBoundEntity,
@@ -40,6 +41,8 @@ export type CustomBoatOptions = {
 	customVisualLocalYaw?: number;
 	blockCount?: number;
 	boatChunk?: BoatChunk;
+	/** BoatChunk-local coords of the wheel (BoatCreator) block, if any. */
+	helmLocal?: Vec3;
 };
 
 type SerializedBoatChunk = {
@@ -54,6 +57,7 @@ type CustomBoatSerializedPayload = {
 	customVisualLocalYaw: number;
 	blockCount?: number;
 	boatChunk?: SerializedBoatChunk;
+	helmLocal?: { x: number; y: number; z: number };
 };
 
 export class CustomBoat implements IUsable {
@@ -67,6 +71,11 @@ export class CustomBoat implements IUsable {
 
 	static #activeBoats = new Set<CustomBoat>();
 	static #boatsSnapshot: CustomBoat[] = [];
+	static #boatsByChunk = new Map<BoatChunk, CustomBoat>();
+
+	public static getBoatForChunk(chunk: BoatChunk): CustomBoat | null {
+		return CustomBoat.#boatsByChunk.get(chunk) ?? null;
+	}
 
 	// PERF: Pre-computed boat cull distance squared — avoids recomputing every tick.
 	static #boatCullDistSq =
@@ -180,9 +189,10 @@ export class CustomBoat implements IUsable {
 			let restoredCustomVisualRoot: Mesh | undefined;
 
 			if (data.boatChunk) {
-				const snapshotBlocks = data.boatChunk.blocks.map((block) => ({
-					...block,
-				}));
+				// PERF: BoatChunk constructor does not retain the input array
+				// reference — it copies into a Uint16Array blockArray. Shallow
+				// slice isolates from the persisted payload without per-block spread.
+				const snapshotBlocks = data.boatChunk.blocks.slice();
 				restoredBoatChunk = new BoatChunk(
 					snapshotBlocks,
 					vec3(
@@ -202,6 +212,9 @@ export class CustomBoat implements IUsable {
 				customVisualLocalYaw: data.customVisualLocalYaw,
 				blockCount: data.blockCount,
 				boatChunk: restoredBoatChunk,
+				helmLocal: data.helmLocal
+					? vec3(data.helmLocal.x, data.helmLocal.y, data.helmLocal.z)
+					: undefined,
 			});
 		});
 	}
@@ -239,9 +252,36 @@ export class CustomBoat implements IUsable {
 	#boatChunkBlockChangeUnsubscribe?: () => void;
 	#ignoredDynamicBlockProviders = new Set<symbol>();
 
+	// Helm (ship's wheel) state: BoatChunk-local coords of the BoatCreator
+	// block. The mounted player stands 1 block behind it, on deck.
+	#helmLocal: Vec3 | null = null;
+	// BoatChunk-local Y of the deck top (occupied maxY + 1), used to keep the
+	// rider's feet on deck regardless of where the wheel sits.
+	#deckTopLocalY = Number.NEGATIVE_INFINITY;
+	// Dedicated mount offset/rotation owned by this boat. Mount stores the
+	// references, so mutating them in place updates the rider transform with
+	// zero allocation per tick.
+	#helmMountOffset = vec3Zero();
+	#helmMountRot = Quaternion.Identity();
+
+	// PERF: single query-options object reused by every voxel probe in the
+	// physics tick (#getWorldBlockForBoatPhysics runs ~1k+/s while floating).
+	// Safe to share because #ignoredDynamicBlockProviders is only mutated
+	// in place (.add/.clear), never reassigned.
+	#worldQueryOptions: DynamicBlockQueryOptions = {
+		ignoredDynamicBlockProviders: this.#ignoredDynamicBlockProviders,
+	};
+
+	// Reused by #sampleBoatChunkBlock — see the allocation note there.
+	static #sampleScratch: DynamicBlockSample = {
+		blockId: 0,
+		blockState: 0,
+		lightLevel: 0,
+	};
+
 	#currentYaw = 0;
 	// PERF: Cache cos/sin to avoid recomputing when yaw is unchanged.
-	#cachedYaw = NaN;
+	#cachedYaw = 0;
 	#cachedCos = 0;
 	#cachedSin = 0;
 	#linearVelocity = vec3Zero();
@@ -261,6 +301,14 @@ export class CustomBoat implements IUsable {
 	#tmpBoatSampleWorld = vec3Zero();
 	#scratchRootLocal = vec3Zero();
 	#scratchQuat = Quaternion.Identity();
+	#scratchBounds: import("@/code/World/Boat/BoatChunk").BoatChunkBounds = {
+		minX: 0,
+		minY: 0,
+		minZ: 0,
+		maxX: 0,
+		maxY: 0,
+		maxZ: 0,
+	};
 
 	constructor(
 		player: Player,
@@ -292,6 +340,13 @@ export class CustomBoat implements IUsable {
 			this.#angularResponseScale = Math.max(
 				0.08,
 				1 / Math.sqrt(options.blockCount),
+			);
+		}
+		if (options?.helmLocal) {
+			this.#helmLocal = vec3(
+				options.helmLocal.x,
+				options.helmLocal.y,
+				options.helmLocal.z,
 			);
 		}
 
@@ -336,6 +391,16 @@ export class CustomBoat implements IUsable {
 		// 6) Controls
 		CustomBoat.#boatControls = new CustomBoatControls(this, player);
 		this.#mount = new Mount(this.#boat, CustomBoat.#boatControls);
+		if (this.#helmLocal && this.#boatChunk) {
+			// Yaw-aware helm mount: Mount stores these references, and #tick
+			// rewrites them in place so the rider stays behind the wheel.
+			this.#mount.setMountOffset(this.#helmMountOffset);
+			this.#mount.setMountRotationOffset(this.#helmMountRot);
+			this.#computeHelmMountOffset();
+		}
+		if (this.#boatChunk) {
+			CustomBoat.#boatsByChunk.set(this.#boatChunk, this);
+		}
 
 		// 7) Tick loop (centralized via tickAllActiveBoats)
 
@@ -519,6 +584,9 @@ export class CustomBoat implements IUsable {
 		// Always update collider orientation
 		this.#voxelCollider.setYaw(this.#currentYaw);
 
+		// Keep the rider behind the wheel as the boat turns.
+		this.#syncHelmMount();
+
 		// Sync mounted player to new position
 		this.#mount.update();
 
@@ -682,9 +750,15 @@ export class CustomBoat implements IUsable {
 			initialYaw: this.#currentYaw,
 			customVisualLocalYaw: this.#customVisualLocalYaw,
 			blockCount: boatChunkSnapshot?.blocks.length,
+			helmLocal: this.#helmLocal
+				? { x: this.#helmLocal.x, y: this.#helmLocal.y, z: this.#helmLocal.z }
+				: undefined,
 			boatChunk: boatChunkSnapshot
 				? {
-						blocks: boatChunkSnapshot.blocks.map((block) => ({ ...block })),
+						// PERF: toSnapshot() already returns a fresh array with fresh
+						// block objects. Shallow copy of the array isolates the
+						// snapshot from the live blocks without per-block spread.
+						blocks: boatChunkSnapshot.blocks.slice(),
 						center: {
 							x: boatChunkSnapshot.center.x,
 							y: boatChunkSnapshot.center.y,
@@ -701,7 +775,50 @@ export class CustomBoat implements IUsable {
 	}
 
 	public use(player: Player): void {
+		this.#computeHelmMountOffset();
 		this.#mount.mount(player);
+	}
+
+	/**
+	 * Recompute the rider transform so the player stands 1 block behind the
+	 * wheel (helm) block, feet on deck, facing boat-forward. Runs every tick
+	 * while mounted because the boat yaws; pure yaw math (no world-matrix
+	 * dependency), matching the visual root's RotationYawPitchRoll frame.
+	 */
+	#syncHelmMount(): void {
+		if (!this.#mount.isMounted()) return;
+		this.#computeHelmMountOffset();
+	}
+
+	#computeHelmMountOffset(): void {
+		if (!this.#helmLocal || !this.#boatChunk) return;
+		const center = this.#boatChunk.center;
+		const totalYaw = this.#currentYaw + this.#customVisualLocalYaw;
+		const c = Math.cos(totalYaw);
+		const s = Math.sin(totalYaw);
+		const dx = this.#helmLocal.x + 0.5 - center.x;
+		const dy = this.#helmLocal.y + 0.5 - center.y;
+		const dz = this.#helmLocal.z + 0.5 - center.z;
+		const helmX = this.#boat.position.x + dx * c + dz * s;
+		const helmY = this.#boat.position.y + dy;
+		const helmZ = this.#boat.position.z - dx * s + dz * c;
+
+		// Boat forward is +Z rotated by currentYaw (see CustomBoatControls).
+		const behindDistance = 1.0;
+		const fx = Math.sin(this.#currentYaw);
+		const fz = Math.cos(this.#currentYaw);
+
+		const deckTopWorldY =
+			this.#boat.position.y + (this.#deckTopLocalY - center.y);
+		const feetY = Math.max(helmY - 0.45, deckTopWorldY + 0.02);
+
+		setVec3(
+			this.#helmMountOffset,
+			helmX - fx * behindDistance - this.#boat.position.x,
+			feetY - this.#boat.position.y,
+			helmZ - fz * behindDistance - this.#boat.position.z,
+		);
+		Quaternion.FromEulerAnglesToRef(0, this.#currentYaw, 0, this.#helmMountRot);
 	}
 
 	public dispose(): void {
@@ -723,6 +840,9 @@ export class CustomBoat implements IUsable {
 		}
 
 		this.#voxelCollider?.dispose();
+		if (this.#boatChunk) {
+			CustomBoat.#boatsByChunk.delete(this.#boatChunk);
+		}
 		this.#boatChunk?.dispose();
 		this.#boatChunk = undefined;
 		CustomBoat.#activeBoats.delete(this);
@@ -741,8 +861,11 @@ export class CustomBoat implements IUsable {
 
 	#syncCollisionFromBoatChunk(): void {
 		if (!this.#boatChunk) return;
-		const occupied = this.#boatChunk.getOccupiedBoundsLocal();
+		const occupied = this.#boatChunk.getOccupiedBoundsLocalToRef(
+			this.#scratchBounds,
+		);
 		if (!occupied) return;
+		this.#deckTopLocalY = occupied.maxY + 1;
 
 		const center = this.#boatChunk.center;
 		const pad = 0.05;
@@ -846,28 +969,50 @@ export class CustomBoat implements IUsable {
 		worldY: number,
 		worldZ: number,
 	): DynamicBlockSample | null {
-		const local = this.#worldToBoatLocal(worldX, worldY, worldZ);
-		if (!local || !this.#boatChunk) {
+		const boatChunk = this.#boatChunk;
+		if (!boatChunk) {
 			return null;
 		}
 
-		const blockId = this.#boatChunk.getBlockLocal(local.x, local.y, local.z);
+		// worldToLocalBlock is a pure translation (world - root + center), so
+		// the sample region is an axis-aligned box. Reject far-away probes with
+		// six compares instead of paying a transform + bounds check per voxel —
+		// this provider sits on every getBlockByWorldCoords call engine-wide
+		// while any boat exists (collision sweeps, raycasts, debris...).
+		const root = boatChunk.visualRoot.position;
+		const center = boatChunk.center;
+		const originX = root.x - center.x;
+		const originY = root.y - center.y;
+		const originZ = root.z - center.z;
+		if (
+			worldX < originX ||
+			worldY < originY ||
+			worldZ < originZ ||
+			worldX >= originX + Chunk.SIZE ||
+			worldY >= originY + Chunk.SIZE ||
+			worldZ >= originZ + Chunk.SIZE
+		) {
+			return null;
+		}
+
+		const localX = worldX - originX;
+		const localY = worldY - originY;
+		const localZ = worldZ - originZ;
+
+		const blockId = boatChunk.getBlockLocal(localX, localY, localZ);
 		if (blockId === BlockType.Air) {
 			return null;
 		}
 
-		return {
-			blockId,
-			blockState: this.#boatChunk.getBlockStateLocal(local.x, local.y, local.z),
-			lightLevel: this.#boatChunk.getLightLocal(local.x, local.y, local.z),
-			context: {
-				kind: "boatChunk",
-				boatChunk: this.#boatChunk,
-				localX: local.x,
-				localY: local.y,
-				localZ: local.z,
-			},
-		};
+		// Shared scratch: every consumer (getBlockByWorldCoords /
+		// getBlockStateByWorldCoords / getLightByWorldCoords) reads the fields
+		// synchronously and never retains the sample object, so reusing one
+		// instance removes two allocations per solid probe.
+		const sample = CustomBoat.#sampleScratch;
+		sample.blockId = blockId;
+		sample.blockState = boatChunk.getBlockStateLocal(localX, localY, localZ);
+		sample.lightLevel = boatChunk.getLightLocal(localX, localY, localZ);
+		return sample;
 	}
 
 	#setBoatChunkBlock(
@@ -933,8 +1078,6 @@ export class CustomBoat implements IUsable {
 	}
 
 	#getWorldBlockForBoatPhysics(x: number, y: number, z: number): number {
-		return getBlockByWorldCoords(x, y, z, {
-			ignoredDynamicBlockProviders: this.#ignoredDynamicBlockProviders,
-		});
+		return getBlockByWorldCoords(x, y, z, this.#worldQueryOptions);
 	}
 }

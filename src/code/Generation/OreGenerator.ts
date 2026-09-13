@@ -7,41 +7,46 @@ type OreDefinition = {
 	maxY: number;
 	veinRadius: number;
 	blocksPerVein: number;
-	spawnChance: number; // out of 100 per chunk
+	spawnChance: number; // out of 100 per attempt
+	attempts: number; // vein attempts per chunk (Minecraft-like density)
 };
 
 const ORE_TYPES: OreDefinition[] = [
 	{
-		id: 19,
+		id: 96,
 		name: "Coal",
 		maxY: 128,
 		veinRadius: 5,
 		blocksPerVein: 60,
-		spawnChance: 25,
+		spawnChance: 70,
+		attempts: 8,
 	},
 	{
-		id: 14,
+		id: 99,
 		name: "Iron",
 		maxY: 64,
 		veinRadius: 4,
 		blocksPerVein: 35,
-		spawnChance: 20,
+		spawnChance: 65,
+		attempts: 6,
 	},
 	{
-		id: 25,
+		id: 97,
 		name: "Copper",
 		maxY: 96,
 		veinRadius: 4,
 		blocksPerVein: 28,
-		spawnChance: 17,
+		spawnChance: 60,
+		attempts: 6,
 	},
 	{
-		id: 26,
+		id: 98,
 		name: "Gold",
 		maxY: 32,
 		veinRadius: 3,
 		blocksPerVein: 16,
-		spawnChance: 12,
+		spawnChance: 55,
+		attempts: 4,
 	},
 	{
 		id: 16,
@@ -49,15 +54,17 @@ const ORE_TYPES: OreDefinition[] = [
 		maxY: -64,
 		veinRadius: 3,
 		blocksPerVein: 20,
-		spawnChance: 14,
+		spawnChance: 55,
+		attempts: 5,
 	},
 	{
-		id: 18,
+		id: 80,
 		name: "Diamond",
 		maxY: -256,
 		veinRadius: 2,
 		blocksPerVein: 8,
-		spawnChance: 8,
+		spawnChance: 50,
+		attempts: 3,
 	},
 	{
 		id: 21,
@@ -65,7 +72,8 @@ const ORE_TYPES: OreDefinition[] = [
 		maxY: 32,
 		veinRadius: 3,
 		blocksPerVein: 16,
-		spawnChance: 10,
+		spawnChance: 45,
+		attempts: 3,
 	},
 	{
 		id: 79,
@@ -73,7 +81,8 @@ const ORE_TYPES: OreDefinition[] = [
 		maxY: -512,
 		veinRadius: 1,
 		blocksPerVein: 4,
-		spawnChance: 5,
+		spawnChance: 35,
+		attempts: 1,
 	},
 ];
 
@@ -111,72 +120,85 @@ export class OreGenerator {
 			const chunkCenterY = chunkWorldY + CHUNK_SIZE / 2;
 			if (chunkCenterY > ore.maxY) continue;
 
-			const hash = getPRNGBySeed(
-				chunkX * 374761393 + chunkY * 668265263 + chunkZ * 955191817 + ore.id,
-				this.seedAsInt,
-			);
+			// Minecraft-style: several independent vein attempts per chunk instead
+			// of a single one, so ore density scales with chunk rather than being
+			// an all-or-nothing per-ore roll.
+			for (let attempt = 0; attempt < ore.attempts; attempt++) {
+				const hash = getPRNGBySeed(
+					chunkX * 374761393 +
+						chunkY * 668265263 +
+						chunkZ * 955191817 +
+						ore.id * 374761 +
+						attempt * 668265263,
+					this.seedAsInt,
+				);
 
-			if (Math.abs(hash) % 100 >= ore.spawnChance) continue;
+				if (Math.abs(hash) % 100 >= ore.spawnChance) continue;
 
-			const veinCenterX =
-				chunkWorldX +
-				(Math.abs(getPRNGBySeed(hash, this.seedAsInt)) % CHUNK_SIZE);
-			const veinCenterY =
-				chunkWorldY +
-				(Math.abs(getPRNGBySeed(hash + 1, this.seedAsInt)) % CHUNK_SIZE);
-			const veinCenterZ =
-				chunkWorldZ +
-				(Math.abs(getPRNGBySeed(hash + 2, this.seedAsInt)) % CHUNK_SIZE);
-			const radius = ore.veinRadius;
-			const radiusSq = radius * radius;
-			const thresholdScale = 0.4 / radiusSq;
-			let placed = 0;
+				const veinCenterX =
+					chunkWorldX +
+					(Math.abs(getPRNGBySeed(hash, this.seedAsInt)) % CHUNK_SIZE);
+				const veinCenterY =
+					chunkWorldY +
+					(Math.abs(getPRNGBySeed(hash + 1, this.seedAsInt)) % CHUNK_SIZE);
+				const veinCenterZ =
+					chunkWorldZ +
+					(Math.abs(getPRNGBySeed(hash + 2, this.seedAsInt)) % CHUNK_SIZE);
+				const radius = ore.veinRadius;
+				const radiusSq = radius * radius;
+				const thresholdScale = 0.4 / radiusSq;
+				let placed = 0;
 
-			for (let dx = -radius; dx <= radius && placed < ore.blocksPerVein; dx++) {
-				// wx depends only on dx — hoist the noise X coordinate.
-				const sx = (veinCenterX + dx) * 0.1;
 				for (
-					let dy = -radius;
-					dy <= radius && placed < ore.blocksPerVein;
-					dy++
+					let dx = -radius;
+					dx <= radius && placed < ore.blocksPerVein;
+					dx++
 				) {
-					const sy = (veinCenterY + dy) * 0.1;
+					// wx depends only on dx — hoist the noise X coordinate.
+					const sx = (veinCenterX + dx) * 0.1;
 					for (
-						let dz = -radius;
-						dz <= radius && placed < ore.blocksPerVein;
-						dz++
+						let dy = -radius;
+						dy <= radius && placed < ore.blocksPerVein;
+						dy++
 					) {
-						const distSq = dx * dx + dy * dy + dz * dz;
-						if (distSq > radiusSq) continue;
+						const sy = (veinCenterY + dy) * 0.1;
+						for (
+							let dz = -radius;
+							dz <= radius && placed < ore.blocksPerVein;
+							dz++
+						) {
+							const distSq = dx * dx + dy * dy + dz * dz;
+							if (distSq > radiusSq) continue;
 
-						const wx = veinCenterX + dx;
-						const wy = veinCenterY + dy;
-						const wz = veinCenterZ + dz;
+							const wx = veinCenterX + dx;
+							const wy = veinCenterY + dy;
+							const wz = veinCenterZ + dz;
 
-						const lx = wx - chunkWorldX;
-						const ly = wy - chunkWorldY;
-						const lz = wz - chunkWorldZ;
+							const lx = wx - chunkWorldX;
+							const ly = wy - chunkWorldY;
+							const lz = wz - chunkWorldZ;
 
-						if (
-							lx < 0 ||
-							lx >= CHUNK_SIZE ||
-							ly < 0 ||
-							ly >= CHUNK_SIZE ||
-							lz < 0 ||
-							lz >= CHUNK_SIZE
-						)
-							continue;
+							if (
+								lx < 0 ||
+								lx >= CHUNK_SIZE ||
+								ly < 0 ||
+								ly >= CHUNK_SIZE ||
+								lz < 0 ||
+								lz >= CHUNK_SIZE
+							)
+								continue;
 
-						const idx = lx + ly * CHUNK_SIZE + lz * chunkSizeSq;
-						if (!isStoneBlock(blocks[idx]!)) continue;
+							const idx = lx + ly * CHUNK_SIZE + lz * chunkSizeSq;
+							if (!isStoneBlock(blocks[idx]!)) continue;
 
-						// Shape the vein with 3D noise
-						const density = this.oreNoise(sx, sy, (veinCenterZ + dz) * 0.1);
-						const threshold = 0.3 + distSq * thresholdScale;
+							// Shape the vein with 3D noise
+							const density = this.oreNoise(sx, sy, (veinCenterZ + dz) * 0.1);
+							const threshold = 0.3 + distSq * thresholdScale;
 
-						if (density > threshold) {
-							blocks[idx] = ore.id;
-							placed++;
+							if (density > threshold) {
+								blocks[idx] = ore.id;
+								placed++;
+							}
 						}
 					}
 				}

@@ -1,20 +1,105 @@
 import { Chunk, getChunk } from "./Chunk";
 import {
 	type GenerateDistantTerrainRequest,
+	type GenerateFarTileRequest,
 	type GenerateFullMeshRequest,
+	type GenerateTerrainRequest,
 	type InitDistantTerrainSharedRequest,
 	type InitLightSharedRequest,
 	type LightAddEmissionRequest,
 	type LightMutateRequest,
 	type LightPropagateDeferredRequest,
+	type LightRegisterChunkBatchRequest,
+	type LightRegisterChunkRequest,
 	type LightSetClosedFaceMaskRequest,
 	type LightSkyReconcileRequest,
+	type LightUpdateChunkBuffersRequest,
 	type MeshWorkerResponse,
 	type RelightMeshRequest,
 	type SetWorldSeedRequest,
+	type VoxelRecycleBuffersRequest,
+	type VoxelRegisterChunkBatchRequest,
+	type VoxelRegisterChunkRequest,
+	type VoxelUpdateChunkBuffersRequest,
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
+
+// Offset order must match the voxel worker's NEIGHBOR_OFFSETS table
+// (slot i = mask bit i): dz outer → dx inner, center (0,0,0) omitted.
+export const NEIGHBOR_OFFSETS_26: readonly {
+	readonly dx: number;
+	readonly dy: number;
+	readonly dz: number;
+}[] = (() => {
+	const out: { dx: number; dy: number; dz: number }[] = [];
+	for (let z = -1; z <= 1; z++) {
+		for (let y = -1; y <= 1; y++) {
+			for (let x = -1; x <= 1; x++) {
+				if (x === 0 && y === 0 && z === 0) continue;
+				out.push({ dx: x, dy: y, dz: z });
+			}
+		}
+	}
+	return out;
+})();
+
+// Cached 26-bit neighbor presence masks, keyed by chunk. Invalidation is
+// exact: a mask only depends on each neighbor's isLoaded && hasVoxelData,
+// both of which flip solely on load/dispose (the pool's onLightChunkLoaded /
+// onLightChunkDisposed hooks delete the affected entries). WeakMap = no leaks.
+export const neighborMaskCache = new WeakMap<Chunk, number>();
+
+/** Mirrors MeshBuildSession's lodStep derivation. */
+function lodStepOfLod(lod: number | null | undefined): number {
+	return lod !== null && lod !== undefined && lod >= 4 ? 1 << (lod - 3) : 1;
+}
+
+/**
+ * Decide which horizontal borders this chunk owns skirts for, so two chunks
+ * never wall the same boundary plane (coplanar z-fighting). A side gets a
+ * skirt only when its neighbor is MISSING or FINER; same-level boundaries
+ * are seamless via padded slabs and coarser neighbors own their own side.
+ *
+ * PERF: returns one packed int — low nibble = sides, high nibble = near-inset
+ * sides — instead of a fresh {sides, nearInset} literal per remesh/relight
+ * dispatch.
+ */
+export function computeBorderSkirtMasks(chunk: Chunk): number {
+	const myStep = lodStepOfLod(chunk.lodLevel);
+	if (myStep <= 1) return 0;
+
+	let sides = 0;
+	let nearInset = 0;
+
+	const check = (
+		dx: number,
+		dz: number,
+		bit: number,
+		isNearSide: boolean,
+	): void => {
+		const n = getChunk(chunk.chunkX + dx, chunk.chunkY, chunk.chunkZ + dz);
+
+		if (!n?.isLoaded) {
+			sides |= bit;
+			return;
+		}
+
+		if (lodStepOfLod(n.lodLevel) < myStep) {
+			sides |= bit;
+			// Near planes coincide with the greedy mesher's slice=-1
+			// boundary walls when a neighbor exists — inset by one block.
+			if (isNearSide) nearInset |= bit;
+		}
+	};
+
+	check(-1, 0, 1, true);
+	check(1, 0, 2, false);
+	check(0, -1, 4, true);
+	check(0, 1, 8, false);
+
+	return sides | (nearInset << 4);
+}
 
 export class ChunkWorker {
 	private terrainWorker: Worker; // terrain + distant terrain + light
@@ -80,6 +165,11 @@ export class ChunkWorker {
 		chunkY: 0,
 		chunkZ: 0,
 		neighborMask: 0,
+		// PERF: declared here so postFullRemesh never adds these after
+		// construction — late-added fields force a V8 hidden-class (map)
+		// transition on every worker instance's first remesh dispatch.
+		borderSkirtSides: 0,
+		borderSkirtNearInset: 0,
 		uniformBlockId: undefined,
 	};
 
@@ -95,6 +185,80 @@ export class ChunkWorker {
 		chunkY: 0,
 		chunkZ: 0,
 		neighborMask: 0,
+		// Same hidden-class rationale as #voxelMeshMsg above.
+		borderSkirtSides: 0,
+		borderSkirtNearInset: 0,
+	};
+
+	// PERF: prebuilt, reused registration/update descriptors. Fields are
+	// mutated in place and postMessage clones synchronously at call time, so
+	// the per-call spread literal ({ type, ...req }) allocation is gone while
+	// the wire bytes stay identical to the old spread output.
+	readonly #lightRegisterMsg: Omit<LightRegisterChunkRequest, "lightSAB"> & {
+		lightSAB: SharedArrayBuffer | null;
+	} = {
+		type: WorkerTaskType.LightRegisterChunk,
+		seq: 0,
+		chunkId: 0n,
+		chunkX: 0,
+		chunkY: 0,
+		chunkZ: 0,
+		headerSlot: 0,
+		blockSAB: null,
+		lightSAB: null,
+		paletteSAB: null,
+		blockStorageBytesPerElement: 1,
+	};
+
+	readonly #lightUpdateMsg: Omit<LightUpdateChunkBuffersRequest, "lightSAB"> & {
+		lightSAB: SharedArrayBuffer | null;
+	} = {
+		type: WorkerTaskType.LightUpdateChunkBuffers,
+		chunkId: 0n,
+		headerSlot: 0,
+		blockSAB: null,
+		paletteSAB: null,
+		lightSAB: null,
+		blockStorageBytesPerElement: 1,
+	};
+
+	readonly #voxelRegisterMsg: VoxelRegisterChunkRequest = {
+		type: WorkerTaskType.VoxelRegisterChunk,
+		chunkId: 0n,
+		chunkX: 0,
+		chunkY: 0,
+		chunkZ: 0,
+		isUniform: false,
+		uniformBlockId: 0,
+		blockStorageBytesPerElement: 1,
+		direct: false,
+		blockSAB: null,
+		paletteSAB: null,
+		lightSAB: null,
+	};
+
+	readonly #voxelRegisterBatchMsg: VoxelRegisterChunkBatchRequest = {
+		type: WorkerTaskType.VoxelRegisterChunkBatch,
+		chunkIds: new BigInt64Array(0),
+		coords: new Int32Array(0),
+		meta: new Uint32Array(0),
+		blockSABs: [],
+		paletteSABs: [],
+		lightSABs: [],
+	};
+
+	readonly #voxelUpdateMsg: VoxelUpdateChunkBuffersRequest = {
+		type: WorkerTaskType.VoxelUpdateChunkBuffers,
+		chunkId: 0n,
+		chunkX: 0,
+		chunkY: 0,
+		chunkZ: 0,
+		isUniform: false,
+		uniformBlockId: 0,
+		blockStorageBytesPerElement: 1,
+		blockSAB: null,
+		paletteSAB: null,
+		lightSAB: null,
 	};
 
 	constructor(
@@ -109,12 +273,12 @@ export class ChunkWorker {
 		);
 		this.terrainWorker.onmessage = onMessageTerrain;
 
-		// Voxel mesh worker
+		// Voxel mesh worker – assign directly to avoid per-worker closure (was 50 kB / frame)
 		this.voxelWorker = new Worker(
 			new URL("./voxel.worker.ts", import.meta.url),
 			{ type: "module", name: `chunk-voxel-${workerIndex}` },
 		);
-		this.voxelWorker.onmessage = (e) => onMessageMesh(e);
+		this.voxelWorker.onmessage = onMessageMesh as any;
 	}
 
 	public setOnError(handler: (ev: ErrorEvent | Event) => void): void {
@@ -128,22 +292,7 @@ export class ChunkWorker {
 		this.voxelWorker.terminate();
 	}
 
-	private static readonly _REMESH_OFFSETS: readonly {
-		readonly dx: number;
-		readonly dy: number;
-		readonly dz: number;
-	}[] = (() => {
-		const out: { dx: number; dy: number; dz: number }[] = [];
-		for (let z = -1; z <= 1; z++) {
-			for (let y = -1; y <= 1; y++) {
-				for (let x = -1; x <= 1; x++) {
-					if (x === 0 && y === 0 && z === 0) continue;
-					out.push({ dx: x, dy: y, dz: z });
-				}
-			}
-		}
-		return out;
-	})();
+	private static readonly _REMESH_OFFSETS = NEIGHBOR_OFFSETS_26;
 
 	/**
 	 * 26-bit presence snapshot for the voxel worker: slot i (same offset order
@@ -152,11 +301,13 @@ export class ChunkWorker {
 	 * transfer path would have sent. The worker reads those borders directly
 	 * from its voxel-registration map.
 	 */
-	private static _buildNeighborMask(
-		cx: number,
-		cy: number,
-		cz: number,
-	): number {
+	private static _buildNeighborMask(chunk: Chunk): number {
+		const cached = neighborMaskCache.get(chunk);
+		if (cached !== undefined) return cached;
+
+		const cx = chunk.chunkX;
+		const cy = chunk.chunkY;
+		const cz = chunk.chunkZ;
 		let mask = 0;
 		for (let i = 0; i < ChunkWorker._REMESH_OFFSETS.length; i++) {
 			const { dx, dy, dz } = ChunkWorker._REMESH_OFFSETS[i];
@@ -168,6 +319,7 @@ export class ChunkWorker {
 				mask |= 1 << i;
 			}
 		}
+		neighborMaskCache.set(chunk, mask);
 		return mask;
 	}
 
@@ -184,17 +336,30 @@ export class ChunkWorker {
 		msg.chunkX = chunk.chunkX;
 		msg.chunkY = chunk.chunkY;
 		msg.chunkZ = chunk.chunkZ;
-		msg.neighborMask = ChunkWorker._buildNeighborMask(
-			chunk.chunkX,
-			chunk.chunkY,
-			chunk.chunkZ,
-		);
+		msg.neighborMask = ChunkWorker._buildNeighborMask(chunk);
 		msg.uniformBlockId = chunk.isUniform ? chunk.uniformBlockId : undefined;
+
+		const skirts = computeBorderSkirtMasks(chunk);
+		msg.borderSkirtSides = skirts & 0xf;
+		msg.borderSkirtNearInset = (skirts >>> 4) & 0xf;
 
 		// SAB-direct: no payload buffers, no transfer list. The worker reads
 		// the center grid and the 26 neighbor borders straight from the
 		// SharedArrayBuffers registered via VoxelRegisterChunk.
 		this.voxelWorker.postMessage(msg);
+	}
+
+	/**
+	 * Return consumed mesh output buffers to this worker's voxel worker so it
+	 * can reuse them instead of slicing fresh ones per response. The buffers
+	 * are transferred (detached here); only call for results whose data is no
+	 * longer referenced anywhere on the main thread.
+	 */
+	public postVoxelRecycleBuffers(buffers: ArrayBuffer[]): void {
+		if (buffers.length === 0) return;
+		const msg = this.#recycleBuffersMsg;
+		msg.buffers = buffers;
+		this.voxelWorker.postMessage(msg, buffers);
 	}
 
 	/**
@@ -216,28 +381,44 @@ export class ChunkWorker {
 		msg.chunkX = chunk.chunkX;
 		msg.chunkY = chunk.chunkY;
 		msg.chunkZ = chunk.chunkZ;
-		msg.neighborMask = ChunkWorker._buildNeighborMask(
-			chunk.chunkX,
-			chunk.chunkY,
-			chunk.chunkZ,
-		);
+		msg.neighborMask = ChunkWorker._buildNeighborMask(chunk);
+
+		const skirts = computeBorderSkirtMasks(chunk);
+		msg.borderSkirtSides = skirts & 0xf;
+		msg.borderSkirtNearInset = (skirts >>> 4) & 0xf;
 
 		this.voxelWorker.postMessage(msg);
 	}
 
 	// Terrain generation stays on terrainWorker
+	// PERF: prebuilt, reused descriptors (same pattern + postMessage-clones-
+	// synchronously rationale as #voxelMeshMsg above) — one object allocation
+	// per instance instead of per generated chunk / recycled result.
+	readonly #terrainGenMsg: GenerateTerrainRequest = {
+		type: WorkerTaskType.GenerateTerrain,
+		chunkId: 0n,
+		chunkX: 0,
+		chunkY: 0,
+		chunkZ: 0,
+		deferLighting: true,
+	};
+
+	readonly #recycleBuffersMsg: VoxelRecycleBuffersRequest = {
+		type: WorkerTaskType.VoxelRecycleBuffers,
+		buffers: [],
+	};
+
 	public postTerrainGeneration(
 		chunk: Chunk,
 		deferLighting: boolean = true,
 	): void {
-		this.terrainWorker.postMessage({
-			type: WorkerTaskType.GenerateTerrain,
-			chunkId: chunk.id,
-			chunkX: chunk.chunkX,
-			chunkY: chunk.chunkY,
-			chunkZ: chunk.chunkZ,
-			deferLighting,
-		});
+		const msg = this.#terrainGenMsg;
+		msg.chunkId = chunk.id;
+		msg.chunkX = chunk.chunkX;
+		msg.chunkY = chunk.chunkY;
+		msg.chunkZ = chunk.chunkZ;
+		msg.deferLighting = deferLighting;
+		this.terrainWorker.postMessage(msg);
 	}
 
 	// ---------------------------------------------------------------------
@@ -288,6 +469,23 @@ export class ChunkWorker {
 			radius,
 			gridStep,
 			renderDistance,
+		};
+
+		this.terrainWorker.postMessage(message);
+	}
+
+	public postGenerateFarTile(
+		requestId: number,
+		levelIndex: number,
+		tileX: number,
+		tileZ: number,
+	): void {
+		const message: GenerateFarTileRequest = {
+			type: WorkerTaskType.GenerateFarTile,
+			requestId,
+			levelIndex,
+			tileX,
+			tileZ,
 		};
 
 		this.terrainWorker.postMessage(message);
@@ -362,9 +560,27 @@ export class ChunkWorker {
 		paletteSAB: SharedArrayBuffer | null;
 		blockStorageBytesPerElement: 1 | 2;
 	}): void {
+		const msg = this.#lightRegisterMsg;
+		msg.seq = req.seq;
+		msg.chunkId = req.chunkId;
+		msg.chunkX = req.chunkX;
+		msg.chunkY = req.chunkY;
+		msg.chunkZ = req.chunkZ;
+		msg.headerSlot = req.headerSlot;
+		msg.blockSAB = req.blockSAB;
+		msg.lightSAB = req.lightSAB;
+		msg.paletteSAB = req.paletteSAB;
+		msg.blockStorageBytesPerElement = req.blockStorageBytesPerElement;
+		this.terrainWorker.postMessage(msg);
+	}
+
+	public postLightRegisterChunkBatch(
+		chunks: LightRegisterChunkBatchRequest["chunks"],
+	): void {
+		if (chunks.length === 0) return;
 		this.terrainWorker.postMessage({
-			type: WorkerTaskType.LightRegisterChunk,
-			...req,
+			type: WorkerTaskType.LightRegisterChunkBatch,
+			chunks,
 		});
 	}
 
@@ -372,6 +588,14 @@ export class ChunkWorker {
 		this.terrainWorker.postMessage({
 			type: WorkerTaskType.LightUnregisterChunk,
 			chunkId,
+		});
+	}
+
+	public postLightUnregisterChunkBatch(chunkIds: bigint[]): void {
+		if (chunkIds.length === 0) return;
+		this.terrainWorker.postMessage({
+			type: WorkerTaskType.LightUnregisterChunkBatch,
+			chunkIds,
 		});
 	}
 
@@ -383,10 +607,14 @@ export class ChunkWorker {
 		lightSAB: SharedArrayBuffer | null;
 		blockStorageBytesPerElement: 1 | 2;
 	}): void {
-		this.terrainWorker.postMessage({
-			type: WorkerTaskType.LightUpdateChunkBuffers,
-			...req,
-		});
+		const msg = this.#lightUpdateMsg;
+		msg.chunkId = req.chunkId;
+		msg.headerSlot = req.headerSlot;
+		msg.blockSAB = req.blockSAB;
+		msg.paletteSAB = req.paletteSAB;
+		msg.lightSAB = req.lightSAB;
+		msg.blockStorageBytesPerElement = req.blockStorageBytesPerElement;
+		this.terrainWorker.postMessage(msg);
 	}
 
 	public postLightMutate(req: {
@@ -409,6 +637,26 @@ export class ChunkWorker {
 		msg.newPacked = req.newPacked;
 		msg.seq = req.seq;
 		this.terrainWorker.postMessage(msg);
+	}
+
+	public postLightMutateBatch(req: {
+		chunkId: bigint;
+		headerSlot: number;
+		muts: Uint32Array;
+		seq: number;
+	}): void {
+		// Transfer the mutation buffer zero-copy; the caller must not reuse
+		// it after posting (flushed arrays are freshly allocated per chunk).
+		this.terrainWorker.postMessage(
+			{
+				type: WorkerTaskType.LightMutateBatch,
+				chunkId: req.chunkId,
+				headerSlot: req.headerSlot,
+				muts: req.muts,
+				seq: req.seq,
+			},
+			[req.muts.buffer],
+		);
 	}
 
 	public postLightAddEmission(req: {
@@ -485,10 +733,35 @@ export class ChunkWorker {
 		paletteSAB: SharedArrayBuffer | null;
 		lightSAB: SharedArrayBuffer | null;
 	}): void {
-		this.voxelWorker.postMessage({
-			type: WorkerTaskType.VoxelRegisterChunk,
-			...req,
-		});
+		const msg = this.#voxelRegisterMsg;
+		msg.chunkId = req.chunkId;
+		msg.chunkX = req.chunkX;
+		msg.chunkY = req.chunkY;
+		msg.chunkZ = req.chunkZ;
+		msg.isUniform = req.isUniform;
+		msg.uniformBlockId = req.uniformBlockId;
+		msg.blockStorageBytesPerElement = req.blockStorageBytesPerElement;
+		msg.direct = req.direct;
+		msg.blockSAB = req.blockSAB;
+		msg.paletteSAB = req.paletteSAB;
+		msg.lightSAB = req.lightSAB;
+		this.voxelWorker.postMessage(msg);
+	}
+
+	public postVoxelRegisterChunkBatch(
+		req: Omit<VoxelRegisterChunkBatchRequest, "type">,
+	): void {
+		if (req.chunkIds.length === 0) return;
+		const msg = this.#voxelRegisterBatchMsg;
+		msg.chunkIds = req.chunkIds;
+		msg.coords = req.coords;
+		msg.meta = req.meta;
+		msg.blockSABs = req.blockSABs;
+		msg.paletteSABs = req.paletteSABs;
+		msg.lightSABs = req.lightSABs;
+		// NOTE: intentionally NOT transferred — the pool fans these arrays
+		// out to EVERY voxel worker, so the buffers must stay alive here.
+		this.voxelWorker.postMessage(msg);
 	}
 
 	public postVoxelUnregisterChunk(
@@ -504,6 +777,14 @@ export class ChunkWorker {
 		});
 	}
 
+	public postVoxelUnregisterChunkBatch(coords: Int32Array): void {
+		if (coords.length === 0) return;
+		this.voxelWorker.postMessage({
+			type: WorkerTaskType.VoxelUnregisterChunkBatch,
+			coords,
+		});
+	}
+
 	public postVoxelUpdateBuffers(req: {
 		chunkId: bigint;
 		chunkX: number;
@@ -516,9 +797,17 @@ export class ChunkWorker {
 		paletteSAB: SharedArrayBuffer | null;
 		lightSAB: SharedArrayBuffer | null;
 	}): void {
-		this.voxelWorker.postMessage({
-			type: WorkerTaskType.VoxelUpdateChunkBuffers,
-			...req,
-		});
+		const msg = this.#voxelUpdateMsg;
+		msg.chunkId = req.chunkId;
+		msg.chunkX = req.chunkX;
+		msg.chunkY = req.chunkY;
+		msg.chunkZ = req.chunkZ;
+		msg.isUniform = req.isUniform;
+		msg.uniformBlockId = req.uniformBlockId;
+		msg.blockStorageBytesPerElement = req.blockStorageBytesPerElement;
+		msg.blockSAB = req.blockSAB;
+		msg.paletteSAB = req.paletteSAB;
+		msg.lightSAB = req.lightSAB;
+		this.voxelWorker.postMessage(msg);
 	}
 }

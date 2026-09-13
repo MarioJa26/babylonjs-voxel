@@ -1,6 +1,7 @@
 import type { Mesh, Vec3 } from "@babylonjs/lite";
+import { playBlockBreak, playMineHit } from "@/code/Audio/SurfaceAudio";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
-import { play, playMining } from "@/code/Maps/BlockBreakParticles";
+import { play, playDebris, playMining } from "@/code/Maps/BlockBreakParticles";
 import {
 	createEmptyInventory,
 	getBlockInventory,
@@ -15,7 +16,7 @@ import {
 	getBlockBreakTime,
 	getBlockInfo,
 } from "@/code/World/Texture/TextureDefinitions";
-import { DroppedItem } from "../../Inventory/DroppedItem";
+import { dropWorldItem } from "../../Inventory/dropWorldItem";
 import { Item } from "../../Inventory/Item";
 import type { Player } from "../../Player";
 import { Gamemodes } from "../../PlayerStats";
@@ -26,7 +27,66 @@ import { pickTarget } from "./BlockRaycaster";
 const _scratchLightPos = vec3Zero();
 const _scratchParticlePos = vec3Zero();
 const _scratchMiningPos = vec3Zero();
+
 let variation = 1834927911;
+
+// Module-level mirror of the multiplayer block-broken callback (set alongside
+// the instance field in setOnBlockBroken). Systems that delete blocks outside
+// the mining path — e.g. TNT ignition — use getOnBlockBroken() to notify the
+// server without reaching into the handler instance.
+let globalOnBlockBroken:
+	| ((x: number, y: number, z: number, blockId: number) => void)
+	| undefined;
+
+export function getOnBlockBroken():
+	| ((x: number, y: number, z: number, blockId: number) => void)
+	| undefined {
+	return globalOnBlockBroken;
+}
+
+// Mirror holder for the multiplayer explosion callback (single Explosion
+// message per detonation — see ExplosionData). Wired alongside the block
+// callbacks in Player.setDefaultBlockEditCallbacks; undefined in singleplayer.
+let globalOnExplosion:
+	| ((x: number, y: number, z: number, radius: number) => void)
+	| undefined;
+
+export function getOnExplosion():
+	| ((x: number, y: number, z: number, radius: number) => void)
+	| undefined {
+	return globalOnExplosion;
+}
+
+export function setOnExplosion(
+	callback: (x: number, y: number, z: number, radius: number) => void,
+): void {
+	globalOnExplosion = callback;
+}
+
+// Mirror holder for the multiplayer ignite callback (one TntIgnite message
+// per ignition so other clients spawn the primed entity — the separate Break
+// edit only removes the block for them). Undefined in singleplayer.
+let globalOnTntIgnite:
+	| ((x: number, y: number, z: number, fuse: number, radius: number) => void)
+	| undefined;
+
+export function getOnTntIgnite():
+	| ((x: number, y: number, z: number, fuse: number, radius: number) => void)
+	| undefined {
+	return globalOnTntIgnite;
+}
+
+export function setOnTntIgnite(
+	callback: (
+		x: number,
+		y: number,
+		z: number,
+		fuse: number,
+		radius: number,
+	) => void,
+): void {
+	globalOnTntIgnite = callback;
+}
 
 export type BoatBlockHitContext = {
 	kind: "boatChunk";
@@ -46,19 +106,104 @@ export type BoatBlockHitContext = {
 	localZ: number;
 };
 
+type CrackBlockPosition = { x: number; y: number; z: number };
+
+function getDroppedBlockId(blockId: number): number {
+	if (blockId === BlockType.Grass001 || blockId === 14 || blockId === 51) {
+		return 46;
+	}
+
+	if (blockId === BlockType.Torch) {
+		return 1017;
+	}
+
+	if (blockId === BlockType.Tnt) {
+		return 1110;
+	}
+
+	return blockId;
+}
+
+function stirVariation(seed: number): void {
+	variation ^= seed;
+	variation ^= variation << 3;
+	variation ^= variation >>> 2;
+}
+
+export function computeDeterministicDropVelocity(
+	seed: number,
+	baseY: number,
+): { x: number; y: number; z: number } {
+	stirVariation(seed);
+
+	const pushX = ((variation & 7) - 3.5) * 0.44;
+	const pushY = baseY + ((variation >>> 3) & 3);
+	const pushZ = (((variation >>> 5) & 7) - 3.5) * 0.44;
+
+	return { x: pushX, y: pushY, z: pushZ };
+}
+
+function isBoatBlockContext(context: unknown): context is BoatBlockHitContext {
+	if (!context || typeof context !== "object") {
+		return false;
+	}
+
+	const value = context as Partial<BoatBlockHitContext>;
+
+	if (value.kind !== "boatChunk") {
+		return false;
+	}
+
+	if (
+		typeof value.localX !== "number" ||
+		typeof value.localY !== "number" ||
+		typeof value.localZ !== "number"
+	) {
+		return false;
+	}
+
+	const boatChunk = value.boatChunk;
+
+	return (
+		!!boatChunk &&
+		!!boatChunk.visualRoot &&
+		!!boatChunk.center &&
+		typeof boatChunk.setBlockLocal === "function"
+	);
+}
+
 export class BlockBreakingHandler {
 	#player: Player;
+	#onBlockBroken?: (x: number, y: number, z: number, blockId: number) => void;
 
 	#active = false;
+
 	#cachedX = 0;
 	#cachedY = 0;
 	#cachedZ = 0;
+	#cachedBlockId = -1;
+	#cachedBlockState = -1;
+
+	#cachedBoatChunk: BoatBlockHitContext["boatChunk"] | null = null;
+	#cachedLocalX = 0;
+	#cachedLocalY = 0;
+	#cachedLocalZ = 0;
+
 	#hasCachedBlock = false;
 	#breakTimer = 0;
 	#lastUpdateMs = 0;
 
+	readonly #crackBlock: CrackBlockPosition = { x: 0, y: 0, z: 0 };
+
 	constructor(player: Player) {
 		this.#player = player;
+	}
+
+	setOnBlockBroken(
+		callback: (x: number, y: number, z: number, blockId: number) => void,
+	): void {
+		this.#onBlockBroken = callback;
+		globalOnBlockBroken = callback;
 	}
 
 	public start(): void {
@@ -74,6 +219,11 @@ export class BlockBreakingHandler {
 		this.#hasCachedBlock = false;
 		this.#breakTimer = 0;
 		this.#lastUpdateMs = 0;
+
+		this.#cachedBlockId = -1;
+		this.#cachedBlockState = -1;
+		this.#cachedBoatChunk = null;
+
 		updateCrackingState(null, 0);
 	}
 
@@ -88,6 +238,7 @@ export class BlockBreakingHandler {
 		this.#lastUpdateMs = now;
 
 		hit ??= pickTarget(this.#player);
+
 		if (!hit) {
 			this.reset();
 			return;
@@ -96,9 +247,11 @@ export class BlockBreakingHandler {
 		const x = hit.x;
 		const y = hit.y;
 		const z = hit.z;
-
 		const blockId = hit.blockId;
 		const blockState = hit.blockState;
+		const boatContext = isBoatBlockContext(hit.dynamicContext)
+			? hit.dynamicContext
+			: null;
 
 		const selectedHotbarSlot = this.#player.playerHud.selectedHotbarSlot;
 		const item =
@@ -109,18 +262,14 @@ export class BlockBreakingHandler {
 				? 0.1
 				: getBlockBreakTime(blockId, item?.itemId) || 0.001;
 
-		const isSameBlock =
-			this.#hasCachedBlock &&
-			x === this.#cachedX &&
-			y === this.#cachedY &&
-			z === this.#cachedZ;
-
-		if (isSameBlock) {
+		if (this.#isSameTarget(hit, boatContext)) {
 			this.#breakTimer += dt;
 
 			const frac = Math.min(this.#breakTimer / breakTime, 1);
-			updateCrackingState(
-				{ x: this.#cachedX, y: this.#cachedY, z: this.#cachedZ },
+			this.#updateCrackVisual(
+				x,
+				y,
+				z,
 				frac,
 				blockId,
 				blockState,
@@ -139,25 +288,104 @@ export class BlockBreakingHandler {
 					lightPos.z,
 				);
 
-				this.#breakBlock(x, y, z, blockId, packedLight, hit.dynamicContext);
+				this.#breakBlock(x, y, z, blockId, packedLight, boatContext);
 			}
-		} else {
-			this.#cachedX = x;
-			this.#cachedY = y;
-			this.#cachedZ = z;
-			this.#hasCachedBlock = true;
-			this.#breakTimer = 0;
 
-			updateCrackingState(
-				{ x, y, z },
-				0,
-				blockId,
-				blockState,
-				hit.dynamicContext,
-			);
-
-			this.#emitMiningParticles(hit, x, y, z, blockId);
+			return;
 		}
+
+		this.#cacheTarget(hit, boatContext);
+		this.#breakTimer = 0;
+
+		this.#updateCrackVisual(
+			x,
+			y,
+			z,
+			0,
+			blockId,
+			blockState,
+			hit.dynamicContext,
+		);
+		this.#emitMiningParticles(hit, x, y, z, blockId);
+	}
+
+	#isSameTarget(
+		hit: BlockRaycastHit,
+		boatContext: BoatBlockHitContext | null,
+	): boolean {
+		if (!this.#hasCachedBlock) {
+			return false;
+		}
+
+		if (
+			hit.blockId !== this.#cachedBlockId ||
+			hit.blockState !== this.#cachedBlockState
+		) {
+			return false;
+		}
+
+		if (boatContext) {
+			return (
+				this.#cachedBoatChunk === boatContext.boatChunk &&
+				this.#cachedLocalX === boatContext.localX &&
+				this.#cachedLocalY === boatContext.localY &&
+				this.#cachedLocalZ === boatContext.localZ
+			);
+		}
+
+		return (
+			this.#cachedBoatChunk === null &&
+			hit.x === this.#cachedX &&
+			hit.y === this.#cachedY &&
+			hit.z === this.#cachedZ
+		);
+	}
+
+	#cacheTarget(
+		hit: BlockRaycastHit,
+		boatContext: BoatBlockHitContext | null,
+	): void {
+		this.#cachedX = hit.x;
+		this.#cachedY = hit.y;
+		this.#cachedZ = hit.z;
+		this.#cachedBlockId = hit.blockId;
+		this.#cachedBlockState = hit.blockState;
+		this.#hasCachedBlock = true;
+
+		if (boatContext) {
+			this.#cachedBoatChunk = boatContext.boatChunk;
+			this.#cachedLocalX = boatContext.localX;
+			this.#cachedLocalY = boatContext.localY;
+			this.#cachedLocalZ = boatContext.localZ;
+		} else {
+			this.#cachedBoatChunk = null;
+			this.#cachedLocalX = 0;
+			this.#cachedLocalY = 0;
+			this.#cachedLocalZ = 0;
+		}
+	}
+
+	#updateCrackVisual(
+		x: number,
+		y: number,
+		z: number,
+		progress: number,
+		blockId: number,
+		blockState: number,
+		dynamicContext: unknown,
+	): void {
+		const crackBlock = this.#crackBlock;
+		crackBlock.x = x;
+		crackBlock.y = y;
+		crackBlock.z = z;
+
+		updateCrackingState(
+			crackBlock,
+			progress,
+			blockId,
+			blockState,
+			dynamicContext,
+		);
 	}
 
 	#emitMiningParticles(
@@ -168,14 +396,15 @@ export class BlockBreakingHandler {
 		blockId: number,
 	): void {
 		const miningPos = _scratchMiningPos;
+
 		setVec3(
 			miningPos,
 			x + 0.5 + hit.nx * 0.5,
 			y + 0.5 + hit.ny * 0.5,
 			z + 0.5 + hit.nz * 0.5,
 		);
+
 		playMining(
-			this.#player.sceneRef,
 			miningPos.x,
 			miningPos.y,
 			miningPos.z,
@@ -184,30 +413,7 @@ export class BlockBreakingHandler {
 			hit.nz,
 			blockId,
 		);
-	}
-
-	#asBoatBlockContext(context: unknown): BoatBlockHitContext | null {
-		if (!context || typeof context !== "object") return null;
-
-		const value = context as Partial<BoatBlockHitContext>;
-		if (value.kind !== "boatChunk") return null;
-
-		if (
-			typeof value.localX !== "number" ||
-			typeof value.localY !== "number" ||
-			typeof value.localZ !== "number" ||
-			!value.boatChunk
-		) {
-			return null;
-		}
-
-		return {
-			kind: "boatChunk",
-			boatChunk: value.boatChunk,
-			localX: value.localX,
-			localY: value.localY,
-			localZ: value.localZ,
-		};
+		playMineHit(blockId);
 	}
 
 	#breakBlock(
@@ -216,46 +422,65 @@ export class BlockBreakingHandler {
 		z: number,
 		blockId: number,
 		packedLight: number,
-		dynamicContext: unknown,
+		boatContext: BoatBlockHitContext | null,
 	): void {
-		const info = getBlockInfo(blockId);
-		if (!info) return;
+		const isCreative = this.#player.stats.gamemode === Gamemodes.Creative;
 
-		//todo make it good
-		const dropId =
-			blockId === BlockType.Grass001 || blockId === 14 || blockId === 51
-				? 46
-				: blockId === BlockType.Torch
-					? 1017
-					: blockId;
-		const worldItem = Item.createById(dropId);
-		worldItem.stackSize = 1;
-		worldItem.itemId = dropId;
+		// Blocks without a blocks.json definition (coral, experimental ids...)
+		// have no hardness/drop data, so survival can't mine them — but
+		// CREATIVE CAN ALWAYS MINE EVERY BLOCK.
+		if (!getBlockInfo(blockId) && !isCreative) return;
 
-		const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
+		const dropId = getDroppedBlockId(blockId);
+
+		// The drop may not exist as an item (unregistered block id) — still
+		// break the block, just without a drop.
+		let worldItem: Item | null = null;
+		try {
+			worldItem = Item.createById(dropId);
+			worldItem.stackSize = 1;
+			worldItem.itemId = dropId;
+		} catch {
+			worldItem = null;
+		}
+
+		const v = computeDeterministicDropVelocity(blockId, 0.67);
+		const di = worldItem
+			? dropWorldItem(
+					worldItem,
+					x + 0.5,
+					y + 0.5,
+					z + 0.5,
+					v.x,
+					v.y,
+					v.z,
+					this.#player,
+				)
+			: null;
 
 		// The item spawns inside the still-solid block, whose voxel stores no
-		// light until the deferred light propagation lands — tint it from the
+		// light until the deferred light propagation lands. Tint it from the
 		// lit air voxel beside the mined face instead.
-		di.setInitialLight(packedLight);
-
-		variation ^= blockId;
-		variation ^= variation << 3;
-		variation ^= variation >>> 2;
-
-		const pushX = ((variation & 7) - 3.5) * 0.44;
-		const pushY = 0.67 + ((variation >>> 3) & 3);
-		const pushZ = (((variation >>> 5) & 7) - 3.5) * 0.44;
-
-		di.addVelocity(pushX, pushY, pushZ);
+		di?.setInitialLight(packedLight);
 
 		const particlePos = _scratchParticlePos;
 		setVec3(particlePos, x + 0.5, y + 0.5, z + 0.5);
-		play(this.#player.sceneRef, particlePos, blockId, packedLight);
+
+		play(particlePos, blockId, packedLight);
+		playDebris(
+			particlePos.x,
+			particlePos.y,
+			particlePos.z,
+			blockId,
+			packedLight,
+		);
+		playBlockBreak(blockId);
 
 		this.reset();
 
-		const boatContext = this.#asBoatBlockContext(dynamicContext);
+		// Notify multiplayer of block break.
+		this.#onBlockBroken?.(x, y, z, blockId);
+
 		if (boatContext) {
 			boatContext.boatChunk.setBlockLocal(
 				boatContext.localX,
@@ -267,7 +492,18 @@ export class BlockBreakingHandler {
 		} else {
 			deleteBlock(x, y, z);
 		}
+
 		if (blockId === BlockType.WoodCrate) {
+			// Multiplayer: crate contents are server-owned — the server
+			// scatters them as world items and force-closes viewers on the
+			// authoritative break path. Scattering locally would duplicate
+			// items and desync every other viewer.
+			if (this.#player.networkManager?.isConnected === true) {
+				if (di && this.#player.stats.gamemode === Gamemodes.Creative) {
+					di.use(this.#player);
+				}
+				return;
+			}
 			const blockInventory = getBlockInventory(x, y, z);
 
 			const dropX = x + 0.5;
@@ -276,23 +512,26 @@ export class BlockBreakingHandler {
 
 			for (const row of blockInventory.slots) {
 				for (const savedItem of row) {
-					if (savedItem) {
-						const item = Item.createById(savedItem.itemId);
-						item.stackSize = savedItem.stackSize;
-						variation ^= savedItem.itemId;
-						variation ^= variation << 3;
-						variation ^= variation >>> 2;
+					if (!savedItem) continue;
 
-						const pushX = ((variation & 7) - 3.5) * 0.44;
-						const pushY = 0.5 + ((variation >>> 3) & 3);
-						const pushZ = (((variation >>> 5) & 7) - 3.5) * 0.44;
+					const item = Item.createById(savedItem.itemId);
+					item.stackSize = savedItem.stackSize;
 
-						const droppedItem = new DroppedItem(item, dropX, dropY, dropZ);
-						droppedItem.setInitialLight(packedLight);
-						droppedItem.addVelocity(pushX, pushY, pushZ);
-					}
+					const v = computeDeterministicDropVelocity(savedItem.itemId, 0.5);
+					const droppedItem = dropWorldItem(
+						item,
+						dropX,
+						dropY,
+						dropZ,
+						v.x,
+						v.y,
+						v.z,
+						this.#player,
+					);
+					droppedItem?.setInitialLight(packedLight);
 				}
 			}
+
 			const emptyInv = createEmptyInventory(
 				blockInventory.width,
 				blockInventory.height,
@@ -300,7 +539,7 @@ export class BlockBreakingHandler {
 			saveBlockInventory(x, y, z, emptyInv);
 		}
 
-		if (this.#player.stats.gamemode === Gamemodes.Creative) {
+		if (di && this.#player.stats.gamemode === Gamemodes.Creative) {
 			di.use(this.#player);
 		}
 	}

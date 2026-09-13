@@ -9,67 +9,137 @@ import {
 	loadTexture2D,
 	onBeforeRender,
 	type SceneContext,
-	type Texture2D,
 	type Vec3,
 } from "@babylonjs/lite";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
 import {
+	getBlockAndStateByWorldCoordsInto,
 	getBlockByWorldCoords,
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
+import {
+	_voxelResolveScratch,
+	createVoxelColliderBlockSampler,
+	VoxelAabbCollider,
+} from "@/code/World/Collision/VoxelAabbCollider";
+import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
+import {
+	computeFenceNeighborMask,
+	getFenceDynamicShape,
+	isFenceBlockId,
+} from "@/code/World/Shape/FenceConnect";
+import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { getPRNGUnit2 } from "../Generation/NoiseAndParameters/Squirrel13";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
-import { BlockTextures } from "../World/Texture/BlockTextures";
+import { BlockFaceTileX, BlockFaceTileY } from "../World/Texture/BlockTextures";
 import { FaceName } from "../World/Texture/FaceName";
 import { atlasSize, tileSize } from "../World/Texture/TextureAtlasFactory";
 
 const ATLAS_URL = "/texture/diffuse_atlas.png";
-const POOL_SIZE = 2048;
-const PARTICLES_PER_BREAK = 222;
-const MINING_PARTICLES_PER_EMIT = 5;
-const MINING_PARTICLE_INTERVAL_MS = 60;
-const SPRINT_PARTICLES_PER_EMIT = 5;
-const SPRINT_PARTICLE_INTERVAL_MS = 130;
+const POOL_SIZE = 8192;
+const PARTICLES_PER_BREAK = 198;
+
+const MINING_PARTICLES_PER_EMIT = 6;
+const MINING_PARTICLE_INTERVAL_MS = 67;
+
+const SPRINT_PARTICLES_PER_EMIT = 6;
+const SPRINT_PARTICLE_INTERVAL_MS = 120;
+
+// Minimum horizontal speed before a sprinting player kicks up dust.
+const SPRINT_MIN_SPEED_SQ = 66;
+// Feet offset subtracted from a player's body origin to land dust at the ground.
+const SPRINT_FEET_OFFSET = 0.85;
+
+/**
+ * Per-emitter throttle state. Sprint dust is emitted by the local player and
+ * every remote player from locally-available interpolated motion, so each
+ * emitter keeps its own cadence instead of contending on a shared timer.
+ */
+export interface SprintEmitterState {
+	lastSprintEmitMs: number;
+}
+
+export function makeSprintEmitterState(): SprintEmitterState {
+	return { lastSprintEmitMs: 0 };
+}
+
+export { SPRINT_FEET_OFFSET, SPRINT_MIN_SPEED_SQ };
+
+const ARROW_PARTICLES_PER_EMIT = 8;
+const ARROW_PARTICLE_INTERVAL_MS = 75;
+
+// Wound drip while an arrow rides a mob: slow red trickle from the impact.
+// Throttling is CALLER-side (per stuck arrow), so any number of wounded mobs
+// can drip simultaneously — see MOB_DRIP_INTERVAL_MS.
+export const MOB_DRIP_INTERVAL_MS = 240;
+const MOB_DRIPS_PER_EMIT = 24;
+const MOB_DAMAGE_PARTICLES_MIN = 4;
+const MOB_DAMAGE_PARTICLES_PER_POINT = 6;
+const MOB_DAMAGE_PARTICLES_MAX = 32;
+const MOB_BLOOD_BLOCK = BlockType.CoralBlock;
+
 const GRAVITY = -16;
 const MAX_DT = 0.1;
 const FADE_START = 0.85;
-const MAX_PENDING_BURSTS = 8;
+const FADE_RANGE = 1 - FADE_START;
+
+const DEBRIS_PER_EXPLOSION = 96;
+
+const DEBRIS_PER_BREAK = 32;
+const DEBRIS_RESTITUTION = 0.35;
+// 0.25 stays below the thinnest collidable (fence arms/posts 0.25 wide,
+// effective width larger with particle radius) so sweeps cannot tunnel,
+// while needing ~40% fewer substeps than 0.15 for fast explosion debris.
+const DEBRIS_COLLIDE_STEP = 0.25;
+const DEBRIS_SETTLE_SPEED = 1.0;
+const DEBRIS_RADIUS_SCALE = 0.4;
+// Initial GPU billboard capacity. POOL_SIZE (particle pool) is unchanged —
+// this only sizes the preallocated instance buffer. 16k holds 10k+ alive
+// with headroom; the lite system grows (doubles) if chained blasts exceed it.
+const BILLBOARD_INITIAL_CAPACITY = 16384;
+
 let lastMiningEmitMs = 0;
-let lastSprintEmitMs = 0;
+let lastArrowHitEmitMs = 0;
 
-type Particle = {
-	x: number;
-	y: number;
-	z: number;
-	vx: number;
-	vy: number;
-	vz: number;
-	age: number;
-	life: number;
-	size: number;
-	angle: number;
-	spin: number;
-	frame: number;
-	r: number;
-	g: number;
-	b: number;
-	a: number;
-	gravityScale: number;
-};
+// ---------------------------------------------------------------------------
+// Particle pool (SoA / typed-array layout).
+//
+// Particles live densely packed in [0, aliveCount). Removal is a swap with
+// the last live particle followed by aliveCount--, so there is no separate
+// free-list to maintain — the tail past aliveCount *is* the free capacity.
+// This keeps every per-frame scan cache-dense and GC-transparent (no object
+// pointers for the collector to trace), matching the typed-array-LUT /
+// scratch-buffer conventions used elsewhere in the engine.
+// ---------------------------------------------------------------------------
 
-type PendingBurst = {
-	x: number;
-	y: number;
-	z: number;
-	frame: number;
-	r: number;
-	g: number;
-	b: number;
-};
+const px = new Float32Array(POOL_SIZE);
+const py = new Float32Array(POOL_SIZE);
+const pz = new Float32Array(POOL_SIZE);
+const pvx = new Float32Array(POOL_SIZE);
+const pvy = new Float32Array(POOL_SIZE);
+const pvz = new Float32Array(POOL_SIZE);
+const page = new Float32Array(POOL_SIZE);
+const plife = new Float32Array(POOL_SIZE);
+const psize = new Float32Array(POOL_SIZE);
+const pangle = new Float32Array(POOL_SIZE);
+const pspin = new Float32Array(POOL_SIZE);
+const pr = new Float32Array(POOL_SIZE);
+const pg = new Float32Array(POOL_SIZE);
+const pb = new Float32Array(POOL_SIZE);
+const pa = new Float32Array(POOL_SIZE);
+const pgrav = new Float32Array(POOL_SIZE);
+// Precomputed fade curve per particle: fadeStartAge = life * FADE_START,
+// fadeInv = 1 / (life - fadeStartAge). Avoids a multiply per particle per
+// frame (and a divide while fading) in tick.
+const pFadeStart = new Float32Array(POOL_SIZE);
+const pFadeInv = new Float32Array(POOL_SIZE);
+const pframe = new Uint16Array(POOL_SIZE);
+/** bit0 = collide (routes through voxel collision in tick), bit1 = settled. */
+const pflags = new Uint8Array(POOL_SIZE);
+const COLLIDE_BIT = 1;
+const SETTLED_BIT = 2;
 
-const alive: Particle[] = [];
-const free: Particle[] = [];
-const pendingBursts: PendingBurst[] = [];
+let aliveCount = 0;
 
 // Scratch props reused across every `addBillboardSpriteIndex` call so the
 // per-frame billboard rebuild allocates nothing.
@@ -84,41 +154,150 @@ const scratchProps = {
 	frame: 0,
 };
 
-let initScene: SceneContext | null = null;
+// Scratch light result reused across every `computeLight` call. Safe because
+// every call site consumes `.r/.g/.b` immediately and never holds the
+// reference across a subsequent `computeLight` call.
+const scratchLight = { r: 0, g: 0, b: 0 };
+
+// Scratch objects for debris collision sweeps (allocation-free).
+const scratchDebrisPos: Vec3 = { x: 0, y: 0, z: 0 };
+const scratchDebrisHalf: Vec3 = { x: 0, y: 0, z: 0 };
+
+// Shared shape-aware voxel sampler + stateless collider (DroppedItem pattern).
+// The collider's fixed half-extents are never used; debris sweeps call
+// `overlapsBox` with per-particle radii instead.
+//
+// Single-fetch: one chunk resolve for id+state instead of two
+// (getBlock + getState each resolved the chunk). Identical shape/fence logic.
+const DEBRIS_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
+	(x, y, z) => {
+		getBlockAndStateByWorldCoordsInto(x, y, z, _voxelResolveScratch);
+		if (!isCollidableBlock(_voxelResolveScratch.blockId)) return null;
+		return _voxelResolveScratch;
+	},
+	{
+		getFenceDynamicShape,
+		getShapeForBlockId,
+		isFenceBlockId,
+		computeFenceNeighborMask,
+	},
+);
+
+const debrisCollider = new VoxelAabbCollider(
+	{ x: 1, y: 1, z: 1 },
+	DEBRIS_BLOCK_SAMPLER,
+	0.001,
+);
+
+// Block id -> atlas frame index, precomputed once. Reads typed arrays directly.
+const blockFrameLUT = buildBlockFrameLUT();
+
+function buildBlockFrameLUT(): Uint16Array {
+	const count = BlockFaceTileX.length / FaceName.Count;
+	const lut = new Uint16Array(count);
+	for (let id = 0; id < count; id++) {
+		const base = id * FaceName.Count + FaceName.All;
+		const tx = BlockFaceTileX[base];
+		const ty = BlockFaceTileY[base];
+		// atlasSize may still be 0 at module init; fallback to 16 (matches atlasSize default)
+		const size = atlasSize || 16;
+		lut[id] = ty * size + tx;
+	}
+	return lut;
+}
+
 let billboard: FacingBillboardSpriteSystem | null = null;
-let ready = false;
 
 export function play(
-	scene: SceneContext,
 	position: Vec3,
 	blockId: number,
 	packedLight: number,
-) {
-	ensureInit(scene);
+): void {
+	if (!billboard) return;
 
 	const frame = getBlockFrame(blockId);
 	const light = computeLight(packedLight);
 
-	if (ready) {
-		spawnBurst(
-			position.x,
-			position.y,
-			position.z,
+	spawnBurst(
+		position.x,
+		position.y,
+		position.z,
+		frame,
+		light.r,
+		light.g,
+		light.b,
+	);
+}
+
+/**
+ * Bouncy debris kicked out of a broken block. Particles collide with the voxel
+ * world (shape-aware: slabs/stairs/fences), bounce with restitution, and settle
+ * to rest on surfaces where they fade out. `x/y/z` is the broken block center.
+ */
+export function playDebris(
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+	packedLight: number,
+): void {
+	if (!billboard) return;
+
+	const frame = getBlockFrame(blockId);
+	const light = computeLight(packedLight);
+
+	spawnDebrisBurst(x, y, z, frame, light.r, light.g, light.b);
+}
+
+/**
+ * Violent omnidirectional debris for explosions: terrain chunks launched in
+ * ALL directions (uniform sphere — up, down, sideways) at high speed, arcing
+ * under full gravity and bouncing off the voxel world. Unlike playDebris
+ * (a mining-strength pop with an upward bias), this is true blast scatter —
+ * including downward chunks that slam into the crater floor and ricochet. A
+ * quarter of the chunks are fire-tinted burning debris. `x/y/z` is the burst
+ * center (destroyed block center); `power` scales launch speed (1 = TNT).
+ */
+export function playExplosionDebris(
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+	packedLight: number,
+	power = 1,
+): void {
+	if (!billboard) return;
+
+	const frame = getBlockFrame(blockId);
+	const light = computeLight(packedLight);
+	let life = 1 + getPRNGUnit2();
+
+	for (let i = 0; i < DEBRIS_PER_EXPLOSION; i++) {
+		const theta = getPRNGUnit2() * Math.PI * 2;
+		const up = getPRNGUnit2() * 2;
+		const speed = (6 + getPRNGUnit2() * 8) * power;
+		const burning = getPRNGUnit2() < 0.25;
+		const shade = 0.8 + getPRNGUnit2() * 0.25;
+		life += 0.06;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.9,
+			y + (getPRNGUnit2() - 0.5) * 0.9,
+			z + (getPRNGUnit2() - 0.5) * 0.9,
+			Math.cos(theta) * speed,
+			up * speed,
+			Math.sin(theta) * speed,
+			life,
+			0.1 + getPRNGUnit2() * 0.1,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 6,
 			frame,
-			light.r,
-			light.g,
-			light.b,
+			burning ? 1.2 : light.r * shade,
+			burning ? 0.5 : light.g * shade,
+			burning ? 0.18 : light.b * shade,
+			1,
+			1,
+			1,
 		);
-	} else if (pendingBursts.length < MAX_PENDING_BURSTS) {
-		pendingBursts.push({
-			x: position.x,
-			y: position.y,
-			z: position.z,
-			frame,
-			r: light.r,
-			g: light.g,
-			b: light.b,
-		});
 	}
 }
 
@@ -128,7 +307,6 @@ export function play(
  * face center (block center + normal * 0.5) and `nx/ny/nz` the face normal.
  */
 export function playMining(
-	scene: SceneContext,
 	x: number,
 	y: number,
 	z: number,
@@ -137,8 +315,7 @@ export function playMining(
 	nz: number,
 	blockId: number,
 ): void {
-	ensureInit(scene);
-	if (!ready) return;
+	if (!billboard) return;
 
 	const now = performance.now();
 	if (now - lastMiningEmitMs < MINING_PARTICLE_INTERVAL_MS) return;
@@ -154,6 +331,9 @@ export function playMining(
 	const light = computeLight(
 		getLightByWorldCoords(x + nx * 0.5, y + ny * 0.5, z + nz * 0.5),
 	);
+	const lr = light.r;
+	const lg = light.g;
+	const lb = light.b;
 
 	for (let i = 0; i < MINING_PARTICLES_PER_EMIT; i++) {
 		const jx = (getPRNGUnit2() - 0.5) * 0.5;
@@ -172,11 +352,302 @@ export function playMining(
 			getPRNGUnit2() * Math.PI * 2,
 			getPRNGUnit2() - 0.5,
 			frame,
-			light.r,
-			light.g,
-			light.b,
+			lr,
+			lg,
+			lb,
 			1,
 			0.6,
+		);
+	}
+}
+export function playArrowHit(
+	x: number,
+	y: number,
+	z: number,
+	nx: number,
+	ny: number,
+	nz: number,
+	blockId: number,
+): void {
+	if (!billboard) return;
+
+	const now = performance.now();
+	if (now - lastArrowHitEmitMs < ARROW_PARTICLE_INTERVAL_MS) return;
+	lastArrowHitEmitMs = now;
+
+	const frame = getBlockFrame(blockId);
+
+	// Sample light one more half-block out along the normal: `x/y/z` is the
+	// face boundary, which floors into the mined (solid) block for half of the
+	// faces — that voxel stores no light, so particles came out black there.
+	// `face center + normal * 0.5` lands in the adjacent air block, which is
+	// lit, for every face (same spot the block-break burst samples).
+	const light = computeLight(
+		getLightByWorldCoords(x + nx * 0.5, y + ny * 0.5, z + nz * 0.5),
+	);
+	const lr = light.r;
+	const lg = light.g;
+	const lb = light.b;
+	let life = 0.4 + getPRNGUnit2();
+
+	for (let i = 0; i < ARROW_PARTICLES_PER_EMIT; i++) {
+		const jx = (getPRNGUnit2() - 0.25) * 0.25;
+		const jy = (getPRNGUnit2() - 0.3) * 0.3;
+		const jz = (getPRNGUnit2() - 0.25) * 0.25;
+		const speed = 0.66 + getPRNGUnit2();
+		life += 0.1;
+		addParticle(
+			x + jx,
+			y + jy,
+			z + jz,
+			nx * speed + jx * 0.6,
+			ny * speed + 0.35 + jy * 0.6,
+			nz * speed + jz * 0.6,
+			life,
+			0.04 + getPRNGUnit2() * 0.03,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			lr,
+			lg,
+			lb,
+			1,
+			0.5,
+		);
+		addParticle(
+			x + jx,
+			y + jy,
+			z + jz,
+			nx * speed + jx * 0.6,
+			ny * speed + 0.35 + jy * 0.6,
+			nz * speed + jz * 0.6,
+			life,
+			0.04 + getPRNGUnit2() * 0.03,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			lr,
+			lg,
+			lb,
+			1,
+			0.5,
+			1,
+		);
+	}
+}
+
+/**
+ * Slow red trickle from a wound — spawns droplets at the given point.
+ * Stateless by design: the CALLER throttles per emitter (each stuck arrow
+ * keeps its own timer against MOB_DRIP_INTERVAL_MS), so any number of wounded
+ * mobs can drip at the same time. `x/y/z` is the arrow tip. Drips fall under
+ * gravity, collide with the voxel world and settle briefly before fading.
+ *
+ * @param damage Dealt per emit — scales the number of droplets so harder
+ *   hits bleed more. Defaults to 1 (base MOB_DRIPS_PER_EMIT droplets).
+ */
+export function playMobDrip(
+	x: number,
+	y: number,
+	z: number,
+	damage = 0.5,
+): void {
+	if (!billboard) return;
+
+	const frame = getBlockFrame(MOB_BLOOD_BLOCK);
+	const light = computeLight(getLightByWorldCoords(x, y - 0.25, z));
+	const bloodR = light.r * 1.0;
+	const bloodG = light.g * 0.3;
+	const bloodB = light.b * 0.24;
+	// Scale particle count with damage, clamped to a sane range.
+	const count = Math.min(
+		MOB_DRIPS_PER_EMIT,
+		Math.max(1, Math.round(MOB_DRIPS_PER_EMIT * Math.max(0, damage))),
+	);
+
+	let life = 10.33 + getPRNGUnit2();
+	for (let i = 0; i < count; i++) {
+		life += 0.1;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.1,
+			y + (getPRNGUnit2() - 0.5) * 0.1,
+			z + (getPRNGUnit2() - 0.5) * 0.1,
+			(getPRNGUnit2() - 0.5) * 0.4,
+			getPRNGUnit2() * 2,
+			(getPRNGUnit2() - 0.5) * 0.4,
+			life,
+			0.04 + getPRNGUnit2() * 0.02,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 2,
+			frame,
+			bloodR,
+			bloodG,
+			bloodB,
+			1,
+			1,
+			1,
+		);
+	}
+}
+
+/** Short blood burst when a mob takes direct damage. */
+export function playMobDamage(
+	x: number,
+	y: number,
+	z: number,
+	damage: number,
+): void {
+	if (!billboard || !Number.isFinite(damage) || damage <= 0) return;
+
+	const frame = getBlockFrame(MOB_BLOOD_BLOCK);
+	const light = computeLight(getLightByWorldCoords(x, y, z));
+	// Use a dedicated red atlas tile for the initial hit burst and reinforce it
+	// with a blood-red tint so it cannot look like the coral drip effect.
+	const bloodR = light.r * 1.0;
+	const bloodG = light.g * 0.3;
+	const bloodB = light.b * 0.24;
+	const count = Math.min(
+		MOB_DAMAGE_PARTICLES_MAX,
+		Math.max(
+			MOB_DAMAGE_PARTICLES_MIN,
+			Math.ceil(damage * MOB_DAMAGE_PARTICLES_PER_POINT),
+		),
+	);
+
+	for (let i = 0; i < count; i++) {
+		const angle = getPRNGUnit2() * Math.PI * 2;
+		const speed = 0.25 + getPRNGUnit2() * 0.65;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.18,
+			y + (getPRNGUnit2() - 0.5) * 0.22,
+			z + (getPRNGUnit2() - 0.5) * 0.18,
+			Math.cos(angle) * speed,
+			0.45 + getPRNGUnit2() * 1.1,
+			Math.sin(angle) * speed,
+			0.3 + getPRNGUnit2() * 0.45,
+			0.035 + getPRNGUnit2() * 0.025,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 3,
+			frame,
+			bloodR,
+			bloodG,
+			bloodB,
+			1,
+			1,
+			1,
+		);
+	}
+}
+
+/**
+ * Directional blood burst for when the PLAYER takes a melee hit: the spray
+ * travels along (dirX, dirZ) with a small random spread, so the hit reads
+ * as coming from a direction instead of a generic omnidirectional pop.
+ * Callers pass the mob→player facing negated, blowing the spray back
+ * toward the attacker so it stays in front of the camera. Falls back to
+ * +X when the direction is degenerate.
+ */
+export function playMobDamageDirected(
+	x: number,
+	y: number,
+	z: number,
+	damage: number,
+	dirX: number,
+	dirZ: number,
+): void {
+	if (!billboard || !Number.isFinite(damage) || damage <= 0) return;
+
+	let dx = dirX;
+	let dz = dirZ;
+	const len = Math.sqrt(dx * dx + dz * dz);
+	if (!(len > 0.0001) || !Number.isFinite(len)) {
+		dx = 1;
+		dz = 0;
+	} else {
+		dx /= len;
+		dz /= len;
+	}
+
+	const frame = getBlockFrame(MOB_BLOOD_BLOCK);
+	const light = computeLight(getLightByWorldCoords(x, y, z));
+	const bloodR = light.r * 1.0;
+	const bloodG = light.g * 0.3;
+	const bloodB = light.b * 0.24;
+	const count = Math.min(
+		MOB_DAMAGE_PARTICLES_MAX,
+		Math.max(
+			MOB_DAMAGE_PARTICLES_MIN,
+			Math.ceil(damage * MOB_DAMAGE_PARTICLES_PER_POINT),
+		),
+	);
+
+	for (let i = 0; i < count; i++) {
+		// Forward cone along the hit direction plus lateral jitter.
+		const forward = 0.8 + getPRNGUnit2() * 1.2;
+		const lateral = (getPRNGUnit2() - 0.5) * 1.1;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.18,
+			y + (getPRNGUnit2() - 0.5) * 0.22,
+			z + (getPRNGUnit2() - 0.5) * 0.18,
+			dx * forward - dz * lateral,
+			0.45 + getPRNGUnit2() * 1.1,
+			dz * forward + dx * lateral,
+			0.3 + getPRNGUnit2() * 0.45,
+			0.035 + getPRNGUnit2() * 0.025,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 3,
+			frame,
+			bloodR,
+			bloodG,
+			bloodB,
+			1,
+			1,
+			1,
+		);
+	}
+}
+
+const MOB_DEATH_PARTICLES = 48;
+
+/**
+ * Violent blood burst when a mob is killed outright (explosions, heavy
+ * hits). Bigger, faster, and longer-lived than the playMobDamage hit spray
+ * so a kill reads clearly even inside explosion FX; chunks bounce
+ * off the voxel world and settle like debris.
+ */
+export function playMobDeath(x: number, y: number, z: number): void {
+	if (!billboard) return;
+
+	const frame = getBlockFrame(MOB_BLOOD_BLOCK);
+	const light = computeLight(getLightByWorldCoords(x, y, z));
+	const bloodR = light.r * 1.0;
+	const bloodG = light.g * 0.3;
+	const bloodB = light.b * 0.24;
+	let life = 2 + getPRNGUnit2();
+
+	for (let i = 0; i < MOB_DEATH_PARTICLES; i++) {
+		const theta = getPRNGUnit2() * Math.PI * 2;
+		const up = getPRNGUnit2() * 2;
+		const speed = 1 + getPRNGUnit2() * 2.5;
+		life += 0.1;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.3,
+			y + (getPRNGUnit2() - 0.5) * 0.4,
+			z + (getPRNGUnit2() - 0.5) * 0.3,
+			Math.cos(theta) * speed,
+			up * speed,
+			Math.sin(theta) * speed,
+			life,
+			0.125,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 6,
+			frame,
+			bloodR,
+			bloodG,
+			bloodB,
+			1,
+			1,
+			1,
 		);
 	}
 }
@@ -187,18 +658,17 @@ export function playMining(
  * drifts opposite to it.
  */
 export function playSprint(
-	scene: SceneContext,
+	emitter: SprintEmitterState,
 	x: number,
 	y: number,
 	z: number,
 	velX: number,
 	velZ: number,
 ): void {
-	ensureInit(scene);
-	if (!ready) return;
+	if (!billboard) return;
 
 	const now = performance.now();
-	if (now - lastSprintEmitMs < SPRINT_PARTICLE_INTERVAL_MS) return;
+	if (now - emitter.lastSprintEmitMs < SPRINT_PARTICLE_INTERVAL_MS) return;
 
 	// Dust picks up the block underfoot: frame + tint come from the ground
 	// block at the feet, so it changes with the terrain instead of always
@@ -212,8 +682,11 @@ export function playSprint(
 	if (groundBlockId === 0) return;
 	const frame = getBlockFrame(groundBlockId);
 	const light = computeLight(getLightByWorldCoords(x, y, z));
+	const lr = light.r;
+	const lg = light.g;
+	const lb = light.b;
 
-	lastSprintEmitMs = now;
+	emitter.lastSprintEmitMs = now;
 
 	const speed = Math.max(0.0001, Math.hypot(velX, velZ));
 	const dirX = velX / speed;
@@ -234,70 +707,412 @@ export function playSprint(
 			getPRNGUnit2() * Math.PI * 2,
 			getPRNGUnit2() - 0.5,
 			frame,
-			light.r * shade,
-			light.g * shade,
-			light.b * shade,
+			lr * shade,
+			lg * shade,
+			lb * shade,
 			1.0,
 			0.08,
 		);
 	}
 }
 
-function ensureInit(scene: SceneContext): void {
-	if (initScene) return;
-	initScene = scene;
-	onBeforeRender(scene, tick);
+/**
+ * Landing dust kicked up when a mob hits the ground after a fall. `x/y/z` is
+ * the landing point (physical ground contact); particle count scales with fall
+ * distance so harder landings throw up more dust. The particles use the tile
+ * and lighting of the block that was actually hit.
+ */
+export function playLandingDust(
+	x: number,
+	y: number,
+	z: number,
+	fallDistance: number,
+): void {
+	if (!billboard || !Number.isFinite(fallDistance) || fallDistance <= 0) return;
 
-	void loadTexture2D(scene.surface.engine, ATLAS_URL, {
-		mipMaps: false,
-		magFilter: "nearest",
-		minFilter: "nearest",
-		invertY: false,
-		addressModeU: "clamp-to-edge",
-		addressModeV: "clamp-to-edge",
-	})
-		.then((texture: Texture2D | null) => setup(texture))
-		.catch((error: unknown) => {
-			console.warn("[BlockBreakParticles] failed to load atlas:", error);
-		});
-}
-
-async function setup(texture: Texture2D | null): Promise<void> {
-	if (!texture) return;
-
-	const atlas = createGridSpriteAtlas(texture, {
-		cellWidthPx: tileSize,
-		cellHeightPx: tileSize,
-	});
-	billboard = createFacingBillboardSystem(atlas, {
-		capacity: POOL_SIZE,
-		blendMode: billboardBlendAlpha,
-	});
-	addFacingBillboardSystem(initScene!, billboard);
-
-	// `addFacingBillboardSystem` registers a deferred renderable builder that
-	// Lite only flushes during `buildScene` (at scene registration). The scene
-	// is long registered by the time the first block breaks, so flush the
-	// builder ourselves or the billboard never gets a GPU renderable.
-	try {
-		await flushDeferredRenderables(initScene!);
-	} catch {
-		return;
+	// `y` is the physical contact height. Sample the voxel immediately below
+	// it so the puff uses the block that was actually hit, not a hard-coded
+	// atlas tile (and never accidentally samples air at the surface boundary).
+	let groundBlockId = getBlockByWorldCoords(
+		Math.floor(x),
+		Math.floor(y - 0.05),
+		Math.floor(z),
+	);
+	if (!isCollidableBlock(groundBlockId)) {
+		// Pass-through cover (tall grass, snow layers) or a fall that
+		// outran chunk streaming — the collider treats unloaded chunks as
+		// solid, so the landing is real but the query reads air. Scan down
+		// for the first solid block so the puff still matches the terrain;
+		// with nothing loaded yet, fall back to generic dust instead of
+		// silently emitting nothing.
+		groundBlockId = 0;
+		const groundY = Math.floor(y - 0.05);
+		for (let d = 1; d <= 6; d++) {
+			const id = getBlockByWorldCoords(
+				Math.floor(x),
+				groundY - d,
+				Math.floor(z),
+			);
+			if (isCollidableBlock(id)) {
+				groundBlockId = id;
+				break;
+			}
+		}
+		if (groundBlockId === 0) groundBlockId = BlockType.GravellySand;
 	}
-	ready = true;
 
-	for (const burst of pendingBursts) {
-		spawnBurst(
-			burst.x,
-			burst.y,
-			burst.z,
-			burst.frame,
-			burst.r,
-			burst.g,
-			burst.b,
+	const frame = getBlockFrame(groundBlockId);
+	const light = computeLight(getLightByWorldCoords(x, y + 0.05, z));
+	const shade = 0.85 + getPRNGUnit2() * 0.15;
+	const lr = light.r * shade;
+	const lg = light.g * shade;
+	const lb = light.b * shade;
+
+	// Scale particle count with fall distance: a 3-block fall makes a small
+	// puff, a 20-block drop kicks up a big cloud. Clamped to the pool.
+	const count = Math.min(
+		PARTICLES_PER_BREAK,
+		Math.max(8, Math.round(fallDistance * 12)),
+	);
+
+	// Clamp the fall distance driving initial speeds: count already caps at
+	// 198, so unbounded speeds would spread very high falls over a huge disc
+	// that disperses in under a second and reads as no particles. Capped
+	// falls still render as a big dense lingering cloud.
+	const speedFall = Math.min(fallDistance, 64);
+	let life = 0.4 + getPRNGUnit2();
+
+	for (let i = 0; i < count; i++) {
+		const angle = getPRNGUnit2() * Math.PI * 2;
+		const outSpeed = 0.3 + getPRNGUnit2() * (0.4 + speedFall * 0.15);
+		life += 0.04;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.6,
+			y + 0.03,
+			z + (getPRNGUnit2() - 0.5) * 0.6,
+			Math.cos(angle) * outSpeed,
+			0.4 + getPRNGUnit2() * (0.6 + speedFall * 0.3),
+			Math.sin(angle) * outSpeed,
+			life,
+			0.08 + getPRNGUnit2() * 0.06,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			lr,
+			lg,
+			lb,
+			1.0,
+			0.8,
+			1,
 		);
 	}
-	pendingBursts.length = 0;
+}
+
+const EXPLOSION_SMOKE_PER_RADIUS = 22;
+const EXPLOSION_SMOKE_MAX = 110;
+const EXPLOSION_EMBER_COUNT = 60;
+const EXPLOSION_RING_COUNT = 48;
+
+/**
+ * Full explosion look: core flash, layered fireball, ground shockwave ring,
+ * rising smoke column, and bouncing embers. `x/y/z` is the blast center.
+ *
+ * Deliberately NOT block-break bursts (those read as mining): the fire and
+ * smoke use the TNT atlas tile purely as chunky filler, tinted per phase.
+ * Terrain chunks come from a few capped playDebris() calls by the detonator.
+ * Total budget stays well under POOL_SIZE so chained blasts don't starve.
+ */
+export function playExplosion(
+	x: number,
+	y: number,
+	z: number,
+	radius: number,
+	packedLight: number,
+): void {
+	if (!billboard) return;
+
+	const frame = getBlockFrame(BlockType.CastleBrickRed);
+	const light = computeLight(packedLight);
+	const lr = Math.min(1, light.r + 0.35);
+	const lg = Math.min(1, light.g + 0.35);
+	const lb = Math.min(1, light.b + 0.35);
+	const speedScale = 0.7 + radius * 0.15;
+
+	// --- 1. Core flash: one huge white billboard, gone in a blink. ---
+	addParticle(
+		x,
+		y,
+		z,
+		0,
+		0.5,
+		0,
+		0.1,
+		radius,
+		y,
+		lr,
+		frame,
+		2.5,
+		2.4,
+		2.2,
+		1,
+		0,
+	);
+
+	// --- 2. Hot sparks: white-yellow, fast, very short. ---
+	for (let i = 0; i < 24; i++) {
+		const theta = getPRNGUnit2() * Math.PI * 2;
+		const up = getPRNGUnit2() * 2 - 1;
+		const flat = Math.sqrt(Math.max(0, 1 - up * up));
+		const speed = (4 + getPRNGUnit2() * 5) * speedScale;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.8,
+			y + (getPRNGUnit2() - 0.5) * 0.8,
+			z + (getPRNGUnit2() - 0.5) * 0.8,
+			Math.cos(theta) * flat * speed,
+			up * speed + 1,
+			Math.sin(theta) * flat * speed,
+			0.2 + getPRNGUnit2() * 0.15,
+			0.1 + getPRNGUnit2() * 0.1,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			1.4,
+			1.1,
+			0.65,
+			1,
+			0.1,
+		);
+	}
+
+	// --- 3. Fireball: three shells, white-hot inside → deep red outside. ---
+	spawnFireShell(
+		x,
+		y,
+		z,
+		frame,
+		30,
+		1.3,
+		0.9,
+		0.45,
+		2,
+		6,
+		0.3,
+		0.5,
+		0.15,
+		0.28,
+		0,
+		speedScale,
+	);
+	spawnFireShell(
+		x,
+		y,
+		z,
+		frame,
+		48,
+		1.2,
+		0.55,
+		0.2,
+		1.5,
+		5,
+		0.45,
+		0.7,
+		0.18,
+		0.32,
+		-0.1,
+		speedScale,
+	);
+	spawnFireShell(
+		x,
+		y,
+		z,
+		frame,
+		36,
+		0.9,
+		0.3,
+		0.12,
+		1,
+		3.5,
+		0.6,
+		0.9,
+		0.2,
+		0.36,
+		-0.15,
+		speedScale,
+	);
+
+	// --- 4. Shockwave ring: fast dusty disc hugging the ground. ---
+	for (let i = 0; i < EXPLOSION_RING_COUNT; i++) {
+		const angle = getPRNGUnit2() * Math.PI * 2;
+		const speed = (7 + getPRNGUnit2() * 6) * speedScale;
+		const shade = 0.55 + getPRNGUnit2() * 0.25;
+		addParticle(
+			x + Math.cos(angle) * 0.5,
+			y + 0.2,
+			z + Math.sin(angle) * 0.5,
+			Math.cos(angle) * speed,
+			0.3 + getPRNGUnit2() * 0.9,
+			Math.sin(angle) * speed,
+			0.35 + getPRNGUnit2() * 0.2,
+			0.18 + getPRNGUnit2() * 0.12,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			shade * lr,
+			shade * lg * 0.9,
+			shade * lb * 0.75,
+			1,
+			0.15,
+		);
+	}
+
+	// --- 5. Smoke column: dark, slow, long-lived, drifting up. ---
+	const smokeCount = Math.min(
+		EXPLOSION_SMOKE_MAX,
+		Math.max(8, Math.floor(radius * EXPLOSION_SMOKE_PER_RADIUS)),
+	);
+	for (let i = 0; i < smokeCount; i++) {
+		const angle = getPRNGUnit2() * Math.PI * 2;
+		const outSpeed = 0.5 + getPRNGUnit2() * (1 + radius * 0.4);
+		const shade = 0.13 + getPRNGUnit2() * 0.1;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * radius,
+			y + (getPRNGUnit2() - 0.5) * 0.8,
+			z + (getPRNGUnit2() - 0.5) * radius,
+			Math.cos(angle) * outSpeed,
+			1.2 + getPRNGUnit2() * 2.2,
+			Math.sin(angle) * outSpeed,
+			1.7 + getPRNGUnit2() * 1.4,
+			0.2 + getPRNGUnit2() * 0.22,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			shade * lr,
+			shade * lg,
+			shade * lb,
+			1,
+			-0.1,
+			1,
+		);
+	}
+
+	// --- 6. Embers: tiny bright sparks that arc out and bounce on landing. ---
+	for (let i = 0; i < EXPLOSION_EMBER_COUNT; i++) {
+		const theta = getPRNGUnit2() * Math.PI * 2;
+		const flat = 0.4 + getPRNGUnit2() * 0.6;
+		const speed = (4 + getPRNGUnit2() * 7) * speedScale;
+		addParticle(
+			x,
+			y + 0.3,
+			z,
+			Math.cos(theta) * flat * speed,
+			(1.5 + getPRNGUnit2() * 3.5) * speedScale,
+			Math.sin(theta) * flat * speed,
+			0.6 + getPRNGUnit2() * 0.8,
+			0.04 + getPRNGUnit2() * 0.04,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 6,
+			frame,
+			1.2,
+			0.45 + getPRNGUnit2() * 0.2,
+			0.12,
+			1,
+			1.1,
+			1,
+		);
+	}
+}
+
+/**
+ * One fireball shell: uniformly-distributed sphere velocities, shared tint,
+ * randomized ranges. `grav` is the particle gravity scale (negative rises).
+ */
+function spawnFireShell(
+	x: number,
+	y: number,
+	z: number,
+	frame: number,
+	count: number,
+	r: number,
+	g: number,
+	b: number,
+	minSpeed: number,
+	maxSpeed: number,
+	minLife: number,
+	maxLife: number,
+	minSize: number,
+	maxSize: number,
+	grav: number,
+	speedScale: number,
+): void {
+	for (let i = 0; i < count; i++) {
+		const theta = getPRNGUnit2() * Math.PI * 2;
+		const up = getPRNGUnit2() * 2 - 1;
+		const flat = Math.sqrt(Math.max(0, 1 - up * up));
+		const speed =
+			(minSpeed + getPRNGUnit2() * (maxSpeed - minSpeed)) * speedScale;
+		const flicker = 0.85 + getPRNGUnit2() * 0.3;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.9,
+			y + (getPRNGUnit2() - 0.5) * 0.9,
+			z + (getPRNGUnit2() - 0.5) * 0.9,
+			Math.cos(theta) * flat * speed,
+			up * speed + 1.2,
+			Math.sin(theta) * flat * speed,
+			minLife + getPRNGUnit2() * (maxLife - minLife),
+			minSize + getPRNGUnit2() * (maxSize - minSize),
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			r * flicker,
+			g * flicker,
+			b * flicker,
+			1,
+			grav,
+		);
+	}
+}
+
+/**
+ * Explicit one-time init, awaited by TestScene after scene registration.
+ * Registers the per-frame tick, loads the block atlas, and builds the
+ * billboard system. Until this resolves, every play* call is a no-op.
+ */
+export async function initBlockBreakParticles(
+	scene: SceneContext,
+): Promise<void> {
+	onBeforeRender(scene, tick);
+
+	try {
+		const texture = await loadTexture2D(scene.surface.engine, ATLAS_URL, {
+			mipMaps: false,
+			magFilter: "nearest",
+			minFilter: "nearest",
+			invertY: false,
+			addressModeU: "clamp-to-edge",
+			addressModeV: "clamp-to-edge",
+		});
+		if (!texture) return;
+
+		const atlas = createGridSpriteAtlas(texture, {
+			cellWidthPx: tileSize,
+			cellHeightPx: tileSize,
+		});
+		const system = createFacingBillboardSystem(atlas, {
+			capacity: BILLBOARD_INITIAL_CAPACITY,
+			blendMode: billboardBlendAlpha,
+		});
+		addFacingBillboardSystem(scene, system);
+
+		// `addFacingBillboardSystem` registers a deferred renderable builder
+		// that Lite only flushes during `buildScene` (at scene registration).
+		// Init runs right after `registerScene`, so flush the builder here or
+		// the billboard never gets a GPU renderable.
+		await flushDeferredRenderables(scene);
+
+		billboard = system;
+	} catch (error: unknown) {
+		console.warn("[BlockBreakParticles] failed to initialise:", error);
+	}
 }
 
 function flushDeferredRenderables(scene: SceneContext): Promise<void> {
@@ -314,49 +1129,99 @@ function flushDeferredRenderables(scene: SceneContext): Promise<void> {
 }
 
 function tick(deltaMs: number): void {
-	if (!billboard) return;
+	const system = billboard;
+	if (!system) return;
 
 	const dt = Math.min(MAX_DT, deltaMs * 0.001);
-	if (dt <= 0) return;
-	if (isUiOpen(UiFocus.pauseMenu)) return;
+	if (dt <= 0 || isUiOpen(UiFocus.pauseMenu)) return;
+
+	clearBillboardSprites(system);
 
 	const gravityDt = GRAVITY * dt;
-	for (let i = 0; i < alive.length; i++) {
-		const p = alive[i];
-		p.vy += gravityDt * p.gravityScale;
-		p.x += p.vx * dt;
-		p.y += p.vy * dt;
-		p.z += p.vz * dt;
-		p.age += dt;
-		p.angle += p.spin * dt;
-		if (p.age >= p.life) {
-			alive[i] = alive[alive.length - 1];
-			alive.pop();
-			free.push(p);
-			i--;
-		}
-	}
 
-	clearBillboardSprites(billboard);
-	for (let i = 0; i < alive.length; i++) {
-		const p = alive[i];
-		const lifeFrac = p.age / p.life;
-		const alpha =
-			lifeFrac > FADE_START
-				? 1 - (lifeFrac - FADE_START) / (1 - FADE_START)
-				: 1;
-		scratchPos[0] = p.x;
-		scratchPos[1] = p.y;
-		scratchPos[2] = p.z;
-		scratchSize[0] = p.size;
-		scratchSize[1] = p.size;
-		scratchColor[0] = p.r;
-		scratchColor[1] = p.g;
-		scratchColor[2] = p.b;
-		scratchColor[3] = alpha * p.a;
-		scratchProps.rotation = p.angle;
-		scratchProps.frame = p.frame;
-		addBillboardSpriteIndex(billboard, scratchProps);
+	// Hoist SoA refs to locals so the 10k-iteration hot loop avoids
+	// module-scope lookups per access.
+	const lpx = px;
+	const lpy = py;
+	const lpz = pz;
+	const lpvx = pvx;
+	const lpvy = pvy;
+	const lpvz = pvz;
+	const lpage = page;
+	const lplife = plife;
+	const lpsize = psize;
+	const lpangle = pangle;
+	const lpspin = pspin;
+	const lpr = pr;
+	const lpg = pg;
+	const lpb = pb;
+	const lpa = pa;
+	const lpgrav = pgrav;
+	const lpFadeStart = pFadeStart;
+	const lpFadeInv = pFadeInv;
+	const lpframe = pframe;
+	const lpflags = pflags;
+
+	for (let i = 0; i < aliveCount; i++) {
+		const life = lplife[i];
+		const age = lpage[i] + dt;
+
+		// Death check first: expiring particles skip physics, collision
+		// probes (the expensive part), and billboard upload entirely.
+		if (age >= life) {
+			removeParticle(i);
+			// removeParticle swapped the last live particle into slot i;
+			// reprocess this slot instead of skipping it (previous `continue`
+			// without i-- skipped the swapped particle for a frame, popping
+			// one live sprite per death).
+			i--;
+			continue;
+		}
+		lpage[i] = age;
+
+		const flags = lpflags[i];
+
+		if ((flags & COLLIDE_BIT) !== 0) {
+			if ((flags & SETTLED_BIT) === 0) {
+				collideParticle(i, dt);
+			}
+		} else {
+			lpvy[i] += gravityDt * lpgrav[i];
+			lpx[i] += lpvx[i] * dt;
+			lpy[i] += lpvy[i] * dt;
+			lpz[i] += lpvz[i] * dt;
+		}
+
+		// Re-read flags: collideParticle may have set SETTLED_BIT this frame.
+		if ((lpflags[i] & SETTLED_BIT) === 0) {
+			const spin = lpspin[i];
+			if (spin !== 0) {
+				lpangle[i] += spin * dt;
+			}
+		}
+
+		let alpha = lpa[i];
+		if (age > lpFadeStart[i]) {
+			alpha *= (life - age) * lpFadeInv[i];
+		}
+
+		scratchPos[0] = lpx[i];
+		scratchPos[1] = lpy[i];
+		scratchPos[2] = lpz[i];
+
+		const size = lpsize[i];
+		scratchSize[0] = size;
+		scratchSize[1] = size;
+
+		scratchColor[0] = lpr[i];
+		scratchColor[1] = lpg[i];
+		scratchColor[2] = lpb[i];
+		scratchColor[3] = alpha;
+
+		scratchProps.rotation = lpangle[i];
+		scratchProps.frame = lpframe[i];
+
+		addBillboardSpriteIndex(system, scratchProps);
 	}
 }
 
@@ -392,6 +1257,112 @@ function spawnBurst(
 	}
 }
 
+function spawnDebrisBurst(
+	x: number,
+	y: number,
+	z: number,
+	frame: number,
+	r: number,
+	g: number,
+	b: number,
+): void {
+	for (let i = 0; i < DEBRIS_PER_BREAK; i++) {
+		const shade = 0.8 + getPRNGUnit2() * 0.25;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.8,
+			y + 0.15,
+			z + (getPRNGUnit2() - 0.5) * 0.8,
+			(getPRNGUnit2() - 0.5) * 2.2,
+			1.4 + getPRNGUnit2() * 2.2,
+			(getPRNGUnit2() - 0.5) * 2.2,
+			1.3 + getPRNGUnit2() * 1.2,
+			0.06 + getPRNGUnit2() * 0.07,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 3,
+			frame,
+			r * shade,
+			g * shade,
+			b * shade,
+			1,
+			1,
+			1,
+		);
+	}
+}
+
+/** Integrates a colliding particle through voxel collision, axis by axis. */
+function collideParticle(i: number, dt: number): void {
+	pvy[i] += GRAVITY * dt * pgrav[i];
+
+	const half = psize[i] * DEBRIS_RADIUS_SCALE;
+	scratchDebrisHalf.x = half;
+	scratchDebrisHalf.y = half;
+	scratchDebrisHalf.z = half;
+
+	moveDebrisAxis(i, 0, pvx[i] * dt);
+	moveDebrisAxis(i, 1, pvy[i] * dt);
+	moveDebrisAxis(i, 2, pvz[i] * dt);
+}
+
+/**
+ * Sweep one axis for a colliding particle. On hit, the particle is left at the
+ * contact point and `onDebrisHit` bounces or settles velocity along that axis.
+ */
+function moveDebrisAxis(i: number, axis: number, delta: number): void {
+	if (delta === 0) return;
+
+	const dir = delta > 0 ? 1 : -1;
+	let remaining = Math.abs(delta);
+
+	const pos = scratchDebrisPos;
+	while (remaining > 1e-8) {
+		const step =
+			remaining > DEBRIS_COLLIDE_STEP ? DEBRIS_COLLIDE_STEP : remaining;
+		const move = step * dir;
+
+		pos.x = px[i];
+		pos.y = py[i];
+		pos.z = pz[i];
+		if (axis === 0) pos.x += move;
+		else if (axis === 1) pos.y += move;
+		else pos.z += move;
+
+		if (debrisCollider.overlapsBox(pos, scratchDebrisHalf)) {
+			onDebrisHit(i, axis, dir);
+			return;
+		}
+
+		if (axis === 0) px[i] = pos.x;
+		else if (axis === 1) py[i] = pos.y;
+		else pz[i] = pos.z;
+
+		remaining -= step;
+	}
+}
+
+/** Reflect or zero velocity on the axis that just hit a block. */
+function onDebrisHit(i: number, axis: number, dir: number): void {
+	if (axis === 1) {
+		if (dir < 0 && -pvy[i] > DEBRIS_SETTLE_SPEED) {
+			pvy[i] = -pvy[i] * DEBRIS_RESTITUTION;
+		} else {
+			pvy[i] = 0;
+			if (dir < 0) pflags[i] |= SETTLED_BIT;
+		}
+		return;
+	}
+
+	const v = axis === 0 ? pvx[i] : pvz[i];
+	if (Math.abs(v) > DEBRIS_SETTLE_SPEED * 1.4) {
+		const bounced = -v * DEBRIS_RESTITUTION;
+		if (axis === 0) pvx[i] = bounced;
+		else pvz[i] = bounced;
+	} else {
+		if (axis === 0) pvx[i] = 0;
+		else pvz[i] = 0;
+	}
+}
+
 function addParticle(
 	x: number,
 	y: number,
@@ -409,62 +1380,62 @@ function addParticle(
 	b: number,
 	a: number,
 	gravityScale: number,
+	collide: 0 | 1 = 0,
 ): void {
-	if (alive.length >= POOL_SIZE) return;
-	const p = free.pop() ?? createParticle();
-	p.x = x;
-	p.y = y;
-	p.z = z;
-	p.vx = vx;
-	p.vy = vy;
-	p.vz = vz;
-	p.age = 0;
-	p.life = life;
-	p.size = size;
-	p.angle = angle;
-	p.spin = spin;
-	p.frame = frame;
-	p.r = r;
-	p.g = g;
-	p.b = b;
-	p.a = a;
-	p.gravityScale = gravityScale;
-	alive.push(p);
+	if (aliveCount >= POOL_SIZE) return;
+	const i = aliveCount++;
+	px[i] = x;
+	py[i] = y;
+	pz[i] = z;
+	pvx[i] = vx;
+	pvy[i] = vy;
+	pvz[i] = vz;
+	page[i] = 0;
+	plife[i] = life;
+	const fadeStart = life * FADE_START;
+	pFadeStart[i] = fadeStart;
+	// life is always > 0 at spawn sites (min 0.1); guard anyway.
+	pFadeInv[i] = life > 0 ? (1 / life) * FADE_RANGE : 0;
+	psize[i] = size;
+	pangle[i] = angle;
+	pspin[i] = spin;
+	pframe[i] = frame;
+	pr[i] = r;
+	pg[i] = g;
+	pb[i] = b;
+	pa[i] = a;
+	pgrav[i] = gravityScale;
+	pflags[i] = collide;
 }
 
-function createParticle(): Particle {
-	return {
-		x: 0,
-		y: 0,
-		z: 0,
-		vx: 0,
-		vy: 0,
-		vz: 0,
-		age: 0,
-		life: 1,
-		size: 0.1,
-		angle: 0,
-		spin: 0,
-		frame: 0,
-		r: 1,
-		g: 1,
-		b: 1,
-		a: 1,
-		gravityScale: 1,
-	};
+/** Swap-remove: overwrites slot `i` with the last live particle and shrinks aliveCount. */
+function removeParticle(i: number): void {
+	const last = --aliveCount;
+	if (i === last) return;
+	px[i] = px[last];
+	py[i] = py[last];
+	pz[i] = pz[last];
+	pvx[i] = pvx[last];
+	pvy[i] = pvy[last];
+	pvz[i] = pvz[last];
+	page[i] = page[last];
+	plife[i] = plife[last];
+	pFadeStart[i] = pFadeStart[last];
+	pFadeInv[i] = pFadeInv[last];
+	psize[i] = psize[last];
+	pangle[i] = pangle[last];
+	pspin[i] = pspin[last];
+	pframe[i] = pframe[last];
+	pr[i] = pr[last];
+	pg[i] = pg[last];
+	pb[i] = pb[last];
+	pa[i] = pa[last];
+	pgrav[i] = pgrav[last];
+	pflags[i] = pflags[last];
 }
 
 function getBlockFrame(blockId: number): number {
-	const blockTex = BlockTextures[blockId];
-	if (!blockTex) return 0;
-	const uv =
-		blockTex[FaceName.All] ??
-		blockTex[FaceName.Side] ??
-		blockTex[FaceName.Top] ??
-		blockTex[FaceName.Bottom] ??
-		blockTex.find((tile) => tile !== undefined);
-	if (!uv) return 0;
-	return uv[1] * atlasSize + uv[0];
+	return blockFrameLUT[blockId] ?? 0;
 }
 
 function computeLight(packedLight: number): {
@@ -479,17 +1450,14 @@ function computeLight(packedLight: number): {
 	const sunLightIntensity = Math.min(1.0, Math.max(0.0, sunElevation * 4.0));
 	const skyScale = sunLightIntensity + 0.3;
 
-	const skyR = skyLight * 0.8 * skyScale;
-	const skyG = skyLight * 0.8 * skyScale;
-	const skyB = skyLight * 0.8 * skyScale;
+	const skyRGB = skyLight * 0.8 * skyScale;
 
 	const blockR = blockLight * 0.9;
 	const blockG = blockLight * 0.6;
 	const blockB = blockLight * 0.2;
 
-	return {
-		r: Math.min(1, Math.max(0.2, skyR + blockR)),
-		g: Math.min(1, Math.max(0.2, skyG + blockG)),
-		b: Math.min(1, Math.max(0.2, skyB + blockB)),
-	};
+	scratchLight.r = Math.min(1, Math.max(0.2, skyRGB + blockR));
+	scratchLight.g = Math.min(1, Math.max(0.2, skyRGB + blockG));
+	scratchLight.b = Math.min(1, Math.max(0.2, skyRGB + blockB));
+	return scratchLight;
 }

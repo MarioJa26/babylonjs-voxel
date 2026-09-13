@@ -9,7 +9,6 @@ import {
 	FLAG_SOLID,
 	FLAG_TRANSPARENT,
 	getCachedFlagsAndId,
-	getFlagsFromCombined,
 } from "./BlockInfoCache";
 import { QuadBuffer } from "./QuadBuffer";
 import type { VoxelPipeline } from "./VoxelPipeline";
@@ -27,6 +26,15 @@ export type WorkerMeshInput = {
 	light_array?: Uint8Array;
 	neighbors: (Uint16Array | undefined)[];
 	neighborLights?: (Uint8Array | undefined)[];
+	/**
+	 * Border-skirt ownership (downsampled builds only). Bit per horizontal
+	 * side (1=-X, 2=+X, 4=-Z, 8=+Z): a bit set means THIS chunk emits skirt
+	 * walls on that border — decided main-thread-side so two neighboring
+	 * chunks never both wall the same plane (coplanar z-fighting).
+	 */
+	borderSkirtSides?: number;
+	/** Sides from borderSkirtSides whose NEAR plane is inset by one block. */
+	borderSkirtNearInset?: number;
 };
 
 /**
@@ -42,26 +50,29 @@ export type PaddedGrids = {
 };
 
 // ── Precomputed neighbor offset table ─────────────────────────────────────────
-// PERF: The (ox, oy, oz) offset for each of the 26 neighbor slots is fixed and
-// independent of chunk size. Decoding it via Math.floor/modulo on every
-// neighbor for every chunk build (26 * every mesh rebuild) is pure repeated
-// work for a value that never changes. Compute it once at module load and
-// index into it instead.
-type NeighborOffset = readonly [ox: number, oy: number, oz: number];
-const NEIGHBOR_OFFSETS: NeighborOffset[] = (() => {
-	const table: NeighborOffset[] = new Array(26);
+
+const NEIGHBOR_OFFSETS_FLAT: Int8Array = (() => {
+	const table = new Int8Array(26 * 3);
 	for (let ni = 0; ni < 26; ni++) {
 		const linear = ni < 13 ? ni : ni + 1;
-		const oz = Math.floor(linear / 9) - 1;
-		const oy = Math.floor((linear % 9) / 3) - 1;
-		const ox = (linear % 3) - 1;
-		table[ni] = [ox, oy, oz];
+		const base = ni * 3;
+
+		table[base] = (linear % 3) - 1;
+		table[base + 1] = Math.floor((linear % 9) / 3) - 1;
+		table[base + 2] = Math.floor(linear / 9) - 1;
 	}
 	return table;
 })();
 
 const OPAQUE_REQUIRED = FLAG_SOLID | FLAG_GREEDY;
 const OPAQUE_FORBIDDEN = FLAG_TRANSPARENT | FLAG_PARTIAL;
+// Combining required+forbidden into one mask turns the opaque test from two
+// ANDs + a boolean AND into a single masked comparison: the surviving bits
+// must equal exactly OPAQUE_REQUIRED (required bits set, forbidden bits clear).
+const OPAQUE_TEST_MASK = OPAQUE_REQUIRED | OPAQUE_FORBIDDEN;
+// Same trick for needsCustom (solid && !greedy): surviving bits under this
+// mask must equal exactly FLAG_SOLID.
+const CUSTOM_TEST_MASK = FLAG_SOLID | FLAG_GREEDY;
 
 /**
  * A single build-time context for the voxel meshing pipeline.
@@ -90,29 +101,95 @@ const OPAQUE_FORBIDDEN = FLAG_TRANSPARENT | FLAG_PARTIAL;
  * re-entrant and testable.
  */
 export class MeshBuildSession implements MeshContext {
-	// --- context (per build) ---
+	// --- context per build ---
 	public size = 0;
 	public lod = 0;
 	public disableAO = false;
+	/**
+	 * Geometric downsampling factor for this build: 1 for LOD<=3 (full
+	 * resolution), 2 for LOD4, 4 for LOD5, ... Each mask cell then covers
+	 * lodStep^3 voxels and every emitted quad spans lodStep blocks per cell.
+	 */
+	public lodStep = 1;
+	/** Logical greedy-grid dimension: size / lodStep (mask cells per axis). */
+	public meshGridSize = 0;
+	/**
+	 * Per-side skirt ownership mask (1=-X, 2=+X, 4=-Z, 8=+Z). Defaults to
+	 * "all sides" so callers that don't know neighbor LODs keep coverage.
+	 */
+	public borderSkirtSides = 0xf;
+	public borderSkirtNearInset = 0;
 
-	// --- padded grids (reused across builds) ---
+	// --- active padded grids ---
 	public block = new Uint16Array(0);
 	public light = new Uint8Array(0);
 	public opaque = new Uint8Array(0);
 	public needsCustom = new Uint8Array(0);
 	public ps = 0;
 	public ps2 = 0;
+	public axisOffsets = new Int32Array(3);
 	public neighbors: (Uint16Array | undefined)[] = [];
 
-	// --- quad output buffers (bound per build via buildVoxelMesh) ---
+	// --- owned fallback grids, used only when no external relight-cache grids are supplied ---
+	private ownedBlock = new Uint16Array(0);
+	private ownedLight = new Uint8Array(0);
+	private ownedOpaque = new Uint8Array(0);
+	private ownedNeedsCustom = new Uint8Array(0);
+
+	// --- quad output buffers ---
 	public quadOpaque = new QuadBuffer();
 	public quadTransparent = new QuadBuffer();
+	// GPU-split transparent buckets: true water vs alpha-cutout (glass) get
+	// separate meshes so the renderer can use a cheap cutout material instead
+	// of forcing every non-water transparent face through the water shader.
+	public quadWater = new QuadBuffer();
+	public quadCutout = new QuadBuffer();
 
-	// --- greedy scratch (reused across builds) ---
+	// --- greedy scratch ---
 	public scratchMask = new Int32Array(0);
 	public scratchLights = new Uint16Array(0);
 
-	// --- shared face descriptor handed to the emit callback ---
+	// --- batched mask banks ---
+	// Pre-extracted greedy masks for ALL slices of one axis, filled by a
+	// single contiguous sweep per axis (VoxelMaskExtractor.extractAllSliceMasks*)
+	// and consumed by greedyMesh's banked mode. Slice s (-1..size-1) lives at
+	// (s+1) * area. One bank pair serves all three axes because extraction for
+	// the next axis only starts after the current axis' merge completed.
+	public maskBank = new Int32Array(0);
+	public lightBank = new Uint16Array(0);
+
+	public ensureMaskBank(minLength: number): Int32Array {
+		if (this.maskBank.length < minLength) {
+			this.maskBank = new Int32Array(minLength);
+		}
+		return this.maskBank;
+	}
+
+	public ensureLightBank(minLength: number): Uint16Array {
+		if (this.lightBank.length < minLength) {
+			this.lightBank = new Uint16Array(minLength);
+		}
+		return this.lightBank;
+	}
+
+	/**
+	 * Per-slice occupancy for the banked greedy mode: slot s+1 is 1 when
+	 * extraction wrote any nonzero mask cell into slice s. Lets greedyMesh
+	 * skip all-empty slices entirely — most far chunks are majority air.
+	 */
+	public sliceOccupancy = new Uint8Array(0);
+
+	public ensureSliceOccupancy(minLength: number): Uint8Array {
+		if (this.sliceOccupancy.length < minLength) {
+			this.sliceOccupancy = new Uint8Array(minLength);
+		}
+		return this.sliceOccupancy;
+	}
+
+	/** Number of needsCustom cells in the active padded grid (0 = plain). */
+	public needsCustomCount = 0;
+
+	// --- shared face descriptor ---
 	public faceScratch = {
 		slice: 0,
 		uStart: 0,
@@ -126,18 +203,12 @@ export class MeshBuildSession implements MeshContext {
 	// --- emitter origin scratch ---
 	public origin = { ox: 0, oy: 0, oz: 0 };
 
-	// --- cached pipeline (closures created once per worker) ---
+	// --- cached pipeline ---
 	public pipeline: VoxelPipeline | null = null;
 
-	/**
-	 * Inline padded-grid index (flattened, with the +1 border offset baked in).
-	 *
-	 * NOTE: arrow-property, not a prototype method — callers detach it
-	 * (`const padIndex = session.padIndex`), and a prototype method would lose
-	 * `this` (→ "Cannot read properties of undefined (reading 'ps')").
-	 */
-	public padIndex = (x: number, y: number, z: number): number =>
-		x + 1 + (y + 1) * this.ps + (z + 1) * this.ps2;
+	public padIndex(x: number, y: number, z: number): number {
+		return x + 1 + (y + 1) * this.ps + (z + 1) * this.ps2;
+	}
 
 	public getBlock = (x: number, y: number, z: number, _fallback = 0): number =>
 		this.block[this.padIndex(x, y, z)];
@@ -145,26 +216,15 @@ export class MeshBuildSession implements MeshContext {
 	public getLight = (x: number, y: number, z: number, _fallback = 0): number =>
 		this.light[this.padIndex(x, y, z)];
 
-	public hasNeighborChunk = (dx: number, dy: number, dz: number): boolean => {
+	public hasNeighborChunk(dx: number, dy: number, dz: number): boolean {
 		if (dx === 0 && dy === 0 && dz === 0) return false;
 
 		const linear = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
 		const neighborIndex = linear < 13 ? linear : linear - 1;
 
-		// A neighbor "exists" iff the main thread sent a border slab for it.
 		return this.neighbors[neighborIndex] !== undefined;
-	};
+	}
 
-	/**
-	 * Reset the session for a new chunk build: fills the padded grids from the
-	 * center chunk + 26 neighbor border slabs and re-classifies opacity.
-	 *
-	 * When `grids` is provided (a relight-cache entry's padded buffers) the
-	 * session binds to those arrays instead of its own — and when
-	 * `skipBlockFill` is set, the block content + opacity classification are
-	 * known-valid from the entry's previous full build, so only the light
-	 * grid is refilled.
-	 */
 	public begin(
 		size: number,
 		lod: number,
@@ -173,13 +233,12 @@ export class MeshBuildSession implements MeshContext {
 		skipBlockFill = false,
 	): void {
 		const size2 = size * size;
-		const ps = size + 2; // padded size
+		const ps = size + 2;
 		const ps2 = ps * ps;
-		const psVol = ps * ps * ps;
+		const psVol = ps2 * ps;
 
 		const blockArray = input.block_array;
 		const lightArray = input.light_array;
-
 		const neighbors = input.neighbors;
 		const neighborLights = input.neighborLights;
 
@@ -187,8 +246,20 @@ export class MeshBuildSession implements MeshContext {
 		this.lod = lod;
 		this.disableAO = lod >= 2;
 
-		// Ensure padded buffers are large enough (grow the caller-provided
-		// grids in place so they persist across relights).
+		// Downsampling begins at LOD4 (user spec): LOD4 -> step 2, LOD5 -> 4...
+		// Fall back to full resolution if the chunk size is not evenly
+		// divisible, so the greedy grid always stays integral.
+		const rawStep = lod >= 4 ? 1 << (lod - 3) : 1;
+		this.lodStep = size % rawStep === 0 ? rawStep : 1;
+		this.meshGridSize = size / this.lodStep;
+
+		this.ps = ps;
+		this.ps2 = ps2;
+
+		this.axisOffsets[0] = 1;
+		this.axisOffsets[1] = ps;
+		this.axisOffsets[2] = ps2;
+
 		if (grids) {
 			if (psVol > grids.block.length) {
 				grids.block = new Uint16Array(psVol);
@@ -196,53 +267,40 @@ export class MeshBuildSession implements MeshContext {
 				grids.opaque = new Uint8Array(psVol);
 				grids.needsCustom = new Uint8Array(psVol);
 			}
+
 			this.block = grids.block;
 			this.light = grids.light;
 			this.opaque = grids.opaque;
 			this.needsCustom = grids.needsCustom;
 		} else {
-			// NOTE: the voxel worker always passes `grids` (a relight-cache
-			// entry's buffers). This fallback must not reuse the session's
-			// existing arrays in that scenario — after a grid-bound build,
-			// `this.block` aliases the cache entry's arrays, and writing a
-			// different chunk into them would corrupt the entry. Allocating
-			// fresh is the safe default for any non-cache caller.
-			this.block = new Uint16Array(psVol);
-			this.light = new Uint8Array(psVol);
-			this.opaque = new Uint8Array(psVol);
-			this.needsCustom = new Uint8Array(psVol);
+			this.ensureOwnedPaddedCapacity(psVol);
+
+			this.block = this.ownedBlock;
+			this.light = this.ownedLight;
+			this.opaque = this.ownedOpaque;
+			this.needsCustom = this.ownedNeedsCustom;
 		}
+
 		const padded = this.block;
 		const paddedLight = this.light;
-		this.ps = ps;
-		this.ps2 = ps2;
 
-		// ── Determine whether the zero-clear is actually needed ──
-		// PERF: The center chunk (indices 1..size on every axis) is always fully
-		// overwritten below, so it never needs clearing. The 1-voxel padding shell
-		// is only "at risk" of holding stale data from a previous build if some
-		// neighbor slab is missing (e.g. at the edge of loaded terrain) — when all
-		// 26 neighbor slabs are present, the border-copy loop below writes every
-		// shell cell itself. In the common interior-of-loaded-world case this lets
-		// us skip an O(ps^3) fill entirely. On a light-only rebuild the block grid
-		// is already valid, so only the light clear is ever needed.
 		let needBlockClear = false;
 		if (!skipBlockFill) {
 			for (let i = 0; i < 26; i++) {
-				if (!neighbors[i]) {
+				if (neighbors[i] === undefined) {
 					needBlockClear = true;
 					break;
 				}
 			}
 		}
 
-		let needLightClear = !lightArray;
+		let needLightClear = lightArray === undefined;
 		if (!needLightClear) {
-			if (!neighborLights) {
+			if (neighborLights === undefined) {
 				needLightClear = true;
 			} else {
 				for (let i = 0; i < 26; i++) {
-					if (!neighborLights[i]) {
+					if (neighborLights[i] === undefined) {
 						needLightClear = true;
 						break;
 					}
@@ -254,16 +312,12 @@ export class MeshBuildSession implements MeshContext {
 		if (needLightClear) paddedLight.fill(0, 0, psVol);
 
 		if (!skipBlockFill) {
-			// ── Fill center chunk (indices 1..size in each axis) ──
-			// PERF: x is the fastest-varying axis in both the source (block_array)
-			// and destination (padded) layouts, so each x-row is a contiguous run
-			// in both arrays. A tight store loop beats TypedArray#set(subarray)
-			// here: the subarray would allocate a fresh view per row (~2 * size^2
-			// tiny allocations per build).
 			if (input.uniformFill !== undefined) {
 				const fillId = input.uniformFill;
+
 				for (let z = 0; z < size; z++) {
 					const pZ = (z + 1) * ps2;
+
 					for (let y = 0; y < size; y++) {
 						const start = 1 + (y + 1) * ps + pZ;
 						padded.fill(fillId, start, start + size);
@@ -273,12 +327,15 @@ export class MeshBuildSession implements MeshContext {
 				for (let z = 0; z < size; z++) {
 					const pZ = (z + 1) * ps2;
 					const cZ = z * size2;
+
 					for (let y = 0; y < size; y++) {
 						const pIdx = 1 + (y + 1) * ps + pZ;
 						const cIdx = y * size + cZ;
-						for (let x = 0; x < size; x++) {
-							padded[pIdx + x] = blockArray[cIdx + x];
-						}
+
+						// Row-wise memcpy via set(subarray): both grids are x-major,
+						// so each source row is contiguous and lands on a contiguous
+						// padded row segment.
+						padded.set(blockArray.subarray(cIdx, cIdx + size), pIdx);
 					}
 				}
 			}
@@ -288,33 +345,28 @@ export class MeshBuildSession implements MeshContext {
 			for (let z = 0; z < size; z++) {
 				const pZ = (z + 1) * ps2;
 				const cZ = z * size2;
+
 				for (let y = 0; y < size; y++) {
 					const pIdx = 1 + (y + 1) * ps + pZ;
 					const cIdx = y * size + cZ;
-					for (let x = 0; x < size; x++) {
-						paddedLight[pIdx + x] = lightArray[cIdx + x];
-					}
+
+					paddedLight.set(lightArray.subarray(cIdx, cIdx + size), pIdx);
 				}
 			}
 		}
 
-		// ── Fill neighbor borders ──
-		// For each of the 26 neighbors, copy the border voxels that touch the
-		// center chunk into the appropriate padding positions. The main thread
-		// sends only the 1-voxel-thick border slab (dense Uint16/Uint8, exactly
-		// xCount*yCount*zCount elements, in (dx, dy, dz) order) per neighbor, so
-		// we can trust indices without bounds-checking each element. On a
-		// light-only rebuild the block borders are already baked into the grid;
-		// only the light borders are copied.
-		const neighborCount = neighbors.length;
-		for (let ni = 0; ni < neighborCount; ni++) {
+		for (let ni = 0; ni < 26; ni++) {
 			const neighbor = neighbors[ni];
 			const nLight = neighborLights?.[ni];
 
-			// No border data → leave padded as 0 (air), matching old behavior.
-			if (!neighbor) continue;
+			// Block borders need block data. Light borders only need light data.
+			// This keeps light-only remeshes from depending on block slabs being resent.
+			if (neighbor === undefined && nLight === undefined) continue;
 
-			const [ox, oy, oz] = NEIGHBOR_OFFSETS[ni];
+			const offsetBase = ni * 3;
+			const ox = NEIGHBOR_OFFSETS_FLAT[offsetBase];
+			const oy = NEIGHBOR_OFFSETS_FLAT[offsetBase + 1];
+			const oz = NEIGHBOR_OFFSETS_FLAT[offsetBase + 2];
 
 			const xCount = ox === 0 ? size : 1;
 			const yCount = oy === 0 ? size : 1;
@@ -325,47 +377,47 @@ export class MeshBuildSession implements MeshContext {
 			const pZStart = oz < 0 ? 0 : oz > 0 ? size + 1 : 1;
 
 			if (xCount === size) {
-				// PERF: ox === 0 means every x-run for this neighbor is a full,
-				// contiguous `size`-length row in both the source slab and the
-				// padded destination (x is the fastest axis in both). This covers
-				// every face neighbor along the x=0 plane and 4 of the 12 edge
-				// neighbors — store loops, same rationale as the center fill.
 				let ci = 0;
+
 				for (let dz = 0; dz < zCount; dz++) {
 					const pZ = (pZStart + dz) * ps2;
+
 					for (let dy = 0; dy < yCount; dy++) {
-						const pY = (pYStart + dy) * ps;
-						const destOffset = pXStart + pY + pZ;
-						if (!skipBlockFill) {
-							for (let x = 0; x < size; x++) {
-								padded[destOffset + x] = neighbor[ci + x];
-							}
+						const destOffset = pXStart + (pYStart + dy) * ps + pZ;
+
+						// Face slabs store one contiguous x-row per (dz,dy) step
+						// in the scratch buffers — copy row-wise.
+						if (!skipBlockFill && neighbor !== undefined) {
+							padded.set(neighbor.subarray(ci, ci + size), destOffset);
 						}
-						if (nLight) {
-							for (let x = 0; x < size; x++) {
-								paddedLight[destOffset + x] = nLight[ci + x];
-							}
+
+						if (nLight !== undefined) {
+							paddedLight.set(nLight.subarray(ci, ci + size), destOffset);
 						}
+
 						ci += size;
 					}
 				}
 			} else {
-				// Remaining cases (edges/corners not aligned along x) are already
-				// small (at most `size` elements, often just 1), so the per-voxel
-				// loop is fine here.
 				let ci = 0;
+
 				for (let dz = 0; dz < zCount; dz++) {
 					const pZ = (pZStart + dz) * ps2;
+
 					for (let dy = 0; dy < yCount; dy++) {
 						const pY = (pYStart + dy) * ps;
+
 						for (let dx = 0; dx < xCount; dx++) {
 							const dest = pXStart + dx + pY + pZ;
-							if (!skipBlockFill) {
+
+							if (!skipBlockFill && neighbor !== undefined) {
 								padded[dest] = neighbor[ci];
 							}
-							if (nLight) {
+
+							if (nLight !== undefined) {
 								paddedLight[dest] = nLight[ci];
 							}
+
 							ci++;
 						}
 					}
@@ -375,40 +427,42 @@ export class MeshBuildSession implements MeshContext {
 
 		this.neighbors = neighbors;
 
-		// ── Classify every cell once, now that the grid (center + all neighbor
-		// borders) is fully assembled. A light-only rebuild reuses the entry's
-		// classification (block content is version-validated unchanged).
 		if (!skipBlockFill) {
 			this.buildOpaqueClassification(psVol);
 		}
 	}
 
-	/**
-	 * PERF: Classify every cell in the padded grid exactly once, immediately
-	 * after the grid is assembled. A cell is "opaque" here iff it is solid,
-	 * greedy-participating, and has neither the transparent nor partial-shape
-	 * flag — i.e. exactly the condition VoxelMaskExtractor's bothCube fast path
-	 * checks. Doing it here means the flags for a given voxel are derived once
-	 * per chunk build instead of up to 6 times (as current + as neighbor, for
-	 * each of the 3 mesh axes) inside the per-cell hot loop.
-	 */
+	private ensureOwnedPaddedCapacity(psVol: number): void {
+		if (psVol <= this.ownedBlock.length) return;
+
+		this.ownedBlock = new Uint16Array(psVol);
+		this.ownedLight = new Uint8Array(psVol);
+		this.ownedOpaque = new Uint8Array(psVol);
+		this.ownedNeedsCustom = new Uint8Array(psVol);
+	}
+
 	private buildOpaqueClassification(psVol: number): void {
-		const bits = this.opaque;
+		const opaqueBits = this.opaque;
 		const customBits = this.needsCustom;
 		const padded = this.block;
+
+		let customCount = 0;
+
 		for (let i = 0; i < psVol; i++) {
-			const flags = getFlagsFromCombined(getCachedFlagsAndId(padded[i]));
-			bits[i] =
-				(flags & OPAQUE_REQUIRED) === OPAQUE_REQUIRED &&
-				(flags & OPAQUE_FORBIDDEN) === 0
-					? 1
-					: 0;
-			// P3.7: custom-shape pass only visits cells that can possibly
-			// contribute custom geometry: solid blocks that are NOT
-			// greedy-participating (crosses, fences, multi-box shapes).
-			customBits[i] =
-				(flags & FLAG_SOLID) !== 0 && (flags & FLAG_GREEDY) === 0 ? 1 : 0;
+			// getCachedFlagsAndId's low 16 bits ARE the flags, so masking the
+			// combined value directly is equivalent to getFlagsFromCombined()
+			// but skips a function call per cell over the whole padded volume.
+			const flags = getCachedFlagsAndId(padded[i]) & 0xffff;
+
+			opaqueBits[i] = (flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED ? 1 : 0;
+			const custom = (flags & CUSTOM_TEST_MASK) === FLAG_SOLID ? 1 : 0;
+			customBits[i] = custom;
+			customCount += custom;
 		}
+
+		// Lets emitCustomShapes bail out without scanning the volume for
+		// plain terrain chunks (the overwhelming majority).
+		this.needsCustomCount = customCount;
 	}
 }
 
@@ -418,9 +472,7 @@ export class MeshBuildSession implements MeshContext {
  */
 export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData {
 	return {
-		faceDataA: new ResizableTypedArray(Uint8Array),
-		faceDataB: new ResizableTypedArray(Uint8Array),
-		faceDataC: new ResizableTypedArray(Uint8Array),
+		faceData: new ResizableTypedArray(Uint8Array),
 		faceCount: 0,
 	};
 }
@@ -431,9 +483,7 @@ export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData {
  */
 export function toTransferableMeshData(data: WorkerInternalMeshData): MeshData {
 	const out = new MeshData();
-	out.faceDataA = data.faceDataA.finalArray;
-	out.faceDataB = data.faceDataB.finalArray;
-	out.faceDataC = data.faceDataC.finalArray;
+	out.faceData = data.faceData.finalArray;
 	out.faceCount = data.faceCount;
 	return out;
 }

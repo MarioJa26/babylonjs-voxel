@@ -5,6 +5,10 @@ import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import { PlayerHud } from "../Hud/PlayerHud";
 
 const handlers: Record<string, () => void> = {
+	f1: () => {
+		PlayerHud.toggleHud();
+	},
+
 	f2: () => {
 		GLOBAL_VALUES.DEBUG = !GLOBAL_VALUES.DEBUG;
 		Map1.setDebug(GLOBAL_VALUES.DEBUG);

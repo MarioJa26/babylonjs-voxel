@@ -1,6 +1,6 @@
 [
 	{
-		"id": 100,
+		"id": 1111,
 		"name": "Small Row Boat",
 		"description": "Boat",
 		"icon": "/texture/other/boat-row-small.png",
@@ -91,7 +91,7 @@
 		"id": 1010,
 		"name": "Iron Pickaxe",
 		"description": "A pickaxe made of iron.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/iron/pickaxe.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -99,7 +99,7 @@
 		"id": 1011,
 		"name": "Iron Sword",
 		"description": "A sword made of iron.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/iron/sword.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -107,7 +107,7 @@
 		"id": 1012,
 		"name": "Iron Axe",
 		"description": "A axe made of iron.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/iron/axe.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -115,7 +115,7 @@
 		"id": 1013,
 		"name": "Iron Shovel",
 		"description": "A shovel made of iron.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/iron/shovel.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -123,7 +123,7 @@
 		"id": 1014,
 		"name": "Iron Hoe",
 		"description": "A hoe made of iron.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/iron/hoe.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -131,8 +131,10 @@
 		"id": 1015,
 		"name": "Apple",
 		"description": "Restores a small amount of hunger.",
-		"icon": "/texture/placeholder.png",
-		"maxStack": 64
+		"icon": "/texture/items/food/apple.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 15
 	},
 	{
 		"id": 1016,
@@ -155,14 +157,14 @@
 		"id": 1018,
 		"name": "Bucket",
 		"description": "Holds water or lava.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/item/bucket/bucket.png",
 		"maxStack": 16
 	},
 	{
 		"id": 1019,
 		"name": "Coal",
 		"description": "A fuel source.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/item/coal/coal_diff_1k.png",
 		"maxStack": 64
 	},
 	{
@@ -175,31 +177,221 @@
 	{
 		"id": 1021,
 		"name": "Iron Ingot",
-		"description": "Refined iron.",
-		"icon": "/texture/placeholder.png",
+		"description": "Refined iron.\nUsed to craft iron tools.",
+		"icon": "/texture/items/item/ironingot/ironingot_diff_1k.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1025,
+		"name": "Gold Ingot",
+		"description": "Refined gold.\nUsed to craft gold tools.",
+		"icon": "/texture/items/item/goldingot/goldingot_diff_1k.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1026,
+		"name": "Copper Ingot",
+		"description": "Refined copper.\nUsed to craft copper tools.",
+		"icon": "/texture/items/item/copperingot/copperingot_diff_1k.png",
 		"maxStack": 64
 	},
 	{
 		"id": 1022,
 		"name": "Bow",
-		"description": "A ranged weapon.",
-		"icon": "/texture/placeholder.png",
+		"description": "A ranged weapon.\nRight-click to shoot an arrow.",
+		"icon": "/texture/items/item/bow/bow_diff_1k.png",
 		"maxStack": 1,
-		"useAction": "use_tool"
+		"useAction": "use_bow"
 	},
 	{
 		"id": 1023,
-		"name": "Arrow",
-		"description": "Ammunition for bows.",
-		"icon": "/texture/placeholder.png",
+		"name": "Wooden Arrow",
+		"description": "Ammunition for bows.\nLow damage, long embed time.",
+		"icon": "/texture/items/item/arrow/woodarrow.png",
 		"maxStack": 64
 	},
 	{
-		"id": 1024,
-		"name": "Crafting Table",
-		"description": "Opens a 3x3 crafting grid.",
-		"icon": "/texture/placeholder.png",
+		"id": 1040,
+		"name": "Iron Arrow",
+		"description": "Ammunition for bows.\nHigh damage, heavy bleed.",
+		"icon": "/texture/items/item/arrow/ironarrow.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1041,
+		"name": "Gold Arrow",
+		"description": "Ammunition for bows.\nModerate damage, short embed time.",
+		"icon": "/texture/items/item/arrow/goldarrow.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1042,
+		"name": "Coal Arrow",
+		"description": "Ammunition for bows.\nLong embed time, strong bleed.",
+		"icon": "/texture/items/item/arrow/coalarrow.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1043,
+		"name": "Copper Arrow",
+		"description": "Ammunition for bows.\nModerate damage, steady bleed.",
+		"icon": "/texture/items/item/arrow/copperarrow.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1044,
+		"name": "Glass Arrow",
+		"description": "Ammunition for bows.\nHighest damage, shatters fast.",
+		"icon": "/texture/items/item/arrow/glassarrow.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1045,
+		"name": "TNT Arrow",
+		"description": "Ammunition for bows.\nExplodes on impact.",
+		"icon": "/texture/items/item/arrow/tntarrow.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1037,
+		"name": "Chicken Spawn Egg",
+		"description": "Spawns a chicken where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/chickenspawnegg/chickenspawnegg_diff_1k.png",
 		"maxStack": 64,
-		"useAction": "open_crafting"
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "chicken"
+	},
+	{
+		"id": 1038,
+		"name": "Sheep Spawn Egg",
+		"description": "Spawns a sheep where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/sheepspawnegg/sheepspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "sheep"
+	},
+	{
+		"id": 1100,
+		"name": "Cow Spawn Egg",
+		"description": "Spawns a cow where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/cowspawnegg/cowspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "cow"
+	},
+	{
+		"id": 1101,
+		"name": "Squid Spawn Egg",
+		"description": "Spawns a squid where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/squidspawnegg/squidspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "squid"
+	},
+	{
+		"id": 1102,
+		"name": "Fish Spawn Egg",
+		"description": "Spawns a fish where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/fishspawnegg/fishspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "fish"
+	},
+	{
+		"id": 1103,
+		"name": "Kraken Spawn Egg",
+		"description": "Spawns a kraken where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/krakenspawnegg/krakenspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "kraken"
+	},
+	{
+		"id": 1112,
+		"name": "Zombie Spawn Egg",
+		"description": "Spawns a zombie where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/zombiespawnegg/zombiespawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "zombie"
+	},
+	{
+		"id": 1113,
+		"name": "Skeleton Spawn Egg",
+		"description": "Spawns a skeleton where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/skeletonspawnegg/skeletonspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "skeleton"
+	},
+	{
+		"id": 1104,
+		"name": "Raw Chicken",
+		"description": "Dropped by chickens.\nRestores hunger.",
+		"icon": "/texture/items/food/chicken.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 20
+	},
+	{
+		"id": 1105,
+		"name": "Raw Mutton",
+		"description": "Dropped by sheep.\nRestores hunger.",
+		"icon": "/texture/items/food/mutton.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 25
+	},
+	{
+		"id": 1106,
+		"name": "Raw Beef",
+		"description": "Dropped by cows.\nRestores hunger.",
+		"icon": "/texture/items/food/beef.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 30
+	},
+	{
+		"id": 1107,
+		"name": "Raw Fish",
+		"description": "Dropped by fish.\nRestores hunger.",
+		"icon": "/texture/items/food/fish.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 20
+	},
+	{
+		"id": 1108,
+		"name": "Calamari",
+		"description": "Dropped by squid.\nRestores hunger.",
+		"icon": "/texture/items/food/calamari.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 20
+	},
+	{
+		"id": 1109,
+		"name": "Kraken Meat",
+		"description": "Dropped by the kraken.\nRestores a lot of hunger.",
+		"icon": "/texture/items/food/kraken_meat.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 50
+	},
+	{
+		"id": 1110,
+		"name": "Rotten Flesh",
+		"description": "Dropped by zombies.\nRestores a little hunger.",
+		"icon": "/texture/items/food/rotten_flesh.png",
+		"maxStack": 64,
+		"useAction": "use_food",
+		"hunger": 10
+	},
+	{
+		"id": 1115,
+		"name": "Bone",
+		"description": "Dropped by skeletons.\nPale and light.",
+		"icon": "/texture/items/item/bone/bone.png",
+		"maxStack": 64
 	}
 ]

@@ -11,15 +11,22 @@
  *
  * [LOOP HOISTING]  Chunk.SIZE, this._lastCamC*, queryId, SEA_LEVEL all hoisted
  *                  to local const before every hot loop.
+ *
+ * [MERGED GROUPS]  All terrain renders through merged 4×4×4 groups (individual
+ *                  chunk meshes exist only for boat chunks, which manage their
+ *                  own visibility), so visibility is decided per GROUP:
+ *                  frustum AABB + range check + BFS reachability gate.
  */
 
 import type { FreeCamera, Mat4 } from "@babylonjs/lite";
 import { getCameraPosition, getViewProjectionMatrix } from "@babylonjs/lite";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
+import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { Map1 } from "@/code/Maps/Map1";
+import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { Chunk, getChunk } from "../Chunk/Chunk";
 import { facePairIndex } from "../Chunk/ChunkFaceMasks";
-import { getAllGroups } from "../Chunk/MergedMeshManager";
+import { consumeGroupsMutated, getAllGroups } from "../Chunk/MergedMeshManager";
 
 // ---------------------------------------------------------------------------
 export interface OcclusionStats {
@@ -33,21 +40,25 @@ export interface OcclusionStats {
 // ---------------------------------------------------------------------------
 const NEAR_CHUNKS = 1;
 const MAX_BFS_STEPS = 32;
-const MAX_RENDER_RADIUS = 20;
-const UNDERGROUND_RENDER_RADIUS = 6;
+// The cull range must cover every streamed LOD ring — RENDER_DISTANCE plus the
+// largest LOD offset — otherwise loaded terrain pops out at the cull boundary.
+const MAX_RENDER_RADIUS =
+	SETTING_PARAMS.RENDER_DISTANCE +
+	Math.max(
+		SETTING_PARAMS.LOD_1_OFFSET,
+		SETTING_PARAMS.LOD_2_OFFSET,
+		SETTING_PARAMS.LOD_3_OFFSET,
+		SETTING_PARAMS.LOD_4_OFFSET,
+		SETTING_PARAMS.LOD_5_OFFSET,
+	) +
+	2;
 const SEA_LEVEL = GenerationParams.SEA_LEVEL;
 const FRUSTUM_MARGIN = 32.0;
 
 // TEMP DEBUG: set true to disable frustum culling (for testing the gap).
 const DISABLE_FRUSTUM_CULL = false;
 
-// T2-12: staged re-enable. Stage 1 (current): frustum/backface sweep + merged-
-// group frustum culling only — the graph-based cave BFS (connectivity scans,
-// _startBFS/_stepBFS, topology-dirty handling) is disabled. Flip this to true
-// for Stage 2 (full cave culling) once Stage 1 is verified in-game.
-const BFS_CAVE_CULLING_ENABLED = false;
-
-const BFS_FRAME_BUDGET = 3000;
+const BFS_FRAME_BUDGET = 1500;
 const BFS_CAP = 32768; // must be power-of-2
 const BFS_MASK = BFS_CAP - 1;
 
@@ -104,59 +115,33 @@ function setFrustumPlane(
 	nz: number,
 	d: number,
 ): void {
-	const len = Math.hypot(nx, ny, nz) || 1;
+	// PERF: Math.sqrt(x*x+y*y+z*z) avoids Math.hypot's varargs + overflow
+	// handling; this runs 6x per view-projection change.
+	const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
 	_frustumPacked[off] = nx / len;
 	_frustumPacked[off + 1] = ny / len;
 	_frustumPacked[off + 2] = nz / len;
 	_frustumPacked[off + 3] = d / len;
 }
 
-// Lite's Mat4 is column-major (m[col*4 + row]); Babylon's Matrix is row-major.
-// Frustum planes come from clip-space half-space inequalities, which are built
-// Babylon Lite runs on WebGPU, whose clip space is 0 <= z <= w (not the
-// OpenGL -w <= z <= w). The side planes (left/right/top/bottom) and the far
-// plane are the standard half-spaces (col3 +/- colN). The near plane is simply
-// col2 (z >= 0); col3 + col2 would be the OpenGL near (z >= -w) and is WRONG here.
+// Lite's Mat4 is column-major (m[col*4 + row]). Frustum planes come from
+// clip-space half-space inequalities on VP = P*V. Babylon Lite runs on WebGPU,
+// whose clip space is 0 <= z <= w (not OpenGL's -w <= z <= w), and its
+// projection is REVERSE-Z (mat4PerspectiveLH: depth 1 at near, 0 at far).
+// Reverse-Z swaps which row maps to which boundary: row2 (z_clip >= 0) is the
+// FAR plane and row3 - row2 (z_clip <= w) is the NEAR plane. Both are
+// extracted below, so the 6-plane set is correct regardless; col3 + col2
+// (the OpenGL -w <= z near) must NOT be used.
 function cacheFrustumPlanes(vp: Mat4): void {
 	const m = vp;
-	// Clip-space half-space extraction (column-major VP): side planes and far
-	// are (col3 +/- colN); near is col2 (see note above).
-	setFrustumPlane(
-		0,
-		m[3]! + m[0]!,
-		m[7]! + m[4]!,
-		m[11]! + m[8]!,
-		m[15]! + m[12]!,
-	); // left
-	setFrustumPlane(
-		4,
-		m[3]! - m[0]!,
-		m[7]! - m[4]!,
-		m[11]! - m[8]!,
-		m[15]! - m[12]!,
-	); // right
-	setFrustumPlane(
-		8,
-		m[3]! + m[1]!,
-		m[7]! + m[5]!,
-		m[11]! + m[9]!,
-		m[15]! + m[13]!,
-	); // bottom
-	setFrustumPlane(
-		12,
-		m[3]! - m[1]!,
-		m[7]! - m[5]!,
-		m[11]! - m[9]!,
-		m[15]! - m[13]!,
-	); // top
-	setFrustumPlane(16, m[2]!, m[6]!, m[10]!, m[14]!); // near (WebGPU clip: z >= 0)
-	setFrustumPlane(
-		20,
-		m[3]! - m[2]!,
-		m[7]! - m[6]!,
-		m[11]! - m[10]!,
-		m[15]! - m[14]!,
-	); // far
+	// Clip-space half-space extraction (column-major VP): side planes are
+	// (col3 +/- colN); the two z boundaries are col2 and col3 - col2.
+	setFrustumPlane(0, m[3] + m[0], m[7] + m[4], m[11] + m[8], m[15] + m[12]); // left
+	setFrustumPlane(4, m[3] - m[0], m[7] - m[4], m[11] - m[8], m[15] - m[12]); // right
+	setFrustumPlane(8, m[3] + m[1], m[7] + m[5], m[11] + m[9], m[15] + m[13]); // bottom
+	setFrustumPlane(12, m[3] - m[1], m[7] - m[5], m[11] - m[9], m[15] - m[13]); // top
+	setFrustumPlane(16, m[2], m[6], m[10], m[14]); // far (reverse-Z: z_clip >= 0)
+	setFrustumPlane(20, m[3] - m[2], m[7] - m[6], m[11] - m[10], m[15] - m[14]); // near (reverse-Z: z_clip <= w)
 	_frustumValid = true;
 }
 
@@ -264,15 +249,17 @@ function resetChunkBfs(chunk: Chunk, queryId: number): void {
 
 /**
  * Lazily populate a chunk's neighborRefs array from chunkInstances.
- * Called once per chunk on first BFS encounter. After this, the refs
- * are kept up to date via the dispose hook (nulling) and new-chunk load
- * (re-populating both sides).
+ * Called on first BFS encounter and whenever a slot is null. Chunk disposal
+ * nulls individual slots in live neighbours (Chunk.dispose), so slots are
+ * re-resolved lazily here — this is what keeps the BFS graph connected across
+ * chunk unload/reload cycles at the render edge.
  */
 function ensureNeighborRefs(chunk: Chunk): void {
 	const refs = chunk.neighborRefs;
-	if (refs[0] !== null || refs[1] !== null) return; // already populated
 	for (let d = 0; d < 6; d++) {
-		refs[d] = chunk.getNeighborChunk(d) ?? null;
+		if (refs[d] === null) {
+			refs[d] = chunk.getNeighborChunk(d) ?? null;
+		}
 	}
 }
 
@@ -318,7 +305,6 @@ function hasConnectivity(
 // ---------------------------------------------------------------------------
 export class OcclusionCuller {
 	private _topoVisibleChunks: Chunk[] = [];
-	private _prevTopoChunks: Chunk[] = [];
 	private _currentQueryId = 0;
 	private _lastCompletedQueryId = 0;
 
@@ -330,7 +316,7 @@ export class OcclusionCuller {
 	private _topoDirtyFrameCount = 0;
 	private static readonly TOPO_THROTTLE_FRAMES = 3;
 
-	// Cached visibility results so we can skip the O(chunks) sweep when nothing
+	// Cached visibility results so we can skip the O(groups) sweep when nothing
 	// that affects visibility has changed since last frame.
 	private _lastTotal = 0;
 	private _lastOccluded = 0;
@@ -340,6 +326,19 @@ export class OcclusionCuller {
 	private _bfsInProgress = false;
 	private _bfsQHead = 0;
 	private _bfsQTail = 0;
+
+	// True when the last BFS restart found no seed chunk at all (camera inside
+	// unloaded space). While set, the group loop bypasses BFS reachability
+	// gating — fail-open so a missing origin can never blank out the world.
+	private _bfsOriginMissing = true;
+
+	// Temporal slicing for the merged-group sweep: far groups re-evaluate on
+	// a rotating 1/N frame slot while near groups run every frame. Visibility
+	// state persists between visits, so a far group's cull decision can lag
+	// N-1 frames — imperceptible at horizon distances, ~N× cheaper sweep.
+	private static readonly SWEEP_AMORTIZE_FRAMES = 3;
+	private static readonly SWEEP_NEAR_DIST_SQ = (10 * Chunk.SIZE) ** 2;
+	private _sweepSlot = 0;
 
 	// ─── update ────────────────────────────────────────────────────────────────
 	update(out: OcclusionStats): OcclusionStats {
@@ -361,9 +360,10 @@ export class OcclusionCuller {
 
 		const currentLoadedSize = Chunk.loadedChunks.size;
 
-		// Topology-dirty scan (BFS stage only)
+		// Topology-dirty scan: queue reachable chunks whose face connectivity
+		// went stale (block edits) for recomputation at the next BFS restart.
 		let topologyTrigger = false;
-		if (BFS_CAVE_CULLING_ENABLED) {
+		{
 			const vis = this._topoVisibleChunks;
 			const len = vis.length;
 			for (let i = 0; i < len; i++) {
@@ -390,52 +390,24 @@ export class OcclusionCuller {
 			camCY !== this._lastCamCY ||
 			camCZ !== this._lastCamCZ;
 
-		const needInitialBFS =
-			BFS_CAVE_CULLING_ENABLED &&
-			this._currentQueryId === 0 &&
-			currentLoadedSize > 0;
+		const needInitialBFS = this._currentQueryId === 0 && currentLoadedSize > 0;
 
 		if (cameraMoved || needInitialBFS || topologyTrigger) {
 			this._lastCamCX = camCX;
 			this._lastCamCY = camCY;
 			this._lastCamCZ = camCZ;
 			this._topologyDirty = false;
-			if (BFS_CAVE_CULLING_ENABLED) {
-				this._startBFS(camCX, camCY, camCZ);
-			}
+			this._startBFS(camCX, camCY, camCZ);
 		}
 
-		if (BFS_CAVE_CULLING_ENABLED) {
-			this._stepBFS(BFS_FRAME_BUDGET);
-		}
-
-		// Gradual-hide during in-progress BFS spread: max 100 per frame
-		if (this._bfsInProgress) {
-			const qid = this._currentQueryId;
-			const vis = this._topoVisibleChunks;
-			const len = vis.length;
-			let hidden = 0;
-			for (let i = 0; i < len && hidden < 100; i++) {
-				const chunk = vis[i];
-				if (chunk.bfsQueryId !== qid) {
-					if (chunk.mergedGroupKey) continue;
-					const mesh = chunk.mesh;
-					if (mesh?.visible) {
-						mesh.visible = false;
-						const tm = chunk.transparentMesh;
-						if (tm) tm.visible = false;
-						hidden++;
-					}
-				}
-			}
-		}
+		this._stepBFS(BFS_FRAME_BUDGET);
 
 		// ── Decide whether the expensive visibility sweep must run ──────────────
 		// The BFS topology restart above is already gated on camera-chunk
-		// movement. The per-chunk frustum/backface sweep and the merged-group
-		// loop are O(visible chunks) with matrix math, so we skip them entirely
-		// when the camera hasn't moved/rotated and no BFS is in flight —
-		// visibility is then identical to the previous frame.
+		// movement. The merged-group loop is O(groups) with matrix math, so we
+		// skip it entirely when the camera hasn't moved/rotated, no BFS is in
+		// flight, and no group membership/mesh changed — visibility is then
+		// identical to the previous frame.
 		const bfsWasInProgress = this._bfsInProgress;
 
 		// VP matrix — recompute frustum planes whenever the full matrix changes
@@ -459,8 +431,13 @@ export class OcclusionCuller {
 			_lastVP.set(vp);
 		}
 
+		const groupsMutated = consumeGroupsMutated();
 		const needSweep =
-			cameraMoved || vpChanged || bfsWasInProgress || needInitialBFS;
+			cameraMoved ||
+			vpChanged ||
+			bfsWasInProgress ||
+			needInitialBFS ||
+			groupsMutated;
 
 		if (!needSweep) {
 			out.total = this._lastTotal;
@@ -469,127 +446,34 @@ export class OcclusionCuller {
 			return out;
 		}
 
-		// Camera forward for backface culling (direction from camera position to target).
-		const _camPos = camPos;
-		let fwdX = camera.target.x - _camPos.x;
-		let fwdY = camera.target.y - _camPos.y;
-		let fwdZ = camera.target.z - _camPos.z;
-		const _fwdLen = Math.hypot(fwdX, fwdY, fwdZ) || 1;
-		fwdX /= _fwdLen;
-		fwdY /= _fwdLen;
-		fwdZ /= _fwdLen;
-
-		const total = currentLoadedSize;
-		let visibleCount = 0;
-
-		// ── Frustum + backface sweep ────────────────────────────────────────────
-		// Stage 1 (no cave BFS): the BFS-visible list stays empty, so sweep every
-		// loaded chunk instead — the BFS is only the topological subset filter.
-		const sweepList = BFS_CAVE_CULLING_ENABLED
-			? this._topoVisibleChunks
-			: _nearbyChunksScratch;
-		if (!BFS_CAVE_CULLING_ENABLED) {
-			_nearbyChunksScratch.length = 0;
-			for (const chunk of Chunk.loadedChunks) {
-				_nearbyChunksScratch.push(chunk);
-			}
-		}
-		const visLen = sweepList.length;
-
-		for (let i = 0; i < visLen; i++) {
-			const chunk = sweepList[i]!;
-			const mesh = chunk.mesh;
-			if (!mesh) continue;
-			if (!chunk.isLoaded) continue;
-			if (chunk.mergedGroupKey) continue;
-
-			const cx = chunk.chunkX;
-			const cy = chunk.chunkY;
-			const cz = chunk.chunkZ;
-
-			const ddx = cx - camCX;
-			const ddy = cy - camCY;
-			const ddz = cz - camCZ;
-
-			let visible = true;
-
-			// Backface cull
-			if (
-				ddx > NEAR_CHUNKS ||
-				ddx < -NEAR_CHUNKS ||
-				ddy > NEAR_CHUNKS ||
-				ddy < -NEAR_CHUNKS ||
-				ddz > NEAR_CHUNKS ||
-				ddz < -NEAR_CHUNKS
-			) {
-				const rawDot = ddx * fwdX + ddy * fwdY + ddz * fwdZ;
-				if (rawDot < 0) {
-					const lenSq = ddx * ddx + ddy * ddy + ddz * ddz;
-					if (rawDot * rawDot > 0.25 * lenSq) visible = false;
-				}
-			}
-
-			// Frustum AABB cull
-			if (visible) {
-				const minX = cx * SIZE;
-				const minY = cy * SIZE;
-				const minZ = cz * SIZE;
-				const maxX = minX + SIZE;
-				const maxY = minY + SIZE;
-				const maxZ = minZ + SIZE;
-				// Eye-inside guard (see group loop): a chunk AABB containing the
-				// camera is always visible and must not be near-plane culled.
-				const eyeInChunk =
-					camPos.x >= minX &&
-					camPos.x <= maxX &&
-					camPos.y >= minY &&
-					camPos.y <= maxY &&
-					camPos.z >= minZ &&
-					camPos.z <= maxZ;
-				if (
-					!DISABLE_FRUSTUM_CULL &&
-					!eyeInChunk &&
-					!aabbInFrustum(minX, minY, minZ, maxX, maxY, maxZ)
-				) {
-					visible = false;
-				}
-			}
-
-			if (mesh.visible !== visible) {
-				mesh.visible = visible;
-				const tm = chunk.transparentMesh;
-				if (tm) tm.visible = visible;
-			}
-			if (visible) visibleCount++;
-		}
-
-		// Batch-hide old chunks once BFS is complete
-		if (!this._bfsInProgress) {
-			const prev = this._prevTopoChunks;
-			const prevLen = prev.length;
-			const queryId = this._currentQueryId;
-			for (let i = 0; i < prevLen; i++) {
-				const pc = prev[i]!;
-				if (pc.bfsQueryId !== queryId) {
-					if (pc.mergedGroupKey) continue;
-					const pm = pc.mesh;
-					const ptm = pc.transparentMesh;
-					if (pm?.visible) {
-						pm.visible = false;
-						if (ptm) ptm.visible = false;
-					}
-				}
-			}
-		}
-
-		// Merged group visibility — frustum AABB + BFS topology cull.
+		// ── Merged-group visibility: frustum AABB + range + BFS reachability ────
+		// All terrain renders through merged groups, so this loop is the single
+		// culling point. Individual chunk meshes exist only for boat chunks,
+		// which manage their own visibility.
 		const allGroups = getAllGroups();
 		const G = 4;
 		const groupExtent = G * SIZE;
 		const gHalf = groupExtent * 0.5;
 		const queryId = this._currentQueryId;
 		const bfsInProgress = this._bfsInProgress;
-		const cameraUnderground = camPos.y < SEA_LEVEL;
+		// Cave state comes from the shared runtime flag (player Y <= -16), not
+		// from the sea level — "below sea level" also matches swimming, diving
+		// and coastal walks where the full LOD range must stay visible.
+		const cameraUnderground = isInCave();
+		// Fail-open: while no BFS seed exists (teleport into unloaded space),
+		// skip reachability gating — worst case is over-rendering, never a
+		// blank world.
+		const bfsGateActive = !this._bfsOriginMissing;
+
+		let groupTotal = 0;
+		let groupHidden = 0;
+
+		// Full pass on structural changes; otherwise far groups rotate
+		// through slots and near groups always evaluate.
+		const fullPass = groupsMutated || needInitialBFS || topologyTrigger;
+		const slotCount = OcclusionCuller.SWEEP_AMORTIZE_FRAMES;
+		const activeSlot = this._sweepSlot;
+		const nearDistSq = OcclusionCuller.SWEEP_NEAR_DIST_SQ;
 
 		for (let i = 0; i < allGroups.length; i++) {
 			const group = allGroups[i];
@@ -597,13 +481,25 @@ export class OcclusionCuller {
 			const minGY = group.gridY * groupExtent;
 			const minGZ = group.gridZ * groupExtent;
 
-			// Underground groups use smaller render radius.
-			const groupCenterY = minGY + gHalf;
-			const isSurfaceGroup = groupCenterY >= SEA_LEVEL;
-			const R_chunks =
-				cameraUnderground || !isSurfaceGroup
-					? UNDERGROUND_RENDER_RADIUS
-					: MAX_RENDER_RADIUS;
+			const centerGX = minGX + gHalf;
+			const centerGY = minGY + gHalf;
+			const centerGZ = minGZ + gHalf;
+
+			const ddx = centerGX - camPos.x;
+			const ddy = centerGY - camPos.y;
+			const ddz = centerGZ - camPos.z;
+
+			// Temporal slicing: near groups every frame, far groups rotate
+			// through 1/N slots. Skipped groups keep their last visibility
+			// state untouched.
+			if (!fullPass) {
+				const distSq = ddx * ddx + ddy * ddy + ddz * ddz;
+				if (distSq > nearDistSq && i % slotCount !== activeSlot) {
+					continue;
+				}
+			}
+
+			const isSurfaceGroup = centerGY >= SEA_LEVEL;
 
 			// Distance check between group AABB and camera chunk range in chunk coordinates.
 			const minChunkX = group.gridX * G;
@@ -614,12 +510,12 @@ export class OcclusionCuller {
 			const maxChunkZ = minChunkZ + G - 1;
 
 			const inRange =
-				minChunkX <= camCX + R_chunks &&
-				camCX - maxChunkX <= R_chunks &&
-				minChunkY <= camCY + R_chunks &&
-				camCY - maxChunkY <= R_chunks &&
-				minChunkZ <= camCZ + R_chunks &&
-				camCZ - maxChunkZ <= R_chunks;
+				minChunkX <= camCX + MAX_RENDER_RADIUS &&
+				camCX - maxChunkX <= MAX_RENDER_RADIUS &&
+				minChunkY <= camCY + MAX_RENDER_RADIUS &&
+				camCY - maxChunkY <= MAX_RENDER_RADIUS &&
+				minChunkZ <= camCZ + MAX_RENDER_RADIUS &&
+				camCZ - maxChunkZ <= MAX_RENDER_RADIUS;
 
 			const maxGX = minGX + groupExtent;
 			const maxGY = minGY + groupExtent;
@@ -643,17 +539,18 @@ export class OcclusionCuller {
 					eyeInAABB ||
 					aabbInFrustum(minGX, minGY, minGZ, maxGX, maxGY, maxGZ));
 
-			// BFS reachability — hide groups sealed underground. Stage 1: BFS
-			// disabled → every group is frustum-only (bypass the reachability
-			// gate, which would otherwise hide every group below the queryId).
+			// BFS reachability — hide groups sealed off from the camera's air
+			// region (Minecraft-style cave culling). Surface groups bypass the
+			// gate while the camera is outside, so open-sky terrain never pays
+			// the reachability cost.
 			const bypassBFS =
-				!BFS_CAVE_CULLING_ENABLED || (isSurfaceGroup && !cameraUnderground);
+				!bfsGateActive || (isSurfaceGroup && !cameraUnderground);
 
 			let vis: boolean;
-			let bfsReachable = false;
 			if (bypassBFS) {
 				vis = inFrustum;
 			} else {
+				let bfsReachable = false;
 				let bfsPrevious = false;
 				const members = group.membersArray;
 				for (let j = 0, mlen = members.length; j < mlen; j++) {
@@ -673,29 +570,40 @@ export class OcclusionCuller {
 					}
 				}
 
+				// Keep last-known visibility while the BFS is still spreading.
+				// The group still counts toward sweep totals; its occluded
+				// state is whatever its meshes currently render.
 				if (!bfsReachable && bfsPrevious && bfsInProgress) {
+					groupTotal++;
+					const mesh = group.opaqueMeshRef;
+					if (!mesh || mesh.isVisible === false) groupHidden++;
 					continue;
 				}
 
 				vis = inFrustum && bfsReachable;
 			}
 
+			groupTotal++;
+			if (!vis) groupHidden++;
+
 			if (group.opaqueMeshRef && group.opaqueMeshRef.isVisible !== vis) {
 				group.opaqueMeshRef.isVisible = vis;
 			}
-			if (
-				group.transparentMeshRef &&
-				group.transparentMeshRef.isVisible !== vis
-			) {
-				group.transparentMeshRef.isVisible = vis;
+			if (group.waterMeshRef && group.waterMeshRef.isVisible !== vis) {
+				group.waterMeshRef.isVisible = vis;
+			}
+			if (group.cutoutMeshRef && group.cutoutMeshRef.isVisible !== vis) {
+				group.cutoutMeshRef.isVisible = vis;
 			}
 		}
 
-		out.total = total;
-		out.occluded = total - visibleCount;
+		out.total = groupTotal;
+		out.occluded = groupHidden;
+
+		this._sweepSlot = (this._sweepSlot + 1) % slotCount;
 		out.timeMs = performance.now() - t0;
-		this._lastTotal = total;
-		this._lastOccluded = total - visibleCount;
+		this._lastTotal = groupTotal;
+		this._lastOccluded = groupHidden;
 		return out;
 	}
 
@@ -760,7 +668,7 @@ export class OcclusionCuller {
 
 			let newSteps = minNbrSteps + 1;
 			if (nY * SIZE < SEA_LEVEL) newSteps++;
-			if (newChunk._isDarkCached === true) newSteps += 3;
+			if (newChunk.isDarkCached()) newSteps += 3;
 			if (newSteps > MAX_BFS_STEPS) continue;
 
 			// Initialise new chunk for this query if needed
@@ -786,8 +694,8 @@ export class OcclusionCuller {
 		// BFS propagation from newChunk outward
 		while (qHead !== qTail) {
 			const current = _incBfsChunks[qHead]!;
-			const entryFace = _incBfsEntry[qHead]!;
-			const steps = _incBfsSteps[qHead]!;
+			const entryFace = _incBfsEntry[qHead];
+			const steps = _incBfsSteps[qHead];
 			qHead = (qHead + 1) & BFS_MASK;
 
 			const curFc = current.faceConnectivity;
@@ -816,7 +724,7 @@ export class OcclusionCuller {
 
 				let newSteps = steps + 1;
 				if (ny * SIZE < SEA_LEVEL) newSteps++;
-				if (nbr._isDarkCached === true) newSteps += 3;
+				if (nbr.isDarkCached()) newSteps += 3;
 				if (newSteps > MAX_BFS_STEPS) continue;
 
 				// Connectivity gate
@@ -850,7 +758,8 @@ export class OcclusionCuller {
 
 		if (newChunk.bfsQueryId === queryId && newChunk.mesh) {
 			newChunk.mesh.visible = true;
-			if (newChunk.transparentMesh) newChunk.transparentMesh.visible = true;
+			if (newChunk.waterMesh) newChunk.waterMesh.visible = true;
+			if (newChunk.cutoutMesh) newChunk.cutoutMesh.visible = true;
 		}
 	}
 
@@ -861,17 +770,13 @@ export class OcclusionCuller {
 		this._currentQueryId++;
 		const queryId = this._currentQueryId;
 
-		// Swap visible arrays
-		const recycled = this._prevTopoChunks;
-		recycled.length = 0;
-		this._prevTopoChunks = this._topoVisibleChunks;
-		this._topoVisibleChunks = recycled;
+		this._topoVisibleChunks.length = 0;
 
 		// Batch connectivity recomputation before BFS
 		const dirty = this._dirtyConnectivityChunks;
 		const dirtyLen = dirty.length;
 		for (let i = 0; i < dirtyLen; i++) {
-			const c = dirty[i]!;
+			const c = dirty[i];
 			if (c.connectivityDirty) c.computeFaceConnectivity();
 			c.bfsQueuedForConnectivity = false;
 		}
@@ -918,9 +823,13 @@ export class OcclusionCuller {
 			}
 		}
 
+		// Fail-open marker: with no seed chunk at all (camera inside unloaded
+		// space) the group loop bypasses BFS gating until a restart finds one.
+		this._bfsOriginMissing = qTail === 0;
+
 		this._bfsQHead = 0;
 		this._bfsQTail = qTail;
-		this._bfsInProgress = true;
+		this._bfsInProgress = qTail > 0;
 	}
 
 	// ─── _stepBFS ──────────────────────────────────────────────────────────────
@@ -940,10 +849,15 @@ export class OcclusionCuller {
 
 		while (qHead !== qTail && processed < budget) {
 			const current = _bfsChunks[qHead]!;
-			const entryFace = _bfsEntry[qHead]!;
-			const steps = _bfsSteps[qHead]!;
+			const entryFace = _bfsEntry[qHead];
+			const steps = _bfsSteps[qHead];
 			qHead = (qHead + 1) & BFS_MASK;
 			processed++;
+
+			// Block edits invalidate face connectivity lazily — refresh before
+			// the outbound gates read it, otherwise mined-out tunnels keep
+			// stale (sealed) connectivity and the culler hides reachable terrain.
+			if (current.connectivityDirty) current.computeFaceConnectivity();
 
 			const curFc = current.faceConnectivity;
 			const curNeighborRefs = current.neighborRefs;
@@ -971,12 +885,12 @@ export class OcclusionCuller {
 
 				let newSteps = steps + 1;
 				if (ny * SIZE < SEA_LEVEL) newSteps++;
-				if (nbr._isDarkCached === true) newSteps += 3;
+				if (nbr.isDarkCached()) newSteps += 3;
 				if (newSteps > MAX_BFS_STEPS) continue;
 
 				// Connectivity gate
 				if (entryFace >= 0) {
-					const bit = FACE_PAIR_FLAT[entryFace * 6 + exitFace]!;
+					const bit = FACE_PAIR_FLAT[entryFace * 6 + exitFace];
 					if (!(curFc & (1 << bit))) continue;
 				}
 				if (nbr.bfsQueryId !== queryId) {
@@ -1010,7 +924,7 @@ export class OcclusionCuller {
 			const vis = this._topoVisibleChunks;
 			let writeIdx = 0;
 			for (let i = 0; i < vis.length; i++) {
-				const chunk = vis[i]!;
+				const chunk = vis[i];
 				if (chunk.bfsQueryId === queryId) {
 					vis[writeIdx++] = chunk;
 				}

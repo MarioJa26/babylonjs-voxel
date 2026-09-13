@@ -147,7 +147,20 @@ export class ResizableTypedArray<
 	}
 
 	get finalArray(): T {
+		// If capacity exactly matches length, avoid extra alloc+copy by
+		// handing out the backing buffer directly (caller transfers it, so
+		// allocate fresh backing for next build).
+		if (this.length === this.capacity && this.length > 0) {
+			const out = this.array;
+			this.array = new this.ctor(this.capacity);
+			return out;
+		}
 		return this.array.slice(0, this.length) as T;
+	}
+
+	get finalArrayView(): T {
+		// Zero-copy view for in-process merges — caller must not retain past next reset().
+		return this.array.subarray(0, this.length) as unknown as T;
 	}
 
 	/**

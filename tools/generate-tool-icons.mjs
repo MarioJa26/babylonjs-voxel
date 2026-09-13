@@ -25,6 +25,7 @@ import zlib from "node:zlib";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const ATLAS_PATH = path.join(ROOT, "public/texture/diffuse_atlas.png");
+const TEMPLATE_DIR = path.join(ROOT, "public/texture/items/template");
 const OUT_DIR = path.join(ROOT, "public/texture/items");
 
 // ---------------------------------------------------------------------------
@@ -338,9 +339,24 @@ const SCALE = Number(process.env.SIZE ?? 4); // output = GRID * SCALE px
 
 // Material sets: each generates its own subfolder. Edit the head block ids to
 // recolor the tool heads (e.g. iron head = 21, gold = ..., diamond = ...).
+// Materials using a template PNG load the head from that file instead of sampling
+// the atlas. The template is a 25x25 image whose pixels are used directly for the
+// tool-head cells ('H' in the grid below).
 const MATERIALS = {
 	wood: { hilt: HILT_BLOCK, head: Number(process.env.WOOD_HEAD ?? 35) },
 	stone: { hilt: HILT_BLOCK, head: Number(process.env.STONE_HEAD ?? 1) },
+	copper: {
+		hilt: HILT_BLOCK,
+		template: path.join(TEMPLATE_DIR, "copper_template.png"),
+	},
+	gold: {
+		hilt: HILT_BLOCK,
+		template: path.join(TEMPLATE_DIR, "gold_template.png"),
+	},
+	iron: {
+		hilt: HILT_BLOCK,
+		template: path.join(TEMPLATE_DIR, "iron_template.png"),
+	},
 };
 
 function main() {
@@ -349,11 +365,27 @@ function main() {
 	const outSize = GRID * SCALE;
 	const outPixels = Buffer.alloc(outSize * outSize * 4);
 
-	for (const [mat, { hilt, head }] of Object.entries(MATERIALS)) {
+	for (const [mat, { hilt, head, template }] of Object.entries(MATERIALS)) {
 		const matDir = path.join(OUT_DIR, mat);
 		fs.mkdirSync(matDir, { recursive: true });
 		const hiltTile = sampleTile(atlas, hilt);
-		const headTile = sampleTile(atlas, head);
+
+		// Head can come from an atlas block id or a template PNG.
+		let headTile;
+		let headLabel;
+		if (template) {
+			const tpl = readPng(template);
+			if (tpl.width !== GRID || tpl.height !== GRID) {
+				throw new Error(
+					`Template ${template} must be ${GRID}x${GRID}, got ${tpl.width}x${tpl.height}`,
+				);
+			}
+			headTile = tpl.pixels;
+			headLabel = `template:${path.basename(template)}`;
+		} else {
+			headTile = sampleTile(atlas, head);
+			headLabel = `block:${head}`;
+		}
 
 		for (const [tool, tpl] of Object.entries(TEMPLATES)) {
 			// Build 25x25 icon.
@@ -362,17 +394,22 @@ function main() {
 				const row = tpl[y] ?? "";
 				for (let x = 0; x < GRID; x++) {
 					const ch = row[x] ?? ".";
-					const src = ch === "H" ? headTile : ch === "h" ? hiltTile : null;
 					const dst = (y * GRID + x) * 4;
-					if (src) {
-						// Map the grid coordinate directly to the tile coordinate
-						// (Requires GRID and TILE to be exactly the same size to loop correctly)
+					if (ch === "H") {
+						// Head: use the template/atlas pixels directly at this position
+						const s = (y * GRID + x) * 4;
+						icon[dst] = headTile[s];
+						icon[dst + 1] = headTile[s + 1];
+						icon[dst + 2] = headTile[s + 2];
+						icon[dst + 3] = 255;
+					} else if (ch === "h") {
+						// Hilt: sample from the hilt tile
 						const sx = x % TILE;
 						const sy = y % TILE;
 						const s = (sy * TILE + sx) * 4;
-						icon[dst] = src[s];
-						icon[dst + 1] = src[s + 1];
-						icon[dst + 2] = src[s + 2];
+						icon[dst] = hiltTile[s];
+						icon[dst + 1] = hiltTile[s + 1];
+						icon[dst + 2] = hiltTile[s + 2];
 						icon[dst + 3] = 255;
 					} else {
 						icon[dst + 3] = 0; // transparent
@@ -397,7 +434,7 @@ function main() {
 			const outPath = path.join(matDir, `${tool}.png`);
 			writePng(outPath, outSize, outSize, outPixels);
 			console.log(
-				`wrote ${outPath} (${outSize}x${outSize}) hilt=${hilt} head=${head}`,
+				`wrote ${outPath} (${outSize}x${outSize}) hilt=${hilt} head=${headLabel}`,
 			);
 		}
 	}

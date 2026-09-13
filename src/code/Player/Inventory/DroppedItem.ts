@@ -21,17 +21,21 @@ import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
 import { vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import {
-	getBlockByWorldCoords,
-	getBlockStateByWorldCoords,
 	getLightByWorldCoords,
+	resolveBlockAtWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
+	_voxelResolveScratch,
 	Axis as ColliderAxis,
 	createVoxelColliderBlockSampler,
+	UNLOADED_SOLID_RESOLVE,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
-import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
+import {
+	getShapeForBlockId,
+	isRegisteredBlockId,
+} from "@/code/World/Shape/BlockShapes";
 import {
 	computeFenceNeighborMask,
 	getFenceDynamicShape,
@@ -80,6 +84,8 @@ struct VSOut {
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let atlasUV = in.vUV * shaderUniforms.uScale + shaderUniforms.uOffset;
   let tex = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
+  // Alpha test for billboard item sprites (block atlas texels are opaque).
+  if (tex.a < 0.5) { discard; }
   let tint = shaderUniforms.tintColor;
   return vec4<f32>(tex.rgb * tint, 1.0);
 }
@@ -103,6 +109,106 @@ function createDroppedItemMaterial(): ShaderMaterial {
 	});
 }
 
+// PERF: ShaderMaterials are pooled per blockId instead of built per item.
+// uScale/uOffset are fixed by blockId, so a pooled instance only needs the
+// tint refresh it gets on every light crossing anyway. Pooling removes
+// pipeline/bind-group churn per spawn AND fixes the old leak where #dispose
+// never released the material at all. Cap bounds worst-case VRAM; overflow
+// materials are disposed outright.
+const MATERIAL_POOL_MAX = 64;
+const droppedItemMaterialPool = new Map<number, ShaderMaterial[]>();
+
+// Lite's ShaderMaterial type exposes no dispose — call it structurally
+// (same pattern as MaterialFactory's local dispose? interface).
+function disposeItemMaterial(mat: ShaderMaterial): void {
+	(mat as unknown as { dispose?: () => void }).dispose?.();
+}
+
+export function acquireDroppedItemMaterial(blockId: number): ShaderMaterial {
+	const pool = droppedItemMaterialPool.get(blockId);
+	const reused = pool?.pop();
+	if (reused) return reused;
+	return createDroppedItemMaterial();
+}
+
+export function releaseDroppedItemMaterial(
+	blockId: number,
+	mat: ShaderMaterial,
+): void {
+	let total = 0;
+	for (const stack of droppedItemMaterialPool.values()) total += stack.length;
+	if (total >= MATERIAL_POOL_MAX) {
+		disposeItemMaterial(mat);
+		return;
+	}
+	let pool = droppedItemMaterialPool.get(blockId);
+	if (!pool) {
+		pool = [];
+		droppedItemMaterialPool.set(blockId, pool);
+	}
+	pool.push(mat);
+}
+
+function disposeAllPooledItemMaterials(): void {
+	for (const stack of droppedItemMaterialPool.values()) {
+		for (const mat of stack) disposeItemMaterial(mat);
+	}
+	droppedItemMaterialPool.clear();
+
+	for (const stack of spriteMaterialPool.values()) {
+		for (const mat of stack) disposeItemMaterial(mat);
+	}
+	spriteMaterialPool.clear();
+}
+
+// ─── Billboard sprites (non-block items) ──────────────────────────────────────
+// Items without a block shape (tools, ingots, eggs, ...) drop as a single
+// camera-facing quad textured with the item's icon PNG — far cheaper than a
+// textured cube and visually correct for flat item art.
+
+const spriteMaterialPool = new Map<string, ShaderMaterial[]>();
+const spriteTextureCache = new Map<string, Promise<Texture2D | null>>();
+
+export function acquireSpriteMaterial(iconUrl: string): ShaderMaterial {
+	const reused = spriteMaterialPool.get(iconUrl)?.pop();
+	if (reused) return reused;
+	return createDroppedItemMaterial();
+}
+
+export function releaseSpriteMaterial(
+	iconUrl: string,
+	mat: ShaderMaterial,
+): void {
+	let total = 0;
+	for (const stack of spriteMaterialPool.values()) total += stack.length;
+	if (total >= MATERIAL_POOL_MAX) {
+		disposeItemMaterial(mat);
+		return;
+	}
+	let pool = spriteMaterialPool.get(iconUrl);
+	if (!pool) {
+		pool = [];
+		spriteMaterialPool.set(iconUrl, pool);
+	}
+	pool.push(mat);
+}
+
+/** Fallback sprite when an item icon PNG is missing (art not created yet). */
+export const PLACEHOLDER_ICON_URL = "/texture/placeholder.png";
+
+export function getIconTexture(url: string): Promise<Texture2D | null> {
+	let promise = spriteTextureCache.get(url);
+	if (!promise) {
+		promise = loadTexture2D(Map1.engine, url, {
+			mipMaps: true,
+			magFilter: "nearest",
+			minFilter: "nearest",
+		}).catch(() => null);
+		spriteTextureCache.set(url, promise);
+	}
+	return promise;
+}
+
 // --------------------------------------------------------------------------
 // OPTIMIZATION: Cache geometry arrays globally. Creating these arrays on
 // every DroppedItem instance causes massive GC spikes in dense worlds.
@@ -114,7 +220,9 @@ let unitCubeGeometryCache: {
 	indices: Uint32Array;
 } | null = null;
 
-function getUnitCubeGeometry() {
+// Exported for PrimedTnt: same cached unit cube (full 0-1 face UVs) so the
+// primed entity renders the TNT atlas tile with zero extra geometry cost.
+export function getUnitCubeGeometry() {
 	if (unitCubeGeometryCache) return unitCubeGeometryCache;
 
 	const positions: number[] = [];
@@ -220,6 +328,30 @@ function getUnitCubeGeometry() {
 	return unitCubeGeometryCache;
 }
 
+// Single +Z-facing quad (same winding/UV layout as the cube's front face, so
+// the shared shader + texture-v convention apply unchanged). Billboarding is
+// yaw-only: #faceCamera rotates the mesh toward the camera every frame.
+let billboardQuadGeometryCache: {
+	positions: Float32Array;
+	normals: Float32Array;
+	uvs: Float32Array;
+	indices: Uint32Array;
+} | null = null;
+
+export function getBillboardQuadGeometry() {
+	if (billboardQuadGeometryCache) return billboardQuadGeometryCache;
+
+	billboardQuadGeometryCache = {
+		positions: new Float32Array([
+			-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0,
+		]),
+		normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
+		uvs: new Float32Array([1, 0, 0, 0, 0, 1, 1, 1]),
+		indices: new Uint32Array([0, 2, 1, 0, 3, 2]),
+	};
+	return billboardQuadGeometryCache;
+}
+
 const ITEM_NAME: string = "droppedItem";
 const ITEM_NAME_AABB: string = "droppedItemAABB";
 
@@ -230,9 +362,18 @@ const LIGHT_NORMALIZE_MUL = 1.0 / 15.0;
 // OPTIMIZATION: Share a single block sampler to prevent function closures per item
 const SHARED_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
 	(x, y, z) => {
-		const blockId = getBlockByWorldCoords(x, y, z);
-		if (!isCollidableBlock(blockId)) return null;
-		return { blockId, blockState: getBlockStateByWorldCoords(x, y, z) };
+		// Mirrors PlayerVehicleMotor: when the chunk under a probe is still
+		// streaming in (missing / not loaded / no voxel data) we hold the
+		// item up on a solid cobble sentinel instead of letting it fall
+		// through into the void. Without this, dropped items fall
+		// indefinitely at the render-distance edge and at every newly
+		// discovered chunk seam.
+		const r = resolveBlockAtWorldCoords(x, y, z);
+		if (r.unloaded) return UNLOADED_SOLID_RESOLVE;
+		if (!isCollidableBlock(r.blockId)) return null;
+		_voxelResolveScratch.blockId = r.blockId;
+		_voxelResolveScratch.blockState = r.blockState;
+		return _voxelResolveScratch;
 	},
 	{
 		getFenceDynamicShape,
@@ -245,7 +386,12 @@ const SHARED_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
 export class DroppedItem implements IUsable {
 	#boxMesh: Mesh;
 	#material: ShaderMaterial;
+	/** Bumped whenever the material leaves this item (dispose→pool) so the
+	 *  async atlas-bind callback can detect a stale acquisition. */
+	#materialEpoch = 0;
 	#item: Item;
+	// Non-block items render as a camera-facing icon sprite instead of a cube.
+	#isSprite = false;
 	#velocity = vec3Zero();
 	#position: Vec3;
 	#halfSize = 0.25;
@@ -253,23 +399,48 @@ export class DroppedItem implements IUsable {
 	#disposed = false;
 	#itemIndex = -1;
 
-	// OPTIMIZATION: Only update lighting when item crosses a voxel boundary
+	// Only update lighting when item crosses a voxel boundary.
 	#lastLightX = Number.NaN;
 	#lastLightY = Number.NaN;
 	#lastLightZ = Number.NaN;
 
-	// OPTIMIZATION: Reuse tint array to avoid GC pressure from setShaderVector3
+	// Reused tint tuple to avoid per-frame/per-light allocations.
 	#tint: [number, number, number] = [1, 1, 1];
 
-	// OPTIMIZATION: Skip transform updates when item hasn't moved
+	// Track last synced position.
 	#oldPositionX = Number.NaN;
 	#oldPositionY = Number.NaN;
 	#oldPositionZ = Number.NaN;
 
-	// OPTIMIZATION: Track grounded from Y-axis collision instead of extra overlap query
+	// Grounded is inferred from Y collision.
 	#grounded = false;
 
-	// OPTIMIZATION: Arrays iterate magnitudes faster than Sets in tight game loops
+	// PERF: settled items do not need physics every frame.
+	#sleeping = false;
+
+	// Sprite bob phase (radians) — randomized per item so stacked drops
+	// don't pulse in sync. Visual-only; physics position is untouched.
+	#bobPhase = Math.random() * Math.PI * 2;
+	// Seconds since spawn — the bob amplitude ramps in over the first
+	// second so the mesh eases out of its rest position instead of
+	// jumping mid-swing on the first frame.
+	#bobAge = 0;
+
+	// Remote (server-authoritative) items: the server owns position +
+	// lifetime. The client only renders + interpolates, so local physics is
+	// disabled (kept "sleeping") and position is driven via setRemotePosition().
+	#remoteInstanceId: number | null = null;
+	#remotePickup: ((instanceId: number) => void) | null = null;
+
+	// Optimistic pickup bookkeeping: what was granted locally while waiting
+	// for the server's despawn/rejection. Cleared on success (despawn) or
+	// rolled back on ItemPickupRejected.
+	#remotePendingPickup: {
+		player: Player;
+		itemId: number;
+		granted: number;
+	} | null = null;
+
 	static readonly #allItems: DroppedItem[] = [];
 	static #observerRegistered = false;
 
@@ -281,14 +452,21 @@ export class DroppedItem implements IUsable {
 			const dt = deltaMs * 0.001;
 			if (dt <= 0) return;
 
-			// PERF: skip item physics while any UI overlay owns the mouse
-			// (matches the mob observer and player-loop suppression).
+			// PERF: skip item physics while any UI overlay owns the mouse.
 			if (isUiOpen(UiFocus.pauseMenu)) return;
 
 			const items = DroppedItem.#allItems;
-			const len = items.length;
-			for (let i = 0; i < len; i++) {
-				items[i].#updatePhysics(dt);
+			for (let i = 0, len = items.length; i < len; i++) {
+				const item = items[i];
+				if (!item.#sleeping) {
+					item.#updatePhysics(dt);
+				}
+				// Sprites keep facing the camera and bob gently even while
+				// settled, like XP orbs (visual-only: physics stays asleep).
+				if (item.#isSprite) {
+					item.#faceCamera();
+					item.#applyBob(dt);
+				}
 			}
 		});
 	}
@@ -296,13 +474,22 @@ export class DroppedItem implements IUsable {
 	static readonly GRAVITY = -18;
 	static readonly STEP_SIZE = 0.2;
 	static readonly EPSILON = 0.001;
+	/** Sprite bob amplitude in blocks (visual-only, matches XpOrb). */
+	static readonly SPRITE_BOB_AMPLITUDE = 0.05;
+	/** Sprite bob angular speed in radians per second (matches XpOrb). */
+	static readonly SPRITE_BOB_SPEED = 3.0;
 	static readonly AIR_DAMPING_PER_SEC = 1.8;
 	static readonly GROUND_DAMPING_PER_SEC = 8.0;
 	static readonly MIN_SPEED = 0.03;
 	static readonly SKY_LIGHT_COLOR = vec3(0.8, 0.8, 0.8);
 	static readonly BLOCK_LIGHT_COLOR = vec3(0.9, 0.6, 0.2);
 
+	static #sizeFor(stackSize: number): number {
+		return 0.25 + stackSize * 0.009;
+	}
+
 	static #atlasPromise: Promise<Texture2D | null> | null = null;
+
 	static #getAtlasTexture(): Promise<Texture2D | null> {
 		if (!DroppedItem.#atlasPromise) {
 			DroppedItem.#atlasPromise = loadTexture2D(
@@ -315,6 +502,7 @@ export class DroppedItem implements IUsable {
 				},
 			).catch(() => null);
 		}
+
 		return DroppedItem.#atlasPromise;
 	}
 
@@ -323,8 +511,15 @@ export class DroppedItem implements IUsable {
 	}
 
 	constructor(item: Item, x: number, y: number, z: number) {
-		const size = 0.25 + item.stackSize * 0.009;
-		const geometry = getUnitCubeGeometry();
+		this.#item = item;
+
+		// Items without a block shape drop as a cheap billboard sprite of
+		// their icon; block items keep the textured spinning cube.
+		this.#isSprite = !isRegisteredBlockId(item.blockId) && item.icon !== "";
+
+		const geometry = this.#isSprite
+			? getBillboardQuadGeometry()
+			: getUnitCubeGeometry();
 
 		this.#boxMesh = createMeshFromData(
 			Map1.engine,
@@ -334,23 +529,25 @@ export class DroppedItem implements IUsable {
 			geometry.indices,
 			geometry.uvs,
 		);
-		addToScene(Map1.mainScene, this.#boxMesh);
 
 		const meta = new MetadataContainer();
 		meta.set("use", this.use);
 		this.#boxMesh.metadata = meta as unknown as LiteMetadata;
 
 		this.#boxMesh.pickable = true;
-		this.#boxMesh.scaling.set(size, size, size);
+
 		this.#position = vec3(x, y, z);
 		this.#boxMesh.position.set(x, y, z);
 
-		this.#material = createDroppedItemMaterial();
+		this.#material = this.#isSprite
+			? acquireSpriteMaterial(item.icon)
+			: acquireDroppedItemMaterial(item.blockId ?? -1);
 		this.#boxMesh.material = this.#material;
 		this.#boxMesh.visible = false;
 
+		const size = DroppedItem.#sizeFor(item.stackSize);
+		this.#boxMesh.scaling.set(size, size, size);
 		this.#halfSize = size * 0.5;
-		this.#item = item;
 
 		this.#voxelCollider = new VoxelAabbCollider(
 			vec3(this.#halfSize, this.#halfSize, this.#halfSize),
@@ -364,18 +561,39 @@ export class DroppedItem implements IUsable {
 			},
 		);
 
-		const sharedAtlas = getDiffuseTexture2D();
-		if (sharedAtlas) {
-			setShaderTexture(this.#material, "diffuseTexture", sharedAtlas);
-			this.#applyAtlasTile(item);
-			this.#boxMesh.visible = true;
+		if (this.#isSprite) {
+			// Full-texture quad: uScale/uOffset are the identity transform.
+			setShaderUniform(this.#material, "uScale", 1);
+			setShaderUniform(this.#material, "uOffset", [0, 0]);
+			this.#bindIconTexture(item.icon);
 		} else {
-			void DroppedItem.#getAtlasTexture().then((atlas) => {
-				if (this.#disposed || !atlas) return;
-				setShaderTexture(this.#material, "diffuseTexture", atlas);
+			const sharedAtlas = getDiffuseTexture2D();
+			if (sharedAtlas) {
+				setShaderTexture(this.#material, "diffuseTexture", sharedAtlas);
 				this.#applyAtlasTile(item);
 				this.#boxMesh.visible = true;
-			});
+				this.#ensureAddedToScene();
+			} else {
+				// Capture the material identity: if this item is disposed before
+				// the atlas resolves, its material returns to the pool and may be
+				// reacquired by another item — a late bind must not retarget it.
+				const mat = this.#material;
+				const epoch = this.#materialEpoch;
+				void DroppedItem.#getAtlasTexture().then((atlas) => {
+					if (
+						this.#disposed ||
+						!atlas ||
+						this.#material !== mat ||
+						this.#materialEpoch !== epoch
+					)
+						return;
+
+					setShaderTexture(this.#material, "diffuseTexture", atlas);
+					this.#applyAtlasTile(item);
+					this.#ensureAddedToScene();
+					this.#boxMesh.visible = true;
+				});
+			}
 		}
 
 		DroppedItem.#ensureObserver();
@@ -383,35 +601,176 @@ export class DroppedItem implements IUsable {
 		this.#itemIndex = DroppedItem.#allItems.length;
 		DroppedItem.#allItems.push(this);
 
-		this.#updateLightingIfNeeded();
+		this.#syncTransformAndLightingIfMoved();
+	}
+
+	/**
+	 * Bind this sprite's icon PNG to its material (async, epoch-guarded so a
+	 * disposed/recycled item never receives a late bind).
+	 *
+	 * If the icon is missing (e.g. art not created yet), fall back to the
+	 * placeholder texture so the drop is still visible and pickable instead
+	 * of silently never entering the scene.
+	 */
+	#bindIconTexture(iconUrl: string): void {
+		const mat = this.#material;
+		const epoch = this.#materialEpoch;
+		void getIconTexture(iconUrl)
+			.then((tex) => {
+				if (tex) return tex;
+				if (iconUrl === PLACEHOLDER_ICON_URL) return null;
+				return getIconTexture(PLACEHOLDER_ICON_URL);
+			})
+			.then((tex) => {
+				if (
+					this.#disposed ||
+					!tex ||
+					this.#material !== mat ||
+					this.#materialEpoch !== epoch
+				)
+					return;
+
+				setShaderTexture(this.#material, "diffuseTexture", tex);
+				this.#ensureAddedToScene();
+				// Restart the bob ramp on first show: the icon may have
+				// loaded long after spawn, so the swing could otherwise
+				// reveal the sprite mid-bob instead of at rest.
+				this.#bobAge = 0;
+				this.#boxMesh.visible = true;
+			});
+	}
+
+	/**
+	 * Add the mesh to the scene only AFTER its material's sampler has a bound
+	 * texture. Lite builds the shader bind group whenever a mesh (re)enters a
+	 * material group, and an unbound sampler throws (#241) — so the previous
+	 * add-early/bind-later order crashed on every first-of-a-kind drop.
+	 */
+	#sceneAdded = false;
+	#ensureAddedToScene(): void {
+		if (this.#sceneAdded) return;
+		this.#sceneAdded = true;
+		addToScene(Map1.mainScene, this.#boxMesh);
+	}
+
+	/** Yaw-only billboarding: keep the sprite quad facing the camera. */
+	#faceCamera(): void {
+		const cam = Map1.mainScene.camera;
+		if (!cam) return;
+
+		// The lite Camera type exposes no position — read the translation
+		// column of its world matrix instead.
+		const m = cam.worldMatrix;
+		this.#boxMesh.rotation.y = Math.atan2(
+			m[12] - this.#position.x,
+			m[14] - this.#position.z,
+		);
+	}
+
+	/**
+	 * Gentle vertical bob for 2D sprite drops (tools, food, eggs, ...),
+	 * matching the XP orb motion. Writes the mesh transform only — the
+	 * physics position, pickup checks, and lighting stay on the true
+	 * resting spot, and the ±0.05 amplitude never leaves the voxel the
+	 * light was sampled from.
+	 */
+	#applyBob(dt: number): void {
+		this.#bobPhase += dt * DroppedItem.SPRITE_BOB_SPEED;
+		this.#bobAge += dt;
+		const ampScale = Math.min(1, this.#bobAge);
+		this.#boxMesh.position.set(
+			this.#position.x,
+			this.#position.y +
+				Math.sin(this.#bobPhase) * DroppedItem.SPRITE_BOB_AMPLITUDE * ampScale,
+			this.#position.z,
+		);
 	}
 
 	addVelocity(x: number, y: number, z: number): void {
 		this.#velocity.x += x;
 		this.#velocity.y += y;
 		this.#velocity.z += z;
+
+		if (x !== 0 || y !== 0 || z !== 0) {
+			this.#sleeping = false;
+		}
 	}
 
 	use = (player: Player): void => {
+		// Remote (server-authoritative) items: optimistically add the stack to
+		// the inventory and keep the mesh until the server confirms. The
+		// server broadcasts ItemDespawn on success (RemoteItemManager then
+		// disposes us) or ItemPickupRejected on failure (rollbackRemotePickup
+		// removes the phantom stack again).
+		if (this.#remoteInstanceId !== null && this.#remotePickup) {
+			// A pickup is already in flight for this item — ignore repeats
+			// so a double-click cannot grant two phantom stacks.
+			if (this.#remotePendingPickup) return;
+
+			this.#remotePickup(this.#remoteInstanceId);
+
+			// addItem() drains item.stackSize into existing stacks, so the
+			// granted amount is captured BEFORE the call.
+			const requestedCount = this.#item.stackSize;
+			const remainder = player.playerInventory.addItem(this.#item);
+			this.#remotePendingPickup = {
+				player,
+				itemId: this.#item.itemId,
+				granted: Math.max(0, requestedCount - remainder),
+			};
+			return;
+		}
+
 		const remainder = player.playerInventory.addItem(this.#item);
 		if (remainder <= 0) {
 			this.#dispose();
+		} else {
+			this.#resize();
 		}
 	};
+
+	#resize(): void {
+		const size = DroppedItem.#sizeFor(this.#item.stackSize);
+		this.#boxMesh.scaling.set(size, size, size);
+		this.#halfSize = size * 0.5;
+		this.#voxelCollider.HalfExtents = vec3(
+			this.#halfSize,
+			this.#halfSize,
+			this.#halfSize,
+		);
+	}
 
 	#dispose(): void {
 		if (this.#disposed) return;
 		this.#disposed = true;
 
+		// If we vanish while a pickup is in flight (ItemDespawn arrived =
+		// success, or scene teardown), cancel rollback bookkeeping so a late
+		// rejection can never remove stacks the server actually confirmed.
+		this.#remotePendingPickup = null;
+
 		const items = DroppedItem.#allItems;
 		const last = items.pop();
+
 		if (last !== undefined && last !== this) {
 			items[this.#itemIndex] = last;
 			last.#itemIndex = this.#itemIndex;
 		}
 
 		this.#voxelCollider.dispose();
-		removeFromScene(Map1.mainScene, this.#boxMesh);
+		if (this.#sceneAdded) {
+			removeFromScene(Map1.mainScene, this.#boxMesh);
+		}
+
+		// PERF/LEAKFIX: return the material to its pool instead of leaking
+		// one ShaderMaterial (pipeline + bind groups) per despawn. The epoch
+		// bump invalidates any in-flight texture bind for this item.
+		this.#materialEpoch++;
+		if (this.#isSprite) {
+			releaseSpriteMaterial(this.#item.icon, this.#material);
+		} else {
+			releaseDroppedItemMaterial(this.#item.blockId ?? -1, this.#material);
+		}
 	}
 
 	#updatePhysics(dt: number): void {
@@ -419,10 +778,10 @@ export class DroppedItem implements IUsable {
 
 		this.#moveAxis(ColliderAxis.X, this.#velocity.x * dt);
 
-		// OPTIMIZATION: Track grounded from Y collision instead of extra overlap query
 		this.#grounded = false;
 		const preY = this.#position.y;
 		this.#moveAxis(ColliderAxis.Y, this.#velocity.y * dt);
+
 		if (this.#position.y === preY && this.#velocity.y < 0) {
 			this.#grounded = true;
 		}
@@ -432,7 +791,7 @@ export class DroppedItem implements IUsable {
 		const damping = this.#grounded
 			? DroppedItem.GROUND_DAMPING_PER_SEC
 			: DroppedItem.AIR_DAMPING_PER_SEC;
-		// OPTIMIZATION: Frame-rate independent exponential damping
+
 		const keep = Math.exp(-damping * dt);
 
 		this.#velocity.x *= keep;
@@ -446,39 +805,40 @@ export class DroppedItem implements IUsable {
 		if (
 			this.#velocity.x > -DroppedItem.MIN_SPEED &&
 			this.#velocity.x < DroppedItem.MIN_SPEED
-		)
+		) {
 			this.#velocity.x = 0;
+		}
+
 		if (
 			this.#velocity.y > -DroppedItem.MIN_SPEED &&
 			this.#velocity.y < DroppedItem.MIN_SPEED
-		)
+		) {
 			this.#velocity.y = 0;
+		}
+
 		if (
 			this.#velocity.z > -DroppedItem.MIN_SPEED &&
 			this.#velocity.z < DroppedItem.MIN_SPEED
-		)
-			this.#velocity.z = 0;
-
-		// OPTIMIZATION: Skip transform update when item hasn't moved
-		const px = this.#position.x;
-		const py = this.#position.y;
-		const pz = this.#position.z;
-		if (
-			px !== this.#oldPositionX ||
-			py !== this.#oldPositionY ||
-			pz !== this.#oldPositionZ
 		) {
-			this.#oldPositionX = px;
-			this.#oldPositionY = py;
-			this.#oldPositionZ = pz;
-			this.#boxMesh.position.set(px, py, pz);
+			this.#velocity.z = 0;
 		}
 
-		this.#voxelCollider.syncDebugMesh(this.#position);
-		this.#updateLightingIfNeeded();
+		this.#syncTransformAndLightingIfMoved();
+
+		// PERF: once settled on the ground, stop spending collision/light work every frame.
+		if (
+			this.#grounded &&
+			this.#velocity.x === 0 &&
+			this.#velocity.y === 0 &&
+			this.#velocity.z === 0
+		) {
+			this.#sleeping = true;
+		}
 	}
 
 	#moveAxis(axis: ColliderAxis, delta: number): void {
+		if (delta === 0) return;
+
 		this.#voxelCollider.moveAxis(
 			this.#position,
 			this.#velocity,
@@ -488,10 +848,33 @@ export class DroppedItem implements IUsable {
 		);
 	}
 
+	#syncTransformAndLightingIfMoved(): void {
+		const px = this.#position.x;
+		const py = this.#position.y;
+		const pz = this.#position.z;
+
+		if (
+			px === this.#oldPositionX &&
+			py === this.#oldPositionY &&
+			pz === this.#oldPositionZ
+		) {
+			return;
+		}
+
+		this.#oldPositionX = px;
+		this.#oldPositionY = py;
+		this.#oldPositionZ = pz;
+
+		this.#boxMesh.position.set(px, py, pz);
+		this.#voxelCollider.syncDebugMesh(this.#position);
+		this.#updateLightingIfNeeded();
+	}
+
 	#updateLightingIfNeeded(): void {
 		const lx = this.#position.x | 0;
 		const ly = this.#position.y | 0;
 		const lz = this.#position.z | 0;
+
 		if (
 			lx === this.#lastLightX &&
 			ly === this.#lastLightY &&
@@ -499,6 +882,7 @@ export class DroppedItem implements IUsable {
 		) {
 			return;
 		}
+
 		this.#lastLightX = lx;
 		this.#lastLightY = ly;
 		this.#lastLightZ = lz;
@@ -513,14 +897,67 @@ export class DroppedItem implements IUsable {
 	}
 
 	/**
-	 * One-shot tint from a pre-sampled packed light value (e.g. the lit air
-	 * voxel beside a freshly mined block). Does not touch the per-voxel cache:
-	 * the item keeps this tint until it actually crosses into another voxel,
-	 * which prevents a freshly dropped item from spawning dark inside the
-	 * still-unlit block it came from.
+	 * One-shot tint from a pre-sampled packed light value.
+	 * Does not touch the per-voxel cache.
 	 */
 	public setInitialLight(packedLight: number): void {
 		this.#applyTintFromPackedLight(packedLight);
+	}
+
+	/**
+	 * Mark this item as server-authoritative. Disables local physics (the
+	 * global observer skips sleeping items) and registers the pickup callback
+	 * invoked when the local player interacts with it.
+	 */
+	public setRemote(
+		instanceId: number,
+		onPickup: (instanceId: number) => void,
+	): void {
+		this.#remoteInstanceId = instanceId;
+		this.#remotePickup = onPickup;
+		this.#sleeping = true;
+	}
+
+	get isRemote(): boolean {
+		return this.#remoteInstanceId !== null;
+	}
+
+	/**
+	 * The server rejected our optimistic pickup (ItemPickupRejected). Undo
+	 * the local inventory grant so no phantom stack lingers. The mesh stays
+	 * visible and pickable — for TooFar rejections the player can simply walk
+	 * closer and try again.
+	 */
+	public rollbackRemotePickup(instanceId: number): void {
+		if (this.#remoteInstanceId !== instanceId) return;
+
+		const pending = this.#remotePendingPickup;
+		if (!pending) return;
+		this.#remotePendingPickup = null;
+
+		if (pending.granted > 0) {
+			pending.player.playerInventory.removeItems(
+				pending.itemId,
+				pending.granted,
+			);
+		}
+	}
+
+	/**
+	 * Drive the rendered position from the server's authoritative state.
+	 * Reused transform + lighting sync keeps the item lit correctly as it
+	 * moves between voxels.
+	 */
+	public setRemotePosition(x: number, y: number, z: number): void {
+		this.#position.x = x;
+		this.#position.y = y;
+		this.#position.z = z;
+		this.#syncTransformAndLightingIfMoved();
+	}
+
+	/** Public dispose (idempotent) for the RemoteItemManager. */
+	public dispose(): void {
+		this.#dispose();
 	}
 
 	#applyTintFromPackedLight(packedLight: number): void {
@@ -539,10 +976,10 @@ export class DroppedItem implements IUsable {
 		const blockG = blockLight * DroppedItem.BLOCK_LIGHT_COLOR.y;
 		const blockB = blockLight * DroppedItem.BLOCK_LIGHT_COLOR.z;
 
-		// OPTIMIZATION: Reuse tint array to avoid GC from setShaderVector3
 		this.#tint[0] = Math.min(1.0, Math.max(0.3, skyR + blockR));
 		this.#tint[1] = Math.min(1.0, Math.max(0.3, skyG + blockG));
 		this.#tint[2] = Math.min(1.0, Math.max(0.3, skyB + blockB));
+
 		setShaderVector3(this.#material, "tintColor", this.#tint);
 	}
 
@@ -576,6 +1013,7 @@ export class DroppedItem implements IUsable {
 		while (DroppedItem.#allItems.length > 0) {
 			DroppedItem.#allItems[0].#dispose();
 		}
+		disposeAllPooledItemMaterials();
 	}
 
 	static nearestTo(player: Player): DroppedItem | null {
@@ -584,11 +1022,11 @@ export class DroppedItem implements IUsable {
 		let bestSq = REACH_DISTANCE_SQ;
 
 		const items = DroppedItem.#allItems;
-		const len = items.length;
 
-		for (let i = 0; i < len; i++) {
+		for (let i = 0, len = items.length; i < len; i++) {
 			const item = items[i];
 			const m = item.#position;
+
 			const dx = m.x - p.x;
 			const dy = m.y - p.y;
 			const dz = m.z - p.z;
@@ -599,6 +1037,7 @@ export class DroppedItem implements IUsable {
 				best = item;
 			}
 		}
+
 		return best;
 	}
 

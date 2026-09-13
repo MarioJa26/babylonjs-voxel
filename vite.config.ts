@@ -52,6 +52,9 @@ export default defineConfig({
 		assetsInlineLimit: 0,
 		cssCodeSplit: true,
 	},
+	define: {
+		global: "globalThis",
+	},
 	json: {
 		stringify: true,
 	},

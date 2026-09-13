@@ -64,15 +64,27 @@ type EmitFn = (
 	faceBit: number,
 ) => void;
 
+type SplitTransparentSession = MeshBuildSession & {
+	/**
+	 * Optional GPU-optimized buckets.
+	 *
+	 * If these do not exist yet, this adapter falls back to quadTransparent,
+	 * preserving current behavior.
+	 */
+	quadWater?: QuadBuffer;
+	quadCutout?: QuadBuffer;
+};
+
 export class VoxelFaceEmitterAdapter {
-	private readonly _session: MeshBuildSession;
+	private readonly _session: SplitTransparentSession;
+
 	// Dispatch LUT indexed by (isWater << 1) | isCube:
 	//   0 = custom shape non-water, 1 = cube non-water,
 	//   2 = custom shape water, 3 = cube water
 	private readonly _dispatch: readonly EmitFn[];
 
 	constructor(session: MeshBuildSession) {
-		this._session = session;
+		this._session = session as SplitTransparentSession;
 		this._dispatch = [
 			this.emitCustomShapeFace.bind(this),
 			this.emitCubeFace.bind(this),
@@ -83,8 +95,6 @@ export class VoxelFaceEmitterAdapter {
 
 	public emitVoxelFace(axis: number, desc: GreedyFaceDescriptor): void {
 		const rawMask = desc.idState | 0;
-		const isBackFace = (rawMask & BACK_FACE_MASK) !== 0;
-		const isNonCube = (rawMask & NON_CUBE_MASK) !== 0;
 		const packedBlock = rawMask & PACKED_WATER_MASK;
 
 		if (!packedBlock) return;
@@ -95,25 +105,48 @@ export class VoxelFaceEmitterAdapter {
 		// itself), so the per-face getShapeInfo cache probe is redundant —
 		// isCube is simply !isNonCube.
 		const materialType = getMaterialType(blockId);
-		const isWater =
-			materialType === MaterialType.WaterOrGlass && blockId === WATER_BLOCK_ID;
+
+		const isTransparentMaterial = materialType === MaterialType.WaterOrGlass;
+		const isWater = isTransparentMaterial && blockId === WATER_BLOCK_ID;
 
 		const session = this._session;
-		const out =
-			materialType === MaterialType.WaterOrGlass
-				? session.quadTransparent
-				: session.quadOpaque;
+
+		// Downsampled builds: cull water SIDE faces outright. Shoreline
+		// slivers are sub-pixel behind terrain at these distances, and any
+		// wall geometry there reads as artifacts (floating water rims).
+		if (session.lodStep > 1 && isWater && axis !== 1) return;
+
+		// GPU-important split:
+		// - true water goes to quadWater if available
+		// - other transparent/cutout/glass goes to quadCutout if available
+		// - old path falls back to quadTransparent
+		const out = isTransparentMaterial
+			? isWater
+				? (session.quadWater ?? session.quadTransparent)
+				: (session.quadCutout ?? session.quadTransparent)
+			: session.quadOpaque;
 
 		const ao = desc.light & 0xff;
 		const light = (desc.light >> 8) & 0xff;
 
-		const back = isBackFace ? 1 : 0;
-		const faceIndex = axis * 2 + back;
+		const back = (rawMask >>> 31) & 1;
+		const faceIndex = (axis << 1) | back;
 		const faceName = FACE_NAME_TABLE[faceIndex];
 		const faceBit = FACE_BIT_TABLE[faceIndex];
 
-		const isCube = !isNonCube;
-		const dispatchKey = (isWater ? 2 : 0) | (isCube ? 1 : 0);
+		const isNonCube = (rawMask & NON_CUBE_MASK) !== 0;
+		// Downsampled builds (lodStep > 1) collapse every participating cell
+		// to a full cube: sub-block shapes (slabs, crosses) cannot be
+		// represented meaningfully at that scale, and box-scaled emission
+		// would stretch partial shapes across whole regions.
+		const step = session.lodStep;
+		const forceCube = step > 1;
+		const isCube = forceCube ? true : !isNonCube;
+		// Water also rides the cube path when downsampled: emitWaterQuad's
+		// fractional level-span math assumes <=31-block runs and breaks under
+		// merged stepped dimensions (rawDim decodes the fraction carrier as
+		// whole blocks -> shoreline walls render far above the surface).
+		const dispatchKey = (isWater && !forceCube ? 2 : 0) | (isCube ? 1 : 0);
 		this._dispatch[dispatchKey](
 			out,
 			axis,
@@ -140,30 +173,95 @@ export class VoxelFaceEmitterAdapter {
 		faceName: FaceName,
 		_faceBit: number,
 	): void {
-		inlineOrigin(axis, back, desc);
+		const session = this._session;
+		const step = session.lodStep;
+		inlineOrigin(axis, back, desc, step);
 
-		const off = 1 ^ back;
+		// Front faces advance one full cell (step blocks) to the shared
+		// face plane; back faces already sit on it via inlineOrigin.
+		const off = (1 ^ back) * step;
 		const x = axis === 0 ? _origin.ox + off : _origin.ox;
 		const y = axis === 1 ? _origin.oy + off : _origin.oy;
 		const z = axis === 2 ? _origin.oz + off : _origin.oz;
-		// P3.8: unchecked emit — greedy cube faces sit at positions 0..size-1,
-		// so the scaled coordinates can never leave the u8 range.
-		out.emitQuadUnchecked(
+
+		const width = desc.width * step;
+		const height = desc.height * step;
+
+		if (step > 1) {
+			// Downsampled builds feed the dedicated LOD4+ raw-units pipeline:
+			// coordinates and dimensions are whole blocks ≤ CHUNK_SIZE (32),
+			// so they encode exactly in the u8 face words — no boundary clamp,
+			// no materialType==3 sentinel, no POS_SCALE. Only the slim LOD4
+			// "raw units" shader may be bound to meshes built this way.
+			out.emitQuadRawUnits(
+				x,
+				y,
+				z,
+				axis,
+				width,
+				height,
+				blockId,
+				back,
+				light,
+				ao,
+				faceName,
+			);
+			return;
+		}
+
+		// Boundary-slice detection: the last greedy slice pairs this chunk's
+		// final region with the +axis neighbor's first region. Its face plane
+		// sits exactly at the chunk border (coord = size), which the u8
+		// position encoding clamps to size-1/8. Flag it with materialType=3;
+		// the shader adds the missing +1 unit along the face axis.
+		const isBoundary =
+			desc.slice === session.meshGridSize - 1 &&
+			session.hasNeighborChunk(
+				axis === 0 ? 1 : 0,
+				axis === 1 ? 1 : 0,
+				axis === 2 ? 1 : 0,
+			);
+
+		if (isBoundary) {
+			// The true plane (coord = size = 32) exceeds the u8 position
+			// grid, so encode at the LAST representable unit (31.875) here —
+			// at the source, never via a downstream clamp — and flag with
+			// materialType=3; the shader adds INV_POS along the face axis,
+			// restoring the exact plane.
+			const ENC_MAX = 255 / 8;
+			out.emitQuadUnchecked(
+				Math.min(x, ENC_MAX),
+				Math.min(y, ENC_MAX),
+				Math.min(z, ENC_MAX),
+				axis,
+				width,
+				height,
+				blockId,
+				back,
+				light,
+				ao,
+				faceName,
+				3, // boundary sentinel — shader nudges +INV_POS on the axis
+				0,
+				0,
+				1,
+			);
+			return;
+		}
+
+		out.emitCubeQuadUnchecked(
 			x,
 			y,
 			z,
 			axis,
-			desc.width,
-			desc.height,
+			width,
+			height,
 			blockId,
 			back,
 			light,
 			ao,
 			faceName,
-			MaterialType.Default,
-			0,
-			0,
-			needsRawDim(blockId, desc.width, desc.height) ? 1 : 0,
+			needsRawDim(blockId, width, height) ? 1 : 0,
 		);
 	}
 
@@ -179,9 +277,10 @@ export class VoxelFaceEmitterAdapter {
 		faceName: FaceName,
 		_faceBit: number,
 	): void {
-		inlineOrigin(axis, back, desc);
+		const step = this._session.lodStep;
+		inlineOrigin(axis, back, desc, step);
 
-		const off = 1 ^ back;
+		const off = (1 ^ back) * step;
 		const x = axis === 0 ? _origin.ox + off : _origin.ox;
 		const y = axis === 1 ? _origin.oy + off : _origin.oy;
 		const z = axis === 2 ? _origin.oz + off : _origin.oz;
@@ -190,8 +289,8 @@ export class VoxelFaceEmitterAdapter {
 			y,
 			z,
 			axis,
-			desc.width,
-			desc.height,
+			desc.width * step,
+			desc.height * step,
 			blockId,
 			back,
 			light,
@@ -217,31 +316,40 @@ export class VoxelFaceEmitterAdapter {
 		const boxes = getRuntimeShapeBoxes(packedBlock & PACKED_ID_STATE_MASK);
 		if (boxes.length === 0) return;
 
-		inlineOrigin(axis, back, desc);
-		const rawDim = needsRawDim(blockId, desc.width, desc.height) ? 1 : 0;
+		const step = this._session.lodStep;
+		inlineOrigin(axis, back, desc, step);
+
+		const rawDim = needsRawDim(blockId, desc.width * step, desc.height * step)
+			? 1
+			: 0;
+		const u = (axis + 1) % 3;
+		const v = (axis + 2) % 3;
+		const originX = _origin.ox;
+		const originY = _origin.oy;
+		const originZ = _origin.oz;
+		const descWidth = desc.width * step;
+		const descHeight = desc.height * step;
 
 		for (let i = 0; i < boxes.length; i++) {
 			const box = boxes[i];
+
 			if ((box.faceMask & faceBit) === 0) continue;
 
 			const min = box.min;
 			const max = box.max;
 			const bc = back ? min[axis] : max[axis];
-			const x = _origin.ox + (axis === 0 ? bc : min[0]);
-			const y = _origin.oy + (axis === 1 ? bc : min[1]);
-			const z = _origin.oz + (axis === 2 ? bc : min[2]);
-			const u = (axis + 1) % 3;
-			const v = (axis + 2) % 3;
-			const width = desc.width * (max[u] - min[u]);
-			const height = desc.height * (max[v] - min[v]);
+
+			const x = originX + (axis === 0 ? bc : min[0]);
+			const y = originY + (axis === 1 ? bc : min[1]);
+			const z = originZ + (axis === 2 ? bc : min[2]);
 
 			out.emitQuad(
 				x,
 				y,
 				z,
 				axis,
-				width,
-				height,
+				descWidth * (max[u] - min[u]),
+				descHeight * (max[v] - min[v]),
 				blockId,
 				back,
 				light,
@@ -274,30 +382,37 @@ export class VoxelFaceEmitterAdapter {
 		const boxes = getRuntimeShapeBoxes(packedBlock & PACKED_ID_STATE_MASK);
 		if (boxes.length === 0) return;
 
-		inlineOrigin(axis, back, desc);
+		const step = this._session.lodStep;
+		inlineOrigin(axis, back, desc, step);
+
+		const u = (axis + 1) % 3;
+		const v = (axis + 2) % 3;
+		const originX = _origin.ox;
+		const originY = _origin.oy;
+		const originZ = _origin.oz;
+		const descWidth = desc.width * step;
+		const descHeight = desc.height * step;
 
 		for (let i = 0; i < boxes.length; i++) {
 			const box = boxes[i];
+
 			if ((box.faceMask & faceBit) === 0) continue;
 
 			const min = box.min;
 			const max = box.max;
 			const bc = back ? min[axis] : max[axis];
-			const x = _origin.ox + (axis === 0 ? bc : min[0]);
-			const y = _origin.oy + (axis === 1 ? bc : min[1]);
-			const z = _origin.oz + (axis === 2 ? bc : min[2]);
-			const u = (axis + 1) % 3;
-			const v = (axis + 2) % 3;
-			const width = desc.width * (max[u] - min[u]);
-			const height = desc.height * (max[v] - min[v]);
+
+			const x = originX + (axis === 0 ? bc : min[0]);
+			const y = originY + (axis === 1 ? bc : min[1]);
+			const z = originZ + (axis === 2 ? bc : min[2]);
 
 			out.emitWaterQuad(
 				x,
 				y,
 				z,
 				axis,
-				width,
-				height,
+				descWidth * (max[u] - min[u]),
+				descHeight * (max[v] - min[v]),
 				blockId,
 				back,
 				light,
@@ -316,20 +431,22 @@ function inlineOrigin(
 	axis: number,
 	back: number,
 	desc: GreedyFaceDescriptor,
-): { ox: number; oy: number; oz: number } {
-	const faceBlockCoord = desc.slice + back;
+	step: number,
+): void {
+	// Descriptor coords are grid cells; scale back to block units. `back`
+	// advances one cell (= step blocks) to the face plane.
+	const faceBlockCoord = (desc.slice + back) * step;
 	if (axis === 0) {
 		_origin.ox = faceBlockCoord;
-		_origin.oy = desc.uStart;
-		_origin.oz = desc.vStart;
+		_origin.oy = desc.uStart * step;
+		_origin.oz = desc.vStart * step;
 	} else if (axis === 1) {
-		_origin.ox = desc.vStart;
+		_origin.ox = desc.vStart * step;
 		_origin.oy = faceBlockCoord;
-		_origin.oz = desc.uStart;
+		_origin.oz = desc.uStart * step;
 	} else {
-		_origin.ox = desc.uStart;
-		_origin.oy = desc.vStart;
+		_origin.ox = desc.uStart * step;
+		_origin.oy = desc.vStart * step;
 		_origin.oz = faceBlockCoord;
 	}
-	return _origin;
 }

@@ -41,6 +41,7 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 	public static KEY_USE = ["e"];
 	public static KEY_JUMP = [" "];
 	public static KEY_SPRINT = ["capslock"];
+	public static KEY_CROUCH = ["control", "shift"];
 	public static KEY_FLASH = ["f"];
 
 	public static MOUSE_WHEEL_UP = ["wheel_up"];
@@ -100,11 +101,16 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 		this.#updateMovementAxesFromPressedKeys();
 
 		if (CustomBoatControls.KEY_USE.includes(key)) {
+			this.#player.setUseHeld(true);
 			this.#player.use();
 		}
 	}
 
 	public onKeyUp(key: string) {
+		if (CustomBoatControls.KEY_USE.includes(key)) {
+			this.#player.setUseHeld(false);
+		}
+
 		if (CustomBoatControls.KEY_FLASH.includes(key)) {
 			this.#player.flashlight.toggle();
 		}
@@ -173,8 +179,11 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 		);
 		scaleVec3InPlace(this.#_forward, this.#pushStrength);
 
-		// Sprint cancels push
-		if (this.#pressedKeysHas(CustomBoatControls.KEY_SPRINT)) {
+		// Sprint or crouch cancels forward push (brake / hold position).
+		if (
+			this.#pressedKeysHas(CustomBoatControls.KEY_SPRINT) ||
+			this.#pressedKeysHas(CustomBoatControls.KEY_CROUCH)
+		) {
 			this.#_forward.x = 0;
 			this.#_forward.y = 0;
 			this.#_forward.z = 0;

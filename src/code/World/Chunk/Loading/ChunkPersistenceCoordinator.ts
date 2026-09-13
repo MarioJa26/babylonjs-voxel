@@ -13,66 +13,53 @@ export interface ChunkPersistenceCoordinatorAdapter {
 	onChunkEntitiesFlushed?(chunkIds: readonly bigint[]): void;
 }
 
+function normalizeFlushLimit(maxChunks: number): number {
+	if (maxChunks <= 0 || Number.isNaN(maxChunks)) {
+		return 0;
+	}
+
+	return Math.trunc(maxChunks);
+}
+
 export class ChunkPersistenceCoordinator {
 	private flushPromise: Promise<void> | null = null;
-	private pendingFlushRequested = false; // Bug 1 fix: track queued flush
+	private pendingFlushRequested = false;
 
 	private entityFlushPromise: Promise<void> | null = null;
-	private pendingEntityFlushRequested = false; // Bug 3 fix: track queued entity flush
+	private pendingEntityFlushRequested = false;
 
 	private readonly lastPersistedEntityChunkIds = new Set<bigint>();
 
-	// Scratch storage — only safe to use BEFORE the first await in a flush
-	private readonly _modifiedChunksScratch: Chunk[] = [];
-	private readonly _candidateChunkIdsScratch: bigint[] = [];
-	private readonly _seenChunkIdsScratch = new Set<bigint>();
+	// Scratch storage. Only use before the first await in each flush pass.
+	private readonly modifiedChunksScratch: Chunk[] = [];
+	private readonly candidateChunkIdsScratch: bigint[] = [];
 
 	public constructor(
 		private readonly adapter: ChunkPersistenceCoordinatorAdapter,
 	) {}
 
-	public async flushModifiedChunks(
+	public flushModifiedChunks(
 		maxChunks: number = this.getChunkSaveBatchSize(),
 	): Promise<void> {
 		if (this.flushPromise) {
-			// Bug 1 fix: a flush is in-flight — mark that we need another pass
-			// so dirty chunks modified during this flush are not silently dropped.
 			this.pendingFlushRequested = true;
 			return this.flushPromise;
 		}
 
-		// Run flush passes until no more are queued
-		do {
-			this.pendingFlushRequested = false;
-			this.flushPromise = this.flushModifiedChunksInternal(maxChunks);
-
-			try {
-				await this.flushPromise;
-			} finally {
-				this.flushPromise = null;
-			}
-		} while (this.pendingFlushRequested);
+		this.flushPromise = this.drainModifiedChunkFlushes(maxChunks);
+		return this.flushPromise;
 	}
 
-	public async flushChunkBoundEntities(
+	public flushChunkBoundEntities(
 		maxChunks: number = this.getChunkEntitySaveBatchSize(),
 	): Promise<void> {
 		if (this.entityFlushPromise) {
-			// Bug 3 fix: same queued-flush pattern
 			this.pendingEntityFlushRequested = true;
 			return this.entityFlushPromise;
 		}
 
-		do {
-			this.pendingEntityFlushRequested = false;
-			this.entityFlushPromise = this.flushChunkBoundEntitiesInternal(maxChunks);
-
-			try {
-				await this.entityFlushPromise;
-			} finally {
-				this.entityFlushPromise = null;
-			}
-		} while (this.pendingEntityFlushRequested);
+		this.entityFlushPromise = this.drainChunkBoundEntityFlushes(maxChunks);
+		return this.entityFlushPromise;
 	}
 
 	private getChunkSaveBatchSize(): number {
@@ -91,79 +78,115 @@ export class ChunkPersistenceCoordinator {
 		);
 	}
 
+	private async drainModifiedChunkFlushes(maxChunks: number): Promise<void> {
+		try {
+			do {
+				this.pendingFlushRequested = false;
+				await this.flushModifiedChunksInternal(maxChunks);
+			} while (this.pendingFlushRequested);
+		} finally {
+			this.flushPromise = null;
+		}
+	}
+
+	private async drainChunkBoundEntityFlushes(maxChunks: number): Promise<void> {
+		try {
+			do {
+				this.pendingEntityFlushRequested = false;
+				await this.flushChunkBoundEntitiesInternal(maxChunks);
+			} while (this.pendingEntityFlushRequested);
+		} finally {
+			this.entityFlushPromise = null;
+		}
+	}
+
 	private async flushModifiedChunksInternal(maxChunks: number): Promise<void> {
-		const scratch = this._modifiedChunksScratch;
-		scratch.length = 0;
-
-		const limit = Math.max(0, maxChunks);
-		if (limit === 0) return;
-
-		for (const chunk of this.adapter.getModifiedChunks()) {
-			if (!chunk.isModified && !chunk.isLightDirty) continue;
-
-			scratch.push(chunk);
-			if (scratch.length >= limit) break;
+		const limit = normalizeFlushLimit(maxChunks);
+		if (limit === 0) {
+			return;
 		}
 
-		if (scratch.length === 0) return;
+		const scratch = this.modifiedChunksScratch;
+		scratch.length = 0;
 
-		// Bug 2 fix: snapshot into a new array before yielding.
-		// The scratch array must not be passed across an await boundary
-		// because a re-entrant flush would clear it mid-save.
+		for (const chunk of this.adapter.getModifiedChunks()) {
+			if (!chunk.isModified && !chunk.isLightDirty) {
+				continue;
+			}
+
+			scratch.push(chunk);
+
+			if (scratch.length >= limit) {
+				break;
+			}
+		}
+
+		if (scratch.length === 0) {
+			return;
+		}
+
+		// Snapshot before await. The scratch array must never cross an await boundary.
 		const chunksToSave = scratch.slice();
 		scratch.length = 0;
 
 		await WorldStorage.saveChunks(chunksToSave);
+
 		this.adapter.onChunksFlushed?.(chunksToSave);
 	}
 
 	private async flushChunkBoundEntitiesInternal(
 		maxChunks: number,
 	): Promise<void> {
-		const limit = Math.max(0, maxChunks);
-		if (limit === 0) return;
-
-		const payloadsByChunk = this.adapter.getChunkEntityPayloads();
-
-		const scratch = this._candidateChunkIdsScratch;
-		scratch.length = 0;
-
-		const seen = this._seenChunkIdsScratch;
-		seen.clear();
-
-		for (const chunkId of payloadsByChunk.keys()) {
-			if (seen.has(chunkId)) continue;
-			seen.add(chunkId);
-			scratch.push(chunkId);
-			if (scratch.length >= limit) break;
+		const limit = normalizeFlushLimit(maxChunks);
+		if (limit === 0) {
+			return;
 		}
 
-		if (scratch.length < limit) {
-			for (const chunkId of this.lastPersistedEntityChunkIds) {
-				if (seen.has(chunkId)) continue;
-				seen.add(chunkId);
-				scratch.push(chunkId);
-				if (scratch.length >= limit) break;
+		const payloadsByChunk = this.adapter.getChunkEntityPayloads();
+		const scratch = this.candidateChunkIdsScratch;
+		scratch.length = 0;
+
+		// Map keys are already unique, so no seen Set is needed for this pass.
+		for (const chunkId of payloadsByChunk.keys()) {
+			scratch.push(chunkId);
+
+			if (scratch.length >= limit) {
+				break;
 			}
 		}
 
-		if (scratch.length === 0) return;
+		if (scratch.length < limit && this.lastPersistedEntityChunkIds.size > 0) {
+			for (const chunkId of this.lastPersistedEntityChunkIds) {
+				// Avoid duplicate candidate ids already covered by the current payload map.
+				if (payloadsByChunk.has(chunkId)) {
+					continue;
+				}
 
-		// Bug 4 fix: snapshot before the first await so the scratch arrays
-		// cannot be stomped by a re-entrant flush mid-loop.
+				scratch.push(chunkId);
+
+				if (scratch.length >= limit) {
+					break;
+				}
+			}
+		}
+
+		if (scratch.length === 0) {
+			return;
+		}
+
+		// Snapshot before the first await so re-entrant flush requests cannot stomp scratch.
 		const candidateChunkIds = scratch.slice();
 		scratch.length = 0;
-		seen.clear();
 
 		for (let i = 0; i < candidateChunkIds.length; i++) {
 			const chunkId = candidateChunkIds[i];
-			const payload = payloadsByChunk.get(chunkId) ?? [];
+			const payload = payloadsByChunk.get(chunkId);
 
-			await WorldStorage.saveChunkEntities(chunkId, payload);
-
-			if (payload.length > 0) {
+			if (payload && payload.length > 0) {
+				await WorldStorage.saveChunkEntities(chunkId, payload);
 				this.lastPersistedEntityChunkIds.add(chunkId);
 			} else {
+				await WorldStorage.saveChunkEntities(chunkId, []);
 				this.lastPersistedEntityChunkIds.delete(chunkId);
 			}
 		}

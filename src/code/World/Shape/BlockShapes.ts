@@ -1,19 +1,23 @@
+import blockShapesRaw from "../../../data/block-shapes.json";
+import blocksRaw from "../../../data/blocks.json";
 import { BlockType } from "../Texture/BlockType";
 
 // Face mask bits: +X=0, -X=1, +Y=2, -Y=3, +Z=4, -Z=5
-export const FACE_PX = 1 << 0; // +X right
-export const FACE_NX = 1 << 1; // -X left
-export const FACE_PY = 1 << 2; // +Y top
-export const FACE_NY = 1 << 3; // -Y bottom
-export const FACE_PZ = 1 << 4; // +Z front
-export const FACE_NZ = 1 << 5; // -Z back
+export const FACE_PX = 1 << 0;
+export const FACE_NX = 1 << 1;
+export const FACE_PY = 1 << 2;
+export const FACE_NY = 1 << 3;
+export const FACE_PZ = 1 << 4;
+export const FACE_NZ = 1 << 5;
+
 export const FACE_ALL =
 	FACE_PX | FACE_NX | FACE_PY | FACE_NY | FACE_PZ | FACE_NZ;
 
 export type ShapeBox = {
 	min: [number, number, number];
 	max: [number, number, number];
-	/** Bitmask of faces that should be rendered. Defaults to FACE_ALL (0b111111). */
+
+	/** Bitmask of faces that should be rendered. Defaults to FACE_ALL. */
 	faceMask: number;
 };
 
@@ -26,69 +30,122 @@ export type ShapeDefinition = {
 };
 
 type RawShapeBox = {
-	min?: number[];
-	max?: number[];
-	faceMask?: number;
+	min?: unknown;
+	max?: unknown;
+	faceMask?: unknown;
 };
 
 type RawShapeDefinition = {
-	name?: string;
-	boxes?: RawShapeBox[];
-	rotateY?: boolean;
-	allowFlipY?: boolean;
-	usesSliceState?: boolean;
+	name?: unknown;
+	boxes?: unknown;
+	rotateY?: unknown;
+	allowFlipY?: unknown;
+	usesSliceState?: unknown;
 };
 
 type RawBlockDefinition = {
-	id: number | string;
-	shape?: string | null;
+	id?: unknown;
+	shape?: unknown;
 };
 
-const BLOCKS_URL = "/data/blocks.json";
-const SHAPES_URL = "/data/block-shapes.json";
 const SHAPE_SCALE = 16;
+const BLOCK_ID_CAPACITY = 65536;
+const VIRTUAL_BLOCK_ID_START = 500;
+
+const VIRTUAL_SHAPES = [
+	"slab",
+	"stairs",
+	"half_wall",
+	"pane",
+	"fence",
+] as const;
+
+const BLOCK_TYPE_BY_NAME = BlockType as unknown as Readonly<
+	Record<string, number>
+>;
+
+const EMPTY_SHAPE_BY_BLOCK_ID = new Uint16Array(BLOCK_ID_CAPACITY);
 
 export const FALLBACK_CUBE: ShapeDefinition = {
 	name: "cube",
-	boxes: [{ min: [0, 0, 0], max: [1, 1, 1], faceMask: FACE_ALL }],
+	boxes: [
+		{
+			min: [0, 0, 0],
+			max: [1, 1, 1],
+			faceMask: FACE_ALL,
+		},
+	],
 	rotateY: false,
 	allowFlipY: false,
 	usesSliceState: false,
 };
 
-const quantize = (value: number): number =>
-	Math.round(value * SHAPE_SCALE) / SHAPE_SCALE;
+const quantizeClamp01 = (value: unknown): number => {
+	const n = Math.round(Number(value) * SHAPE_SCALE) / SHAPE_SCALE;
+	return n < 0 ? 0 : n > 1 ? 1 : n;
+};
 
-const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
-
-const normalizeBlockId = (id: number | string): number | null => {
-	if (typeof id === "number" && Number.isFinite(id)) return id;
-	if (typeof id === "string") {
-		const mapped = (BlockType as unknown as Record<string, number>)[id];
-		if (typeof mapped === "number") return mapped;
+const normalizeBlockId = (id: unknown): number | null => {
+	if (typeof id === "number") {
+		return Number.isFinite(id) ? id : null;
 	}
-	return null;
+
+	if (typeof id !== "string") {
+		return null;
+	}
+
+	const mapped = BLOCK_TYPE_BY_NAME[id];
+	return typeof mapped === "number" && Number.isFinite(mapped) ? mapped : null;
 };
 
 const normalizeBox = (raw: RawShapeBox): ShapeBox | null => {
-	if (!raw || !Array.isArray(raw.min) || !Array.isArray(raw.max)) return null;
-	if (raw.min.length !== 3 || raw.max.length !== 3) return null;
-	const min = raw.min.map((v) => clamp01(quantize(Number(v))));
-	const max = raw.max.map((v) => clamp01(quantize(Number(v))));
-	if (min.some((v) => Number.isNaN(v)) || max.some((v) => Number.isNaN(v))) {
+	const rawMin = raw.min;
+	const rawMax = raw.max;
+
+	if (
+		!Array.isArray(rawMin) ||
+		!Array.isArray(rawMax) ||
+		rawMin.length !== 3 ||
+		rawMax.length !== 3
+	) {
 		return null;
 	}
-	const minX = Math.min(min[0], max[0]);
-	const minY = Math.min(min[1], max[1]);
-	const minZ = Math.min(min[2], max[2]);
-	const maxX = Math.max(min[0], max[0]);
-	const maxY = Math.max(min[1], max[1]);
-	const maxZ = Math.max(min[2], max[2]);
-	if (maxX <= minX || maxY <= minY || maxZ <= minZ) return null;
+
+	const aX = quantizeClamp01(rawMin[0]);
+	const aY = quantizeClamp01(rawMin[1]);
+	const aZ = quantizeClamp01(rawMin[2]);
+	const bX = quantizeClamp01(rawMax[0]);
+	const bY = quantizeClamp01(rawMax[1]);
+	const bZ = quantizeClamp01(rawMax[2]);
+
+	if (
+		Number.isNaN(aX) ||
+		Number.isNaN(aY) ||
+		Number.isNaN(aZ) ||
+		Number.isNaN(bX) ||
+		Number.isNaN(bY) ||
+		Number.isNaN(bZ)
+	) {
+		return null;
+	}
+
+	const minX = aX < bX ? aX : bX;
+	const minY = aY < bY ? aY : bY;
+	const minZ = aZ < bZ ? aZ : bZ;
+	const maxX = aX > bX ? aX : bX;
+	const maxY = aY > bY ? aY : bY;
+	const maxZ = aZ > bZ ? aZ : bZ;
+
+	if (maxX <= minX || maxY <= minY || maxZ <= minZ) {
+		return null;
+	}
+
+	const rawFaceMask = raw.faceMask;
 	const faceMask =
-		typeof raw.faceMask === "number" && Number.isFinite(raw.faceMask)
-			? raw.faceMask & FACE_ALL
+		typeof rawFaceMask === "number" && Number.isFinite(rawFaceMask)
+			? rawFaceMask & FACE_ALL
 			: FACE_ALL;
+
 	return {
 		min: [minX, minY, minZ],
 		max: [maxX, maxY, maxZ],
@@ -96,102 +153,172 @@ const normalizeBox = (raw: RawShapeBox): ShapeBox | null => {
 	};
 };
 
-const loadShapeDefinitions = async (): Promise<ShapeDefinition[]> => {
+const loadShapeDefinitions = (): ShapeDefinition[] => {
 	try {
-		const response = await fetch(SHAPES_URL);
-		if (!response.ok)
-			throw new Error(`Failed to load shapes: ${response.status}`);
-		const data = (await response.json()) as unknown;
-		if (!Array.isArray(data)) throw new Error("Shape JSON must be an array.");
+		const data: unknown = blockShapesRaw;
 
-		const defs: ShapeDefinition[] = [];
-		for (const entry of data as RawShapeDefinition[]) {
-			if (!entry || typeof entry !== "object") continue;
-			const name = typeof entry.name === "string" ? entry.name : "";
-			if (!name) continue;
+		if (!Array.isArray(data)) {
+			throw new Error("Shape JSON must be an array.");
+		}
+
+		const definitions: ShapeDefinition[] = [];
+		let hasCube = false;
+
+		for (let i = 0; i < data.length; i++) {
+			const rawDefinition = data[i];
+
+			if (rawDefinition === null || typeof rawDefinition !== "object") {
+				continue;
+			}
+
+			const entry = rawDefinition as RawShapeDefinition;
+			const name = entry.name;
+
+			if (typeof name !== "string" || name.length === 0) {
+				continue;
+			}
+
+			const rawBoxes = entry.boxes;
+
+			if (!Array.isArray(rawBoxes) || rawBoxes.length === 0) {
+				continue;
+			}
+
 			const boxes: ShapeBox[] = [];
-			if (Array.isArray(entry.boxes)) {
-				for (const rawBox of entry.boxes) {
-					const box = normalizeBox(rawBox ?? {});
-					if (box) boxes.push(box);
+
+			for (let j = 0; j < rawBoxes.length; j++) {
+				const rawBox = rawBoxes[j];
+
+				if (rawBox === null || typeof rawBox !== "object") {
+					continue;
+				}
+
+				const box = normalizeBox(rawBox as RawShapeBox);
+
+				if (box !== null) {
+					boxes.push(box);
 				}
 			}
-			if (boxes.length === 0) continue;
-			defs.push({
+
+			if (boxes.length === 0) {
+				continue;
+			}
+
+			if (name === "cube") {
+				hasCube = true;
+			}
+
+			definitions.push({
 				name,
 				boxes,
-				rotateY: Boolean(entry.rotateY),
-				allowFlipY: Boolean(entry.allowFlipY),
-				usesSliceState: Boolean(entry.usesSliceState),
+				rotateY: entry.rotateY === true,
+				allowFlipY: entry.allowFlipY === true,
+				usesSliceState: entry.usesSliceState === true,
 			});
 		}
 
-		if (!defs.some((def) => def.name === "cube")) {
-			defs.unshift(FALLBACK_CUBE);
+		if (!hasCube) {
+			definitions.unshift(FALLBACK_CUBE);
 		}
-		return defs;
+
+		return definitions;
 	} catch (error) {
 		console.warn("Block shapes failed to load:", error);
 		return [FALLBACK_CUBE];
 	}
 };
 
-const VIRTUAL_BLOCK_ID_START = 500;
-const VIRTUAL_SHAPES = ["slab", "stairs", "half_wall", "pane", "fence"];
+type BlockShapeMapResult = {
+	map: Uint16Array;
+	ids: Set<number>;
+};
 
-const loadBlockShapeMap = async (
-	shapes: ShapeDefinition[],
-): Promise<{ map: Uint16Array; ids: Set<number> }> => {
-	const map = new Uint16Array(65536);
+const loadBlockShapeMap = (
+	shapes: readonly ShapeDefinition[],
+): BlockShapeMapResult => {
+	const map = new Uint16Array(BLOCK_ID_CAPACITY);
 	const ids = new Set<number>();
-	const cubeIndex = shapes.findIndex((shape) => shape.name === "cube");
-	map.fill(cubeIndex === -1 ? 0 : cubeIndex);
+	const shapeIndexByName = new Map<string, number>();
+
+	let cubeIndex = 0;
+
+	for (let i = 0; i < shapes.length; i++) {
+		const name = shapes[i].name;
+
+		shapeIndexByName.set(name, i);
+
+		if (name === "cube") {
+			cubeIndex = i;
+		}
+	}
+
+	map.fill(cubeIndex);
 
 	try {
-		const response = await fetch(BLOCKS_URL);
-		if (!response.ok)
-			throw new Error(`Failed to load blocks: ${response.status}`);
-		const data = (await response.json()) as unknown;
-		if (!Array.isArray(data)) throw new Error("Blocks JSON must be an array.");
+		const data: unknown = blocksRaw;
 
-		const shapeIndexByName = new Map(
-			shapes.map((shape, index) => [shape.name, index]),
-		);
-		for (const entry of data as RawBlockDefinition[]) {
-			if (!entry || typeof entry !== "object") continue;
-			const id = normalizeBlockId(entry.id);
-			if (id === null) continue;
-			const shapeName =
-				typeof entry.shape === "string" && entry.shape.length > 0
-					? entry.shape
-					: "cube";
-			const shapeIndex = shapeIndexByName.get(shapeName);
-			if (shapeIndex === undefined) continue;
-			map[id] = shapeIndex;
-			ids.add(id);
+		if (!Array.isArray(data)) {
+			throw new Error("Blocks JSON must be an array.");
 		}
 
-		// Pre-compute virtual block shape entries for mason table shape variants.
-		// Uses the same deterministic ID scheme as BlockTextures.ts.
-		for (const entry of data as RawBlockDefinition[]) {
-			if (!entry || typeof entry !== "object") continue;
-			const id = normalizeBlockId(entry.id);
-			if (id === null) continue;
-			const sourceShape =
-				typeof entry.shape === "string" && entry.shape.length > 0
-					? entry.shape
-					: "cube";
-			if (sourceShape !== "cube") continue;
+		for (let i = 0; i < data.length; i++) {
+			const rawEntry = data[i];
 
-			for (let si = 0; si < VIRTUAL_SHAPES.length; si++) {
-				const targetShape = VIRTUAL_SHAPES[si];
-				if (targetShape === sourceShape) continue;
-				const targetIndex = shapeIndexByName.get(targetShape);
-				if (targetIndex === undefined) continue;
-				const virtualId =
-					VIRTUAL_BLOCK_ID_START + (id - 1) * VIRTUAL_SHAPES.length + si;
-				map[virtualId] = targetIndex;
+			if (rawEntry === null || typeof rawEntry !== "object") {
+				continue;
+			}
+
+			const entry = rawEntry as RawBlockDefinition;
+			const id = normalizeBlockId(entry.id);
+
+			if (id === null) {
+				continue;
+			}
+
+			const rawShapeName = entry.shape;
+			const shapeName =
+				typeof rawShapeName === "string" && rawShapeName.length > 0
+					? rawShapeName
+					: "cube";
+
+			const shapeIndex = shapeIndexByName.get(shapeName);
+
+			if (shapeIndex === undefined) {
+				continue;
+			}
+
+			// Preserve registration behavior for every finite resolved ID.
+			ids.add(id);
+
+			// Typed-array indices must be non-negative integers in range.
+			if (Number.isInteger(id) && id >= 0 && id < BLOCK_ID_CAPACITY) {
+				map[id] = shapeIndex;
+			}
+
+			if (shapeName !== "cube") {
+				continue;
+			}
+
+			const virtualBase =
+				VIRTUAL_BLOCK_ID_START + (id - 1) * VIRTUAL_SHAPES.length;
+
+			for (
+				let shapeOffset = 0;
+				shapeOffset < VIRTUAL_SHAPES.length;
+				shapeOffset++
+			) {
+				const targetIndex = shapeIndexByName.get(VIRTUAL_SHAPES[shapeOffset]);
+
+				if (targetIndex === undefined) {
+					continue;
+				}
+
+				const virtualId = virtualBase + shapeOffset;
 				ids.add(virtualId);
+
+				if (virtualId >= 0 && virtualId < BLOCK_ID_CAPACITY) {
+					map[virtualId] = targetIndex;
+				}
 			}
 		}
 	} catch (error) {
@@ -210,24 +337,40 @@ let _cubeShapeIndex = 0;
 let _crossShapeIndex = -1;
 let _crossDiagonalShapeIndex = -1;
 
-const EMPTY_SHAPE_BY_BLOCK_ID = new Uint16Array(65536);
-
 function ensureShapeInit(): Promise<void> {
-	if (_shapeInitPromise === null) {
-		_shapeInitPromise = (async () => {
-			const defs = await loadShapeDefinitions();
-			const { map, ids } = await loadBlockShapeMap(defs);
-			_shapeDefinitions = defs;
-			_shapeByBlockId = map;
-			_registeredBlockIds = ids;
-			_cubeShapeIndex = defs.findIndex((d) => d.name === "cube");
-			if (_cubeShapeIndex === -1) _cubeShapeIndex = 0;
-			_crossShapeIndex = defs.findIndex((d) => d.name === "cross");
-			_crossDiagonalShapeIndex = defs.findIndex(
-				(d) => d.name === "cross_diagonal",
-			);
-		})();
+	if (_shapeInitPromise !== null) {
+		return _shapeInitPromise;
 	}
+
+	const definitions = loadShapeDefinitions();
+	const { map, ids } = loadBlockShapeMap(definitions);
+
+	let cubeShapeIndex = 0;
+	let crossShapeIndex = -1;
+	let crossDiagonalShapeIndex = -1;
+
+	for (let i = 0; i < definitions.length; i++) {
+		switch (definitions[i].name) {
+			case "cube":
+				cubeShapeIndex = i;
+				break;
+			case "cross":
+				crossShapeIndex = i;
+				break;
+			case "cross_diagonal":
+				crossDiagonalShapeIndex = i;
+				break;
+		}
+	}
+
+	_shapeDefinitions = definitions;
+	_shapeByBlockId = map;
+	_registeredBlockIds = ids;
+	_cubeShapeIndex = cubeShapeIndex;
+	_crossShapeIndex = crossShapeIndex;
+	_crossDiagonalShapeIndex = crossDiagonalShapeIndex;
+
+	_shapeInitPromise = Promise.resolve();
 	return _shapeInitPromise;
 }
 
@@ -246,15 +389,12 @@ export function areShapesInitialized(): boolean {
 }
 
 /**
- * Returns true only for ids that are explicitly registered blocks (including
- * mason-table virtual shape variants). Non-block items (tools, weapons, etc.)
- * return false even though getShapeForBlockId falls back to the cube shape.
- * This is shape-driven, so blocks added later to the data files are detected
- * automatically without touching the atlas.
+ * Returns true only for IDs that are explicitly registered blocks, including
+ * mason-table virtual shape variants. Non-block items return false even though
+ * getShapeForBlockId falls back to the cube shape.
  */
 export function isRegisteredBlockId(id: number | null): boolean {
-	if (id === null || _registeredBlockIds === null) return false;
-	return _registeredBlockIds.has(id);
+	return id !== null && _registeredBlockIds?.has(id) === true;
 }
 
 export function getCubeShapeIndex(): number {
@@ -262,19 +402,38 @@ export function getCubeShapeIndex(): number {
 }
 
 export const getShapeForBlockId = (id: number): ShapeDefinition => {
-	const defs = _shapeDefinitions;
-	const map = _shapeByBlockId;
-	if (!map || !defs) return FALLBACK_CUBE;
-	const shapeIndex = map[id] ?? _cubeShapeIndex;
-	return defs[shapeIndex] ?? defs[_cubeShapeIndex] ?? FALLBACK_CUBE;
+	const definitions = _shapeDefinitions;
+	const shapeByBlockId = _shapeByBlockId;
+
+	if (definitions === null || shapeByBlockId === null) {
+		return FALLBACK_CUBE;
+	}
+
+	const isValidIndex = id >= 0 && id < shapeByBlockId.length;
+
+	const shapeIndex = isValidIndex ? shapeByBlockId[id] : _cubeShapeIndex;
+
+	return (
+		definitions[shapeIndex] ?? definitions[_cubeShapeIndex] ?? FALLBACK_CUBE
+	);
 };
 
 export function isCrossBlockId(blockId: number): boolean {
-	if (_crossShapeIndex < 0 || !_shapeByBlockId) return false;
-	return _shapeByBlockId[blockId] === _crossShapeIndex;
+	const shapeByBlockId = _shapeByBlockId;
+
+	return (
+		_crossShapeIndex >= 0 &&
+		shapeByBlockId !== null &&
+		shapeByBlockId[blockId] === _crossShapeIndex
+	);
 }
 
 export function isCrossDiagonalBlockId(blockId: number): boolean {
-	if (_crossDiagonalShapeIndex < 0 || !_shapeByBlockId) return false;
-	return _shapeByBlockId[blockId] === _crossDiagonalShapeIndex;
+	const shapeByBlockId = _shapeByBlockId;
+
+	return (
+		_crossDiagonalShapeIndex >= 0 &&
+		shapeByBlockId !== null &&
+		shapeByBlockId[blockId] === _crossDiagonalShapeIndex
+	);
 }

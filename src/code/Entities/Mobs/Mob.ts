@@ -3,13 +3,26 @@ import type { SavedChunkEntityData } from "@/code/World/WorldStorage";
 
 export interface Mob {
 	position: Vec3;
+	/** Facing angle around Y (radians); rotates with wandering AI. */
+	readonly facingYaw: number;
+	/** Half-extents of the mob's hit box (matches its visual body). */
+	readonly hitHalfExtents: Vec3;
 	hp: number;
 	maxHp: number;
 	readonly mobType: string;
 
-	takeDamage(amount: number): void;
+	/**
+	 * False for player-spawned mobs (spawn eggs): they are exempt from the
+	 * mob cap, which only limits naturally spawned mobs. Set before the mob
+	 * is added to the MobRegistry and treated as immutable afterwards.
+	 */
+	countsTowardMobCap: boolean;
+
+	takeDamage(amount: number, impactPosition?: Vec3): void;
 	setPlayerPosition(pos: Vec3): void;
 	dispose(): void;
+	/** True once disposed — stuck projectiles stop following after this. */
+	readonly isDisposed: boolean;
 	serializeForChunkReload(): SavedChunkEntityData | null;
 }
 
@@ -21,22 +34,65 @@ export type MobSpawnConfig = {
 	spawnBlockId: number;
 	despawnable?: boolean;
 	spawnYOffset?: number;
+	/**
+	 * True for night spawners (zombies/skeletons): natural spawning only
+	 * runs at night and skips the daylight skylight gate. Spawn eggs
+	 * ignore this and work any time.
+	 */
+	nightSpawn?: boolean;
 };
 
 export class MobRegistry {
 	#configs = new Map<string, MobSpawnConfig>();
 	#allMobs = new Set<Mob>();
+	// Cap accounting tracks only naturally spawned mobs; spawn-egg mobs
+	// (countsTowardMobCap === false) never block natural spawning.
+	#countsByType = new Map<string, number>();
+	#naturalCountsByType = new Map<string, number>();
+	#naturalTotal = 0;
 
 	register(config: MobSpawnConfig): void {
 		this.#configs.set(config.mobType, config);
 	}
 
 	addMob(mob: Mob): void {
+		if (this.#allMobs.has(mob)) return;
+
 		this.#allMobs.add(mob);
+		this.#countsByType.set(
+			mob.mobType,
+			(this.#countsByType.get(mob.mobType) || 0) + 1,
+		);
+
+		if (mob.countsTowardMobCap) {
+			this.#naturalTotal++;
+			this.#naturalCountsByType.set(
+				mob.mobType,
+				(this.#naturalCountsByType.get(mob.mobType) || 0) + 1,
+			);
+		}
 	}
 
 	removeMob(mob: Mob): void {
-		this.#allMobs.delete(mob);
+		if (!this.#allMobs.delete(mob)) return;
+
+		const currentCount = this.#countsByType.get(mob.mobType) || 0;
+		if (currentCount <= 1) {
+			this.#countsByType.delete(mob.mobType);
+		} else {
+			this.#countsByType.set(mob.mobType, currentCount - 1);
+		}
+
+		if (mob.countsTowardMobCap) {
+			this.#naturalTotal = Math.max(0, this.#naturalTotal - 1);
+
+			const naturalCount = this.#naturalCountsByType.get(mob.mobType) || 0;
+			if (naturalCount <= 1) {
+				this.#naturalCountsByType.delete(mob.mobType);
+			} else {
+				this.#naturalCountsByType.set(mob.mobType, naturalCount - 1);
+			}
+		}
 	}
 
 	getAllMobs(): ReadonlySet<Mob> {
@@ -52,37 +108,38 @@ export class MobRegistry {
 	}
 
 	getCountByType(mobType: string): number {
-		let count = 0;
-		for (const mob of this.#allMobs) {
-			if (mob.mobType === mobType) count++;
-		}
-		return count;
+		return this.#countsByType.get(mobType) || 0;
 	}
 
 	getTotalCount(): number {
 		return this.#allMobs.size;
 	}
 
+	/** Number of mobs that count toward the mob cap (naturally spawned). */
+	getNaturalTotal(): number {
+		return this.#naturalTotal;
+	}
+
 	disposeAll(): void {
 		for (const mob of [...this.#allMobs]) {
 			mob.dispose();
 		}
+
 		this.#allMobs.clear();
+		this.#countsByType.clear();
+		this.#naturalCountsByType.clear();
+		this.#naturalTotal = 0;
 	}
 
-	private counts = new Map<string, number>();
 	pickSpawnType(): MobSpawnConfig | null {
 		if (this.#configs.size === 0) return null;
 
-		this.counts.clear();
-		for (const mob of this.#allMobs) {
-			this.counts.set(mob.mobType, (this.counts.get(mob.mobType) || 0) + 1);
-		}
-
 		let totalWeight = 0;
 		const eligible: MobSpawnConfig[] = [];
+
 		for (const config of this.#configs.values()) {
-			if ((this.counts.get(config.mobType) || 0) < config.maxCount) {
+			const naturalCount = this.#naturalCountsByType.get(config.mobType) || 0;
+			if (naturalCount < config.maxCount) {
 				eligible.push(config);
 				totalWeight += config.spawnWeight;
 			}
@@ -101,19 +158,38 @@ export class MobRegistry {
 
 	getDebugStats(): {
 		total: number;
+		naturalTotal: number;
 		cap: number;
-		perType: { type: string; count: number; max: number }[];
+		perType: {
+			type: string;
+			count: number;
+			natural: number;
+			max: number;
+		}[];
 	} {
 		let cap = 0;
-		const perType: { type: string; count: number; max: number }[] = [];
+		const perType: {
+			type: string;
+			count: number;
+			natural: number;
+			max: number;
+		}[] = [];
+
 		for (const config of this.#configs.values()) {
 			cap += config.maxCount;
 			perType.push({
 				type: config.mobType,
-				count: this.getCountByType(config.mobType),
+				count: this.#countsByType.get(config.mobType) || 0,
+				natural: this.#naturalCountsByType.get(config.mobType) || 0,
 				max: config.maxCount,
 			});
 		}
-		return { total: this.#allMobs.size, cap, perType };
+
+		return {
+			total: this.#allMobs.size,
+			naturalTotal: this.#naturalTotal,
+			cap,
+			perType,
+		};
 	}
 }

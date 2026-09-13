@@ -1,6 +1,7 @@
 // MountainTrees.ts
 
 import { getPRNGBySeed } from "@/code/Generation/NoiseAndParameters/Squirrel13";
+import type { PlaceBlockFn } from "@/code/Generation/SurfaceGenerator";
 import type { TreeDefinition } from "../../BiomeTypes";
 
 export const CONIFER_TREE: TreeDefinition = {
@@ -13,13 +14,7 @@ export const CONIFER_TREE: TreeDefinition = {
 		worldX: number,
 		worldY: number,
 		worldZ: number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			blockId: number,
-			overwrite?: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seedAsInt: number,
 	): void {
 		const h = getPRNGBySeed(worldX * 31337 + worldZ * 7919, seedAsInt);
@@ -70,13 +65,7 @@ export const DEAD_TREE: TreeDefinition = {
 		worldX: number,
 		worldY: number,
 		worldZ: number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			blockId: number,
-			overwrite?: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seedAsInt: number,
 	): void {
 		const h = getPRNGBySeed(worldX * 31337 + worldZ * 7919, seedAsInt);

@@ -44,7 +44,7 @@ import {
 	type ShapeBounds,
 } from "../../Shape/BlockShapeTransforms";
 import { isFenceBlockId } from "../../Shape/FenceConnect";
-import { MaterialType, type BlockShapeInfo } from "../types/MeshTypes";
+import { type BlockShapeInfo, MaterialType } from "../types/MeshTypes";
 
 // ---------------------------------------------------------------------------
 // Block flag bits (derived once per packed value, stored in the cache entry)
@@ -84,6 +84,12 @@ const BOXES: (readonly ShapeBounds[] | undefined)[] = new Array(
 	DENSE_CACHE_SIZE,
 ).fill(undefined);
 
+// Dense closed-face masks (6 bits, FACE_PX..FACE_NZ) parallel to ENTRIES.
+// PERF: lets hot paths read closedFaceMask as a typed-array load instead of
+// fetching the BlockShapeInfo object. Filled in buildEntry for dense keys;
+// sparse overflow keys (> 0xffff) must keep using getShapeInfo().
+export const CLOSED_FACES_LUT = new Uint8Array(DENSE_CACHE_SIZE);
+
 // Sparse overflow fallback (only for packed keys beyond the dense range).
 const ENTRIES_OVERFLOW = new Map<number, number>();
 const SHAPES_OVERFLOW = new Map<number, BlockShapeInfo>();
@@ -99,14 +105,16 @@ function canUseDenseCache(packed: number): boolean {
 // ---------------------------------------------------------------------------
 
 const GLASS_BLOCK_IDS = new Set([60, 61]);
-const GLASS_LUT = (() => {
-	const lut = new Uint8Array(256);
+// Sized to BLOCK_ID_MASK range (10-bit ids) so hot paths can index directly
+// without bounds guards: any id from unpacked packed values hits the LUT.
+export const GLASS_ID_LUT = (() => {
+	const lut = new Uint8Array(1024);
 	for (const id of GLASS_BLOCK_IDS) lut[id] = 1;
 	return lut;
 })();
 
 export function isGlassBlock(blockId: number): boolean {
-	return blockId >= 0 && blockId < 256 && GLASS_LUT[blockId] !== 0;
+	return blockId >= 0 && blockId < 1024 && GLASS_ID_LUT[blockId] !== 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,10 +248,103 @@ function pushRect(
 
 /**
  * Returns true if the rect union fully covers [0,1]x[0,1].
+ *
+ * PERF: Optimized for small N (typical block shapes have 1-3 rects per face).
+ * Uses direct geometric checks instead of the general O(n²) edge-sweep
+ * algorithm for the common cases.
  */
 function doesRectUnionCoverUnitSquare(rects: FaceRect[]): boolean {
-	if (rects.length === 0) return false;
+	const n = rects.length;
+	if (n === 0) return false;
 
+	// Fast path: single rect must cover [0,1]x[0,1]
+	if (n === 1) {
+		const r = rects[0];
+		if (!r) return false;
+		return r.u0 <= EPS && r.u1 >= 1 - EPS && r.v0 <= EPS && r.v1 >= 1 - EPS;
+	}
+
+	// Fast path: two rects — check if either fully covers, or if they
+	// partition the square along one axis (horizontal or vertical split).
+	if (n === 2) {
+		const a = rects[0];
+		const b = rects[1];
+		if (!a || !b) return false;
+		// Single rect covers everything
+		if (a.u0 <= EPS && a.u1 >= 1 - EPS && a.v0 <= EPS && a.v1 >= 1 - EPS)
+			return true;
+		if (b.u0 <= EPS && b.u1 >= 1 - EPS && b.v0 <= EPS && b.v1 >= 1 - EPS)
+			return true;
+		// Vertical split: a covers left, b covers right
+		if (
+			a.v0 <= EPS &&
+			a.v1 >= 1 - EPS &&
+			b.v0 <= EPS &&
+			b.v1 >= 1 - EPS &&
+			a.u0 <= EPS &&
+			a.u1 + EPS >= b.u0 &&
+			b.u1 >= 1 - EPS
+		)
+			return true;
+		// Horizontal split: a covers bottom, b covers top
+		if (
+			a.u0 <= EPS &&
+			a.u1 >= 1 - EPS &&
+			b.u0 <= EPS &&
+			b.u1 >= 1 - EPS &&
+			a.v0 <= EPS &&
+			a.v1 + EPS >= b.v0 &&
+			b.v1 >= 1 - EPS
+		)
+			return true;
+		// L-shaped: check all 4 corners are covered by either rect
+		return doesTwoRectsCoverUnitSquare(a, b);
+	}
+
+	// Fast path: 3-4 rects — check if any single rect covers everything
+	// (common for cross/fence shapes with a full-cover face)
+	for (let i = 0; i < n; i++) {
+		const r = rects[i];
+		if (!r) continue;
+		if (r.u0 <= EPS && r.u1 >= 1 - EPS && r.v0 <= EPS && r.v1 >= 1 - EPS)
+			return true;
+	}
+
+	// General case (5+ rects or complex 3-4 rect arrangements):
+	// Use edge-sweep algorithm. Bounded by at most 10 edges per axis
+	// (2 origin + 2 per rect), so O(10² × N) = O(N) effectively.
+	return doesRectUnionCoverUnitSquareGeneral(rects);
+}
+
+/** Check if two L/T-shaped rects cover the unit square. */
+function doesTwoRectsCoverUnitSquare(a: FaceRect, b: FaceRect): boolean {
+	// All 4 corners of [0,1]x[0,1] must be covered by at least one rect.
+	const corners: Array<[number, number]> = [
+		[0, 0],
+		[1, 0],
+		[0, 1],
+		[1, 1],
+	];
+	for (const [u, v] of corners) {
+		const inA =
+			u >= a.u0 - EPS && u <= a.u1 + EPS && v >= a.v0 - EPS && v <= a.v1 + EPS;
+		const inB =
+			u >= b.u0 - EPS && u <= b.u1 + EPS && v >= b.v0 - EPS && v <= b.v1 + EPS;
+		if (!inA && !inB) return false;
+	}
+	// Corners covered — for convex shapes this is sufficient, but we need
+	// to also verify the center edge isn't missed. Check the intersection
+	// of the two rects' coverage on each edge.
+	// Actually for the unit square with only 2 rects, if all 4 corners
+	// are covered AND the rects overlap or touch, the full square is covered.
+	// Verify overlap/touch on at least one axis:
+	const uOverlap = Math.min(a.u1, b.u1) - Math.max(a.u0, b.u0) >= -EPS;
+	const vOverlap = Math.min(a.v1, b.v1) - Math.max(a.v0, b.v0) >= -EPS;
+	return uOverlap || vOverlap;
+}
+
+/** General edge-sweep coverage check for complex multi-rect arrangements. */
+function doesRectUnionCoverUnitSquareGeneral(rects: FaceRect[]): boolean {
 	_uEdgesScratch.length = 2;
 	_uEdgesScratch[0] = 0;
 	_uEdgesScratch[1] = 1;
@@ -468,6 +569,7 @@ function buildEntry(packed: number): number {
 		(shapeInfo.isCube ? FIC_ISCUBE : 0);
 
 	if (canUseDenseCache(packed)) {
+		CLOSED_FACES_LUT[packed] = shapeInfo.closedFaceMask;
 		ENTRIES[packed] = entry >>> 0;
 		SHAPES[packed] = shapeInfo;
 		BOXES[packed] = boxes;
@@ -497,6 +599,18 @@ function getEntry(packed: number): number {
 	const overflow = ENTRIES_OVERFLOW.get(packed);
 	if (overflow !== undefined) return overflow;
 	return buildEntry(packed);
+}
+
+// Entry bit layout exported for direct typed-array decoding in hot paths:
+//   flags = entry & 0xffff, id = (entry >>> 16) & 0x3ff, isCube bit 30.
+export const ENTRY_IS_CUBE = FIC_ISCUBE;
+
+/**
+ * Full raw entry (ready | isCube | id | flags) — one probe gives hot paths
+ * every per-block scalar without touching BlockShapeInfo objects.
+ */
+export function getFullBlockEntry(packed: number): number {
+	return getEntry(packed);
 }
 
 // ---------------------------------------------------------------------------

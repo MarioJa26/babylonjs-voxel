@@ -69,9 +69,9 @@ export function tryCreateBoatFromMarker(
 	markerX: number,
 	markerY: number,
 	markerZ: number,
-): boolean {
+): CustomBoat | null {
 	const hullBlocks = collectConnectedHullBlocks(markerX, markerY, markerZ);
-	if (hullBlocks.length === 0) return false;
+	if (hullBlocks.length === 0) return null;
 
 	const bounds = computeBounds(hullBlocks);
 	const paddedSizeX = bounds.sizeX + LOCAL_CHUNK_PADDING * 2;
@@ -95,7 +95,7 @@ export function tryCreateBoatFromMarker(
 				max: Chunk.SIZE,
 			},
 		);
-		return false;
+		return null;
 	}
 
 	const center = bounds.center;
@@ -116,6 +116,13 @@ export function tryCreateBoatFromMarker(
 	}
 
 	let boatChunk: BoatChunk | undefined;
+	// The marker block is kept as the ship's wheel: it travels with the boat
+	// and becomes the usable control block once on board.
+	const helmLocal = vec3(
+		markerX - bounds.minX + LOCAL_CHUNK_PADDING,
+		markerY - bounds.minY + LOCAL_CHUNK_PADDING,
+		markerZ - bounds.minZ + LOCAL_CHUNK_PADDING,
+	);
 	if (visualMode === "blocks") {
 		const localBlocks: BoatChunkBlock[] = hullBlocks.map((block) => ({
 			x: block.x - bounds.minX + LOCAL_CHUNK_PADDING,
@@ -125,6 +132,14 @@ export function tryCreateBoatFromMarker(
 			blockState: block.blockState,
 			lightLevel: block.lightLevel,
 		}));
+		localBlocks.push({
+			x: helmLocal.x,
+			y: helmLocal.y,
+			z: helmLocal.z,
+			blockId: getBlockByWorldCoords(markerX, markerY, markerZ),
+			blockState: getBlockStateByWorldCoords(markerX, markerY, markerZ),
+			lightLevel: getLightByWorldCoords(markerX, markerY, markerZ),
+		});
 		const localCenter = vec3(
 			LOCAL_CHUNK_PADDING + bounds.sizeX * 0.5,
 			LOCAL_CHUNK_PADDING + bounds.sizeY * 0.5,
@@ -143,17 +158,18 @@ export function tryCreateBoatFromMarker(
 
 	const paddedHalfExtents = vec3(0, 0, 0);
 	addVec3ToRef(center, vec3(0.5, 0.5, 0.5), paddedHalfExtents);
-	new CustomBoat(player, GenerationParams.SEA_LEVEL, center, {
+	const boat = new CustomBoat(player, GenerationParams.SEA_LEVEL, center, {
 		collisionHalfExtents: paddedHalfExtents,
 		customVisualRoot: customVisual,
 		skipDefaultModel: visualMode === "blocks",
 		initialYaw,
 		customVisualLocalYaw: -initialYaw,
-		blockCount: hullBlocks.length,
+		blockCount: hullBlocks.length + 1,
 		boatChunk,
+		helmLocal,
 	});
 
-	return true;
+	return boat;
 }
 
 function collectConnectedHullBlocks(

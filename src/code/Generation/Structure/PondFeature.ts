@@ -2,6 +2,7 @@ import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
+import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { SUBSURFACE_LAYER_DEPTH } from "../Terrain/SurfaceBlockResolver";
 import { getBiome } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
@@ -56,13 +57,7 @@ export class PondFeature implements IWorldFeature {
 		_chunkY: number,
 		chunkZ: number,
 		_biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seed: number,
 		chunkSize: number,
 		generatingChunkX: number,
@@ -184,13 +179,7 @@ export class PondFeature implements IWorldFeature {
 		stoneBlockId: number,
 		beachBlockId: number,
 		groundAt: (x: number, z: number) => number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 	) {
 		const floorY = waterTop - maxDepth;
 		if (waterTop <= floorY) return;

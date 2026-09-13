@@ -1,4 +1,5 @@
 // MeshPipeline/core/GreedyPipeline.ts
+
 import type { GreedyFaceDescriptor } from "../types/MeshTypes";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
@@ -36,50 +37,84 @@ export type FaceEmitterCallback = (desc: GreedyFaceDescriptor) => void;
  *
  * It accepts:
  *   - session for dimensions + reusable scratch buffers
- *   - extractMask(...) to fill mask & light arrays for a slice
+ *   - extractMask(...) to fill mask & light arrays for a slice, OR
+ *   - maskBank/lightBank holding pre-extracted masks for ALL slices
+ *     (banked mode — slice s lives at (s+1) * area; filled by the
+ *     extractAllSliceMasks* sweeps in VoxelMaskExtractor)
  *   - emitFace(...) callback that builds quads using the merged results
  *
  * Optimized version:
- * - reuses the session's typed-array scratch buffers (no per-call allocation)
+ * - reuses the session's typed-array scratch buffers (or caller-provided banks)
  * - avoids per-call array allocation
- * - avoids per-call .fill(0) because extractMask overwrites every entry
+ * - avoids per-slice .fill(0) because extraction overwrites every entry
+ * - clears only mask after merging because mask is the processed/empty marker
  *
  * The shared face descriptor lives on the session, so greedyMesh is
  * re-entrant as long as the callback doesn't stash the descriptor.
  */
 export function greedyMesh(
 	session: MeshBuildSession,
-	extractMask: MaskExtractor,
+	extractMask: MaskExtractor | null,
 	emitFace: FaceEmitterCallback,
+	maskBank?: Int32Array,
+	lightBank?: Uint16Array,
 ): void {
-	const size = session.size;
+	// Greedy merging runs on the (possibly downsampled) mask grid. For
+	// lodStep > 1 the extractor writes one cell per lodStep^3 voxel region,
+	// so descriptors come back in grid cells and the face emitter scales
+	// them back to block units.
+	const size = session.meshGridSize > 0 ? session.meshGridSize : session.size;
 	const area = size * size;
 
-	// Ensure the session's scratch buffers are at least the required size.
-	if (session.scratchMask.length < area) {
-		session.scratchMask = new Int32Array(area);
+	const banked = maskBank !== undefined && lightBank !== undefined;
+	if (!banked && !extractMask) {
+		throw new Error("greedyMesh requires extractMask or mask banks");
 	}
-	if (session.scratchLights.length < area) {
-		session.scratchLights = new Uint16Array(area);
-	}
-	const mask = session.scratchMask;
-	const lights = session.scratchLights;
 
+	let mask: WritableNumberArray;
+	let lights: WritableNumberArray;
+
+	if (banked) {
+		mask = maskBank;
+		lights = lightBank;
+	} else {
+		if (session.scratchMask.length < area) {
+			session.scratchMask = new Int32Array(area);
+		}
+
+		if (session.scratchLights.length < area) {
+			session.scratchLights = new Uint16Array(area);
+		}
+
+		mask = session.scratchMask;
+		lights = session.scratchLights;
+	}
+
+	const extractor = extractMask as MaskExtractor;
 	const faceScratch = session.faceScratch;
+	// Banked sweeps mark per-slice occupancy; skipping all-empty slices
+	// avoids scanning (up to) gridSize² mask cells per dead slice — most
+	// far chunks are majority air above the terrain line.
+	const occ = session.sliceOccupancy;
 
-	// axis-slice iteration
-	// Start at -1 to handle the negative boundary (face at position 0).
 	for (let slice = -1; slice < size; slice++) {
-		// Fill mask & light data for this slice.
-		// IMPORTANT:
-		// extractMask MUST overwrite every entry in mask/lights for the slice.
-		extractMask(slice, mask, lights);
+		// Banked mode reads straight from the pre-extracted bank region;
+		// scratch mode extracts into the area-sized buffers at offset 0.
+		const base = banked ? (slice + 1) * area : 0;
+		if (!banked) extractor(slice, mask, lights);
 
-		// v = vertical dimension on the 2D slice plane
+		if (
+			banked &&
+			slice >= 0 &&
+			base + area <= occ.length &&
+			occ[slice + 1] === 0
+		) {
+			continue;
+		}
+
 		for (let v = 0; v < size; v++) {
-			const rowBase = v * size;
+			const rowBase = base + v * size;
 
-			// u = horizontal dimension
 			for (let u = 0; u < size; ) {
 				const index = rowBase + u;
 				const idState = mask[index];
@@ -91,30 +126,34 @@ export function greedyMesh(
 
 				const light = lights[index];
 
-				// Compute merge width
 				let width = 1;
-				while (u + width < size) {
-					const idx = index + width;
-					if (mask[idx] !== idState || lights[idx] !== light) {
-						break;
-					}
+				let scan = index + 1;
+				const rowEnd = rowBase + size;
+
+				while (
+					scan < rowEnd &&
+					mask[scan] === idState &&
+					lights[scan] === light
+				) {
 					width++;
+					scan++;
 				}
 
-				// Compute merge height
 				let height = 1;
+
 				outer: while (v + height < size) {
 					const testRowBase = index + height * size;
-					for (let k = 0; k < width; k++) {
-						const idx = testRowBase + k;
+					const testRowEnd = testRowBase + width;
+
+					for (let idx = testRowBase; idx < testRowEnd; idx++) {
 						if (mask[idx] !== idState || lights[idx] !== light) {
 							break outer;
 						}
 					}
+
 					height++;
 				}
 
-				// Emit the merged face descriptor
 				faceScratch.slice = slice;
 				faceScratch.uStart = u;
 				faceScratch.vStart = v;
@@ -122,29 +161,27 @@ export function greedyMesh(
 				faceScratch.height = height;
 				faceScratch.idState = idState;
 				faceScratch.light = light;
+
 				emitFace(faceScratch);
 
-				// Clear the merged region so it wont be processed again
+				// Only mask needs clearing. It is the sole processed-cell marker.
+				// lights is ignored whenever mask is 0 and extraction overwrites
+				// (or pre-fills) it before the next slice is processed.
 				if (width === size) {
-					const clearEnd = index + height * size;
-					for (let ci = index; ci < clearEnd; ci++) {
-						mask[ci] = 0;
-						lights[ci] = 0;
-					}
+					mask.fill(0, index, index + height * size);
 				} else if (width < 8) {
 					for (let dv = 0; dv < height; dv++) {
-						const rowBase = index + dv * size;
-						const rowEnd = rowBase + width;
-						for (let ci = rowBase; ci < rowEnd; ci++) {
+						const clearStart = index + dv * size;
+						const clearEnd = clearStart + width;
+
+						for (let ci = clearStart; ci < clearEnd; ci++) {
 							mask[ci] = 0;
-							lights[ci] = 0;
 						}
 					}
 				} else {
 					for (let dv = 0; dv < height; dv++) {
-						const rowBase = index + dv * size;
-						mask.fill(0, rowBase, rowBase + width);
-						lights.fill(0, rowBase, rowBase + width);
+						const clearStart = index + dv * size;
+						mask.fill(0, clearStart, clearStart + width);
 					}
 				}
 

@@ -125,7 +125,31 @@ export class UndergroundBiomeSelector {
 	): UndergroundBiome {
 		if (worldY >= 0) return DEFAULT_BIOME;
 
-		const noiseVal = this.biomeNoise(worldX, worldZ);
+		return this.getBiomeWithNoise(
+			worldX,
+			worldY,
+			worldZ,
+			this.biomeNoise(worldX, worldZ),
+		);
+	}
+
+	/**
+	 * The band noise is a pure function of (worldX, worldZ) — independent of
+	 * depth — so callers iterating many Y layers over the same columns can
+	 * sample it once per column and resolve each layer through this method
+	 * instead of paying a scalar wasm crossing per (y, z) cell.
+	 */
+	public sampleBiomeNoise(worldX: number, worldZ: number): number {
+		return this.biomeNoise(worldX, worldZ);
+	}
+
+	public getBiomeWithNoise(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+		noiseVal: number,
+	): UndergroundBiome {
+		if (worldY >= 0) return DEFAULT_BIOME;
 
 		// Resolve the offset into BAND_DATA without allocating an array.
 		let offset: number;

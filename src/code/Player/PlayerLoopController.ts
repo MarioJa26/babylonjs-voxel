@@ -1,5 +1,9 @@
-import type { SceneContext, Vec3 } from "@babylonjs/lite";
+// Add these module-level reusable scratch buffers near _indexedScratch.
+
+import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
+import { playFootstep } from "../Audio/SurfaceAudio";
 import { CustomBoat } from "../Entities/CustomBoat";
+import { MobTypeId } from "../Entities/MobConfig";
 import { update as updateDistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import {
 	getBiome,
@@ -7,43 +11,65 @@ import {
 	getTerrainNoiseDebug,
 } from "../Generation/TerrainHeightMap";
 import type { IControls } from "../Interface/IControls";
+import { frameProfiler } from "../Lib/FrameProfiler";
 import { isUiOpen, setInCave } from "../Lib/GameRuntimeState";
 import { worldToChunkCoord } from "../Lib/VoxelMath";
-import { playSprint } from "../Maps/BlockBreakParticles";
+import {
+	makeSprintEmitterState,
+	playSprint,
+} from "../Maps/BlockBreakParticles";
 import { Map1 } from "../Maps/Map1";
+import { isEyeUnderwater } from "../Maps/UnderWaterEffect";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
+	getBlockByWorldCoords,
 	getDebugStats,
 	processFrameBudgetedStreamingWork,
-	refreshOpfsDebugStats,
 	updateChunksAround,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
-import { getMergedMeshFlushStats } from "../World/Chunk/MergedMeshManager";
+import {
+	getMergedLayerMemoryStats,
+	getMergedMeshFlushStats,
+} from "../World/Chunk/MergedMeshManager";
+import { getPackedMeshMemoryStats } from "../World/Chunk/PackedChunkMesh";
 import { BlockTickScheduler } from "../World/Chunk/Worker/BlockTickScheduler";
-import { processWaterUpdate } from "../World/Chunk/Worker/WaterSimulation";
+import {
+	ensureDefaultInstance,
+	processWaterUpdate,
+} from "../World/Chunk/Worker/WaterSimulation";
+import { FarTileManager } from "../World/FarTiles/FarTileManager";
+import { onGpuWorkDone } from "../World/Light/liteGpuBuffer";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
+import { onSpawnPrepared } from "../World/SpawnPoint";
+import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import {
 	type BlockRaycastHit,
 	pickTarget,
 } from "./Hud/BlockHighlight/BlockRaycaster";
 import { PlayerHud } from "./Hud/PlayerHud";
+import { updateHeldItemView } from "./Inventory/HeldItemView";
 import type { PlayerCamera } from "./PlayerCamera";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
 
-// PERF: Reusable scratch for debug HUD dispatch histogram — avoids per-tick allocation.
-const _indexedScratch: { count: number; index: number }[] = [];
+// They replace the object-allocation + full-sort path for Worker Dist.
+const _topDispatchIndices = [-1, -1, -1, -1];
+const _topDispatchCounts = [0, 0, 0, 0];
 
-// Lite port: the classic-Babylon scene/engine accessors (onBeforeRenderObservable,
-// freezeActiveMeshes, getFps, getDeltaTime, getActiveIndices, ...) are not on
-// SceneContext/EngineContext. The frame loop is driven by the host (Player.tick
-// via onBeforeRender), and the debug HUD derives timings from the frame delta.
+const MOB_TYPE_NAMES: Record<number, string> = {
+	[MobTypeId.Chicken]: "Chicken",
+	[MobTypeId.Sheep]: "Sheep",
+};
 
 export class PlayerLoopController {
 	// ---- chunk-loading position tracking ----
 	#loadLastCx = 0;
 	#loadLastCy = 0;
 	#loadLastCz = 0;
+	// World streaming runs in its own per-frame hook that is installed only
+	// once the spawn is prepared (see #installStreaming) — the hot tick()
+	// path never touches spawn state.
+	#offSpawnPrepared: (() => void) | null = null;
 
 	// ---- active-mesh selection position tracking (separate from loading) ----
 	#amLastCx = 0;
@@ -61,27 +87,32 @@ export class PlayerLoopController {
 	#pickLastPitch = NaN;
 	#pickCachedHit: BlockRaycastHit | null = null;
 	#pickStillFrames = 0;
-	static readonly PICK_STILL_REFRESH_FRAMES = 6; // refresh at most every 6 still frames
+	static readonly PICK_STILL_REFRESH_FRAMES = 6;
 
 	// ---- cave state ----
 	#lastCaveState = false;
 
 	// ---- occlusion culling ----
-	// T2-12: re-enabled (stage 1 — frustum/backface sweep only; the cave-BFS
-	// topology culling stays disabled via BFS_CAVE_CULLING_ENABLED).
 	#occlusionCuller = new OcclusionCuller();
 	#lastOcclusionStats = { total: 0, occluded: 0, timeMs: 0 };
 
 	// ---- debug HUD throttle ----
 	#lastDebugHudUpdateMs = 0;
-	// EMA-smoothed main-thread time spent inside onBeforeRender (game logic +
-	// chunk streaming + occlusion). Excludes GPU render time — pair with
-	// "Frame Ms" (engine.getDeltaTime) to see render-vs-logic split.
 	#mainThreadMs = 0;
-	static readonly DEBUG_HUD_INTERVAL_MS = 250;
+	static readonly DEBUG_HUD_INTERVAL_MS = 1250;
 
 	// ---- captured static callback for restore-on-dispose ----
 	#previousOnChunkLoaded: typeof Chunk.onChunkLoaded | null = null;
+
+	// Cache singleton instead of resolving it multiple times in hot paths.
+	#blockTickScheduler = BlockTickScheduler.getInstance();
+
+	// Per-emitter throttle state so the local player keeps its own sprint-dust
+	// cadence independent of remote players.
+	#sprintEmitter = makeSprintEmitterState();
+
+	// Stride accumulator for footstep sounds (meters since the last step).
+	#strideDistance = 0;
 
 	private readonly scene: SceneContext;
 
@@ -91,6 +122,9 @@ export class PlayerLoopController {
 			isSprinting: boolean;
 			isClimbing: boolean;
 			isFlying: boolean;
+			isMounted: boolean;
+			isGrounded: boolean;
+			onAudibleStep: (() => void) | null;
 			velocity: Vec3;
 			inputDirection: Vec3;
 			update(dt: number): void;
@@ -106,115 +140,192 @@ export class PlayerLoopController {
 	}
 
 	public bind(): void {
-		// Initialize water tick scheduler
-		BlockTickScheduler.getInstance().setProcessCallback(processWaterUpdate);
+		// Kick off async init of the shared default instance (dynamic import of
+		// ChunkLoadingSystem). The scheduler callback won't fire until the first
+		// processFrame() on a later frame, by which point init has resolved.
+		void ensureDefaultInstance();
+		this.#blockTickScheduler.setProcessCallback(processWaterUpdate);
 
-		// Wire incremental occlusion culling for individual chunk loads.
-		// T2-12 stage 1: BFS is disabled, so incrementalAdd is a no-op
-		// (it early-returns while _currentQueryId === 0); re-enable it with
-		// BFS_CAVE_CULLING_ENABLED.
+		// Install world streaming only once the spawn is prepared — a one-shot
+		// notification instead of any spawn-state check in the per-frame hot
+		// path. Before the teleport the player sits at the origin; loading
+		// there would leave residual chunks at 0,0.
+		this.#offSpawnPrepared = onSpawnPrepared(() => this.#installStreaming());
+
 		this.#previousOnChunkLoaded = Chunk.onChunkLoaded;
 		Chunk.onChunkLoaded = (chunk: Chunk) => {
 			this.#previousOnChunkLoaded?.(chunk);
-			//this.#occlusionCuller.incrementalAdd(chunk);
+			this.#occlusionCuller.incrementalAdd(chunk);
 		};
+
+		// Step-up sounds share the stride cooldown: any audible step-up
+		// restarts the walking cadence so the two never overlap.
+		this.playerVehicle.onAudibleStep = () => {
+			this.#strideDistance = 0;
+		};
+
+		// Profiling keys: F5 dumps a frame-section report, F6 toggles far-tile
+		// visibility for GPU-side A/B comparison (CPU sections vs rAF delta).
+		window.addEventListener("keydown", this.#profilerKeyDown);
 	}
 
-	/**
-	 * Per-frame update. Driven by the host loop (Player.tick → onBeforeRender),
-	 * since Lite's SceneContext has no onBeforeRenderObservable to self-register.
-	 */
+	#profilerKeyDown = (e: KeyboardEvent): void => {
+		const key = e.key.toLowerCase();
+		if (key === "f5") {
+			e.preventDefault();
+			frameProfiler.logReport();
+			PlayerHud.updateDebugInfo(
+				"Profiler",
+				frameProfiler.summaryLine(),
+				"profiler",
+			);
+		} else if (key === "f6") {
+			e.preventDefault();
+			const next = !FarTileManager.isFarTilesVisible();
+			FarTileManager.setFarTilesVisible(next);
+			console.info(`[Profiler] far tiles visible: ${next}`);
+		}
+	};
+
+	#gpuLagFrameCounter = 0;
+	#pendingGpuLagMs = 0;
+
 	public tick(deltaMs: number): void {
-		const dt = deltaMs;
-		// Stats are tuned per-second; the frame delta arrives in milliseconds
-		// (the motor converts internally). Normalize once for the stats path.
-		const dtSec = deltaMs / 1000;
-		const _frameStart = performance.now();
+		const frameStart = performance.now();
+		const dtSec = deltaMs * 0.001;
 
-		BlockTickScheduler.getInstance().processFrame();
+		// Batch the whole tick wave: a flood tick can write hundreds of blocks;
+		// coalescing turns that into one remesh per touched chunk instead of
+		// dozens of intermediate rebuilds.
+		frameProfiler.begin("blockTicks");
+		Chunk.beginBlockEditBatch();
+		try {
+			this.#blockTickScheduler.processFrame();
+		} finally {
+			Chunk.endBlockEditBatch();
+		}
+		frameProfiler.end("blockTicks");
 
-		// Cache getter-backed properties once per frame.
 		const vehicle = this.playerVehicle;
 		const stats = this.playerStats;
 
 		if (
 			vehicle.isSprinting &&
-			(vehicle.inputDirection.x !== 0 || vehicle.inputDirection.z !== 0)
+			(vehicle.inputDirection.x !== 0 || vehicle.inputDirection.z !== 0) &&
+			!stats.consumeStamina(4 * dtSec) &&
+			stats.gamemode !== Gamemodes.Creative
 		) {
+			vehicle.isSprinting = false;
+		}
+
+		const camPos = this.playerCamera.position;
+		const isUnderwater = isEyeUnderwater(camPos.x, camPos.y, camPos.z);
+
+		if (isUnderwater) {
 			if (
-				!stats.consumeStamina(4 * dtSec) &&
+				!stats.consumeStamina(8 * dtSec) &&
 				stats.gamemode !== Gamemodes.Creative
 			) {
-				vehicle.isSprinting = false;
+				stats.takeDamage(10 * dtSec);
 			}
 		}
 
-		// Raycast once per frame — shared by crosshair highlight and block breaking.
-		// Skipped while a UI overlay is open (matches #updateControls' early-out),
-		// since the highlight is hidden behind the menu and breaking is suppressed.
 		const uiOpen = isUiOpen();
 		const playerPos = this.getPlayerPosition();
-		const pickHit = uiOpen ? null : this.#pickTargetGated(playerPos);
+
+		frameProfiler.begin("pick");
+		const pickHit = uiOpen ? null : this.pickTargetGated(playerPos);
+		frameProfiler.end("pick");
+
 		this.playerHud.crossHair.setTargetHit(pickHit);
 
-		// L1: Cache position once — reused by all sub-systems this frame.
-		updateDistantTerrain(playerPos.x, playerPos.z);
-
-		// C3: tick all active boats (buoyancy + controls). Uses the player
-		// position only for distance culling of out-of-range boats.
+		frameProfiler.begin("boats");
 		CustomBoat.tickAllActiveBoats(this.scene, playerPos);
-		vehicle.update(dt);
-		this.#updateSprintParticles(uiOpen, playerPos);
+		frameProfiler.end("boats");
+
+		frameProfiler.begin("physics");
+		vehicle.update(deltaMs);
+
+		this.updateSprintParticles(uiOpen, playerPos);
+		this.updateFootsteps(uiOpen, playerPos, dtSec);
+
 		stats.update(
 			dtSec,
 			vehicle.isSprinting,
-			vehicle.isClimbing ? stats.climbingStaminaRegenMultiplier : 1,
+			isUnderwater
+				? 0
+				: vehicle.isClimbing
+					? stats.climbingStaminaRegenMultiplier
+					: 1,
 		);
+
 		vehicle.updateCameraAndVisuals(deltaMs);
-		this.#updateControls(uiOpen, pickHit);
-		if (this.#updateCaveState(playerPos.y)) {
+		frameProfiler.end("physics");
+
+		frameProfiler.begin("controls");
+		this.updateControls(uiOpen, pickHit);
+		updateHeldItemView(this.playerHud.player, dtSec);
+		frameProfiler.end("controls");
+
+		if (this.updateCaveState(playerPos.y)) {
 			this.#loadLastCx = -99999;
 		}
+
 		const cx = worldToChunkCoord(playerPos.x);
 		const cy = worldToChunkCoord(playerPos.y);
 		const cz = worldToChunkCoord(playerPos.z);
 
-		this.#updateChunksAroundPlayer(cx, cy, cz, playerPos);
-		processFrameBudgetedStreamingWork(cx, cy, cz);
+		// Chunk streaming / distant terrain run in #streamTick (installed when
+		// the spawn is prepared) — see #installStreaming.
 
 		this.#updateActiveMeshSelection(cx, cy, cz);
 
-		// Occlusion culling – must run after chunk loading and before Lite evaluates the scene.
+		frameProfiler.begin("occlusion");
 		this.#occlusionCuller.update(this.#lastOcclusionStats);
+		frameProfiler.end("occlusion");
 
-		// Main-thread work time for this frame (EMA-smoothed).
-		const _frameMs = performance.now() - _frameStart;
-		this.#mainThreadMs = this.#mainThreadMs * 0.9 + _frameMs * 0.1;
+		// Best-effort GPU-lag probe: how long the queue takes to drain all
+		// work submitted so far. Sampled every 30th frame — the promise itself
+		// is cheap but not free. The async result is buffered and injected
+		// into the frame right before endFrame (noteSectionValue drops
+		// samples that land inside an open section).
+		if (++this.#gpuLagFrameCounter % 30 === 0 && Map1.engine) {
+			const submittedAt = performance.now();
+			void onGpuWorkDone(Map1.engine).then(() => {
+				this.#pendingGpuLagMs = performance.now() - submittedAt;
+			});
+		}
 
-		this.#updateDebugHud(deltaMs, cx, cy, cz);
+		const frameMs = performance.now() - frameStart;
+		this.#mainThreadMs = this.#mainThreadMs * 0.9 + frameMs * 0.1;
+
+		frameProfiler.begin("hud");
+		this.updateDebugHud(deltaMs, cx, cy, cz);
+		frameProfiler.end("hud");
+
 		this.#freezeActiveMeshes();
+
+		if (this.#pendingGpuLagMs > 0) {
+			frameProfiler.noteSectionValue("gpuLag", this.#pendingGpuLagMs);
+			this.#pendingGpuLagMs = 0;
+		}
+
+		frameProfiler.endFrame(deltaMs);
 	}
 
 	public dispose(): void {
+		window.removeEventListener("keydown", this.#profilerKeyDown);
+		if (this.#offSpawnPrepared) {
+			this.#offSpawnPrepared();
+			this.#offSpawnPrepared = null;
+		}
 		if (this.#previousOnChunkLoaded !== null) {
 			Chunk.onChunkLoaded = this.#previousOnChunkLoaded;
 			this.#previousOnChunkLoaded = null;
 		}
 	}
 
-	// ---------------------------------------------------------------------------
-	// Controls
-	// ---------------------------------------------------------------------------
-
-	/**
-	 * Full pick raycast, gated on camera/position stillness. When the eye
-	 * position and camera yaw/pitch have not moved (within epsilon), reuse the
-	 * last hit for at most PICK_STILL_REFRESH_FRAMES frames — staring at open
-	 * sky drops the 64-voxel DDA from 60/s to 10/s. Block-breaking progress is
-	 * wall-clock based (BreakingBlockHandler), so a briefly stale hit is safe;
-	 * the frame cap guarantees the hit refreshes after e.g. a block breaks.
-	 */
-	#pickTargetGated(playerPos: {
+	pickTargetGated(playerPos: {
 		x: number;
 		y: number;
 		z: number;
@@ -244,50 +355,57 @@ export class PlayerLoopController {
 		this.#pickLastPitch = pitch;
 		this.#pickStillFrames = 0;
 		this.#pickCachedHit = pickTarget(this.playerHud.player);
+
 		return this.#pickCachedHit;
 	}
 
-	#updateControls(uiOpen: boolean, hit?: BlockRaycastHit | null): void {
+	updateControls(uiOpen: boolean, hit?: BlockRaycastHit | null): void {
 		const controls = this.getKeyboardControls();
 		const type = controls.controlType;
-		if (type === "walking" || type === "customBoat" || type === "paddleBoat") {
-			// While a UI overlay (inventory / mason table) is open, suppress block
-			// breaking progress and cancel any in-progress break so a held mouse
-			// button doesn't keep mining behind the menu.
-			if (uiOpen) {
-				const maybe = controls as unknown as {
-					stopBlockBreaking?: () => void;
-				};
-				maybe.stopBlockBreaking?.();
-				return;
-			}
-			(
-				controls as unknown as { update(hit?: BlockRaycastHit | null): void }
-			).update(hit);
+
+		if (uiOpen) {
+			const c = controls as unknown as {
+				stopBlockBreaking?: () => void;
+				cancelDraw?: () => void;
+			};
+			c.stopBlockBreaking?.();
+			c.cancelDraw?.();
+			// Opening any UI cancels an in-progress E-hold vacuum.
+			this.playerHud.player.setUseHeld(false);
+			return;
 		}
+
+		// Holding E vacuums up nearby drops (pickup-only; block interactions
+		// stay single-press). Runs for every control scheme, including ones
+		// without a per-frame update below.
+		this.playerHud.player.updateUseHeld();
+
+		if (type !== "walking" && type !== "customBoat" && type !== "paddleBoat") {
+			return;
+		}
+
+		(
+			controls as unknown as { update(hit?: BlockRaycastHit | null): void }
+		).update(hit);
 	}
 
-	// ---------------------------------------------------------------------------
-	// Sprint particles
-	// ---------------------------------------------------------------------------
-
-	#updateSprintParticles(
+	updateSprintParticles(
 		uiOpen: boolean,
 		playerPos: { x: number; y: number; z: number },
 	): void {
-		if (
-			uiOpen ||
-			!this.playerVehicle.isSprinting ||
-			this.playerVehicle.isFlying
-		) {
+		const vehicle = this.playerVehicle;
+
+		if (uiOpen || !vehicle.isSprinting || vehicle.isFlying) {
 			return;
 		}
-		const vel = this.playerVehicle.velocity;
-		if (vel.x * vel.x + vel.z * vel.z < 4) return;
 
-		// Player capsule is 1.8m tall — feet sit ~0.85 below the body center.
+		const vel = vehicle.velocity;
+		if (vel.x * vel.x + vel.z * vel.z < 4) {
+			return;
+		}
+
 		playSprint(
-			this.scene,
+			this.#sprintEmitter,
 			playerPos.x,
 			playerPos.y - 0.85,
 			playerPos.z,
@@ -296,67 +414,160 @@ export class PlayerLoopController {
 		);
 	}
 
-	// ---------------------------------------------------------------------------
-	// Cave state
-	// ---------------------------------------------------------------------------
+	/**
+	 * Footstep sounds from stride distance. Plays the ground material's
+	 * footstep (or a splash when wading) every ~2m walked / ~2.6m sprinted.
+	 * Riding, flying, climbing, and UI-open states stay silent.
+	 */
+	updateFootsteps(
+		uiOpen: boolean,
+		playerPos: { x: number; y: number; z: number },
+		dtSec: number,
+	): void {
+		const vehicle = this.playerVehicle;
 
-	#updateCaveState(playerY: number): boolean {
-		const inCave = playerY <= -16;
-		if (inCave !== this.#lastCaveState) {
-			this.#lastCaveState = inCave;
-			setInCave(inCave);
-			return true;
+		if (
+			uiOpen ||
+			vehicle.isMounted ||
+			vehicle.isFlying ||
+			vehicle.isClimbing ||
+			!vehicle.isGrounded
+		) {
+			this.#strideDistance = 0;
+			return;
 		}
-		return false;
+
+		const vel = vehicle.velocity;
+		const horizontalSpeed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+
+		if (horizontalSpeed < 1.2 || dtSec <= 0) {
+			this.#strideDistance = 0;
+			return;
+		}
+
+		this.#strideDistance += horizontalSpeed * dtSec;
+
+		const stride = vehicle.isSprinting ? 2.6 : 2.0;
+		if (this.#strideDistance < stride) {
+			return;
+		}
+		// Hold at threshold while the shared cooldown suppresses us so at
+		// most one step stays pending — it fires as soon as the gate opens
+		// instead of bursting afterwards.
+		this.#strideDistance = stride;
+
+		const intensity = Math.min(1, Math.max(0.4, horizontalSpeed / 6));
+
+		// Feet sit ~0.85 below the body origin (cf. sprint dust); scan down
+		// for the first solid block so slabs and half-steps resolve.
+		const blockX = Math.floor(playerPos.x);
+		const blockZ = Math.floor(playerPos.z);
+		const feetBlockY = Math.floor(playerPos.y - 0.85);
+
+		for (let d = 0; d <= 2; d++) {
+			const blockId = getBlockByWorldCoords(blockX, feetBlockY - d, blockZ);
+
+			if (blockId === BlockType.Water) {
+				if (playFootstep(blockId, intensity)) this.#strideDistance = 0;
+				return;
+			}
+
+			if (isCollidableBlock(blockId)) {
+				if (playFootstep(blockId, intensity)) this.#strideDistance = 0;
+				return;
+			}
+		}
+
+		// No ground found (world edge): drop the pending step.
+		this.#strideDistance = 0;
 	}
 
-	// ---------------------------------------------------------------------------
-	// Chunk loading
-	// ---------------------------------------------------------------------------
+	updateCaveState(playerY: number): boolean {
+		const inCave = playerY <= -16;
 
-	#updateChunksAroundPlayer(
+		if (inCave === this.#lastCaveState) {
+			return false;
+		}
+
+		this.#lastCaveState = inCave;
+		setInCave(inCave);
+		return true;
+	}
+
+	updateChunksAroundPlayer(
 		cx: number,
 		cy: number,
 		cz: number,
 		playerPos: { x: number; z: number },
 	): void {
 		if (
-			cx !== this.#loadLastCx ||
-			cy !== this.#loadLastCy ||
-			cz !== this.#loadLastCz
+			cx === this.#loadLastCx &&
+			cy === this.#loadLastCy &&
+			cz === this.#loadLastCz
 		) {
-			// Direct call (no setTimeout): updateChunksAround is already async
-			// and frame-budgeted, and PlayerLoadingGate calls it directly every
-			// frame while spawn-loading — the macrotask only added latency.
-			const prevCx = this.#loadLastCx;
-			const prevCy = this.#loadLastCy;
-			const prevCz = this.#loadLastCz;
-			this.#loadLastCx = cx;
-			this.#loadLastCy = cy;
-			this.#loadLastCz = cz;
-			void updateChunksAround(
-				cx,
-				cy,
-				cz,
-				undefined,
-				undefined,
-				prevCx,
-				prevCy,
-				prevCz,
-				playerPos.x,
-				playerPos.z,
-			);
+			return;
 		}
+
+		const prevCx = this.#loadLastCx;
+		const prevCy = this.#loadLastCy;
+		const prevCz = this.#loadLastCz;
+
+		this.#loadLastCx = cx;
+		this.#loadLastCy = cy;
+		this.#loadLastCz = cz;
+
+		void updateChunksAround(
+			cx,
+			cy,
+			cz,
+			undefined,
+			undefined,
+			prevCx,
+			prevCy,
+			prevCz,
+			playerPos.x,
+			playerPos.z,
+		);
 	}
 
-	// ---------------------------------------------------------------------------
-	// Active mesh selection
-	// Uses its own #amLastCx/Y/Z — never touches chunk-loading state.
-	// ---------------------------------------------------------------------------
+	/**
+	 * Installed exactly once, when the world spawn is prepared (server
+	 * SpawnPosition or the singleplayer fallback). Registers its own per-frame
+	 * scene hook — onBeforeRender prepends, so it runs first each frame — and
+	 * tick() stays free of any spawn-state gating. #loadLast* is pre-absorbed
+	 * at the still-current pre-teleport position so the teleport performed by
+	 * PlayerLoadingGate later that same frame is what triggers the first real
+	 * chunk update, never the origin.
+	 */
+	#installStreaming(): void {
+		const pos = this.getPlayerPosition();
+		this.#loadLastCx = worldToChunkCoord(pos.x);
+		this.#loadLastCy = worldToChunkCoord(pos.y);
+		this.#loadLastCz = worldToChunkCoord(pos.z);
+		onBeforeRender(this.scene, () => {
+			this.streamTick();
+		});
+	}
+
+	streamTick(): void {
+		frameProfiler.begin("streaming");
+		const pos = this.getPlayerPosition();
+		updateDistantTerrain(pos.x, pos.z);
+		const cx = worldToChunkCoord(pos.x);
+		const cy = worldToChunkCoord(pos.y);
+		const cz = worldToChunkCoord(pos.z);
+		this.updateChunksAroundPlayer(cx, cy, cz, pos);
+		try {
+			void processFrameBudgetedStreamingWork(cx, cy, cz);
+		} catch (err) {
+			console.error("[T0-ERR] processFrameBudgetedStreamingWork threw:", err);
+		}
+		frameProfiler.end("streaming");
+	}
 
 	#frozenOnce = false;
 	#cameraStillFrames = 0;
-	static readonly FREEZE_DELAY_FRAMES = 4; // freeze after N still frames
+	static readonly FREEZE_DELAY_FRAMES = 4;
 
 	#updateActiveMeshSelection(cx: number, cy: number, cz: number): void {
 		const yaw = this.playerCamera.cameraYaw;
@@ -372,6 +583,7 @@ export class PlayerLoopController {
 			this.#amLastCy = cy;
 			this.#amLastCz = cz;
 		}
+
 		if (cameraMoved) {
 			this.#prevCameraYaw = yaw;
 			this.#prevCameraPitch = pitch;
@@ -380,50 +592,49 @@ export class PlayerLoopController {
 		if (chunkChanged || cameraMoved) {
 			this.#cameraStillFrames = 0;
 			this.#rebuildActiveMeshes = false;
-			// Lite has no active-mesh freeze; reset the local freeze latch so a
-			// later still-period can re-arm (no-op on the renderer side).
 			this.#frozenOnce = false;
-		} else {
-			this.#cameraStillFrames++;
-			// Schedule ONE freeze after the player has been still long enough.
-			if (
-				this.#cameraStillFrames === PlayerLoopController.FREEZE_DELAY_FRAMES &&
-				!this.#frozenOnce
-			) {
-				this.#rebuildActiveMeshes = true;
-			}
+			return;
+		}
+
+		this.#cameraStillFrames++;
+
+		if (
+			this.#cameraStillFrames === PlayerLoopController.FREEZE_DELAY_FRAMES &&
+			!this.#frozenOnce
+		) {
+			this.#rebuildActiveMeshes = true;
 		}
 	}
 
 	#freezeActiveMeshes(): void {
-		// Lite SceneContext exposes no active-mesh freeze API; chunk visibility is
-		// already driven directly by the OcclusionCuller each frame. Keep the local
-		// latch consistent so a future still-period re-arms cleanly.
-		if (this.#rebuildActiveMeshes && !this.#frozenOnce) {
-			this.#frozenOnce = true;
-			this.#rebuildActiveMeshes = false;
+		if (!this.#rebuildActiveMeshes || this.#frozenOnce) {
+			return;
 		}
+
+		this.#frozenOnce = true;
+		this.#rebuildActiveMeshes = false;
 	}
 
-	// ---------------------------------------------------------------------------
-	// Debug HUD
-	// ---------------------------------------------------------------------------
-
-	#updateDebugHud(
+	updateDebugHud(
 		deltaMs: number,
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
 	): void {
 		this.playerHud.updateStats();
-		if (!PlayerHud.debugPanelVisible) return;
+
+		if (!PlayerHud.debugPanelVisible) {
+			return;
+		}
 
 		const now = performance.now();
 		if (
 			now - this.#lastDebugHudUpdateMs <
 			PlayerLoopController.DEBUG_HUD_INTERVAL_MS
-		)
+		) {
 			return;
+		}
+
 		this.#lastDebugHudUpdateMs = now;
 
 		const playerPos = this.getPlayerPosition();
@@ -431,6 +642,8 @@ export class PlayerLoopController {
 		const cameraPos = cam.position;
 		const cameraYaw = cam.cameraYaw;
 		const cameraPitch = cam.cameraPitch;
+		const floorX = Math.floor(playerPos.x);
+		const floorZ = Math.floor(playerPos.z);
 
 		PlayerHud.updateDebugInfo(
 			"FPS",
@@ -443,7 +656,7 @@ export class PlayerLoopController {
 			this.#mainThreadMs.toFixed(1),
 			"performance",
 		);
-		PlayerHud.updateDebugInfo("Faces", "n/a", "performance");
+
 		PlayerHud.updateDebugInfo(
 			"Player Pos",
 			`${playerPos.x.toFixed(2)}, ${playerPos.y.toFixed(2)}, ${playerPos.z.toFixed(2)}`,
@@ -469,16 +682,11 @@ export class PlayerLoopController {
 			this.#directionFromYaw(cameraYaw),
 			"position",
 		);
-		PlayerHud.updateDebugInfo(
-			"Biome",
-			getBiome(Math.floor(playerPos.x), Math.floor(playerPos.z)).name,
-			"biome",
-		);
 
-		const terrainNoise = getTerrainNoiseDebug(
-			Math.floor(playerPos.x),
-			Math.floor(playerPos.z),
-		);
+		PlayerHud.updateDebugInfo("Biome", getBiome(floorX, floorZ).name, "biome");
+
+		const terrainNoise = getTerrainNoiseDebug(floorX, floorZ);
+
 		PlayerHud.updateDebugInfo(
 			"Continent",
 			terrainNoise.continent.toFixed(3),
@@ -507,7 +715,7 @@ export class PlayerLoopController {
 		);
 		PlayerHud.updateDebugInfo(
 			"Height",
-			getFinalTerrainHeight(Math.floor(playerPos.x), Math.floor(playerPos.z)),
+			getFinalTerrainHeight(floorX, floorZ),
 			"biome",
 		);
 
@@ -526,7 +734,6 @@ export class PlayerLoopController {
 
 		const loadStats = getDebugStats();
 		const workerStats = ChunkWorkerPool.getInstance().getDebugStats();
-		void refreshOpfsDebugStats();
 
 		PlayerHud.updateDebugInfo(
 			"Chunk Queues",
@@ -541,14 +748,6 @@ export class PlayerLoopController {
 		PlayerHud.updateDebugInfo(
 			"Chunk I/O",
 			`load:${loadStats.lastLoadedFromStorage} gen:${loadStats.lastGenerated} hyd:${loadStats.lastHydrated} unload:${loadStats.lastUnloaded} save:${loadStats.lastSaved}`,
-			"chunks",
-		);
-		PlayerHud.updateDebugInfo(
-			"OPFS Mesh",
-			`hits:${loadStats.lastOpfsHits} miss:${loadStats.lastOpfsMisses} ` +
-				`used:${(loadStats.opfsUsedBytes / 1024 / 1024).toFixed(1)}MB / ` +
-				`${(loadStats.opfsTotalBytes / 1024 / 1024).toFixed(0)}MB ` +
-				`slots:${loadStats.opfsSlotCount} evicts:${loadStats.opfsEvictionCount}`,
 			"chunks",
 		);
 		PlayerHud.updateDebugInfo(
@@ -581,32 +780,36 @@ export class PlayerLoopController {
 			"workers",
 		);
 
-		const counts = workerStats.workerDispatchCounts;
-		// PERF: Reuse scratch array to avoid per-tick allocation.
-		_indexedScratch.length = 0;
-		for (let i = 0; i < counts.length; i++) {
-			if (counts[i] > 0) _indexedScratch.push({ count: counts[i], index: i });
-		}
-		_indexedScratch.sort((a, b) => b.count - a.count);
-		const limit = _indexedScratch.length < 4 ? _indexedScratch.length : 4;
-		let dispatchHistogram = "";
-		for (let i = 0; i < limit; i++) {
-			if (i > 0) dispatchHistogram += " ";
-			dispatchHistogram += `${_indexedScratch[i].index}:${_indexedScratch[i].count}`;
-		}
+		const mem = getPackedMeshMemoryStats();
+		const layers = getMergedLayerMemoryStats();
+		const mib = (b: number) => `${(b / 1048576).toFixed(1)}`;
+		PlayerHud.updateDebugInfo(
+			"Mesh Memory",
+			`inst:${mib(mem.instanceBytes)} arenas:${mib(mem.arenaBytes)} ` +
+				`(${mem.arenaUsedFaces}/${mem.arenaCapacityFaces}f) ` +
+				`off:${mib(mem.offsetBytes)} grp:${layers.groups}/${mib(layers.layerBytes)}MiB`,
+			"workers",
+		);
 
-		const indices = workerStats.lastDispatchWorkerIndices;
-		const len = indices.length;
-		const recentStart = len > 8 ? len - 8 : 0;
-		let recentWorkers = "";
-		for (let i = recentStart; i < len; i++) {
-			if (i > recentStart) recentWorkers += ",";
-			recentWorkers += String(indices[i]);
-		}
+		const census = Chunk.getCensus();
+		PlayerHud.updateDebugInfo(
+			"Chunk Census",
+			`total:${census.total} vox:${census.withVoxels} ` +
+				`lod<=1:${census.lodLow} lod2-3:${census.lodMid} lod4+:${census.lodHigh} ` +
+				`meshes:${census.cachedMeshEntries}/${mib(census.cachedMeshBytes)}MiB`,
+			"workers",
+		);
+
+		const dispatchHistogram = this.#formatTopDispatchWorkers(
+			workerStats.workerDispatchCounts,
+		);
+		const recentWorkers = this.#formatRecentWorkers(
+			workerStats.lastDispatchWorkerIndices,
+		);
 
 		PlayerHud.updateDebugInfo(
 			"Worker Dist",
-			`peakBusy:${workerStats.peakBusyWorkers} top:[${dispatchHistogram || "-"}] recent:[${recentWorkers || "-"}]`,
+			`peakBusy:${workerStats.peakBusyWorkers} top:[${dispatchHistogram}] recent:[${recentWorkers}]`,
 			"workers",
 		);
 		PlayerHud.updateDebugInfo(
@@ -614,6 +817,34 @@ export class PlayerLoopController {
 			`${workerStats.lastMeshProcessed} in ${workerStats.lastMeshDrainMs.toFixed(2)}ms`,
 			"workers",
 		);
+
+		const farStats = FarTileManager.getDebugStats();
+		if (farStats) {
+			const kib = (b: number) => `${(b / 1024).toFixed(0)}KiB`;
+			const levelSummary = farStats.levels
+				.map(
+					(l, i) =>
+						`L${i}:${l.faces}/${l.capacity}f(${l.straight}+${l.reversed})`,
+				)
+				.join(" ");
+			PlayerHud.updateDebugInfo(
+				"Far Tiles",
+				`tiles:${farStats.tiles} pend:${farStats.pending} water:${farStats.water.faces}f origins:${farStats.origins.used}/${farStats.origins.capacity}`,
+				"far",
+			);
+			PlayerHud.updateDebugInfo(
+				"Far Detail",
+				`${levelSummary} up:${kib(farStats.uploadBytes)}/f`,
+				"far",
+			);
+		}
+
+		PlayerHud.updateDebugInfo(
+			"Profiler",
+			frameProfiler.summaryLine(),
+			"profiler",
+		);
+
 		PlayerHud.updateDebugInfo(
 			"Health",
 			Math.ceil(this.playerStats.health),
@@ -635,22 +866,108 @@ export class PlayerLoopController {
 			"stats",
 		);
 
-		const mobStats = Map1.mobRegistry?.getDebugStats();
-		if (mobStats) {
-			PlayerHud.updateDebugInfo(
-				"Mobs",
-				`${mobStats.total}/${mobStats.cap}`,
-				"mobs",
-			);
-			const breakdown = mobStats.perType
-				.map((t) => `${t.type}:${t.count}/${t.max}`)
-				.join("  ");
+		const localStats = Map1.mobRegistry?.getDebugStats();
+		const remoteStats = Map1.remoteMobManager?.getDebugStats();
+		if (!localStats && !remoteStats) {
+			return;
+		}
+
+		if (localStats) {
+			// Cap accounting covers only naturally spawned mobs; spawn-egg
+			// mobs are cap-exempt and shown as a "+N" suffix when present.
+			const eggCount = localStats.total - localStats.naturalTotal;
+			const mobLabel =
+				eggCount > 0
+					? `${localStats.naturalTotal}/${localStats.cap} (+${eggCount})`
+					: `${localStats.naturalTotal}/${localStats.cap}`;
+
+			PlayerHud.updateDebugInfo("Mobs", mobLabel, "mobs");
+
+			let breakdown = "";
+			for (let i = 0; i < localStats.perType.length; i++) {
+				const t = localStats.perType[i];
+				if (i > 0) breakdown += "  ";
+				breakdown += `${t.type}:${t.natural}/${t.max}`;
+			}
+
+			PlayerHud.updateDebugInfo("Mob Types", breakdown || "-", "mobs");
+		}
+
+		if (remoteStats) {
+			PlayerHud.updateDebugInfo("Mobs", `${remoteStats.total}`, "mobs");
+
+			let breakdown = "";
+			for (let i = 0; i < remoteStats.perType.length; i++) {
+				const t = remoteStats.perType[i];
+				if (i > 0) breakdown += "  ";
+				breakdown += `${MOB_TYPE_NAMES[t.typeId] ?? `type${t.typeId}`}:${t.count}`;
+			}
+
 			PlayerHud.updateDebugInfo("Mob Types", breakdown || "-", "mobs");
 		}
 	}
 
-	// Lookup table is faster than the original Math.round(degrees/45) path
-	// because it avoids floating-point modular arithmetic at call-site.
+	#formatTopDispatchWorkers(counts: readonly number[]): string {
+		_topDispatchIndices[0] = -1;
+		_topDispatchIndices[1] = -1;
+		_topDispatchIndices[2] = -1;
+		_topDispatchIndices[3] = -1;
+
+		_topDispatchCounts[0] = 0;
+		_topDispatchCounts[1] = 0;
+		_topDispatchCounts[2] = 0;
+		_topDispatchCounts[3] = 0;
+
+		for (let index = 0; index < counts.length; index++) {
+			const count = counts[index];
+			if (count <= 0 || count <= _topDispatchCounts[3]) {
+				continue;
+			}
+
+			let slot = 3;
+			while (slot > 0 && count > _topDispatchCounts[slot - 1]) {
+				_topDispatchCounts[slot] = _topDispatchCounts[slot - 1];
+				_topDispatchIndices[slot] = _topDispatchIndices[slot - 1];
+				slot--;
+			}
+
+			_topDispatchCounts[slot] = count;
+			_topDispatchIndices[slot] = index;
+		}
+
+		let out = "";
+		for (let i = 0; i < 4; i++) {
+			const index = _topDispatchIndices[i];
+			if (index < 0) {
+				break;
+			}
+
+			if (out.length > 0) {
+				out += " ";
+			}
+
+			out += `${index}:${_topDispatchCounts[i]}`;
+		}
+
+		return out || "-";
+	}
+
+	#formatRecentWorkers(indices: readonly number[]): string {
+		const len = indices.length;
+		const start = len > 8 ? len - 8 : 0;
+
+		let out = "";
+		for (let i = start; i < len; i++) {
+			if (i > start) {
+				out += ",";
+			}
+
+			out += String(indices[i]);
+		}
+
+		return out || "-";
+	}
+
 	static readonly #DIRECTION_NAMES = [
 		"West",
 		"North-West",
@@ -664,8 +981,9 @@ export class PlayerLoopController {
 
 	#directionFromYaw(yaw: number): string {
 		const degrees = (yaw * (180 / Math.PI)) % 360;
-		const normalizedDeg = (degrees + 360) % 360;
-		const index = Math.round(normalizedDeg / 45) % 8;
+		const normalizedDeg = degrees + (degrees < 0 ? 360 : 0);
+		const index = Math.round(normalizedDeg / 45) & 7;
+
 		return PlayerLoopController.#DIRECTION_NAMES[index];
 	}
 }

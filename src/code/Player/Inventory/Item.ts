@@ -5,7 +5,6 @@ import { setBlock } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	getShapeForBlockId,
 	isRegisteredBlockId,
-	shapeInitPromise,
 } from "@/code/World/Shape/BlockShapes";
 import { getSliceAxis } from "@/code/World/Shape/BlockShapeTransforms";
 import { BlockType } from "@/code/World/Texture/BlockType";
@@ -16,9 +15,11 @@ import {
 	pickBlock,
 } from "../Hud/BlockHighlight/BlockRaycaster";
 import type { Player } from "../Player";
-import { drawCubeIcon, getShapeHeightScale } from "./CubeIcon";
-import { getRegisteredItemById, type ItemDefinition } from "./ItemRegistry";
+import { Gamemodes } from "../PlayerStats";
+import { drawCubeIcon, iconAtlasesReadyPromise } from "./CubeIcon";
+import { getRegisteredItemById } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
+import type { ItemDefinition } from "./Types/InventoryTypes";
 
 // ─── Module-level constants (V8 inlines as immediates, zero memory per instance) ───
 const QUARTER_TURN = Math.PI * 0.5;
@@ -26,28 +27,6 @@ const TWO_PI = Math.PI * 2;
 const HALF_QUARTER = QUARTER_TURN * 0.5;
 const INV_QUARTER = 1 / QUARTER_TURN;
 const CANVAS_SIZE = 64;
-const ATLAS_PATH = "/texture/diffuse_atlas.png";
-
-// ─── Shared atlas loader (single Image for all Item instances) ───
-let _sharedAtlasImg: HTMLImageElement | null = null;
-let _sharedAtlasLoaded = false;
-const _atlasWaiters: (() => void)[] = [];
-
-function _ensureSharedAtlas(): HTMLImageElement {
-	if (_sharedAtlasImg !== null) return _sharedAtlasImg;
-	const img = new Image();
-	img.onload = () => {
-		_sharedAtlasLoaded = true;
-		// Flush waiters
-		const len = _atlasWaiters.length;
-		for (let i = 0; i < len; i++) _atlasWaiters[i]();
-		_atlasWaiters.length = 0; // release references
-	};
-	img.src = ATLAS_PATH;
-	_sharedAtlasImg = img;
-	return img;
-}
-_ensureSharedAtlas();
 // ─── Rotation policy: flat lookup (avoids Map.get overhead for 2 entries) ───
 // Only "cube" and "slab" return true; everything else defaults to true.
 // Since the default is true, we only need to track exceptions (none currently).
@@ -67,6 +46,29 @@ interface BoatCtx {
 }
 
 let _boatCtx: BoatCtx | null = null;
+
+// Multiplayer callback: called when a block is placed locally
+let _onBlockPlaced:
+	| ((
+			x: number,
+			y: number,
+			z: number,
+			blockId: number,
+			blockState: number,
+	  ) => void)
+	| null = null;
+
+export function setOnBlockPlaced(
+	callback: (
+		x: number,
+		y: number,
+		z: number,
+		blockId: number,
+		blockState: number,
+	) => void,
+): void {
+	_onBlockPlaced = callback;
+}
 
 export class Item implements IUsable {
 	// ─── Public fields (ordered for V8 hidden class stability) ───
@@ -89,7 +91,7 @@ export class Item implements IUsable {
 	private _stackLabel: HTMLSpanElement | null = null;
 	private _cubeCanvas: HTMLCanvasElement | null = null;
 	private _useAction: ((player: Player) => void) | null = null;
-	private _shapeRedrawn = false;
+	private _iconReadyDrawn = false;
 
 	constructor(
 		name: string,
@@ -199,7 +201,13 @@ export class Item implements IUsable {
 		const action = this._useAction;
 		if (action !== null) {
 			action(player);
-		} else {
+			return;
+		}
+
+		// Only items backed by a REGISTERED BLOCK are placeable. Everything
+		// else (arrows, tools, materials without a use action) does nothing on
+		// right-click instead of placing an unregistered garbage block id.
+		if (this.blockId !== null && isRegisteredBlockId(this.blockId)) {
 			Item._placeAction(player);
 		}
 	}
@@ -215,15 +223,13 @@ export class Item implements IUsable {
 		const hit = getPlacementHit(player);
 		if (!hit) return;
 
-		const item =
-			player.playerInventory.inventory[0][player.playerHud.selectedHotbarSlot]
-				?.item;
-		if (!item) return;
+		const hotbar = player.playerInventory.inventory[0];
+		const slot = player.playerHud.selectedHotbarSlot;
+		const item = hotbar?.[slot]?.item;
+		if (item === null || item === undefined) return;
 
 		const blockId = item.blockId ?? item.itemId;
-		let blockState = item.blockState ?? 0;
-
-		if (blockId === BlockType.Water) blockState = 0;
+		let blockState = blockId === BlockType.Water ? 0 : (item.blockState ?? 0);
 
 		const shape = getShapeForBlockId(blockId);
 		const yaw = player.playerCamera.cameraYaw;
@@ -237,20 +243,25 @@ export class Item implements IUsable {
 			const sliceBits = blockState & ~7;
 			const existingRotation = blockState & 7;
 			const originalSliceAxis = getSliceAxis(existingRotation);
-			// Default true — only override if explicitly false in future
-			const rotateVertical = SLICE_ROTATE_VERTICAL_DEFAULT;
 
 			rotation = existingRotation & 3;
-			if (originalSliceAxis !== 1 && rotateVertical) {
+
+			if (originalSliceAxis !== 1 && SLICE_ROTATE_VERTICAL_DEFAULT) {
 				rotation = Item._wallRotFromYaw(yaw);
 			}
+
 			const sliceAxis = getSliceAxis(rotation);
 
 			flipY = (existingRotation & 4) !== 0;
+
 			if (sliceAxis === 1) {
-				if (hit.ny === -1) flipY = true;
-				else if (hit.ny === 1) flipY = false;
-				else flipY = hit.hitFracY > 0.5;
+				if (hit.ny === -1) {
+					flipY = true;
+				} else if (hit.ny === 1) {
+					flipY = false;
+				} else {
+					flipY = hit.hitFracY > 0.5;
+				}
 			} else if (sliceAxis === 0) {
 				flipY = hit.nx !== 0 ? hit.nx < 0 : hit.hitFracX > 0.5;
 			} else {
@@ -260,24 +271,21 @@ export class Item implements IUsable {
 			blockState = sliceBits | (flipY ? 4 : 0) | rotation;
 			slice = (blockState >> 3) & 7;
 		} else if (shape.rotateY) {
-			// Normalise yaw → [0, 2π) with single modulo
-			let normalized = yaw % TWO_PI;
-			if (normalized < 0) normalized += TWO_PI;
-			rotation = (((normalized + HALF_QUARTER) * INV_QUARTER) | 0) & 3;
-			rotation = (rotation ^ 2) & 3;
-			rotation = (4 - rotation) & 3;
+			rotation = Item._blockRotationFromYaw(yaw);
 			flipY = (shape.allowFlipY && hit.ny === -1) || hit.hitFracY > 0.5;
 			blockState = (blockState & ~7) | (flipY ? 4 : 0) | rotation;
 		}
 
 		const pos = hit.pos;
+		const x = pos.x;
+		const y = pos.y;
+		const z = pos.z;
 
-		// ─── Player overlap check ───
 		if (
 			player.playerVehicle.wouldBlockOverlapPlayer(
-				pos.x,
-				pos.y,
-				pos.z,
+				x,
+				y,
+				z,
 				shape,
 				rotation,
 				slice,
@@ -287,54 +295,54 @@ export class Item implements IUsable {
 			return;
 		}
 
-		// Mob overlap (Set iteration)
 		const mobRegistry = Map1.mobRegistry;
-		if (mobRegistry) {
-			const px = pos.x,
-				py = pos.y,
-				pz = pos.z;
-			const px1 = px + 1,
-				py1 = py + 1,
-				pz1 = pz + 1;
+		if (mobRegistry !== null && mobRegistry !== undefined) {
+			const x1 = x + 1;
+			const y1 = y + 1;
+			const z1 = z + 1;
+
 			for (const mob of mobRegistry.getAllMobs()) {
 				const mp = mob.position;
+
 				if (
-					mp.x >= px &&
-					mp.x < px1 &&
-					mp.y >= py &&
-					mp.y < py1 &&
-					mp.z >= pz &&
-					mp.z < pz1
+					mp.x >= x &&
+					mp.x < x1 &&
+					mp.y >= y &&
+					mp.y < y1 &&
+					mp.z >= z &&
+					mp.z < z1
 				) {
 					return;
 				}
 			}
 		}
 
-		// ─── Boat placement ───
 		const boatCtx = Item._extractBoatCtx(hit.dynamicContext);
-		if (boatCtx) {
+		if (boatCtx !== null) {
 			const plX = boatCtx.localX + boatCtx.localHitNx;
 			const plY = boatCtx.localY + boatCtx.localHitNy;
 			const plZ = boatCtx.localZ + boatCtx.localHitNz;
+
 			if (boatCtx.boatChunk.isInsideLocalBounds(plX, plY, plZ)) {
 				boatCtx.boatChunk.setBlockLocal(plX, plY, plZ, blockId, blockState);
+				if (player.stats.gamemode !== Gamemodes.Creative) {
+					player.playerInventory.removeItems(item.itemId, 1);
+				}
 				return;
 			}
 		}
 
-		setBlock(pos.x, pos.y, pos.z, blockId, blockState);
+		setBlock(x, y, z, blockId, blockState);
+		_onBlockPlaced?.(x, y, z, blockId, blockState);
+		if (player.stats.gamemode !== Gamemodes.Creative) {
+			player.playerInventory.removeItems(item.itemId, 1);
+		}
 	}
 
 	// ─── Zero-allocation boat context extraction ───
 	private static _extractBoatCtx(context: unknown): BoatCtx | null {
-		if (
-			context === null ||
-			context === undefined ||
-			typeof context !== "object"
-		) {
-			return null;
-		}
+		if (context === null || typeof context !== "object") return null;
+
 		const c = context as Record<string, unknown>;
 		if (
 			c.kind !== "boatChunk" ||
@@ -343,12 +351,14 @@ export class Item implements IUsable {
 		) {
 			return null;
 		}
-		const lx = c.localX,
-			ly = c.localY,
-			lz = c.localZ;
-		const hnx = c.localHitNx,
-			hny = c.localHitNy,
-			hnz = c.localHitNz;
+
+		const lx = c.localX;
+		const ly = c.localY;
+		const lz = c.localZ;
+		const hnx = c.localHitNx;
+		const hny = c.localHitNy;
+		const hnz = c.localHitNz;
+
 		if (
 			typeof lx !== "number" ||
 			typeof ly !== "number" ||
@@ -360,10 +370,11 @@ export class Item implements IUsable {
 			return null;
 		}
 
-		// Reuse scratch (stable hidden class)
+		const boatChunk = c.boatChunk as BoatChunk;
+
 		if (_boatCtx === null) {
 			_boatCtx = {
-				boatChunk: c.boatChunk as BoatChunk,
+				boatChunk,
 				localX: lx,
 				localY: ly,
 				localZ: lz,
@@ -372,7 +383,7 @@ export class Item implements IUsable {
 				localHitNz: hnz,
 			};
 		} else {
-			_boatCtx.boatChunk = c.boatChunk as BoatChunk;
+			_boatCtx.boatChunk = boatChunk;
 			_boatCtx.localX = lx;
 			_boatCtx.localY = ly;
 			_boatCtx.localZ = lz;
@@ -380,29 +391,40 @@ export class Item implements IUsable {
 			_boatCtx.localHitNy = hny;
 			_boatCtx.localHitNz = hnz;
 		}
+
 		return _boatCtx;
 	}
-
+	private static _blockRotationFromYaw(yaw: number): number {
+		let rotation = Item._yawQuarter(yaw);
+		rotation = (rotation ^ 2) & 3;
+		return (4 - rotation) & 3;
+	}
 	private static _wallRotFromYaw(yaw: number): number {
+		const qi = Item._yawQuarter(yaw);
+
+		// Keep wall-slice rotations on the two horizontal wall axes.
+		// The previous implementation returned 0 or 1 while the comment said 1 or 2.
+		return (qi & 1) !== 0 ? 1 : 2;
+	}
+	private static _yawQuarter(yaw: number): number {
 		let normalized = yaw % TWO_PI;
 		if (normalized < 0) normalized += TWO_PI;
-		const qi = (((normalized + HALF_QUARTER) * INV_QUARTER) | 0) & 3;
-		return qi & 1; // odd → 1, even → 0... wait, original returns 1 or 2
-		// Corrected: odd → 1, even → 2
+		return (((normalized + HALF_QUARTER) * INV_QUARTER) | 0) & 3;
 	}
 
 	// ─── Icon rendering ───
 	private _refreshIcon(): void {
-		const isBlock = isRegisteredBlockId(this.blockId);
-		if (isBlock) {
+		if (isRegisteredBlockId(this.blockId)) {
 			if (this._cubeCanvas !== null) this._cubeCanvas.style.display = "";
-			this._drawCube();
-			if (!this._shapeRedrawn) {
-				this._shapeRedrawn = true;
-				shapeInitPromise.then(() => {
-					if (isRegisteredBlockId(this.blockId)) this._drawCube();
-				});
+			if (!this._iconReadyDrawn) {
+				// First draw: wait for the shading atlases so the icon renders
+				// with lighting in a single pass. Shapes are already
+				// initialized whenever isRegisteredBlockId is true.
+				this._iconReadyDrawn = true;
+				iconAtlasesReadyPromise.then(() => this._drawCube());
+				return;
 			}
+			this._drawCube();
 			return;
 		}
 		// Non-block: hide canvas, use background image
@@ -426,16 +448,7 @@ export class Item implements IUsable {
 		const ctx = canvas.getContext("2d");
 		if (ctx === null) return;
 
-		const img = _sharedAtlasImg!; // always non-null after module init
-		const ready = _sharedAtlasLoaded && img.width > 0;
-
-		drawCubeIcon(
-			ctx,
-			this.blockId,
-			img,
-			ready,
-			getShapeHeightScale(this.blockId),
-		);
+		drawCubeIcon(ctx, this.blockId);
 	}
 
 	// ─── Stack operations (hot path: inventory drag/drop) ───
@@ -476,5 +489,3 @@ export class Item implements IUsable {
 		return this._stackSize;
 	}
 }
-// ─── EAGER LOAD: begin fetching immediately on import ───
-_ensureSharedAtlas();

@@ -1,11 +1,14 @@
 /// <reference lib="webworker" />
 
+import { resetCacheAndTracking as resetDistantTerrainCache } from "@/code/Generation/DistantTerrain/DistantTerrainGenerator";
 import type { GenerationParamsType } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { WorldGenerator } from "@/code/Generation/WorldGenerator";
 import { enableWasmNoise } from "@/code/Lib/WasmNoise";
+import { packCoords } from "./DataStructures/ChunkCoords";
 import {
+	type LightRegisterChunkBatchRequest,
 	type LightRegisterChunkRequest,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
@@ -13,6 +16,7 @@ import { WATER_BLOCK_ID } from "./Worker/ChunkMesherConstants";
 import { LightTaskHandlers } from "./Worker/LightTaskHandlers";
 import {
 	handleGenerateDistantTerrain,
+	handleGenerateFarTile,
 	handleGenerateTerrain,
 	handleInitDistantTerrainShared,
 } from "./Worker/WorkerTaskHandlers";
@@ -29,16 +33,12 @@ interface PendingVoxelData {
 	blockBytesPerElement: 1 | 2;
 }
 // Coord → voxel data from OPFS worker
-const _pendingVoxelData = new Map<number, PendingVoxelData>();
+const _pendingVoxelData = new Map<bigint, PendingVoxelData>();
 // Coord → registration metadata from main thread (arrives before channel)
 const _pendingRegistrations = new Map<
-	number,
+	bigint,
 	{ seq: number; chunkId: bigint; headerSlot: number }
 >();
-
-function _packCoordKey(x: number, y: number, z: number): number {
-	return ((x + 512) << 20) | ((y + 512) << 10) | (z + 512);
-}
 
 function _registerFromBoth(
 	meta: {
@@ -69,7 +69,7 @@ function _registerFromBoth(
 function _handleChannelMessage(event: MessageEvent): void {
 	const data = event.data;
 	if (!data || (data as { _type?: string })._type !== "voxelData") return;
-	const key = _packCoordKey(data.chunkX | 0, data.chunkY | 0, data.chunkZ | 0);
+	const key = packCoords(data.chunkX | 0, data.chunkY | 0, data.chunkZ | 0);
 	const voxel: PendingVoxelData = {
 		blocksSAB: data.blocksSAB,
 		paletteSAB: data.paletteSAB,
@@ -267,10 +267,7 @@ const onMessageHandler = (event: MessageEvent) => {
 				const { payload, transferables } = handleGenerateDistantTerrain(
 					event.data,
 				);
-				self.postMessage(
-					{ ...payload, type: WorkerTaskType.GenerateDistantTerrain_Generated },
-					transferables,
-				);
+				self.postMessage(payload, transferables);
 			} catch (err) {
 				console.error("GenerateDistantTerrain failed:", err);
 				const { requestId, centerChunkX, centerChunkZ } = event.data;
@@ -280,6 +277,25 @@ const onMessageHandler = (event: MessageEvent) => {
 					centerChunkX,
 					centerChunkZ,
 					failed: true,
+				});
+			}
+			return;
+		}
+
+		case WorkerTaskType.GenerateFarTile: {
+			try {
+				const { payload, transferables } = handleGenerateFarTile(event.data);
+				self.postMessage(payload, transferables);
+			} catch (err) {
+				console.error("GenerateFarTile failed:", err);
+				self.postMessage({
+					type: WorkerTaskType.GenerateFarTile,
+					requestId: event.data.requestId,
+					levelIndex: event.data.levelIndex,
+					tileX: event.data.tileX,
+					tileZ: event.data.tileZ,
+					opaqueFaces: new Uint32Array(0),
+					waterFaces: new Uint32Array(0),
 				});
 			}
 			return;
@@ -302,7 +318,7 @@ const onMessageHandler = (event: MessageEvent) => {
 			}
 			// Null SABs → main thread uses worker-to-worker channel for SABs.
 			// Merge with pending voxel data from OPFS worker.
-			const key = _packCoordKey(req.chunkX, req.chunkY, req.chunkZ);
+			const key = packCoords(req.chunkX, req.chunkY, req.chunkZ);
 			const voxel = _pendingVoxelData.get(key);
 			if (voxel) {
 				_pendingVoxelData.delete(key);
@@ -326,6 +342,41 @@ const onMessageHandler = (event: MessageEvent) => {
 			}
 			return;
 		}
+		case WorkerTaskType.LightRegisterChunkBatch: {
+			const chunks = (event.data as LightRegisterChunkBatchRequest).chunks;
+			for (let i = 0; i < chunks.length; i++) {
+				const item = chunks[i];
+
+				if (item.blockSAB !== null) {
+					LightTaskHandlers.handleRegisterChunkFields(item);
+					continue;
+				}
+
+				const key = packCoords(item.chunkX, item.chunkY, item.chunkZ);
+				const voxel = _pendingVoxelData.get(key);
+				if (voxel) {
+					_pendingVoxelData.delete(key);
+					_registerFromBoth(
+						{
+							seq: item.seq,
+							chunkId: item.chunkId,
+							chunkX: item.chunkX,
+							chunkY: item.chunkY,
+							chunkZ: item.chunkZ,
+							headerSlot: item.headerSlot,
+						},
+						voxel,
+					);
+				} else {
+					_pendingRegistrations.set(key, {
+						seq: item.seq,
+						chunkId: item.chunkId,
+						headerSlot: item.headerSlot,
+					});
+				}
+			}
+			return;
+		}
 
 		case WorkerTaskType.InitWorkerChannel: {
 			const port = (event.data as { port: MessagePort }).port;
@@ -337,12 +388,20 @@ const onMessageHandler = (event: MessageEvent) => {
 			LightTaskHandlers.handleUnregisterChunk(event.data);
 			return;
 		}
+		case WorkerTaskType.LightUnregisterChunkBatch: {
+			LightTaskHandlers.handleUnregisterChunkBatch(event.data);
+			return;
+		}
 		case WorkerTaskType.LightUpdateChunkBuffers: {
 			LightTaskHandlers.handleUpdateBuffers(event.data);
 			return;
 		}
 		case WorkerTaskType.LightMutate: {
 			LightTaskHandlers.handleMutate(event.data);
+			return;
+		}
+		case WorkerTaskType.LightMutateBatch: {
+			LightTaskHandlers.handleMutateBatch(event.data);
 			return;
 		}
 		case WorkerTaskType.LightAddEmission: {
@@ -364,6 +423,7 @@ const onMessageHandler = (event: MessageEvent) => {
 			// generation task, so no chunk can be generated with a stale seed.
 			const { seed } = event.data as { seed: string };
 			setTerrainSeed(seed);
+			resetDistantTerrainCache();
 			generator = new WorldGenerator({
 				...GenerationParams,
 				SEED: seed,

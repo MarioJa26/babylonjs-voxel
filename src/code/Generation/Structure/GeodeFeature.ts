@@ -1,5 +1,6 @@
 import type { Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
+import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
@@ -15,13 +16,7 @@ export class GeodeFeature implements IWorldFeature {
 		_chunkY: number,
 		chunkZ: number,
 		_biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seed: number,
 		chunkSize: number,
 		generatingChunkX: number,
@@ -64,8 +59,17 @@ export class GeodeFeature implements IWorldFeature {
 		const outerSq = outerRadius * outerRadius;
 		const innerSq = innerRadius * innerRadius;
 
-		for (let x = bounds.minX; x < bounds.maxX; x++) {
-			for (let z = bounds.minZ; z < bounds.maxZ; z++) {
+		// Clamp the column walk to the sphere's footprint: columns outside
+		// [cx-maxR, cx+maxR] can never satisfy distSq <= outerSq, so scanning
+		// them was pure overhead (up to ~12x over-scan when the geode sits in
+		// a corner of the chunk). Output is identical.
+		const minX = Math.max(bounds.minX, cx - maxR);
+		const maxX = Math.min(bounds.maxX - 1, cx + maxR) + 1;
+		const minZ = Math.max(bounds.minZ, cz - maxR);
+		const maxZ = Math.min(bounds.maxZ - 1, cz + maxR) + 1;
+
+		for (let x = minX; x < maxX; x++) {
+			for (let z = minZ; z < maxZ; z++) {
 				for (let y = cy - maxR; y <= cy + maxR; y++) {
 					const dx = x - cx;
 					const dy = y - cy;

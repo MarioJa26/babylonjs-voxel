@@ -1,34 +1,141 @@
-import {
-	addToScene,
-	createMeshFromData,
-	type LiteMetadata,
-	type Mesh,
-	removeFromScene,
-	type SceneContext,
-	vec3,
-} from "@babylonjs/lite";
+import { type SceneContext, vec3 } from "@babylonjs/lite";
 import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
-import { DroppedItem } from "../../Player/Inventory/DroppedItem";
+import { dropWorldItem } from "../../Player/Inventory/dropWorldItem";
 import { Item } from "../../Player/Inventory/Item";
-import type { Player } from "../../Player/Player";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
-import { MetadataContainer } from "../MetadataContainer";
-import { buildBoxGeometry, createMobColorMaterial } from "./MobMesh";
+import { getMobStats, MobTypeId } from "../MobConfig";
+import { dropMobFoodForType } from "./MobDrops";
+import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
+import { registerMobLight, unregisterMobLight } from "./MobLighting";
+import type { MobPartSpec } from "./MobMesh";
+import {
+	MOB_SHEEP_SKIN_PATH,
+	SHEEP_BODY_UV,
+	SHEEP_HEAD_UV,
+	SHEEP_LEG_BL_UV,
+	SHEEP_LEG_BR_UV,
+	SHEEP_LEG_FL_UV,
+	SHEEP_LEG_FR_UV,
+} from "./MobSkin";
 import { NeutralMob } from "./NeutralMob";
+import { spawnXpOrbs } from "./XpOrb";
 
-const BODY_WIDTH = 0.6;
-const BODY_HEIGHT = 0.6;
-const BODY_DEPTH = 0.9;
+const SHEEP_MOB_TYPE = "sheep";
+const SHEEP_CHUNK_ENTITY_TYPE = "sheep_v1";
+const SHEEP_STATS = getMobStats(MobTypeId.Sheep);
+const SHEEP_DEFAULT_HP = SHEEP_STATS.hp;
+const SHEEP_WANDER_SPEED = SHEEP_STATS.speed;
+
 const WOOL_DROP_BLOCK_ID = 1;
 
-const SHEEP_COLORS = [
+// Sheep anatomy: wool body + wool head + four legs. The whole herd renders
+// through this ONE shared thin-instanced mesh (1 draw call total); wool color
+// comes from the per-instance color buffer. UVs reference the editable skin
+// layout in MobSkin.ts (each leg has its own region).
+const SHEEP_PARTS: readonly MobPartSpec[] = [
+	{
+		width: 0.7,
+		height: 0.65,
+		depth: 1.0,
+		x: 0,
+		y: 0,
+		z: 0,
+		uv: SHEEP_BODY_UV,
+	},
+	{
+		width: 0.38,
+		height: 0.42,
+		depth: 0.42,
+		x: 0,
+		y: 0.16,
+		z: 0.6,
+		uv: SHEEP_HEAD_UV,
+	},
+	{
+		width: 0.16,
+		height: 0.45,
+		depth: 0.16,
+		x: -0.21,
+		y: -0.33,
+		z: -0.32,
+		uv: SHEEP_LEG_FL_UV,
+		partId: 3,
+	},
+	{
+		width: 0.16,
+		height: 0.45,
+		depth: 0.16,
+		x: 0.21,
+		y: -0.33,
+		z: -0.32,
+		uv: SHEEP_LEG_FR_UV,
+		partId: 4,
+	},
+	{
+		width: 0.16,
+		height: 0.45,
+		depth: 0.16,
+		x: -0.21,
+		y: -0.33,
+		z: 0.32,
+		uv: SHEEP_LEG_BL_UV,
+		partId: 3,
+	},
+	{
+		width: 0.16,
+		height: 0.45,
+		depth: 0.16,
+		x: 0.21,
+		y: -0.33,
+		z: 0.32,
+		uv: SHEEP_LEG_BR_UV,
+		partId: 4,
+	},
+];
+
+// Collider spans the whole animal so feet rest exactly on the ground.
+// Arrow hit box matches the WOOL BODY only (±0.325 vertically, centered on
+// the body) — not the full model extent, so arrows flying over the back or
+// under the belly don't register.
+export const SHEEP_HIT_HALF = { x: 0.36, y: 0.325, z: 0.52 };
+const SHEEP_BODY_HALF_SIZE = vec3(
+	SHEEP_HIT_HALF.x,
+	SHEEP_HIT_HALF.y,
+	SHEEP_HIT_HALF.z,
+);
+export const SHEEP_COLORS = [
 	{ name: "white", color: new Color3(0.95, 0.95, 0.95) },
 	{ name: "black", color: new Color3(0.15, 0.15, 0.15) },
 	{ name: "brown", color: new Color3(0.45, 0.25, 0.1) },
 	{ name: "gray", color: new Color3(0.5, 0.5, 0.5) },
 	{ name: "pink", color: new Color3(0.9, 0.5, 0.6) },
 ] as const;
+
+// Hip pivot Y: legs span y ∈ [-0.555, -0.105]; the body underside is at
+// y = -0.325, so the leg-body joint (rotation pivot) sits at y = -0.1.
+const SHEEP_HIP_PIVOT_Y = -0.1;
+const SHEEP_WALK_AMP = 0.6;
+
+let bodyPool: MobInstancePool | null = null;
+
+function getBodyPool(): MobInstancePool {
+	bodyPool ??= new MobInstancePool({
+		name: "sheepInstances",
+		parts: SHEEP_PARTS,
+		instanceColors: true,
+		skinPath: MOB_SHEEP_SKIN_PATH,
+		hipPivotY: SHEEP_HIP_PIVOT_Y,
+		walkAmp: SHEEP_WALK_AMP,
+	});
+	return bodyPool;
+}
+
+/** Shared instance pool — remote (server-authoritative) sheep render through
+ * the same textured instanced mesh as local ones. */
+export function getSheepInstancePool(): MobInstancePool {
+	return getBodyPool();
+}
 
 type SheepSerializedPayload = {
 	position: { x: number; y: number; z: number };
@@ -45,19 +152,18 @@ function payloadToColor(p: { r: number; g: number; b: number }): Color3 {
 }
 
 function randomSheepColor(): Color3 {
-	const entry = SHEEP_COLORS[Math.floor(Math.random() * SHEEP_COLORS.length)];
+	const entry = SHEEP_COLORS[(Math.random() * SHEEP_COLORS.length) | 0];
 	return entry.color.clone();
 }
 
 export class Sheep extends NeutralMob {
-	readonly mobType = "sheep";
-	readonly CHUNK_ENTITY_TYPE = "sheep_v1";
+	readonly mobType = SHEEP_MOB_TYPE;
+	readonly CHUNK_ENTITY_TYPE = SHEEP_CHUNK_ENTITY_TYPE;
 
 	static #chunkLoaderRegistered = false;
 	static #chunkReloadScene: SceneContext | null = null;
 
-	#bodyMesh: Mesh;
-	#bodyMaterial: ReturnType<typeof createMobColorMaterial>;
+	#bodySlot: InstanceSlotHandle;
 	#color: Color3;
 
 	constructor(
@@ -69,62 +175,68 @@ export class Sheep extends NeutralMob {
 		color?: Color3,
 	) {
 		super(
-			hp ?? 8,
+			hp ?? SHEEP_DEFAULT_HP,
 			scene,
-			vec3(BODY_WIDTH * 0.5, BODY_HEIGHT * 0.5, BODY_DEPTH * 0.5),
+			SHEEP_BODY_HALF_SIZE,
+			SHEEP_STATS.feetHeight,
 		);
 
 		this.#color = color ?? randomSheepColor();
 
-		// Body mesh
-		const bodyGeo = buildBoxGeometry(BODY_WIDTH, BODY_HEIGHT, BODY_DEPTH);
-		this.#bodyMesh = createMeshFromData(
-			Map1.engine,
-			"sheepBody",
-			bodyGeo.positions,
-			bodyGeo.normals,
-			bodyGeo.indices,
+		this.setPosition(x, y, z);
+
+		this.#bodySlot = getBodyPool().acquire(this);
+		// Wool color in RGB; alpha channel carries the walk phase (start at 0).
+		getBodyPool().writeColor(
+			this.#bodySlot,
+			this.#color.r,
+			this.#color.g,
+			this.#color.b,
+			0,
 		);
-		this.#bodyMesh.position.set(x, y, z);
-		this.#bodyMesh.pickable = true;
-		this.#bodyMesh.renderOrder = 1;
-
-		this.#bodyMaterial = createMobColorMaterial(
-			this.#color.clone(),
-			"sheepBodyMat",
-		);
-		this.#bodyMesh.material = this.#bodyMaterial;
-
-		addToScene(Map1.mainScene, this.#bodyMesh);
-
-		// Wire up body mesh to base class
-		const meta = new MetadataContainer();
-		this.#bodyMesh.metadata = meta as unknown as LiteMetadata;
-		this.setBodyMesh(this.#bodyMesh);
-		meta.set("use", (player: Player) => this.use(player));
+		this.syncToInstances();
+		this.finalizeRegistration();
+		registerMobLight({
+			pool: getBodyPool(),
+			slot: this.#bodySlot,
+			getPos: () => this.position,
+			baseColor: [this.#color.r, this.#color.g, this.#color.b],
+			owner: this,
+		});
 	}
 
-	// --- Abstract implementations ---
+	protected override syncToInstances(): void {
+		const pos = this.position;
+		const pool = getBodyPool();
+
+		pool.writeMatrix(this.#bodySlot, pos.x, pos.y, pos.z, this.facingYaw);
+		pool.writeWalkPhase(this.#bodySlot, this.walkPhase);
+	}
 
 	configureChunkLoader(scene: SceneContext): void {
 		Sheep.#chunkReloadScene = scene;
+
 		if (Sheep.#chunkLoaderRegistered) return;
 		Sheep.#chunkLoaderRegistered = true;
 
-		registerChunkEntityLoader(this.CHUNK_ENTITY_TYPE, (payload: unknown) => {
-			const s = Sheep.#chunkReloadScene;
-			if (!s) return;
+		registerChunkEntityLoader(SHEEP_CHUNK_ENTITY_TYPE, (payload: unknown) => {
+			const reloadScene = Sheep.#chunkReloadScene;
+			if (!reloadScene) return;
+
 			const data = payload as SheepSerializedPayload | undefined;
-			if (!data?.position) return;
+			const position = data?.position;
+			if (!position) return;
+
 			const color = data.color
 				? payloadToColor(data.color)
 				: randomSheepColor();
+
 			Map1.mobRegistry?.addMob(
 				new Sheep(
-					data.position.x,
-					data.position.y,
-					data.position.z,
-					s,
+					position.x,
+					position.y,
+					position.z,
+					reloadScene,
 					data.hp,
 					color,
 				),
@@ -133,31 +245,54 @@ export class Sheep extends NeutralMob {
 	}
 
 	getWanderSpeed(): number {
-		return 1.5;
+		return SHEEP_WANDER_SPEED;
+	}
+
+	// Sheep don't panic from player proximity — only when damaged.
+	protected override getPanicRadiusSq(): number {
+		return 0;
+	}
+
+	// When hit, flee for 4 seconds.
+	protected override onDamaged(): void {
+		this.triggerPanic(4);
 	}
 
 	onDeath(): void {
 		this.#dropWool();
+		const pos = this.position;
+		dropMobFoodForType("sheep", pos.x, pos.y, pos.z);
+		spawnXpOrbs(pos.x, pos.y, pos.z, 1, 1);
 	}
 
 	protected override getExtraPayload(): Record<string, unknown> {
 		return { color: colorToPayload(this.#color) };
 	}
 
-	// --- Sheep-specific ---
-
 	#dropWool(): void {
-		const pos = this.#bodyMesh.position;
+		const pos = this.position;
 		const item = Item.createById(WOOL_DROP_BLOCK_ID);
-		item.stackSize = 1;
-		new DroppedItem(item, pos.x, pos.y + 0.5, pos.z);
-	}
 
-	// --- Cleanup ---
+		item.stackSize = 1;
+
+		// Pass the local player so the drop routes through ItemDrop in
+		// multiplayer instead of spawning a server-unaware local item.
+		dropWorldItem(
+			item,
+			pos.x,
+			pos.y + 0.5,
+			pos.z,
+			0,
+			0,
+			0,
+			Map1.mainPlayer ?? undefined,
+		);
+	}
 
 	dispose(): void {
 		if (this.isDisposed) return;
-		removeFromScene(Map1.mainScene, this.#bodyMesh);
+		unregisterMobLight(this.#bodySlot);
+		getBodyPool().release(this.#bodySlot);
 		super.dispose();
 	}
 }

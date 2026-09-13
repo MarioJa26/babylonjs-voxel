@@ -37,6 +37,7 @@ export type InFlightProcessState = {
 	unloadBatch: Chunk[];
 	unloadBatchIndex: number;
 	savedChunkIds: Set<bigint>;
+	savedChunkRevisions: Map<bigint, number>;
 
 	loadBatch: QueuedChunkRequest[];
 	validLoadBatch: QueuedChunkRequest[];
@@ -46,12 +47,23 @@ export type InFlightProcessState = {
 	farLoadedDataMap: Map<bigint, SavedChunkData>;
 	applyLoadedIndex: number;
 	chunksToGenerate: Chunk[];
+	chunksToGenerateIds: Set<bigint>;
 	chunksNeedingFullHydration: Set<bigint>;
 
 	hydrateIds: bigint[];
 	hydrateChunks: Chunk[];
 	hydrateMap: Map<bigint, SavedChunkData>;
 	hydrateIndex: number;
+
+	/**
+	 * Caller-owned scratch set used while rebuilding the load queue after
+	 * processing fails. It is reused instead of allocating a new Set for
+	 * every recovery.
+	 *
+	 * This belongs to the process state because the state is exclusively
+	 * owned by one active processQueues() operation.
+	 */
+	queuedLoadIdsScratch: Set<bigint>;
 };
 
 export type ChunkLoadingDebugStats = {
@@ -72,12 +84,14 @@ export type ChunkLoadingDebugStats = {
 	totalHydrated: number;
 	totalUnloaded: number;
 	totalSaved: number;
-	lastOpfsHits: number;
-	lastOpfsMisses: number;
-	totalOpfsHits: number;
-	totalOpfsMisses: number;
-	opfsUsedBytes: number;
-	opfsTotalBytes: number;
-	opfsSlotCount: number;
-	opfsEvictionCount: number;
+	// Phase-0 streaming instrumentation (ms, last updateChunksAround).
+	// Identifies which scan stage hitches on move/fast-fly.
+	lastUpdateAroundMs: number;
+	lastReconcileMs: number;
+	lastShellMs: number;
+	lastUndergroundMs: number;
+	lastRefreshMs: number;
+	lastSortMs: number;
+	lastUnloadScanMs: number;
+	totalUpdateAroundMs: number;
 };

@@ -8,25 +8,31 @@
 		"build": "\"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js build",
 		"preview": "\"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js preview",
 		"lint": "tsc --noEmit",
+		"selftest": "tsc --ignoreConfig --outDir .tmp-selftest --module esnext --target es2020 --moduleResolution bundler --skipLibCheck scripts/far-tile-selftest.ts && node .tmp-selftest/scripts/far-tile-selftest.js",
 		"ts7:version": "tsc --version",
 		"typecheck:ts7": "tsc --noEmit",
-		"build:test-ts7": "tsc --noEmit && \"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js build"
+		"build:test-ts7": "tsc --noEmit && \"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js build",
+		"postinstall": "patch-package"
 	},
 	"dependencies": {
-		"@babylonjs/lite": "^1.16.0",
-		"@colyseus/sdk": "^0.17.43",
-		"@webgpu/types": "^0.1.71",
+		"@babylonjs/lite": "^1.26.0",
+		"@colyseus/sdk": "^0.18.2",
+		"@types/level": "^8.0.0",
+		"@types/level-js": "^4.0.5",
+		"@webgpu/types": "^0.1.72",
 		"alea": "^1.0.1",
-		"babylon-lite-explorer": "^0.5.0",
-		"idb": "^8.0.3"
+		"babylon-lite-explorer": "^0.6.0",
+		"idb": "^8.0.3",
+		"level": "^10.0.0"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.6",
-		"@types/node": "^26.1.2",
+		"@biomejs/biome": "2.5.11",
+		"@types/node": "^26.4.0",
 		"assemblyscript": "^0.28.20",
-		"tsx": "^4.23.5",
+		"patch-package": "^8.0.1",
+		"tsx": "^4.23.13",
 		"typescript": "^7.0.2",
-		"vite": "^8.2.0",
+		"vite": "^8.2.2",
 		"vite-plugin-glsl": "^1.6.1"
 	}
 }

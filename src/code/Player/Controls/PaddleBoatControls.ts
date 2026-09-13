@@ -90,11 +90,16 @@ export class PaddleBoatControls implements IControls<BoatControlEntity> {
 		} else if (PaddleBoatControls.KEY_DOWN.includes(key)) {
 			this.#inputDirection.y = 1;
 		} else if (PaddleBoatControls.KEY_USE.includes(key)) {
+			this.#player.setUseHeld(true);
 			this.#player.use();
 		}
 	}
 
 	public onKeyUp(key: string) {
+		if (PaddleBoatControls.KEY_USE.includes(key)) {
+			this.#player.setUseHeld(false);
+		}
+
 		if (PaddleBoatControls.KEY_UP.includes(key)) {
 			if (this.#pressedKeysHas(PaddleBoatControls.KEY_DOWN)) {
 				this.#inputDirection.y = 1;

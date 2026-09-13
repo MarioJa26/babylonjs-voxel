@@ -1,15 +1,24 @@
 import type { Vec3 } from "@babylonjs/lite";
-import type { Mob } from "@/code/Entities/Mobs/Mob";
+import { resolveMobFromPick } from "@/code/Entities/Mobs/MobInstancePool";
+import { getMeleeDamage, getMeleeRange } from "@/code/Entities/WeaponStats";
 import type { IControls } from "@/code/Interface/IControls";
+import { Map1 } from "@/code/Maps/Map1";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { validateChunksAround } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { MetadataContainer } from "../../Entities/MetadataContainer";
 import { isUiOpen, UiFocus } from "../../Lib/GameRuntimeState";
 import type { BlockRaycastHit } from "../Hud/BlockHighlight/BlockRaycaster";
 import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
 import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakingBlockHandler";
 import { Crosshair } from "../Hud/Crosshair/Crosshair";
+import { swingHeldItemView } from "../Inventory/HeldItemView";
 import type { Item } from "../Inventory/Item";
+import { getRegisteredItemById } from "../Inventory/ItemRegistry";
+import {
+	BOW_DRAW_TIME,
+	BOW_MIN_DRAW_TIME,
+	playerHasArrows,
+	useBow,
+} from "../Inventory/ItemUseActions";
 import type { Player } from "../Player";
 import { Gamemodes } from "../PlayerStats";
 import type { PlayerVehicleMotor } from "../PlayerVehicleMotor";
@@ -25,6 +34,11 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 
 	#lastJumpTapMs = 0;
 	static readonly DOUBLE_TAP_MS = 260;
+
+	// Bow draw state
+	#isDrawing = false;
+	#drawStartTime = 0;
+	#drawProgress = 0;
 
 	static readonly #HOTBAR_KEY_MAP = new Map<string, number>([
 		["1", 0],
@@ -95,12 +109,20 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	public handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void {
 		if (WalkingControls.MOUSE1.includes(mouseEvent.button)) {
 			if (isKeyDown) {
-				const mobMesh = Crosshair.pickMobMesh(this.#player);
-				if (mobMesh?.metadata instanceof MetadataContainer) {
-					const mob: Mob | undefined = mobMesh.metadata.get("mob");
-					mob?.takeDamage(1);
-					return;
+				swingHeldItemView();
+				const target = Crosshair.pickMobTarget(this.#player);
+				if (target) {
+					const mob = resolveMobFromPick(target.mesh, target.thinInstanceIndex);
+					if (mob) {
+						// Punch damage comes from the held weapon (WeaponStats);
+						// empty hand keeps the classic 1-hp hit.
+						mob.takeDamage(getMeleeDamage(this.selectedItem?.itemId));
+						return;
+					}
 				}
+				// Multiplayer: local pools hold no server mobs, so sweep the
+				// remote mobs along the view ray and send a validated hit.
+				if (this.#tryRemoteMelee()) return;
 				this.#blockBreaking.start();
 			} else {
 				this.#blockBreaking.stop();
@@ -108,20 +130,137 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 			return;
 		}
 
-		if (WalkingControls.MOUSE2.includes(mouseEvent.button) && isKeyDown) {
-			const item =
-				this.#player.playerInventory.inventory[0][
-					this.#player.playerHud.selectedHotbarSlot
-				]?.item;
-
-			if (item) {
-				item.use(this.#player);
+		if (WalkingControls.MOUSE2.includes(mouseEvent.button)) {
+			if (isKeyDown) {
+				this.#onRightClickDown();
+			} else {
+				this.#onRightClickUp();
 			}
 		}
 	}
 
+	/**
+	 * Handle right-click press. If the selected item is a bow with arrows
+	 * available, start drawing. Otherwise, use the item immediately.
+	 */
+	#onRightClickDown(): void {
+		if (this.#isDrawing) return;
+
+		const item = this.selectedItem;
+		if (!item) return;
+
+		if (this.#isBowItem(item)) {
+			// Start drawing the bow — only if the player has ammunition
+			if (playerHasArrows(this.#player)) {
+				this.#isDrawing = true;
+				this.#drawStartTime = performance.now();
+				this.#drawProgress = 0;
+			}
+		} else {
+			// Non-bow item: use immediately (previous behavior)
+			item.use(this.#player);
+		}
+	}
+
+	/**
+	 * Handle right-click release. If drawing a bow, fire the arrow if the
+	 * draw time exceeded the minimum threshold; otherwise cancel the shot.
+	 */
+	#onRightClickUp(): void {
+		if (!this.#isDrawing) return;
+
+		this.#isDrawing = false;
+		const drawTime = (performance.now() - this.#drawStartTime) / 1000;
+
+		if (drawTime >= BOW_MIN_DRAW_TIME) {
+			// Fire the arrow with speed based on draw progress
+			useBow(this.#player, this.#drawProgress);
+		}
+
+		this.#drawProgress = 0;
+		this.#player.playerHud.updateDrawProgress(0);
+		this.#player.playerCamera.clearBowZoom();
+	}
+
+	/** Check whether the given item is a bow (has the use_bow action). */
+	#isBowItem(item: Item): boolean {
+		const def = getRegisteredItemById(item.itemId);
+		return def?.useAction === "use_bow";
+	}
+
+	/** The currently selected hotbar item (or null). */
+	get selectedItem(): Item | null {
+		return (
+			this.#player.playerInventory.inventory[0][
+				this.#player.playerHud.selectedHotbarSlot
+			]?.item ?? null
+		);
+	}
+
+	/**
+	 * Melee a server-authoritative (remote) mob in multiplayer. Sweeps the
+	 * view ray against RemoteMobManager and sends MobDamage when it lands.
+	 * True when a swing connected (caller must not start block breaking).
+	 */
+	#tryRemoteMelee(): boolean {
+		const remote = Map1.remoteMobManager;
+		const netClient = this.#player.networkManager?.netClient;
+		if (!remote || !netClient?.isConnected) return false;
+
+		const cam = this.#player.playerCamera.playerCamera;
+		const px = cam.position.x;
+		const py = cam.position.y;
+		const pz = cam.position.z;
+		let dx = cam.target.x - px;
+		let dy = cam.target.y - py;
+		let dz = cam.target.z - pz;
+		const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+		dx /= len;
+		dy /= len;
+		dz /= len;
+
+		const reach = Math.max(3.2, getMeleeRange(this.selectedItem?.itemId));
+		const hit = remote.findSegmentHit(
+			px,
+			py,
+			pz,
+			px + dx * reach,
+			py + dy * reach,
+			pz + dz * reach,
+		);
+		if (!hit) return false;
+		netClient.sendMobDamage(hit.id, getMeleeDamage(this.selectedItem?.itemId));
+		// Optimistic kill-link: the server echo skips the sender, so record
+		// the hit locally or our own kills show no burst/XP.
+		remote.noteOutgoingDamage(hit.id);
+		return true;
+	}
+
 	public update(hit?: BlockRaycastHit | null): void {
 		this.#blockBreaking.update(hit);
+
+		if (this.#isDrawing) {
+			const elapsed = (performance.now() - this.#drawStartTime) / 1000;
+			const progress = Math.min(1, elapsed / BOW_DRAW_TIME);
+
+			if (progress === this.#drawProgress) return;
+
+			this.#drawProgress = progress;
+			this.#player.playerHud.updateDrawProgress(progress);
+			this.#player.playerCamera.setBowZoom(progress);
+		}
+	}
+
+	/**
+	 * Cancel any in-progress bow draw. Called when the player switches items,
+	 * opens a UI, or otherwise interrupts the draw.
+	 */
+	public cancelDraw(): void {
+		if (!this.#isDrawing) return;
+		this.#isDrawing = false;
+		this.#drawProgress = 0;
+		this.#player.playerHud.updateDrawProgress(0);
+		this.#player.playerCamera.clearBowZoom();
 	}
 
 	/**
@@ -130,6 +269,15 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	 */
 	public stopBlockBreaking(): void {
 		this.#blockBreaking.stop();
+	}
+
+	/**
+	 * Set callback for when a block is broken (for multiplayer sync).
+	 */
+	public setOnBlockBroken(
+		callback: (x: number, y: number, z: number, blockId: number) => void,
+	): void {
+		this.#blockBreaking.setOnBlockBroken(callback);
 	}
 
 	public onKeyDown(key: string) {
@@ -153,6 +301,8 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 
 		if (WalkingControls.KEY_CHAT.includes(key)) {
 			this.#player.playerHud.chat.open();
+			// Also open multiplayer chat if connected
+			this.#player.networkManager?.toggleChat();
 			return;
 		}
 
@@ -177,12 +327,14 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		} else if (WalkingControls.KEY_SNEAK.includes(key)) {
 			this.#controlledEntity.isSneaking = true;
 		} else if (WalkingControls.KEY_USE.includes(key)) {
+			this.#player.setUseHeld(true);
 			this.#player.use();
 		} else if (WalkingControls.KEY_FLASH.includes(key)) {
 			this.#player.flashlight.toggle();
 		}
 
 		if (WalkingControls.KEY_DROP.includes(key)) {
+			this.cancelDraw();
 			const item =
 				this.#player.playerInventory.inventory[0][
 					this.#player.playerHud.selectedHotbarSlot
@@ -216,7 +368,11 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		}
 
 		if (WalkingControls.KEY_SNEAK.includes(key)) {
-			this.#controlledEntity.isSneaking = false;
+			this.#player.playerVehicle.isSneaking = false;
+		}
+
+		if (WalkingControls.KEY_USE.includes(key)) {
+			this.#player.setUseHeld(false);
 		}
 
 		if (WalkingControls.MOUSE_WHEEL_UP.includes(key)) {
@@ -225,9 +381,11 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 			if (this.#player.playerHud.selectedHotbarSlot < 0) {
 				this.#player.playerHud.selectedHotbarSlot = 9;
 			}
+			this.cancelDraw();
 		} else if (WalkingControls.MOUSE_WHEEL_DOWN.includes(key)) {
 			this.#player.playerHud.selectedHotbarSlot =
 				(this.#player.playerHud.selectedHotbarSlot + 1) % 10;
+			this.cancelDraw();
 		}
 
 		if (
@@ -252,6 +410,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 			// toggleInventory() is now the single source of truth for switching the
 			// active control scheme (see PlayerHud.#activateInventoryControls /
 			// #activateWalkingControls), so we no longer swap keyboardControls here.
+			this.cancelDraw();
 			this.#player.playerHud.toggleInventory();
 		}
 
@@ -267,6 +426,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		const hotbarSlot = WalkingControls.#HOTBAR_KEY_MAP.get(key);
 		if (hotbarSlot !== undefined) {
 			this.#player.playerHud.selectedHotbarSlot = hotbarSlot;
+			this.cancelDraw();
 		}
 
 		this.pressedKeys.delete(key);
@@ -292,6 +452,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 			const hotbarItem = inventory.inventory[0][i].item;
 			if (matchesPickedBlock(hotbarItem)) {
 				this.#player.playerHud.selectedHotbarSlot = i;
+				this.cancelDraw();
 				return;
 			}
 		}

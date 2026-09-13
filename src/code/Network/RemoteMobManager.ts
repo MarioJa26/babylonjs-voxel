@@ -1,0 +1,885 @@
+/**
+ * RemoteMobManager: client-side renderer for server-authoritative mobs.
+ *
+ * Registers a binary handler on NetClient and turns MobSpawn,
+ * MobUpdateBatch, and MobDespawn messages into shared thin-instance slots.
+ */
+import {
+	CHICKEN_HIT_HALF,
+	getChickenInstancePool,
+} from "@/code/Entities/Mobs/Chicken";
+import { COW_HIT_HALF, getCowInstancePool } from "@/code/Entities/Mobs/Cow";
+import {
+	FISH_COLORS,
+	FISH_HIT_HALF,
+	getFishInstancePool,
+} from "@/code/Entities/Mobs/Fish";
+import {
+	getKrakenInstancePool,
+	KRAKEN_HIT_HALF,
+} from "@/code/Entities/Mobs/Kraken";
+import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
+import type {
+	InstanceSlotHandle,
+	MobInstancePool,
+} from "@/code/Entities/Mobs/MobInstancePool";
+import {
+	getCachedLightColor,
+	registerMobLight,
+	unregisterMobLight,
+} from "@/code/Entities/Mobs/MobLighting";
+import {
+	getSheepInstancePool,
+	SHEEP_COLORS,
+	SHEEP_HIT_HALF,
+} from "@/code/Entities/Mobs/Sheep";
+import {
+	getSkeletonInstancePool,
+	SKELETON_HIT_HALF,
+} from "@/code/Entities/Mobs/Skeleton";
+import {
+	getSquidInstancePool,
+	SQUID_HIT_HALF,
+} from "@/code/Entities/Mobs/Squid";
+import { spawnXpOrbs } from "@/code/Entities/Mobs/XpOrb";
+import {
+	getZombieAttackPool,
+	getZombieInstancePool,
+	ZOMBIE_HIT_HALF,
+} from "@/code/Entities/Mobs/Zombie";
+import {
+	getMeleeDamage,
+	getMeleeRange,
+	getMobWeaponIdByTypeId,
+} from "@/code/Entities/WeaponStats";
+import {
+	playLandingDust,
+	playMobDamage,
+	playMobDamageDirected,
+	playMobDeath,
+} from "@/code/Maps/BlockBreakParticles";
+import { Map1 } from "@/code/Maps/Map1";
+import { Gamemodes } from "@/code/Player/PlayerStats";
+import { isHostileTypeId, MobTypeId } from "../Entities/MobConfig";
+import type { NetClient } from "./NetClient";
+import {
+	BinaryDecoder,
+	decodeMobDamageInto,
+	decodeMobDespawn,
+	decodeMobImpactInto,
+	decodeMobSpawnInto,
+} from "./protocol/encoder";
+import { MessageType } from "./protocol/messages";
+
+/** Server yaw byte, 0 to 255, converted to radians. */
+const YAW_BYTE_TO_RAD = (Math.PI * 2) / 255;
+
+/** Radians of walk phase accumulated per meter of horizontal travel. */
+const WALK_STRIDE_FACTOR = 2;
+
+/** Walk-phase decay rate per second while idle. */
+const WALK_PHASE_DECAY = 6;
+
+/** Squared movement threshold used before calculating a square root. */
+const WALK_DISTANCE_EPSILON_SQ = 0.0001;
+
+/**
+ * How long after a MobDamage hit a despawn still counts as a kill (death
+ * burst). Covers TNT (damage relay + immediate despawn) and arrow kills.
+ */
+const MOB_DEATH_BLEED_WINDOW_MS = 1500;
+
+/** Phase below this value snaps back to rest. */
+const WALK_PHASE_EPSILON = 0.01;
+
+interface MutablePosition {
+	x: number;
+	y: number;
+	z: number;
+}
+
+interface RemoteMobInstance {
+	/** Stored so hit-test iteration does not need Map entry tuples. */
+	id: number;
+
+	slot: InstanceSlotHandle;
+	pool: MobInstancePool;
+	typeId: number;
+
+	halfX: number;
+	halfY: number;
+	halfZ: number;
+
+	currentX: number;
+	currentY: number;
+	currentZ: number;
+
+	targetX: number;
+	targetY: number;
+	targetZ: number;
+
+	currentYawRad: number;
+	targetYawRad: number;
+
+	walkPhase: number;
+	prevX: number;
+	prevZ: number;
+
+	writtenX: number;
+	writtenY: number;
+	writtenZ: number;
+	writtenYawRad: number;
+
+	/**
+	 * Reused by the lighting callback instead of creating a new position
+	 * object every time MobLighting queries this mob.
+	 */
+	lightPosition: MutablePosition;
+
+	/**
+	 * Allocated once per mob because registerMobLight requires a callback.
+	 * The callback returns lightPosition without allocating.
+	 */
+	getLightPosition: () => MutablePosition;
+
+	/** Seconds until this hostile may strike the local player again. */
+	strikeCooldown: number;
+
+	/** True while this zombie renders through the attack-pose pool. */
+	inAttackPool: boolean;
+}
+
+export class RemoteMobManager {
+	private readonly mobs = new Map<number, RemoteMobInstance>();
+
+	/** mobId → performance.now() of the last MobDamage hit (kill linkage). */
+	private readonly recentDamage = new Map<number, number>();
+
+	private readonly handler: (data: Uint8Array) => void;
+	private readonly onDisconnected: () => void;
+
+	private readonly decoder = new BinaryDecoder(new Uint8Array(0));
+	private readonly mobSpawnScratch = {
+		mobId: 0,
+		mobType: 0,
+		x: 0,
+		y: 0,
+		z: 0,
+		yaw: 0,
+	};
+	private readonly mobDamageScratch = { mobId: 0, damage: 0 };
+	private readonly mobImpactScratch = {
+		mobId: 0,
+		x: 0,
+		y: 0,
+		z: 0,
+		fallDistance: 0,
+	};
+
+	constructor(private readonly client: NetClient) {
+		/*
+		 * These closures are allocated once per manager, rather than once per
+		 * packet or frame.
+		 */
+		this.handler = (data) => {
+			this.handleBinaryMessage(data);
+		};
+
+		this.onDisconnected = () => {
+			this.clearAll();
+		};
+
+		client.addBinaryHandler(this.handler);
+		client.addDisconnectListener(this.onDisconnected);
+	}
+
+	get size(): number {
+		return this.mobs.size;
+	}
+
+	/**
+	 * Optimistic kill-link for outgoing hits (melee punches, arrows).
+	 *
+	 * The server relays accepted MobDamage to everyone EXCEPT the sender,
+	 * so without this the attacker's own client could never link its kills:
+	 * melee/arrow despawns would show no death burst and no XP orbs for the
+	 * killer (explosions broadcast to all, which is why only they dropped
+	 * XP). The despawn must still arrive inside the bleed window, so a
+	 * rejected hit links nothing on its own.
+	 */
+	noteOutgoingDamage(mobId: number): void {
+		this.recentDamage.set(mobId, performance.now());
+	}
+
+	/**
+	 * Sweep a segment against every remote mob and return the nearest hit.
+	 * No object is allocated unless a hit is found.
+	 */
+	findSegmentHit(
+		startX: number,
+		startY: number,
+		startZ: number,
+		endX: number,
+		endY: number,
+		endZ: number,
+	): { id: number; x: number; y: number; z: number } | null {
+		let bestT = Number.POSITIVE_INFINITY;
+		let bestMob: RemoteMobInstance | null = null;
+
+		/*
+		 * values() avoids the entry pair yielded by:
+		 *
+		 *     for (const [id, mob] of this.mobs)
+		 *
+		 * The mob stores its own id, so the pair is not needed.
+		 */
+		const iterator = this.mobs.values();
+
+		for (let result = iterator.next(); !result.done; result = iterator.next()) {
+			const mob = result.value;
+
+			const t = segmentMobHit(
+				startX,
+				startY,
+				startZ,
+				endX,
+				endY,
+				endZ,
+				mob.currentX,
+				mob.currentY,
+				mob.currentZ,
+				mob.currentYawRad,
+				mob.halfX,
+				mob.halfY,
+				mob.halfZ,
+			);
+
+			if (t !== null && t < bestT) {
+				bestT = t;
+				bestMob = mob;
+			}
+		}
+
+		if (bestMob === null) {
+			return null;
+		}
+
+		return {
+			id: bestMob.id,
+			x: startX + (endX - startX) * bestT,
+			y: startY + (endY - startY) * bestT,
+			z: startZ + (endZ - startZ) * bestT,
+		};
+	}
+
+	/**
+	 * Return the current interpolated mob transform.
+	 *
+	 * This result must remain a new object because external callers may retain
+	 * or mutate it. Reusing a shared result object would change public behavior.
+	 */
+	getMobPosition(
+		id: number,
+	): { x: number; y: number; z: number; yaw: number } | null {
+		const mob = this.mobs.get(id);
+
+		if (mob === undefined) {
+			return null;
+		}
+
+		return {
+			x: mob.currentX,
+			y: mob.currentY,
+			z: mob.currentZ,
+			yaw: mob.currentYawRad,
+		};
+	}
+
+	/**
+	 * Cached voxel-light multiplier (0-1 RGB) for a remote mob, reusing the
+	 * value MobLighting already computed for it. Lets stuck projectiles
+	 * match their host without a second voxel query. Null when unknown.
+	 */
+	getMobLightColor(id: number): readonly [number, number, number] | null {
+		const mob = this.mobs.get(id);
+
+		if (mob === undefined) {
+			return null;
+		}
+
+		return getCachedLightColor(mob.slot);
+	}
+
+	/**
+	 * Debug-only aggregation. Allocations are intentionally retained because
+	 * the returned arrays and objects are public callback-visible data.
+	 */
+	getDebugStats(): {
+		total: number;
+		perType: { typeId: number; count: number }[];
+	} {
+		const byType = new Map<number, number>();
+		const mobIterator = this.mobs.values();
+
+		for (
+			let result = mobIterator.next();
+			!result.done;
+			result = mobIterator.next()
+		) {
+			const typeId = result.value.typeId;
+			byType.set(typeId, (byType.get(typeId) ?? 0) + 1);
+		}
+
+		const perType: { typeId: number; count: number }[] = [];
+		const typeIterator = byType.entries();
+
+		for (
+			let result = typeIterator.next();
+			!result.done;
+			result = typeIterator.next()
+		) {
+			const entry = result.value;
+
+			perType.push({
+				typeId: entry[0],
+				count: entry[1],
+			});
+		}
+
+		return {
+			total: this.mobs.size,
+			perType,
+		};
+	}
+
+	private handleBinaryMessage(data: Uint8Array): void {
+		if (data.byteLength === 0) {
+			return;
+		}
+
+		const messageType = data[0];
+
+		switch (messageType) {
+			case MessageType.MobDamage: {
+				this.decoder.setBuffer(data);
+				this.decoder.readUint8();
+				const damage = decodeMobDamageInto(this.decoder, this.mobDamageScratch);
+				const mob = this.mobs.get(damage.mobId);
+				if (mob !== undefined) {
+					playMobDamage(
+						mob.currentX,
+						mob.currentY,
+						mob.currentZ,
+						damage.damage,
+					);
+					this.recentDamage.set(damage.mobId, performance.now());
+				}
+				return;
+			}
+
+			case MessageType.MobImpact: {
+				this.decoder.setBuffer(data);
+				this.decoder.readUint8();
+				const impact = decodeMobImpactInto(this.decoder, this.mobImpactScratch);
+				playLandingDust(impact.x, impact.y, impact.z, impact.fallDistance);
+				return;
+			}
+
+			case MessageType.MobSpawn: {
+				this.decoder.setBuffer(data);
+				this.decoder.readUint8();
+				const spawn = decodeMobSpawnInto(this.decoder, this.mobSpawnScratch);
+
+				this.spawnMob(
+					spawn.mobId,
+					spawn.mobType,
+					spawn.x,
+					spawn.y,
+					spawn.z,
+					spawn.yaw,
+				);
+
+				return;
+			}
+
+			case MessageType.MobUpdateBatch:
+				this.handleMobUpdateBatch(data);
+				return;
+
+			case MessageType.MobDespawn:
+				this.despawnMob(decodeMobDespawn(data));
+				return;
+
+			default:
+				return;
+		}
+	}
+
+	/**
+	 * Decode updates directly into local primitives.
+	 *
+	 * This avoids creating a batch array and avoids creating one
+	 * MobUpdateBatchEntry object per mob.
+	 */
+	private handleMobUpdateBatch(data: Uint8Array): void {
+		const decoder = this.decoder;
+		decoder.setBuffer(data);
+
+		decoder.readUint8();
+		const count = decoder.readUint8();
+
+		for (let i = 0; i < count; i++) {
+			const mobId = decoder.readUint16();
+			const x = decoder.readFloat32();
+			const y = decoder.readFloat32();
+			const z = decoder.readFloat32();
+			const yaw = decoder.readUint8();
+
+			const mob = this.mobs.get(mobId);
+
+			if (mob === undefined) {
+				continue;
+			}
+
+			mob.targetX = x;
+			mob.targetY = y;
+			mob.targetZ = z;
+			mob.targetYawRad = yaw * YAW_BYTE_TO_RAD;
+		}
+	}
+
+	private poolFor(typeId: number): MobInstancePool {
+		switch (typeId) {
+			case MobTypeId.Sheep:
+				return getSheepInstancePool();
+
+			case MobTypeId.Cow:
+				return getCowInstancePool();
+
+			case MobTypeId.Squid:
+				return getSquidInstancePool();
+
+			case MobTypeId.Fish:
+				return getFishInstancePool();
+
+			case MobTypeId.Kraken:
+				return getKrakenInstancePool();
+
+			case MobTypeId.Zombie:
+				return getZombieInstancePool();
+
+			case MobTypeId.Skeleton:
+				return getSkeletonInstancePool();
+
+			case MobTypeId.Chicken:
+			default:
+				return getChickenInstancePool();
+		}
+	}
+
+	private halfFor(
+		typeId: number,
+	): Readonly<{ x: number; y: number; z: number }> {
+		switch (typeId) {
+			case MobTypeId.Sheep:
+				return SHEEP_HIT_HALF;
+
+			case MobTypeId.Cow:
+				return COW_HIT_HALF;
+
+			case MobTypeId.Squid:
+				return SQUID_HIT_HALF;
+
+			case MobTypeId.Fish:
+				return FISH_HIT_HALF;
+
+			case MobTypeId.Kraken:
+				return KRAKEN_HIT_HALF;
+
+			case MobTypeId.Zombie:
+				return ZOMBIE_HIT_HALF;
+
+			case MobTypeId.Skeleton:
+				return SKELETON_HIT_HALF;
+
+			case MobTypeId.Chicken:
+			default:
+				return CHICKEN_HIT_HALF;
+		}
+	}
+
+	private spawnMob(
+		id: number,
+		typeId: number,
+		x: number,
+		y: number,
+		z: number,
+		yaw: number,
+	): void {
+		const existing = this.mobs.get(id);
+
+		if (existing !== undefined) {
+			existing.targetX = x;
+			existing.targetY = y;
+			existing.targetZ = z;
+			existing.targetYawRad = yaw * YAW_BYTE_TO_RAD;
+			return;
+		}
+
+		const pool = this.poolFor(typeId);
+		const slot = pool.acquire(null);
+		const half = this.halfFor(typeId);
+		const yawRad = yaw * YAW_BYTE_TO_RAD;
+
+		/*
+		 * Keep RGB in primitives first. This avoids allocating the default
+		 * [1, 1, 1] tuple and then replacing it for sheep or fish.
+		 */
+		let colorR = 1;
+		let colorG = 1;
+		let colorB = 1;
+
+		if (typeId === MobTypeId.Sheep) {
+			const colorCount = SHEEP_COLORS.length;
+			const colorIndex = ((id % colorCount) + colorCount) % colorCount;
+			const wool = SHEEP_COLORS[colorIndex]!.color;
+
+			colorR = wool.r;
+			colorG = wool.g;
+			colorB = wool.b;
+		} else if (typeId === MobTypeId.Fish) {
+			const colorCount = FISH_COLORS.length;
+			const colorIndex = ((id % colorCount) + colorCount) % colorCount;
+			const scales = FISH_COLORS[colorIndex]!;
+
+			colorR = scales.r;
+			colorG = scales.g;
+			colorB = scales.b;
+		}
+
+		pool.writeColor(slot, colorR, colorG, colorB, 0);
+		pool.writeMatrix(slot, x, y, z, yawRad);
+
+		const lightPosition: MutablePosition = { x, y, z };
+
+		/*
+		 * Assign in two steps because getLightPosition needs to close over the
+		 * position object. The closure is allocated once for the mob and never
+		 * allocates when invoked.
+		 */
+		const entry: RemoteMobInstance = {
+			id,
+			slot,
+			pool,
+			typeId,
+
+			halfX: half.x,
+			halfY: half.y,
+			halfZ: half.z,
+
+			currentX: x,
+			currentY: y,
+			currentZ: z,
+
+			targetX: x,
+			targetY: y,
+			targetZ: z,
+
+			currentYawRad: yawRad,
+			targetYawRad: yawRad,
+
+			walkPhase: 0,
+			prevX: x,
+			prevZ: z,
+			writtenX: x,
+			writtenY: y,
+			writtenZ: z,
+			writtenYawRad: yawRad,
+
+			lightPosition,
+			getLightPosition: () => lightPosition,
+			strikeCooldown: 0,
+			inAttackPool: false,
+		};
+
+		this.mobs.set(id, entry);
+
+		/*
+		 * baseColor remains a new tuple because MobLighting may retain it.
+		 * Only one tuple is allocated, including for sheep and fish.
+		 */
+		registerMobLight({
+			pool,
+			slot,
+			getPos: entry.getLightPosition,
+			baseColor: [colorR, colorG, colorB],
+			owner: entry,
+		});
+	}
+
+	private updateMob(
+		id: number,
+		x: number,
+		y: number,
+		z: number,
+		yaw: number,
+	): void {
+		const mob = this.mobs.get(id);
+
+		if (mob === undefined) {
+			return;
+		}
+
+		mob.targetX = x;
+		mob.targetY = y;
+		mob.targetZ = z;
+		mob.targetYawRad = yaw * YAW_BYTE_TO_RAD;
+	}
+
+	/**
+	 * Move a remote zombie's lane between the normal and attack-pose pools.
+	 * Same pattern as the singleplayer Zombie: light registration follows
+	 * the lane, and the written-transform cache is invalidated so the new
+	 * lane is uploaded even when the mob stands still.
+	 */
+	private swapZombiePool(mob: RemoteMobInstance, attacking: boolean): void {
+		const want = attacking ? getZombieAttackPool() : getZombieInstancePool();
+		if (want === mob.pool) {
+			mob.inAttackPool = attacking;
+			return;
+		}
+
+		unregisterMobLight(mob.slot);
+		mob.pool.release(mob.slot);
+		mob.pool = want;
+		mob.slot = want.acquire(null);
+		mob.inAttackPool = attacking;
+		want.writeColor(mob.slot, 1, 1, 1, mob.walkPhase);
+		mob.writtenX = Number.NaN;
+		mob.writtenY = Number.NaN;
+		mob.writtenZ = Number.NaN;
+		mob.writtenYawRad = Number.NaN;
+		registerMobLight({
+			pool: want,
+			slot: mob.slot,
+			getPos: mob.getLightPosition,
+			baseColor: [1, 1, 1],
+			owner: mob,
+		});
+	}
+
+	private despawnMob(id: number): void {
+		const mob = this.mobs.get(id);
+
+		if (mob === undefined) {
+			this.recentDamage.delete(id);
+			return;
+		}
+
+		// Damage-then-despawn inside the window means a kill (TNT, arrows):
+		// burst blood at the mob's last position. Plain despawns (wandered
+		// off) stay clean. Kills additionally shower XP orbs (local-only,
+		// like singleplayer onDeath): 3-6 for hostiles, 1 for passives.
+		const hitAt = this.recentDamage.get(id);
+		this.recentDamage.delete(id);
+		if (
+			hitAt !== undefined &&
+			performance.now() - hitAt <= MOB_DEATH_BLEED_WINDOW_MS
+		) {
+			playMobDeath(mob.currentX, mob.currentY, mob.currentZ);
+			if (isHostileTypeId(mob.typeId)) {
+				spawnXpOrbs(mob.currentX, mob.currentY, mob.currentZ, 3, 6);
+			} else {
+				spawnXpOrbs(mob.currentX, mob.currentY, mob.currentZ, 1, 1);
+			}
+		}
+
+		this.mobs.delete(id);
+		unregisterMobLight(mob.slot);
+		mob.pool.release(mob.slot);
+	}
+
+	/**
+	 * Interpolate every mob and update its thin-instance lane.
+	 */
+	update(deltaMs: number): void {
+		if (this.recentDamage.size > 0) {
+			const now = performance.now();
+			const keyIterator = this.recentDamage.keys();
+			for (
+				let next = keyIterator.next();
+				!next.done;
+				next = keyIterator.next()
+			) {
+				const hitAt = this.recentDamage.get(next.value);
+				if (hitAt === undefined || now - hitAt > MOB_DEATH_BLEED_WINDOW_MS) {
+					this.recentDamage.delete(next.value);
+				}
+			}
+		}
+
+		if (this.mobs.size === 0) {
+			return;
+		}
+
+		const dt = deltaMs * 0.001;
+		const alpha = 1 - Math.exp(-dt * 12);
+		const idlePhaseMultiplier = Math.max(0, 1 - WALK_PHASE_DECAY * dt);
+
+		// Hostile strike targeting (multiplayer): server mobs are
+		// position-authoritative but player HP is client-local, so the
+		// client applies melee when a hostile closes to its weapon's reach.
+		const player = Map1.mainPlayer;
+		const playerHarmable =
+			player !== null &&
+			player !== undefined &&
+			player.stats.gamemode !== Gamemodes.Creative;
+		const playerX = player?.position.x ?? 0;
+		const playerY = player?.position.y ?? 0;
+		const playerZ = player?.position.z ?? 0;
+
+		const iterator = this.mobs.values();
+
+		for (let result = iterator.next(); !result.done; result = iterator.next()) {
+			const mob = result.value;
+
+			const currentX = mob.currentX + (mob.targetX - mob.currentX) * alpha;
+			const currentY = mob.currentY + (mob.targetY - mob.currentY) * alpha;
+			const currentZ = mob.currentZ + (mob.targetZ - mob.currentZ) * alpha;
+
+			/*
+			 * Preserve the original shortest-arc interpolation calculation.
+			 */
+			let yawDifference = mob.targetYawRad - mob.currentYawRad;
+
+			yawDifference = Math.atan2(
+				Math.sin(yawDifference),
+				Math.cos(yawDifference),
+			);
+
+			const currentYawRad = mob.currentYawRad + yawDifference * alpha;
+
+			const dx = currentX - mob.prevX;
+			const dz = currentZ - mob.prevZ;
+			const distanceSquared = dx * dx + dz * dz;
+
+			if (distanceSquared > WALK_DISTANCE_EPSILON_SQ) {
+				mob.walkPhase += Math.sqrt(distanceSquared) * WALK_STRIDE_FACTOR;
+			} else {
+				mob.walkPhase *= idlePhaseMultiplier;
+
+				if (mob.walkPhase < WALK_PHASE_EPSILON) {
+					mob.walkPhase = 0;
+				}
+			}
+
+			mob.currentX = currentX;
+			mob.currentY = currentY;
+			mob.currentZ = currentZ;
+			mob.currentYawRad = currentYawRad;
+
+			mob.prevX = currentX;
+			mob.prevZ = currentZ;
+
+			/*
+			 * Keep the lighting position synchronized without allocating a
+			 * temporary object.
+			 */
+			const lightPosition = mob.lightPosition;
+			lightPosition.x = currentX;
+			lightPosition.y = currentY;
+			lightPosition.z = currentZ;
+
+			// Hostile strike (multiplayer): runs even when the mob stands
+			// still, so a zombie already in reach keeps swinging. Zombies
+			// also raise their arms while in reach (attack-pose pool).
+			if (playerHarmable && isHostileTypeId(mob.typeId)) {
+				mob.strikeCooldown -= dt;
+				const weaponId = getMobWeaponIdByTypeId(mob.typeId);
+				const range = getMeleeRange(weaponId);
+				const sdx = playerX - currentX;
+				const sdz = playerZ - currentZ;
+				const sdy = playerY - currentY;
+				const inReach =
+					sdx * sdx + sdz * sdz <= range * range && sdy >= -1 && sdy <= 2.5;
+				// Attack pose follows the pursuit, not the final swing: chase
+				// hysteresis (16 aggro / 32 deaggro) mirrors the server, so
+				// arms stay horizontal for the whole chase like singleplayer.
+				if (mob.typeId === MobTypeId.Zombie) {
+					const distSq = sdx * sdx + sdz * sdz;
+					const chaseRadiusSq = mob.inAttackPool ? 32 * 32 : 16 * 16;
+					const pursuing = distSq < chaseRadiusSq;
+					if (pursuing !== mob.inAttackPool) {
+						this.swapZombiePool(mob, pursuing);
+					}
+				}
+				if (inReach && mob.strikeCooldown <= 0) {
+					mob.strikeCooldown = 1.0;
+					const strikeDamage = getMeleeDamage(weaponId);
+					// Blood blows back toward the mob (opposite the hit
+					// facing) so the spray stays in the player's view.
+					playMobDamageDirected(
+						playerX,
+						playerY,
+						playerZ,
+						strikeDamage,
+						-sdx,
+						-sdz,
+					);
+					player?.stats.takeDamage(strikeDamage);
+				}
+			}
+
+			/*
+			 * Preserve the existing behavior exactly. In particular, the walk
+			 * phase is not written if the transform itself did not change.
+			 */
+			if (
+				currentX === mob.writtenX &&
+				currentY === mob.writtenY &&
+				currentZ === mob.writtenZ &&
+				currentYawRad === mob.writtenYawRad
+			) {
+				continue;
+			}
+
+			const pool = mob.pool;
+			const slot = mob.slot;
+
+			pool.writeMatrix(slot, currentX, currentY, currentZ, currentYawRad);
+
+			pool.writeWalkPhase(slot, mob.walkPhase);
+
+			mob.writtenX = currentX;
+			mob.writtenY = currentY;
+			mob.writtenZ = currentZ;
+			mob.writtenYawRad = currentYawRad;
+		}
+	}
+
+	/** Release every tracked mob's instance lane. */
+	clearAll(): void {
+		this.recentDamage.clear();
+
+		if (this.mobs.size === 0) {
+			return;
+		}
+
+		const iterator = this.mobs.values();
+
+		for (let result = iterator.next(); !result.done; result = iterator.next()) {
+			const mob = result.value;
+
+			unregisterMobLight(mob.slot);
+			mob.pool.release(mob.slot);
+		}
+
+		this.mobs.clear();
+	}
+
+	dispose(): void {
+		this.client.removeBinaryHandler(this.handler);
+		this.client.removeDisconnectListener(this.onDisconnected);
+		this.clearAll();
+	}
+}
