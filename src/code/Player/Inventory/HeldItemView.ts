@@ -23,8 +23,8 @@ import {
 	acquireDroppedItemMaterial,
 	acquireSpriteMaterial,
 	getBillboardQuadGeometry,
+	getBlockItemGeometry,
 	getIconTexture,
-	getUnitCubeGeometry,
 	PLACEHOLDER_ICON_URL,
 	releaseDroppedItemMaterial,
 	releaseSpriteMaterial,
@@ -88,13 +88,14 @@ type CubeEntry = {
 	mesh: Mesh;
 	material: ShaderMaterial;
 	blockId: number;
+	blockState: number;
 	/** True once the atlas is bound (mesh is in the scene from then on). */
 	bound: boolean;
 };
 
 class HeldItemView {
 	#sprites = new Map<string, SpriteEntry>();
-	#cubes = new Map<number, CubeEntry>();
+	#cubes = new Map<string, CubeEntry>();
 
 	// Currently-shown selection. Declared up front (fixed hidden class,
 	// no shape transitions) and updated only when the selection changes;
@@ -103,6 +104,7 @@ class HeldItemView {
 	#activeKind: "sprite" | "cube" | null = null;
 	#activeIcon: string | null = null;
 	#activeBlockId: number | null = null;
+	#activeBlockState: number | null = null;
 	#activeMesh: Mesh | null = null;
 
 	#swingT = Number.POSITIVE_INFINITY;
@@ -151,12 +153,15 @@ class HeldItemView {
 		const useSprite =
 			!isRegisteredBlockId(item.blockId ?? -1) && item.icon !== "";
 		const blockId = item.blockId ?? -1;
+		const blockState = item.blockState ?? 0;
 
 		const changed = useSprite
 			? this.#activeKind !== "sprite" || this.#activeIcon !== item.icon
-			: this.#activeKind !== "cube" || this.#activeBlockId !== blockId;
+			: this.#activeKind !== "cube" ||
+				this.#activeBlockId !== blockId ||
+				this.#activeBlockState !== blockState;
 		if (changed) {
-			this.#select(useSprite, item.icon, blockId);
+			this.#select(useSprite, item.icon, blockId, blockState);
 		}
 
 		const mesh = this.#activeMesh;
@@ -244,6 +249,7 @@ class HeldItemView {
 		this.#activeKind = null;
 		this.#activeIcon = null;
 		this.#activeBlockId = null;
+		this.#activeBlockState = null;
 	}
 
 	/**
@@ -253,14 +259,22 @@ class HeldItemView {
 	 * since at most one mesh is ever visible), then gets-or-creates the
 	 * target entry and shows it immediately if already bound.
 	 */
-	#select(useSprite: boolean, icon: string, blockId: number): void {
+	#select(
+		useSprite: boolean,
+		icon: string,
+		blockId: number,
+		blockState: number,
+	): void {
 		if (this.#activeMesh) this.#activeMesh.visible = false;
 		this.#activeMesh = null;
 		this.#activeKind = useSprite ? "sprite" : "cube";
 		this.#activeIcon = useSprite ? icon : null;
 		this.#activeBlockId = useSprite ? null : blockId;
+		this.#activeBlockState = useSprite ? null : blockState;
 
-		const entry = useSprite ? this.#getSprite(icon) : this.#getCube(blockId);
+		const entry = useSprite
+			? this.#getSprite(icon)
+			: this.#getCube(blockId, blockState);
 		if (entry.bound) {
 			entry.mesh.visible = true;
 			this.#activeMesh = entry.mesh;
@@ -326,18 +340,19 @@ class HeldItemView {
 		return entry;
 	}
 
-	#getCube(blockId: number): CubeEntry {
-		let entry = this.#cubes.get(blockId);
+	#getCube(blockId: number, blockState: number): CubeEntry {
+		const key = `${blockId}:${blockState & 63}`;
+		let entry = this.#cubes.get(key);
 		if (entry) {
 			// Refresh recency for eviction.
-			this.#cubes.delete(blockId);
-			this.#cubes.set(blockId, entry);
+			this.#cubes.delete(key);
+			this.#cubes.set(key, entry);
 			this.#finishCubeBind(entry);
 			return entry;
 		}
 
 		this.#evictIfNeeded();
-		const cube = getUnitCubeGeometry();
+		const cube = getBlockItemGeometry(blockId, blockState);
 		const mesh = createMeshFromData(
 			Map1.engine,
 			"heldItemCube",
@@ -368,8 +383,8 @@ class HeldItemView {
 		// Fullbright hand lighting (Minecraft-style; the hand ignores
 		// voxel darkness so the held item stays readable).
 		setShaderVector3(material, "tintColor", [1, 1, 1]);
-		entry = { mesh, material, blockId, bound: false };
-		this.#cubes.set(blockId, entry);
+		entry = { mesh, material, blockId, blockState, bound: false };
+		this.#cubes.set(key, entry);
 
 		this.#finishCubeBind(entry);
 		return entry;
@@ -384,7 +399,11 @@ class HeldItemView {
 		setShaderTexture(entry.material, "diffuseTexture", atlas);
 		entry.bound = true;
 		addToScene(Map1.mainScene, entry.mesh);
-		if (this.#activeKind === "cube" && this.#activeBlockId === entry.blockId) {
+		if (
+			this.#activeKind === "cube" &&
+			this.#activeBlockId === entry.blockId &&
+			this.#activeBlockState === entry.blockState
+		) {
 			entry.mesh.visible = true;
 			this.#activeMesh = entry.mesh;
 		}
@@ -406,7 +425,11 @@ class HeldItemView {
 			const cubeKey = oldestCube.done ? null : oldestCube.value;
 			if (
 				cubeKey !== null &&
-				!(this.#activeKind === "cube" && this.#activeBlockId === cubeKey)
+				!(
+					this.#activeKind === "cube" &&
+					this.#cubes.get(cubeKey)?.blockId === this.#activeBlockId &&
+					this.#cubes.get(cubeKey)?.blockState === this.#activeBlockState
+				)
 			) {
 				this.#retireCube(cubeKey);
 				continue;
@@ -424,10 +447,10 @@ class HeldItemView {
 		releaseSpriteMaterial(entry.icon, entry.material);
 	}
 
-	#retireCube(blockId: number): void {
-		const entry = this.#cubes.get(blockId);
+	#retireCube(key: string): void {
+		const entry = this.#cubes.get(key);
 		if (!entry) return;
-		this.#cubes.delete(blockId);
+		this.#cubes.delete(key);
 		if (this.#activeMesh === entry.mesh) this.#activeMesh = null;
 		removeFromScene(Map1.mainScene, entry.mesh);
 		releaseDroppedItemMaterial(entry.blockId, entry.material);
@@ -443,6 +466,7 @@ class HeldItemView {
 		this.#activeKind = null;
 		this.#activeIcon = null;
 		this.#activeBlockId = null;
+		this.#activeBlockState = null;
 	}
 }
 

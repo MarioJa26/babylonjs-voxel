@@ -33,9 +33,16 @@ import {
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import {
+	FACE_NX,
+	FACE_NY,
+	FACE_NZ,
+	FACE_PX,
+	FACE_PY,
+	FACE_PZ,
 	getShapeForBlockId,
 	isRegisteredBlockId,
 } from "@/code/World/Shape/BlockShapes";
+import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
 import {
 	computeFenceNeighborMask,
 	getFenceDynamicShape,
@@ -219,6 +226,154 @@ let unitCubeGeometryCache: {
 	uvs: Float32Array;
 	indices: Uint32Array;
 } | null = null;
+
+type ItemGeometry = {
+	positions: Float32Array;
+	normals: Float32Array;
+	uvs: Float32Array;
+	indices: Uint32Array;
+};
+
+const shapeGeometryCache = new Map<string, ItemGeometry>();
+
+const SHAPE_FACES: Array<{
+	bit: number;
+	normal: [number, number, number];
+	verts: (
+		min: [number, number, number],
+		max: [number, number, number],
+	) => Array<[number, number, number]>;
+}> = [
+	{
+		bit: FACE_PX,
+		normal: [1, 0, 0],
+		verts: (min, max) => [
+			[max[0], min[1], max[2]],
+			[max[0], min[1], min[2]],
+			[max[0], max[1], min[2]],
+			[max[0], max[1], max[2]],
+		],
+	},
+	{
+		bit: FACE_NX,
+		normal: [-1, 0, 0],
+		verts: (min, max) => [
+			[min[0], min[1], min[2]],
+			[min[0], min[1], max[2]],
+			[min[0], max[1], max[2]],
+			[min[0], max[1], min[2]],
+		],
+	},
+	{
+		bit: FACE_PY,
+		normal: [0, 1, 0],
+		verts: (min, max) => [
+			[min[0], max[1], max[2]],
+			[max[0], max[1], max[2]],
+			[max[0], max[1], min[2]],
+			[min[0], max[1], min[2]],
+		],
+	},
+	{
+		bit: FACE_NY,
+		normal: [0, -1, 0],
+		verts: (min, max) => [
+			[min[0], min[1], min[2]],
+			[max[0], min[1], min[2]],
+			[max[0], min[1], max[2]],
+			[min[0], min[1], max[2]],
+		],
+	},
+	{
+		bit: FACE_PZ,
+		normal: [0, 0, 1],
+		verts: (min, max) => [
+			[min[0], min[1], max[2]],
+			[max[0], min[1], max[2]],
+			[max[0], max[1], max[2]],
+			[min[0], max[1], max[2]],
+		],
+	},
+	{
+		bit: FACE_NZ,
+		normal: [0, 0, -1],
+		verts: (min, max) => [
+			[max[0], min[1], min[2]],
+			[min[0], min[1], min[2]],
+			[min[0], max[1], min[2]],
+			[max[0], max[1], min[2]],
+		],
+	},
+];
+
+export function getBlockItemGeometry(
+	blockId: number,
+	blockState: number,
+): ItemGeometry {
+	const shape = getShapeForBlockId(blockId);
+	const cacheKey = `${blockId}:${blockState & 63}`;
+	const cached = shapeGeometryCache.get(cacheKey);
+	if (cached) return cached;
+
+	const positions: number[] = [];
+	const normals: number[] = [];
+	const uvs: number[] = [];
+	const indices: number[] = [];
+
+	const addQuad = (
+		verts: Array<[number, number, number]>,
+		normal: [number, number, number],
+	): void => {
+		const base = positions.length / 3;
+		for (let i = 0; i < 4; i++) {
+			positions.push(verts[i][0] - 0.5, verts[i][1] - 0.5, verts[i][2] - 0.5);
+			normals.push(normal[0], normal[1], normal[2]);
+		}
+		uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+		indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
+	};
+
+	if (shape.name === "cross_diagonal") {
+		// Cross-diagonal foliage is intentionally represented by two diagonal
+		// planes rather than box faces. Add both windings because the shared
+		// dropped-item material keeps back-face culling enabled.
+		const a: Array<[number, number, number]> = [
+			[0, 0, 0],
+			[1, 0, 1],
+			[1, 1, 1],
+			[0, 1, 0],
+		];
+		const b: Array<[number, number, number]> = [
+			[1, 0, 0],
+			[0, 0, 1],
+			[0, 1, 1],
+			[1, 1, 0],
+		];
+		const na: [number, number, number] = [Math.SQRT1_2, 0, -Math.SQRT1_2];
+		const nb: [number, number, number] = [Math.SQRT1_2, 0, Math.SQRT1_2];
+		addQuad(a, na);
+		addQuad([...a].reverse(), [-na[0], -na[1], -na[2]]);
+		addQuad(b, nb);
+		addQuad([...b].reverse(), [-nb[0], -nb[1], -nb[2]]);
+	} else {
+		for (const box of getTransformedShapeBoxes(blockId, blockState)) {
+			for (const face of SHAPE_FACES) {
+				if ((box.faceMask & face.bit) !== 0) {
+					addQuad(face.verts(box.min, box.max), face.normal);
+				}
+			}
+		}
+	}
+
+	const geometry = {
+		positions: new Float32Array(positions),
+		normals: new Float32Array(normals),
+		uvs: new Float32Array(uvs),
+		indices: new Uint32Array(indices),
+	};
+	shapeGeometryCache.set(cacheKey, geometry);
+	return geometry;
+}
 
 // Exported for PrimedTnt: same cached unit cube (full 0-1 face UVs) so the
 // primed entity renders the TNT atlas tile with zero extra geometry cost.
@@ -484,7 +639,7 @@ export class DroppedItem implements IUsable {
 	static readonly SKY_LIGHT_COLOR = vec3(0.8, 0.8, 0.8);
 	static readonly BLOCK_LIGHT_COLOR = vec3(0.9, 0.6, 0.2);
 
-	static #sizeFor(stackSize: number): number {
+	static sizeFor(stackSize: number): number {
 		return 0.25 + stackSize * 0.009;
 	}
 
@@ -514,12 +669,12 @@ export class DroppedItem implements IUsable {
 		this.#item = item;
 
 		// Items without a block shape drop as a cheap billboard sprite of
-		// their icon; block items keep the textured spinning cube.
+		// their icon; block items use their registered voxel shape.
 		this.#isSprite = !isRegisteredBlockId(item.blockId) && item.icon !== "";
 
 		const geometry = this.#isSprite
 			? getBillboardQuadGeometry()
-			: getUnitCubeGeometry();
+			: getBlockItemGeometry(item.blockId ?? -1, item.blockState ?? 0);
 
 		this.#boxMesh = createMeshFromData(
 			Map1.engine,
@@ -545,7 +700,7 @@ export class DroppedItem implements IUsable {
 		this.#boxMesh.material = this.#material;
 		this.#boxMesh.visible = false;
 
-		const size = DroppedItem.#sizeFor(item.stackSize);
+		const size = DroppedItem.sizeFor(item.stackSize);
 		this.#boxMesh.scaling.set(size, size, size);
 		this.#halfSize = size * 0.5;
 
@@ -730,7 +885,7 @@ export class DroppedItem implements IUsable {
 	};
 
 	#resize(): void {
-		const size = DroppedItem.#sizeFor(this.#item.stackSize);
+		const size = DroppedItem.sizeFor(this.#item.stackSize);
 		this.#boxMesh.scaling.set(size, size, size);
 		this.#halfSize = size * 0.5;
 		this.#voxelCollider.HalfExtents = vec3(
