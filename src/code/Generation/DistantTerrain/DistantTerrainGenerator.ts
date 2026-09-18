@@ -137,14 +137,22 @@ export function generate(
 		const absShiftX = Math.abs(shiftX);
 		const absShiftZ = Math.abs(shiftZ);
 
+		// PERF: slideArrays/regenerateEdges/rewriteLocalXZ are exact for any
+		// shift magnitude (heights/normals/tiles are pure world-grid
+		// functions; local XZ is rewritten from scratch), so multi-cell
+		// shifts don't need a full rebuild — only the exposed edge strips
+		// are regenerated (O(k*rowSize) vs O(rowSize^2)). Threshold 4 covers
+		// fast flight and hitch-induced jumps; teleports (shift >= rowSize)
+		// still take the full path below.
+		const absShiftTooLargeForSlide = absShiftX > 4 || absShiftZ > 4;
+
 		const needsFullRebuild =
 			absShiftX >= rowSize ||
 			absShiftZ >= rowSize ||
 			!Number.isInteger(shiftX) ||
 			!Number.isInteger(shiftZ) ||
 			(exactCenterMoved && !snappedGridMoved) ||
-			absShiftX > 1 ||
-			absShiftZ > 1;
+			absShiftTooLargeForSlide;
 
 		if (needsFullRebuild) {
 			fullGenerate(

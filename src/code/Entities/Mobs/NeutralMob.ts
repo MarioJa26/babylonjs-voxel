@@ -112,6 +112,16 @@ export abstract class NeutralMob {
 	#tmpGroundExtents = vec3Zero();
 	#tmpFallNudge = vec3Zero();
 
+	// PERF: cliff-guard result cache (see #hasLethalDropAhead). A moving mob
+	// re-probes the same column for ~30 frames while a full scan costs up to
+	// 13 mutation-layer resolves per call.
+	#ledgePx = 0x7fffffff;
+	#ledgeFeetY = 0x7fffffff;
+	#ledgePz = 0x7fffffff;
+	#ledgeResult = false;
+	#ledgeRevA = -1;
+	#ledgeRevB = -1;
+
 	#path: PathWaypoint[] = [];
 	#pathIndex = 0;
 	#shoreSearchTimer = 0;
@@ -910,6 +920,15 @@ export abstract class NeutralMob {
 	 * as a safe landing at any scanned depth (splash-downs never deal fall
 	 * damage), and unloaded columns count as safe so mobs never freeze at
 	 * chunk borders on missing data.
+	 *
+	 * PERF: result cache keyed by probe column + the blockRevisions of the
+	 * chunks covering the scan column (feetY down to feetY -
+	 * LEDGE_WATER_SCAN_DEPTH spans at most two 32-tall chunks). Any terrain
+	 * edit bumps blockRevision, and unload/load transitions flip
+	 * isLoaded/hasVoxelData (reads degrade to revision -1), so cache hits
+	 * reproduce the uncached scan exactly. The only uncovered input is
+	 * boat-deck motion, which can only yield water columns (scanned safe)
+	 * and self-corrects on the next column change.
 	 */
 	#hasLethalDropAhead(pos: Vec3, moveX: number, moveZ: number): boolean {
 		const stepLenSq = moveX * moveX + moveZ * moveZ;
@@ -923,6 +942,44 @@ export abstract class NeutralMob {
 		const pz = Math.floor(pos.z + (moveZ / stepLen) * lookAhead);
 		const feetY = Math.floor(pos.y - this.#feetHeight);
 
+		const cx = Math.floor(px / Chunk.SIZE);
+		const cz = Math.floor(pz / Chunk.SIZE);
+		const cyA = Math.floor(feetY / Chunk.SIZE);
+		const cyB = Math.floor((feetY - LEDGE_WATER_SCAN_DEPTH) / Chunk.SIZE);
+		const chA = getChunk(cx, cyA, cz);
+		const revA =
+			chA && chA.isLoaded && chA.hasVoxelData ? chA.blockRevision : -1;
+		let revB = revA;
+		if (cyB !== cyA) {
+			const chB = getChunk(cx, cyB, cz);
+			revB =
+				chB && chB.isLoaded && chB.hasVoxelData ? chB.blockRevision : -1;
+		}
+
+		if (
+			px === this.#ledgePx &&
+			feetY === this.#ledgeFeetY &&
+			pz === this.#ledgePz &&
+			revA === this.#ledgeRevA &&
+			revB === this.#ledgeRevB
+		) {
+			return this.#ledgeResult;
+		}
+
+		const result = this.#scanLedgeDropAhead(px, feetY, pz);
+
+		this.#ledgePx = px;
+		this.#ledgeFeetY = feetY;
+		this.#ledgePz = pz;
+		this.#ledgeResult = result;
+		this.#ledgeRevA = revA;
+		this.#ledgeRevB = revB;
+
+		return result;
+	}
+
+	/** Uncached cliff-guard column scan; see #hasLethalDropAhead. */
+	#scanLedgeDropAhead(px: number, feetY: number, pz: number): boolean {
 		const solidScanDepth = MAX_SAFE_LEDGE_DROP + LEDGE_SCAN_SLACK;
 		for (let dy = 0; dy <= solidScanDepth; dy++) {
 			const r = resolveBlockAtWorldCoords(px, feetY - dy, pz);

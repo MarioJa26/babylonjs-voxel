@@ -167,6 +167,10 @@ export abstract class FlyingMob {
 			const dt = deltaMs * 0.001;
 			if (dt <= 0 || isUiOpen()) return;
 
+			// PERF: night flag hoisted out of the per-bird tick — was
+			// Map1.environment + division per bird per frame.
+			const night = isNightNow();
+
 			frameProfiler.begin("birds");
 			for (const mob of FlyingMob.#allMobs) {
 				const pos = mob.#position;
@@ -186,7 +190,7 @@ export abstract class FlyingMob {
 					continue;
 				}
 
-				mob.tick(dt);
+				mob.tick(dt, night);
 			}
 			frameProfiler.end("birds");
 		});
@@ -339,14 +343,15 @@ export abstract class FlyingMob {
 		return null;
 	}
 
-	tick(dt: number): void {
+	tick(dt: number, night: boolean): void {
 		if (this.#isDisposed) {
 			FlyingMob.#allMobs.delete(this);
 			return;
 		}
 
 		// Day-only ambient: nightfall clears the sky quietly (no drops).
-		if (isNightNow()) {
+		// `night` is computed once per frame by the family loop.
+		if (night) {
 			this.dispose();
 			return;
 		}
