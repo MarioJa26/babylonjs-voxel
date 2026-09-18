@@ -1,0 +1,163 @@
+diff --git a/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js b/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js
+index 610e0b5..275df07 100644
+--- a/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js
++++ b/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js
+@@ -2,33 +2,46 @@ import { syncThinInstanceBuffers, syncThinInstanceForDraw } from "../../mesh/thi
+ //#region src/material/shader/shader-thin-instance.ts
+ /** Instance vertex buffer layouts. `baseLocation` is the first free shader
+ *  location after the material's own attributes. */
+-function instanceVertexLayouts(baseLocation, hasColor) {
+-	const layouts = [{
+-		arrayStride: 64,
+-		stepMode: "instance",
+-		attributes: [
+-			{
++function instanceVertexLayouts(baseLocation, hasColor, compact) {
++	const layouts = [];
++	if (compact) {
++		layouts.push({
++			arrayStride: 16,
++			stepMode: "instance",
++			attributes: [{
+ 				shaderLocation: baseLocation,
+ 				offset: 0,
+ 				format: "float32x4"
+-			},
+-			{
+-				shaderLocation: baseLocation + 1,
+-				offset: 16,
+-				format: "float32x4"
+-			},
+-			{
+-				shaderLocation: baseLocation + 2,
+-				offset: 32,
+-				format: "float32x4"
+-			},
+-			{
+-				shaderLocation: baseLocation + 3,
+-				offset: 48,
+-				format: "float32x4"
+-			}
+-		]
+-	}];
++			}]
++		});
++	} else {
++		layouts.push({
++			arrayStride: 64,
++			stepMode: "instance",
++			attributes: [
++				{
++					shaderLocation: baseLocation,
++					offset: 0,
++					format: "float32x4"
++				},
++				{
++					shaderLocation: baseLocation + 1,
++					offset: 16,
++					format: "float32x4"
++				},
++				{
++					shaderLocation: baseLocation + 2,
++					offset: 32,
++					format: "float32x4"
++				},
++				{
++					shaderLocation: baseLocation + 3,
++					offset: 48,
++					format: "float32x4"
++				}
++			]
++		});
++	}
+ 	if (hasColor) layouts.push({
+ 		arrayStride: 16,
+ 		stepMode: "instance",
+@@ -41,8 +54,13 @@ function instanceVertexLayouts(baseLocation, hasColor) {
+ 	return layouts;
+ }
+ /** WGSL lines appended inside `VertexInput` for instanced variants. */
+-function instancePreludeAttributes(baseLocation, hasColor) {
+-	let source = `@location(${baseLocation})world0:vec4<f32>,@location(${baseLocation + 1})world1:vec4<f32>,@location(${baseLocation + 2})world2:vec4<f32>,@location(${baseLocation + 3})world3:vec4<f32>,`;
++function instancePreludeAttributes(baseLocation, hasColor, compact) {
++	let source;
++	if (compact) {
++		source = `@location(${baseLocation})instData:vec4<f32>,`;
++	} else {
++		source = `@location(${baseLocation})world0:vec4<f32>,@location(${baseLocation + 1})world1:vec4<f32>,@location(${baseLocation + 2})world2:vec4<f32>,@location(${baseLocation + 3})world3:vec4<f32>,`;
++	}
+ 	if (hasColor) source = `${source}@location(${baseLocation + 4})instanceColor:vec4<f32>,`;
+ 	return source;
+ }
+@@ -52,10 +70,11 @@ function createShaderInstancedRenderable(scene, material, packet, isOverride, h,
+ 	const mesh = packet.mesh;
+ 	const ti = mesh.thinInstances;
+ 	const hasColor = !!ti.colors && material._tic != 0;
++	const compact = !!ti.compact;
+ 	const baseLocation = material.attributes.length;
+-	const instanceLayouts = instanceVertexLayouts(baseLocation, hasColor);
+-	const instanceAttrs = instancePreludeAttributes(baseLocation, hasColor);
+-	const variantKey = "" + +hasColor;
++	const instanceLayouts = instanceVertexLayouts(baseLocation, hasColor, compact);
++	const instanceAttrs = instancePreludeAttributes(baseLocation, hasColor, compact);
++	const variantKey = "" + +hasColor + ":" + +compact;
+ 	const wm = mesh.worldMatrix;
+ 	const sortCenter = [
+ 		wm[12],
+diff --git a/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js b/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
+index 31095b1..1a1bc6d 100644
+--- a/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
++++ b/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
+@@ -10,17 +10,23 @@ import { packMat4IntoF32 } from "../math/pack-mat4-into-f32.js";
+ function syncThinInstanceGpuData(engine, ti, hasColor) {
+ 	const device = engine._device;
+ 	const needsStorage = ti._gpuCullingEnabled;
++	// Compact instance mode (ti.compact): each instance is a single vec4<f32>
++	// (16 bytes) instead of a full mat4 (64 bytes). Only valid for meshes whose
++	// shaders read instData (custom ShaderMaterial path); never combine with
++	// _gpuCullingEnabled or standard/PBR materials, which assume mat4 lanes.
++	const stride = ti.compact ? 16 : 64;
++	const floatsPerInstance = ti.compact ? 4 : 16;
+ 	let retiredMatrix = null;
+ 	let retiredColor = null;
+ 	let recreated = false;
+ 	if (ti._version !== ti._gpuVersion || ti._gpuBufferStorage !== needsStorage) {
+-		const byteSize = ti.count * 64;
++		const byteSize = ti.count * stride;
+ 		let bufferRecreated = false;
+ 		if (!ti._gpuBuffer || ti._gpuBuffer.size < byteSize || ti._gpuBufferStorage !== needsStorage) {
+ 			if (ti._gpuBuffer) retiredMatrix = ti._gpuBuffer;
+ 			ti._gpuBuffer = device.createBuffer({
+ 				label: "thin-instance-matrices",
+-				size: Math.max(ti._capacity * 64, 4),
++				size: Math.max(ti._capacity * stride, 4),
+ 				usage: BU.VERTEX | BU.COPY_DST | BU.STORAGE
+ 			});
+ 			ti._gpuBufferStorage = needsStorage;
+@@ -30,14 +36,22 @@ function syncThinInstanceGpuData(engine, ti, hasColor) {
+ 		const dirtyMin = bufferRecreated ? 0 : ti._dirtyMin;
+ 		const dirtyMax = bufferRecreated ? ti.count : Math.min(ti._dirtyMax, ti.count);
+ 		if (dirtyMax > dirtyMin) {
+-			const minByte = dirtyMin * 64;
+-			const maxByte = dirtyMax * 64;
++			const minByte = dirtyMin * stride;
++			const maxByte = dirtyMax * stride;
+ 			if (ti.matrices instanceof F32) device.queue.writeBuffer(ti._gpuBuffer, minByte, ti.matrices.buffer, ti.matrices.byteOffset + minByte, maxByte - minByte);
+ 			else {
+-				const neededFloats = ti._capacity * 16;
++				const neededFloats = ti._capacity * floatsPerInstance;
+ 				if (!ti._uploadF32 || ti._uploadF32.length < neededFloats) ti._uploadF32 = new F32(neededFloats);
+ 				const upload = ti._uploadF32;
+-				for (let i = dirtyMin; i < dirtyMax; i++) packMat4IntoF32(upload, ti.matrices, i * 16, i * 16);
++				if (ti.compact) {
++					for (let i = dirtyMin; i < dirtyMax; i++) {
++						const s = i * 4, d = i * 4;
++						upload[d] = ti.matrices[s];
++						upload[d + 1] = ti.matrices[s + 1];
++						upload[d + 2] = ti.matrices[s + 2];
++						upload[d + 3] = ti.matrices[s + 3];
++					}
++				} else for (let i = dirtyMin; i < dirtyMax; i++) packMat4IntoF32(upload, ti.matrices, i * 16, i * 16);
+ 				device.queue.writeBuffer(ti._gpuBuffer, minByte, upload.buffer, upload.byteOffset + minByte, maxByte - minByte);
+ 			}
+ 		}

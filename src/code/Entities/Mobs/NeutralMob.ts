@@ -947,13 +947,11 @@ export abstract class NeutralMob {
 		const cyA = Math.floor(feetY / Chunk.SIZE);
 		const cyB = Math.floor((feetY - LEDGE_WATER_SCAN_DEPTH) / Chunk.SIZE);
 		const chA = getChunk(cx, cyA, cz);
-		const revA =
-			chA && chA.isLoaded && chA.hasVoxelData ? chA.blockRevision : -1;
+		const revA = chA?.isLoaded && chA.hasVoxelData ? chA.blockRevision : -1;
 		let revB = revA;
 		if (cyB !== cyA) {
 			const chB = getChunk(cx, cyB, cz);
-			revB =
-				chB && chB.isLoaded && chB.hasVoxelData ? chB.blockRevision : -1;
+			revB = chB?.isLoaded && chB.hasVoxelData ? chB.blockRevision : -1;
 		}
 
 		if (
