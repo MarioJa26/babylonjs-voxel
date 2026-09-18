@@ -116,6 +116,18 @@ export class OreGenerator {
 		const chunkWorldZ = chunkZ * CHUNK_SIZE;
 		const chunkSizeSq = CHUNK_SIZE * CHUNK_SIZE;
 
+		// PERF: skip air/water-only chunks entirely — a single linear scan
+		// with early exit on first stone is far cheaper than 36 vein
+		// attempts × sphere loops × scalar noise FFI each.
+		let hasStone = false;
+		for (let i = 0; i < blocks.length; i++) {
+			if (isStoneBlock(blocks[i]!)) {
+				hasStone = true;
+				break;
+			}
+		}
+		if (!hasStone) return;
+
 		for (const ore of ORE_TYPES) {
 			const chunkCenterY = chunkWorldY + CHUNK_SIZE / 2;
 			if (chunkCenterY > ore.maxY) continue;

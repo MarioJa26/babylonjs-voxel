@@ -250,6 +250,10 @@ export class SurfaceGenerator {
 	// One chunk column (32 voxels) + the probe above the chunk.
 	private readonly densityColumnBand = new Float32Array(33);
 
+	// PERF: reused [cheese, tunnel, detail] scratch for computeCaveModifier's
+	// get3() — avoids 2 extra getCellParams per voxel vs separate getters.
+	private readonly caveSampleScratch = new Float32Array(3);
+
 	/**
 	 * Direct-mapped cache of expensive horizontal column prepass data.
 	 *
@@ -1716,6 +1720,8 @@ export class SurfaceGenerator {
 		// chunk (local Y in [0, 31]). The single per-column probe at topWorldY+1
 		// (ly === chunkSize) falls outside the grid's valid range, so it keeps
 		// sampling raw noise — negligible cost and behaviour-preserving.
+		// PERF: get3() computes cell/fraction once for all three fields
+		// instead of 3x getCellParams via separate getters.
 		if (ly >= 0 && ly < chunkSize) {
 			if (!this.caveGridReady) {
 				this.caveGrid.reset(
@@ -1726,9 +1732,11 @@ export class SurfaceGenerator {
 				);
 				this.caveGridReady = true;
 			}
-			cheese = this.caveGrid.getCheese(lx, ly, lz);
-			tunnel = this.caveGrid.getTunnel(lx, ly, lz);
-			detail = this.caveGrid.getDetail(lx, ly, lz);
+			const s = this.caveSampleScratch;
+			this.caveGrid.get3(lx, ly, lz, s);
+			cheese = s[0]!;
+			tunnel = s[1]!;
+			detail = s[2]!;
 		} else {
 			cheese = this.cheeseNoise(x, y, z);
 			tunnel = this.tunnelNoise(x, y, z);

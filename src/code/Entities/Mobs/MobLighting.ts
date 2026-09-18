@@ -408,9 +408,13 @@ export function unregisterMobLight(slot: InstanceSlotHandle): void {
  * Cached voxel-light multiplier (0-1 RGB) for an owner passed as
  * `owner` to registerMobLight. Returns null when the owner has no live
  * lighting entry. The caller multiplies its own base color by this value.
+ *
+ * PERF: optional `out` scratch avoids the per-call `[r,g,b]` tuple alloc
+ * on hot paths (e.g. Arrow per-frame host-light queries).
  */
 export function getCachedLightColorForOwner(
 	owner: object,
+	out?: [number, number, number],
 ): readonly [number, number, number] | null {
 	const entry = entriesByOwner.get(owner);
 
@@ -418,6 +422,12 @@ export function getCachedLightColorForOwner(
 		return null;
 	}
 
+	if (out) {
+		out[0] = entry.lightR;
+		out[1] = entry.lightG;
+		out[2] = entry.lightB;
+		return out;
+	}
 	return [entry.lightR, entry.lightG, entry.lightB];
 }
 
@@ -427,6 +437,7 @@ export function getCachedLightColorForOwner(
  */
 export function getCachedLightColor(
 	slot: InstanceSlotHandle,
+	out?: [number, number, number],
 ): readonly [number, number, number] | null {
 	const entry = entriesBySlot.get(slot);
 
@@ -434,6 +445,12 @@ export function getCachedLightColor(
 		return null;
 	}
 
+	if (out) {
+		out[0] = entry.lightR;
+		out[1] = entry.lightG;
+		out[2] = entry.lightB;
+		return out;
+	}
 	return [entry.lightR, entry.lightG, entry.lightB];
 }
 

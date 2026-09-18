@@ -13,16 +13,20 @@ export const MeshEmitters = {
 };
 
 const FACE_DATA_BYTES_PER_QUAD = 12;
-const CUSTOM_SHAPE_QUAD_HEADROOM_PER_BLOCK = 16;
-const GREEDY_FACE_HEADROOM_FACTOR = 3;
+// PERF: greedy emits at most 3*size*size merged faces (3072 for size 32).
+// The old headroom (size^3*16 = 527k quads = 6.3MB/bucket, 19MB total)
+// retained worst-case memory per worker forever. Reserve 8*size^2 (8k quads
+// for size 32, ~2.6x greedy max); QuadBuffer.emitRaw grows on overflow so
+// pathological custom-shape chunks stay correct and only pay growth then.
+const GREEDY_QUAD_RESERVE_FACTOR = 8;
 
 /**
  * Reserve capacity for a full chunk build once, up front, so the hot-path
- * emitters can write branchlessly without per-emit ensureCapacity checks.
+ * emitters hit the branch-predicted fast path without per-emit growth.
  *
- * maxQuads is an intentional upper bound:
- *   - greedy emits at most 3 * size * size merged faces
- *   - custom shapes can emit many more, so reserve size^3 * 16 headroom
+ * maxQuads is a common-case hint, not an upper bound: QuadBuffer.emitRaw
+ * grows via ensureCapacity on overflow, so dense custom-shape chunks stay
+ * correct and only pay growth when they actually overflow.
  *
  * ResizableTypedArray keeps backing capacity across builds, so after the first
  * large enough reservation this usually becomes a cheap no-op.
@@ -59,9 +63,7 @@ export function buildVoxelMesh(
 	const size = session.size;
 	const sizeSquared = size * size;
 
-	const maxQuads =
-		sizeSquared *
-		(size * CUSTOM_SHAPE_QUAD_HEADROOM_PER_BLOCK + GREEDY_FACE_HEADROOM_FACTOR);
+	const maxQuads = sizeSquared * GREEDY_QUAD_RESERVE_FACTOR;
 
 	reserveMeshCapacity(opaqueOut, maxQuads);
 	reserveMeshCapacity(waterOut, maxQuads);

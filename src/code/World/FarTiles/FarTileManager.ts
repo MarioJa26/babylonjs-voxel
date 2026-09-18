@@ -141,6 +141,10 @@ class FaceWordArena {
 	private dirtyStarts: number[] = [];
 	private dirtyCounts: number[] = [];
 
+	public hasDirty(): boolean {
+		return this.dirtyStarts.length > 0;
+	}
+
 	readonly initialCapacity: number;
 	bufferRebound = false;
 
@@ -1183,6 +1187,15 @@ class FarTileManagerImpl {
 
 		this.updateUniforms();
 
+		// PERF: idle early-out — sync/flush/ensure loops run even when no
+		// tile arrived, no arena dirtied, and no mesh pending. Uniforms
+		// above are self-guarded (quantized), so skipping the rest when
+		// clean saves ~10 function calls + profiler noise per frame.
+		if (!this.hasPendingFarWork()) {
+			frameProfiler.end("farTiles");
+			return;
+		}
+
 		for (const arena of this.terrainArenas) {
 			arena.flushDirty();
 		}
@@ -1198,6 +1211,39 @@ class FarTileManagerImpl {
 		this.ensureWaterMesh();
 
 		frameProfiler.end("farTiles");
+	}
+
+	private hasPendingFarWork(): boolean {
+		if (this.pendingByKey.size > 0) return true;
+		for (const arena of this.terrainArenas) {
+			if (arena.hasDirty()) return true;
+		}
+		if (this.waterArena.hasDirty()) return true;
+		if (Number.isFinite(this.originsDirtyMin)) return true;
+		for (const wm of this.terrainStraight) {
+			if (wm.dirtyMax > wm.dirtyMin) return true;
+		}
+		for (const wm of this.terrainReversed) {
+			if (wm.dirtyMax > wm.dirtyMin) return true;
+		}
+		if (this.waterReversed.dirtyMax > this.waterReversed.dirtyMin) return true;
+		// Mesh creation/rebind lives in ensureLevelMesh/ensureWaterMesh, which
+		// the early-out skips. A missing mesh or rebound buffer with live
+		// faces must still run the frame pump even when no dirty flags remain.
+		for (let i = 0; i < this.terrainArenas.length; i++) {
+			const arena = this.terrainArenas[i];
+			if (!arena || !arena.buffer) continue;
+			if (arena.bufferRebound) return true;
+			if (arena.appendedFaces > 0) {
+				if (!this.terrainStraight[i]?.mesh || !this.terrainReversed[i]?.mesh) {
+					return true;
+				}
+			}
+		}
+		if (this.waterArena.buffer && this.waterArena.appendedFaces > 0) {
+			if (!this.waterReversed.mesh) return true;
+		}
+		return false;
 	}
 
 	private ensureLevelMesh(levelIndex: number): void {

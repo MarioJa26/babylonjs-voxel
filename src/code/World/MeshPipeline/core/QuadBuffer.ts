@@ -57,8 +57,10 @@ export class QuadBuffer {
 	}
 
 	/**
-	 * Raw face write. No bounds check and no growth check.
-	 * reserveMeshCapacity must guarantee capacity up front.
+	 * Raw face write. Fast path is branch-predicted (single length compare);
+	 * reserveMeshCapacity sizes the buffer for the common case and this
+	 * grows via ensureCapacity on overflow so the reserve is a hint, not
+	 * a correctness requirement.
 	 */
 	private emitRaw(
 		sx: number,
@@ -74,8 +76,23 @@ export class QuadBuffer {
 		tint: number,
 		meta: number,
 	): void {
-		const i = this.count * 12;
-		const buf = this.buf;
+		let i = this.count * 12;
+		let buf = this.buf;
+
+		// Growth fallback for pathological custom-shape chunks that exceed
+		// the upfront reserve. The common path stays branch-predicted (single
+		// length compare); only overflow pays for ensureCapacity + rebind.
+		// NOTE: rta.length stays 0 for the whole build (bind/finish bracket
+		// it) with the live face count tracked in this.count, while
+		// ResizableTypedArray.grow() copies subarray(0, length). Sync length
+		// first or growth would discard all previously emitted faces and
+		// corrupt the mesh (garbage/offset geometry).
+		if (i + 12 > buf.length) {
+			this.rta.length = i;
+			this.rta.ensureCapacity(i + 12);
+			buf = this.rta.backingArray;
+			this.buf = buf;
+		}
 
 		// Positions/dims are single bytes; emitters guarantee in-range values
 		// (boundary faces encode 255 + shader sentinel, never raw 256).

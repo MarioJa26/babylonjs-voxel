@@ -51,6 +51,25 @@ export default defineConfig({
 		sourcemap: false,
 		assetsInlineLimit: 0,
 		cssCodeSplit: true,
+		// PERF: keep the ~400-file Babylon shard + colyseus out of the
+		// entry chunk. Menu route loads a small entry; the game chunk
+		// (via main.ts dynamic import) pulls these vendors on demand.
+		rollupOptions: {
+			output: {
+				manualChunks: (id: string) => {
+					if (id.includes("node_modules/@babylonjs/lite")) {
+						return "vendor-lite";
+					}
+					if (id.includes("node_modules/@colyseus")) {
+						return "vendor-colyseus";
+					}
+					if (id.includes("node_modules/alea")) {
+						return "vendor-alea";
+					}
+					return undefined;
+				},
+			},
+		},
 	},
 	define: {
 		global: "globalThis",

@@ -718,7 +718,11 @@ export class Chunk {
 		this.writeLightHeaderRow();
 		Chunk.onLightChunkLoaded?.(this, _fromStorage);
 		Chunk.onChunkLoaded?.(this);
-		if (scheduleRemesh) this.scheduleRemesh(true, true);
+		// PERF: self-only remesh on load. Neighbors schedule their own remesh
+		// when they load; fan-out here caused 7x greedy rebuilds per streamed
+		// chunk during load storms. Border faces resolve when the neighbor's
+		// own remesh pulls border slabs lazily.
+		if (scheduleRemesh) this.scheduleRemesh(true, false);
 	}
 
 	private writeLightHeaderRow(): void {

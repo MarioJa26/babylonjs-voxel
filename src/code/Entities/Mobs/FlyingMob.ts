@@ -461,24 +461,39 @@ export abstract class FlyingMob {
 		// Move per axis through the voxel collider so terrain slides
 		// instead of tunneling. Track blocked horizontal axes to climb or
 		// abandon the route.
+		// PERF: unrolled axes — the old `for (const axis of [X,Y,Z])`
+		// allocated a 3-element array per bird per tick.
 		let blockedAxes = 0;
-		for (const axis of [Axis.X, Axis.Y, Axis.Z]) {
-			const delta =
-				(axis === Axis.X
-					? velocity.x
-					: axis === Axis.Y
-						? velocity.y
-						: velocity.z) * dt;
-			if (delta === 0) continue;
-			const before = axis === Axis.X ? pos.x : axis === Axis.Y ? pos.y : pos.z;
-			this.#collider.moveAxis(pos, velocity, axis, delta, STEP_SIZE);
-			const after = axis === Axis.X ? pos.x : axis === Axis.Y ? pos.y : pos.z;
-			if (
-				axis !== Axis.Y &&
-				Math.abs(delta) > 0.001 &&
-				Math.abs(after - before) < Math.abs(delta) * BLOCKED_MOVE_FRACTION
-			) {
-				blockedAxes++;
+		{
+			const deltaX = velocity.x * dt;
+			if (deltaX !== 0) {
+				const before = pos.x;
+				this.#collider.moveAxis(pos, velocity, Axis.X, deltaX, STEP_SIZE);
+				if (
+					Math.abs(deltaX) > 0.001 &&
+					Math.abs(pos.x - before) < Math.abs(deltaX) * BLOCKED_MOVE_FRACTION
+				) {
+					blockedAxes++;
+				}
+			}
+		}
+		{
+			const deltaY = velocity.y * dt;
+			if (deltaY !== 0) {
+				this.#collider.moveAxis(pos, velocity, Axis.Y, deltaY, STEP_SIZE);
+			}
+		}
+		{
+			const deltaZ = velocity.z * dt;
+			if (deltaZ !== 0) {
+				const before = pos.z;
+				this.#collider.moveAxis(pos, velocity, Axis.Z, deltaZ, STEP_SIZE);
+				if (
+					Math.abs(deltaZ) > 0.001 &&
+					Math.abs(pos.z - before) < Math.abs(deltaZ) * BLOCKED_MOVE_FRACTION
+				) {
+					blockedAxes++;
+				}
 			}
 		}
 

@@ -1,15 +1,13 @@
 import { enableWasmNoise } from "./code/Lib/WasmNoise";
-import { TestScene } from "./code/TestScene";
 import { MainMenu } from "./code/UI/MainMenu";
 import {
 	getServerNameFromUrl,
 	getWorldNameFromUrl,
 } from "./code/World/WorldContext";
+// PERF: only theme.css is needed for the main menu. HUD stylesheets ship
+// with the game chunk via dynamic import below so `/` doesn't pay for
+// hud/crosshair/item/multiplayer CSS + full TestScene graph upfront.
 import "@/style/theme.css";
-import "@/style/hud.css";
-import "@/style/crosshair-options.css";
-import "@/style/Item.css";
-import "@/style/MultiplayerHUD.css";
 
 function showErrorOverlay(error: unknown): void {
 	console.error("Application startup failed:", error);
@@ -57,6 +55,17 @@ async function main(): Promise<void> {
 	// the terrain workers, which load it independently). Fire-and-forget:
 	// chunk generation never waits on this; failure keeps the JS backend.
 	void enableWasmNoise();
+
+	// PERF: route-split the game bundle — `/` (menu) never downloads
+	// TestScene → Player → NetworkManager → @colyseus/sdk + @babylonjs/lite.
+	// HUD styles ride along with the game chunk.
+	await Promise.all([
+		import("@/style/hud.css"),
+		import("@/style/crosshair-options.css"),
+		import("@/style/Item.css"),
+		import("@/style/MultiplayerHUD.css"),
+	]);
+	const { TestScene } = await import("./code/TestScene");
 
 	const canvas = document.createElement("canvas");
 

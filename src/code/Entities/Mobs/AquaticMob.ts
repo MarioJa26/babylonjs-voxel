@@ -90,6 +90,7 @@ export abstract class AquaticMob {
 	#groundProbe = vec3Zero();
 	#groundProbeExtents = vec3Zero();
 	#wanderTargetScratch = vec3Zero();
+	#nudgeScratch = vec3Zero();
 
 	#collider: VoxelAabbCollider;
 	#scene: SceneContext;
@@ -553,14 +554,14 @@ export abstract class AquaticMob {
 				const cx = Math.floor(pos.x);
 				const cy = Math.floor(pos.y - this.#halfHeight - 0.05);
 				const cz = Math.floor(pos.z);
-				if (!isCollidableBlock(getBlockByWorldCoords(cx, cy, cz)) && grounded) {
+				// PERF: single voxel fetch — reuse result for both checks.
+				const belowCollidable = isCollidableBlock(
+					getBlockByWorldCoords(cx, cy, cz),
+				);
+				if (!belowCollidable && grounded) {
 					grounded = false;
 				}
-				if (
-					!isCollidableBlock(getBlockByWorldCoords(cx, cy, cz)) &&
-					!grounded &&
-					Math.abs(velocity.y) < 0.01
-				) {
+				if (!belowCollidable && !grounded && Math.abs(velocity.y) < 0.01) {
 					velocity.y = -0.5;
 				}
 			}
@@ -598,7 +599,8 @@ export abstract class AquaticMob {
 			if (!isCollidableBlock(getBlockByWorldCoords(cx2, cy2, cz2))) {
 				if (velocity.y > -2) velocity.y -= 2 * dt;
 				if (Math.abs(velocity.y) < 0.1) {
-					const nudge = vec3Zero();
+					// PERF: reuse scratch instead of vec3Zero() per tick.
+					const nudge = this.#nudgeScratch;
 					nudge.x = pos.x;
 					nudge.y = pos.y - 0.03;
 					nudge.z = pos.z;

@@ -377,6 +377,13 @@ function releasePooledU8(array: Uint8Array | null): void {
 		return;
 	}
 
+	// CORRECTNESS: merged groups draw the full slot extent
+	// (exposeLayerData sets faceCount = appendedFaces, and the shader reads
+	// faceData[faceBase + instanceIndex] for every face in it), so holes and
+	// per-member padding slack are rendered. They must read as zero records
+	// (degenerate invisible quads) — without this fill, pooled arrays carry
+	// stale faces from previous groups and render as ghost geometry at wrong
+	// world offsets. Do not remove.
 	array.fill(0);
 	list.push(array);
 	_uint8PoolBytes += bytes;
@@ -410,8 +417,15 @@ function copyPrefix(
 function slotClassFor(count: number, maximumFaces: number): number {
 	let size = MIN_SLOT_FACES;
 
+	// PERF: 1.5x steps (32,48,72,108,...) instead of 2x — halves average
+	// slack per member (e.g. 33 faces occupies 48 not 64) while keeping
+	// amortized growth. Still capped by maximumFaces.
 	while (size < count) {
-		const next = size * 2;
+		const next = Math.ceil((size * 3) / 2);
+
+		if (next <= size) {
+			return maximumFaces;
+		}
 
 		if (next > maximumFaces) {
 			return maximumFaces;
