@@ -52,24 +52,38 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
  * whole species shares the same stride amplitude.
  *
  * Limb tags copy the player convention exactly: 0 = static, 1 = arm-left,
- * 2 = arm-right, 3 = leg-left, 4 = leg-right. Arms rotate about the
- * shoulder pivot (uShoulderPivotY), legs about the hip pivot (uHipPivotY),
- * mirrored by the same signs as the player (arm-L/leg-R in phase, arm-R/
- * leg-L opposite). The rotation pivots about the X axis (swings the limb
+ * 2 = arm-right, 3 = leg-left, 4 = leg-right, 5 = wing-left (+X),
+ * 6 = wing-right (−X). Arms rotate about the shoulder pivot
+ * (uShoulderPivotY), legs about the hip pivot (uHipPivotY), mirrored by
+ * the same signs as the player (arm-L/leg-R in phase, arm-R/leg-L
+ * opposite). The rotation pivots about the X axis (swings the limb
  * forward/back in Z). uAttackRaise adds a fixed base rotation to both arms
  * (negative = forward/up, the zombie attack pose); legs ignore it.
+ * Wings rotate about the Z axis at the shoulder line so both wings rise
+ * together (mirrored, not alternating), triple-timed from the walk phase
+ * so small birds beat fast; when the phase decays at rest the wings ease
+ * back to their modeled (folded) pose.
  */
 const MOB_LIMB_VERTEX_WGSL = /* wgsl */ `
 const SWING_MAX : f32 = 0.85;
 
 fn animateMobLimbs(p : vec3<f32>, partId : f32, walkPhase : f32) -> vec3<f32> {
-  // partId 0 = static (and 5+ reserved): never swings.
-  if (partId < 0.5 || partId > 4.5) {
+  // partId 0 = static (7+ reserved): never swings.
+  if (partId < 0.5 || partId > 6.5) {
     return p;
   }
   let amp = shaderUniforms.uWalkAmp;
   if (amp <= 0.0) {
     return p;
+  }
+  if (partId > 4.5) {
+    // Wings flap about the Z axis at the shoulder line. Mirrored by side
+    // so both wings rise together; triple-timed so flight beats fast.
+    let fang = sin(walkPhase * 3.0) * SWING_MAX * amp * select(1.0, -1.0, partId < 5.5);
+    let fs = sin(fang);
+    let fc = cos(fang);
+    let fcy = p.y - shaderUniforms.uShoulderPivotY;
+    return vec3<f32>(p.x * fc - fcy * fs, shaderUniforms.uShoulderPivotY + p.x * fs + fcy * fc, p.z);
   }
   let osc = sin(walkPhase) * SWING_MAX * amp;
   var ang : f32;
@@ -451,7 +465,8 @@ export type MobPartSpec = {
 	 * Limb tag baked into normal.x at build time (same trick as PlayerModel:
 	 * the fragment shader only reads n.y for lighting, so normal.x is free).
 	 * Player convention: 0 = static · 1 = arm-left · 2 = arm-right ·
-	 * 3 = leg-left · 4 = leg-right. Parts with no tag are static.
+	 * 3 = leg-left · 4 = leg-right · 5 = wing-left (+X) · 6 = wing-right
+	 * (−X). Parts with no tag are static.
 	 */
 	partId?: number;
 };

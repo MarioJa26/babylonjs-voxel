@@ -21,9 +21,12 @@
 import {
 	FALL_DAMAGE_PER_BLOCK,
 	FALL_DAMAGE_THRESHOLD,
+	isBirdTypeId,
 	isHostileTypeId,
+	LEAF_BLOCK_IDS,
 	MOB_SPAWN_CONFIGS,
 	MOB_STATS,
+	MobTypeId,
 } from "@/code/Entities/MobConfig";
 import {
 	getMeleeRange,
@@ -68,6 +71,16 @@ export interface ServerMob {
 	 * mob cap (which limits natural spawning only) can never block them.
 	 */
 	egg: boolean;
+	/** Bird flight target (world coords); only meaningful when hasTarget. */
+	tx: number;
+	ty: number;
+	tz: number;
+	/** Whether the bird currently has a flight target. */
+	hasTarget: boolean;
+	/** True when the current target is a perch (rest on arrival). */
+	perchTarget: boolean;
+	/** ms of perch rest remaining (songbirds); 0 = not perched. */
+	perchTimer: number;
 }
 type PlayerPosition = Readonly<{
 	x: number;
@@ -86,8 +99,14 @@ interface ServerWaypoint {
 	groundY: number;
 }
 
+export enum ServerMobEventKind {
+	Spawn,
+	Despawn,
+	Impact,
+}
+
 export interface ServerMobEvent {
-	kind: "spawn" | "despawn" | "impact";
+	kind: ServerMobEventKind;
 	mob: ServerMob;
 	/** Fall distance used to scale the landing particle burst. */
 	fallDistance?: number;
@@ -491,7 +510,7 @@ export class ServerMobSimulation {
 			try {
 				const died = this.updateMob(mob, deltaMs, players, events, isNight);
 				if (died) {
-					events.push({ kind: "despawn", mob });
+					events.push({ kind: ServerMobEventKind.Despawn, mob });
 				}
 			} catch (err) {
 				this.logTickError("updateMob", mob, err);
@@ -585,6 +604,11 @@ export class ServerMobSimulation {
 		// Hostiles never flee and hunt players instead of wandering.
 		if (isHostileTypeId(mob.typeId)) {
 			return this.updateHostileMob(mob, deltaMs, players, events, isNight);
+		}
+
+		// Birds fly waypoint routes (or perch) instead of walking.
+		if (isBirdTypeId(mob.typeId)) {
+			return this.updateBirdMob(mob, deltaMs, players, events, isNight);
 		}
 
 		// Damage-triggered panic: flee from the nearest player for fleeTimer ms,
@@ -731,8 +755,7 @@ export class ServerMobSimulation {
 				// swings on its own cooldown; the server just stays put.
 				mob.headingTimer = Math.max(mob.headingTimer, 250);
 			} else {
-				const step =
-					stats.speed * 1.15 * (deltaMs / 1000);
+				const step = stats.speed * 1.15 * (deltaMs / 1000);
 				if (step > 0) {
 					const dist = Math.sqrt(horizontalSq);
 					const nx = mob.x + (dx / (dist || 1)) * step;
@@ -809,6 +832,257 @@ export class ServerMobSimulation {
 			if (isCollidableBlock(blockId)) return false;
 		}
 		return true;
+	}
+
+	/**
+	 * Bird flight AI — gravity-free waypoint steering for both species.
+	 * Songbirds route to leaf tops and perch (perchTimer); flock birds fly
+	 * long straight legs. Panic bursts away + upward. Nightfall removes
+	 * birds silently (no drops, never persisted), mirroring the client.
+	 */
+	private updateBirdMob(
+		mob: ServerMob,
+		deltaMs: number,
+		players: ReadonlyArray<{ x: number; y: number; z: number }>,
+		_events: ServerMobEvent[],
+		isNight: boolean,
+	): boolean {
+		const stats = MOB_STATS[mob.typeId];
+		const dt = deltaMs * MS_TO_SECONDS;
+
+		if (isNight) {
+			this.removeActiveMob(mob);
+			return true;
+		}
+
+		// Damage-triggered panic: burst away and upward, ignoring routes.
+		if (mob.fleeTimer > 0) {
+			mob.fleeTimer = Math.max(0, mob.fleeTimer - deltaMs);
+		}
+		const threat =
+			mob.fleeTimer > 0
+				? this.findNearestPlayer(mob, players)
+				: this.findNearestThreat(mob, players);
+		if (threat !== null || mob.fleeTimer > 0) {
+			const target = threat ?? this.findNearestPlayer(mob, players);
+			if (target) {
+				const awayX = mob.x - target.x;
+				const awayY = mob.y - target.y + 4;
+				const awayZ = mob.z - target.z;
+				const dist =
+					Math.sqrt(awayX * awayX + awayY * awayY + awayZ * awayZ) || 1;
+				const panicSpeed = stats.speed * 1.8;
+				mob.yaw = this.vectorToYaw(awayX, awayZ);
+				this.moveBird(
+					mob,
+					mob.x + (awayX / dist) * panicSpeed * dt,
+					mob.y + (awayY / dist) * panicSpeed * dt,
+					mob.z + (awayZ / dist) * panicSpeed * dt,
+					deltaMs,
+				);
+			}
+			mob.hasTarget = false;
+			mob.perchTimer = 0;
+			return false;
+		}
+
+		// Perched songbird: sit still until the timer expires.
+		if (mob.perchTimer > 0) {
+			mob.perchTimer = Math.max(0, mob.perchTimer - deltaMs);
+			return false;
+		}
+
+		if (!mob.hasTarget) {
+			this.pickBirdTarget(mob);
+		}
+
+		if (mob.hasTarget) {
+			const dx = mob.tx - mob.x;
+			const dy = mob.ty - mob.y;
+			const dz = mob.tz - mob.z;
+			const distSq = dx * dx + dy * dy + dz * dz;
+			if (distSq < 1) {
+				mob.hasTarget = false;
+				if (mob.perchTarget) {
+					mob.perchTimer = 4000 + Math.random() * 6000;
+				}
+				return false;
+			}
+
+			const dist = Math.sqrt(distSq);
+			mob.yaw = this.vectorToYaw(dx, dz);
+			this.moveBird(
+				mob,
+				mob.x + (dx / dist) * stats.speed * dt,
+				mob.y + (dy / dist) * stats.speed * dt,
+				mob.z + (dz / dist) * stats.speed * dt,
+				deltaMs,
+			);
+		}
+
+		return false;
+	}
+
+	/**
+	 * Move a bird toward an absolute position, sliding on terrain. Solid
+	 * body cells climb instead of tunneling; repeated blocks abandon the
+	 * route so a new target gets picked.
+	 */
+	private moveBird(
+		mob: ServerMob,
+		nx: number,
+		ny: number,
+		nz: number,
+		deltaMs: number,
+	): void {
+		const body = this.sampler.sample(nx, Math.floor(ny), nz);
+		if (body === null) return;
+		if (this.isSolidId(body)) {
+			mob.y += 2.5 * deltaMs * MS_TO_SECONDS;
+			mob.stuckTimer += deltaMs;
+			if (mob.stuckTimer > STUCK_MS) {
+				mob.stuckTimer = 0;
+				mob.hasTarget = false;
+			}
+			return;
+		}
+
+		mob.x = nx;
+		mob.y = Math.max(1, ny);
+		mob.z = nz;
+		mob.stuckTimer = 0;
+
+		// Dunked: climb out and reroute.
+		if (this.sampler.sample(nx, Math.floor(ny), nz) === BlockType.Water) {
+			mob.y += 2.5 * deltaMs * MS_TO_SECONDS;
+			mob.hasTarget = false;
+		}
+	}
+
+	/** Pick a flight target: leaf perch for songbirds, cruise leg else. */
+	private pickBirdTarget(mob: ServerMob): void {
+		mob.hasTarget = false;
+		mob.perchTarget = false;
+
+		if (mob.typeId === MobTypeId.Songbird) {
+			// Songbirds also land and hop on the ground: nearby ground
+			// spots rest on the same timer as leaf perches.
+			if (Math.random() < 0.3) {
+				const ground = this.findGroundSpot(mob, 2, 8);
+				if (ground) {
+					mob.tx = ground.x;
+					mob.ty = ground.y;
+					mob.tz = ground.z;
+					mob.hasTarget = true;
+					mob.perchTarget = true;
+					return;
+				}
+			}
+
+			const perch = this.findLeafPerch(mob);
+			if (perch) {
+				mob.tx = perch.x;
+				mob.ty = perch.y;
+				mob.tz = perch.z;
+				mob.hasTarget = true;
+				mob.perchTarget = true;
+				return;
+			}
+		}
+
+		// Flock birds mostly hold their heading so parallel-spawned formations
+		// stay together without any shared server-side flock state.
+		const holdHeading = mob.typeId === MobTypeId.Bird && Math.random() < 0.7;
+		const angle = holdHeading
+			? (mob.yaw / 255) * Math.PI * 2
+			: Math.random() * Math.PI * 2;
+		const dist = 10 + Math.random() * 10;
+		mob.tx = mob.x + Math.sin(angle) * dist;
+		mob.ty = Math.max(3, mob.y + (Math.random() * 4 - 2));
+		mob.tz = mob.z + Math.cos(angle) * dist;
+		mob.hasTarget = true;
+	}
+
+	/**
+	 * Scan nearby columns for a leaf top with headroom, like the client
+	 * songbird. Returns the perch center or null.
+	 */
+	private findLeafPerch(mob: ServerMob): { x: number; y: number; z: number } | null {
+		const stats = MOB_STATS[mob.typeId];
+		const baseY = Math.floor(mob.y);
+
+		for (let attempt = 0; attempt < 8; attempt++) {
+			const angle = Math.random() * Math.PI * 2;
+			const dist = 6 + Math.random() * 14;
+			const cx = Math.floor(mob.x + Math.sin(angle) * dist);
+			const cz = Math.floor(mob.z + Math.cos(angle) * dist);
+
+			for (let y = baseY + 12; y >= baseY - 10; y--) {
+				const below = this.sampler.sample(cx, y, cz);
+				if (below === null) break;
+				const head = this.sampler.sample(cx, y + 1, cz);
+				if (head === null) break;
+				const head2 = this.sampler.sample(cx, y + 2, cz);
+				if (head2 === null) break;
+
+				if (
+					LEAF_BLOCK_IDS.has(below) &&
+					head === BlockType.Air &&
+					head2 === BlockType.Air
+				) {
+					return {
+						x: cx + 0.5,
+						y: y + 1 + stats.feetHeight,
+						z: cz + 0.5,
+					};
+				}
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Scan nearby columns for solid ground with headroom (songbird hops
+	 * and landings). Returns the rest center or null.
+	 */
+	private findGroundSpot(
+		mob: ServerMob,
+		minDist: number,
+		maxDist: number,
+	): { x: number; y: number; z: number } | null {
+		const stats = MOB_STATS[mob.typeId];
+		const baseY = Math.floor(mob.y);
+
+		for (let attempt = 0; attempt < 8; attempt++) {
+			const angle = Math.random() * Math.PI * 2;
+			const dist = minDist + Math.random() * (maxDist - minDist);
+			const cx = Math.floor(mob.x + Math.sin(angle) * dist);
+			const cz = Math.floor(mob.z + Math.cos(angle) * dist);
+
+			for (let y = baseY + 2; y >= baseY - 8; y--) {
+				const below = this.sampler.sample(cx, y, cz);
+				if (below === null) break;
+				const head = this.sampler.sample(cx, y + 1, cz);
+				if (head === null) break;
+				const head2 = this.sampler.sample(cx, y + 2, cz);
+				if (head2 === null) break;
+
+				if (
+					this.isSolidId(below) &&
+					head === BlockType.Air &&
+					head2 === BlockType.Air
+				) {
+					return {
+						x: cx + 0.5,
+						y: y + 1 + stats.feetHeight,
+						z: cz + 0.5,
+					};
+				}
+			}
+		}
+
+		return null;
 	}
 
 	/**
@@ -1078,7 +1352,7 @@ export class ServerMobSimulation {
 
 		if (fallDistance > 0.5) {
 			events.push({
-				kind: "impact",
+				kind: ServerMobEventKind.Impact,
 				mob,
 				fallDistance,
 				damage,
@@ -1626,7 +1900,7 @@ export class ServerMobSimulation {
 
 		if (fallDistance > 0.5) {
 			events.push({
-				kind: "impact",
+				kind: ServerMobEventKind.Impact,
 				mob,
 				fallDistance,
 				damage,
@@ -1693,6 +1967,13 @@ export class ServerMobSimulation {
 			const typeId = this.pickSpawnType(isNight);
 			if (typeId === null) return;
 
+			// Flock birds arrive as one formation sharing a heading, so the
+			// clients see a flock instead of scattered loners.
+			if (typeId === MobTypeId.Bird) {
+				this.trySpawnFlock(player, events);
+				continue;
+			}
+
 			const stats = MOB_STATS[typeId];
 			const pos = this.findSpawnPosition(player, typeId);
 			if (!pos) continue;
@@ -1715,10 +1996,70 @@ export class ServerMobSimulation {
 				pathIndex: 0,
 				pathTimer: 0,
 				egg: false,
+				tx: 0,
+				ty: 0,
+				tz: 0,
+				hasTarget: false,
+				perchTarget: false,
+				perchTimer: 0,
 			};
 
 			this.addActiveMob(mob);
-			events.push({ kind: "spawn", mob });
+			events.push({ kind: ServerMobEventKind.Spawn, mob });
+		}
+	}
+
+	/**
+	 * Spawn a bird flock (3-7 members) at one air position. Members share
+	 * the same heading and speed so the formation holds without any shared
+	 * server-side flock state. Stops early when the per-type cap is full.
+	 */
+	private trySpawnFlock(
+		player: { x: number; y: number; z: number },
+		events: ServerMobEvent[],
+	): void {
+		const typeId = MobTypeId.Bird;
+		const stats = MOB_STATS[typeId];
+		const spawnConfig = MOB_SPAWN_CONFIGS[typeId];
+		const pos = this.findSpawnPosition(player, typeId);
+		if (!pos) return;
+
+		const count = 3 + Math.floor(Math.random() * 5);
+		const yaw = Math.floor(Math.random() * 256);
+		for (let i = 0; i < count; i++) {
+			if ((this.naturalTypeCounts.get(typeId) ?? 0) >= spawnConfig.maxCount) {
+				return;
+			}
+			if (this.naturalTotal >= HARD_MOB_CAP) return;
+
+			const mob: ServerMob = {
+				id: this.nextId++,
+				typeId,
+				x: pos.x + (Math.random() * 4 - 2),
+				y: pos.y + (Math.random() * 2 - 1),
+				z: pos.z + (Math.random() * 4 - 2),
+				yaw,
+				hp: stats.hp,
+				fallStartY: Number.NaN,
+				headingTimer:
+					WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
+				stuckTimer: 0,
+				fleeing: false,
+				fleeTimer: 0,
+				path: [],
+				pathIndex: 0,
+				pathTimer: 0,
+				egg: false,
+				tx: 0,
+				ty: 0,
+				tz: 0,
+				hasTarget: false,
+				perchTarget: false,
+				perchTimer: 0,
+			};
+
+			this.addActiveMob(mob);
+			events.push({ kind: ServerMobEventKind.Spawn, mob });
 		}
 	}
 
@@ -1775,6 +2116,12 @@ export class ServerMobSimulation {
 			pathIndex: 0,
 			pathTimer: 0,
 			egg: true,
+			tx: 0,
+			ty: 0,
+			tz: 0,
+			hasTarget: false,
+			perchTarget: false,
+			perchTimer: 0,
 		};
 
 		this.addActiveMob(mob);
@@ -1834,6 +2181,8 @@ export class ServerMobSimulation {
 			const typeId = MOB_TYPE_IDS[index];
 			// Hostiles (zombies/skeletons) only roll at night.
 			if (!isNight && isHostileTypeId(typeId)) continue;
+			// Birds only roll during the day.
+			if (isNight && isBirdTypeId(typeId)) continue;
 
 			const spawnConfig = MOB_SPAWN_CONFIGS[typeId];
 
@@ -1902,7 +2251,11 @@ export class ServerMobSimulation {
 				if (loaded.has(col)) continue;
 
 				this.removeActiveMob(mob);
-				events.push({ kind: "despawn", mob });
+				events.push({ kind: ServerMobEventKind.Despawn, mob });
+
+				// Birds are never persistent: fly-overs that leave reach are
+				// gone for good instead of reloading later.
+				if (isBirdTypeId(mob.typeId)) continue;
 
 				let list = byColumn.get(col);
 				if (list === undefined) {
@@ -1969,7 +2322,7 @@ export class ServerMobSimulation {
 
 				const mob = this.restoreMob(pm);
 				this.addActiveMob(mob);
-				this.asyncEvents.push({ kind: "spawn", mob });
+				this.asyncEvents.push({ kind: ServerMobEventKind.Spawn, mob });
 			}
 
 			if (kept.length !== persisted.length) {
@@ -2024,6 +2377,12 @@ export class ServerMobSimulation {
 			pathIndex: pm.pathIndex,
 			pathTimer: pm.pathTimer,
 			egg: pm.egg ?? false,
+			tx: 0,
+			ty: 0,
+			tz: 0,
+			hasTarget: false,
+			perchTarget: false,
+			perchTimer: 0,
 		};
 	}
 
@@ -2032,6 +2391,9 @@ export class ServerMobSimulation {
 		const byColumn = new Map<number, PersistedMob[]>();
 
 		for (const mob of this.mobs.values()) {
+			// Birds are never persistent (see lifecycle eviction above).
+			if (isBirdTypeId(mob.typeId)) continue;
+
 			const cx = Math.floor(mob.x / CHUNK_SIZE);
 			const cz = Math.floor(mob.z / CHUNK_SIZE);
 			const col = packChunkKeyFast(cx, 0, cz);
@@ -2061,6 +2423,22 @@ export class ServerMobSimulation {
 	): { x: number; y: number; z: number } | null {
 		const stats = MOB_STATS[typeId];
 		const isAquatic = stats.aquatic;
+
+		// Flock birds spawn in open air above the player — no ground scan.
+		if (typeId === MobTypeId.Bird) {
+			const angle = Math.random() * Math.PI * 2;
+			const dist =
+				SPAWN_RING_MIN + Math.random() * (SPAWN_RING_MAX - SPAWN_RING_MIN);
+			const wx = Math.floor(player.x + Math.cos(angle) * dist);
+			const wz = Math.floor(player.z + Math.sin(angle) * dist);
+			const wy = Math.floor(player.y) + 12 + Math.floor(Math.random() * 9);
+
+			const cell = this.sampler.sample(wx, wy, wz);
+			if (cell === null || cell !== BlockType.Air) return null;
+			if (this.isSpawnTooClose(wx, wz)) return null;
+
+			return { x: wx + 0.5, y: wy + 0.5, z: wz + 0.5 };
+		}
 		const angle = Math.random() * Math.PI * 2;
 		const dist =
 			SPAWN_RING_MIN + Math.random() * (SPAWN_RING_MAX - SPAWN_RING_MIN);

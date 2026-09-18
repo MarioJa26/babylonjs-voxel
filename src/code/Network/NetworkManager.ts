@@ -99,6 +99,8 @@ export class NetworkManager {
 	readonly containers: RemoteContainerManager;
 	private player: Player;
 	private sendAccum = 0;
+	private lastSentHeldItemId = -1;
+	private lastSentHeldItemBlockState = -1;
 	// Last state actually sent to the server, quantized to wire values. The
 	// idle-skip compares against this so identical bytes are never re-sent.
 	private lastSentState: {
@@ -138,6 +140,9 @@ export class NetworkManager {
 	async connect(playerName: string, worldName: string): Promise<void> {
 		this.client.setCallbacks({
 			onConnected: () => {
+				this.lastSentHeldItemId = -1;
+				this.lastSentHeldItemBlockState = -1;
+				this.sendHeldItemSelection();
 				console.log("[NetworkManager] Connected to server");
 				this.hud.setConnected(true);
 				this.hud.addSystemMessage("Connected to server");
@@ -256,9 +261,12 @@ export class NetworkManager {
 			// Session boundary: any (re)connect starts a fresh authoritative
 			// state, so the first update after the boundary must always send.
 			this.lastSentState = null;
+			this.lastSentHeldItemId = -1;
+			this.lastSentHeldItemBlockState = -1;
 			return;
 		}
 
+		this.sendHeldItemSelection();
 		client.updateRemotePlayerInterpolation(deltaMs / 1000);
 
 		const camera = this.player.playerCamera.playerCamera;
@@ -312,6 +320,21 @@ export class NetworkManager {
 
 	private onToggleChat(open: boolean): void {
 		setIsPaused(open);
+	}
+
+	private sendHeldItemSelection(): void {
+		const slot = this.player.playerHud.selectedHotbarSlot;
+		const item = this.player.playerInventory.inventory[0]?.[slot]?.item;
+		const itemId = item && item.stackSize > 0 ? item.itemId : 0;
+		const blockState = itemId === 0 ? 0 : (item?.blockState ?? 0);
+		if (
+			itemId === this.lastSentHeldItemId &&
+			blockState === this.lastSentHeldItemBlockState
+		)
+			return;
+		if (!this.client.sendHeldItemSelection(itemId, blockState)) return;
+		this.lastSentHeldItemId = itemId;
+		this.lastSentHeldItemBlockState = blockState;
 	}
 
 	private sendPlayerState(): void {

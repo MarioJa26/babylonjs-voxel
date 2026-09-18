@@ -21,18 +21,21 @@ import {
 	type MobPartSpec,
 } from "./MobMesh";
 import {
+	MOB_BIRD_SKIN_PATH,
 	MOB_CHICKEN_SKIN_PATH,
 	MOB_COW_SKIN_PATH,
 	MOB_FISH_SKIN_PATH,
 	MOB_KRAKEN_SKIN_PATH,
 	MOB_SHEEP_SKIN_PATH,
 	MOB_SKELETON_SKIN_PATH,
+	MOB_SONGBIRD_SKIN_PATH,
 	MOB_SQUID_SKIN_PATH,
 	MOB_ZOMBIE_SKIN_PATH,
 } from "./MobSkin";
+import type { FlyingMob } from "./FlyingMob";
 import type { NeutralMob } from "./NeutralMob";
 
-type MobOwner = Mob | NeutralMob | AquaticMob | HostileMob;
+type MobOwner = Mob | NeutralMob | AquaticMob | HostileMob | FlyingMob;
 
 /**
  * Per-species thin-instance pools for mob rendering.
@@ -119,6 +122,8 @@ export async function preloadMobSkins(): Promise<void> {
 		loadMobSkin(MOB_KRAKEN_SKIN_PATH),
 		loadMobSkin(MOB_ZOMBIE_SKIN_PATH),
 		loadMobSkin(MOB_SKELETON_SKIN_PATH),
+		loadMobSkin(MOB_BIRD_SKIN_PATH),
+		loadMobSkin(MOB_SONGBIRD_SKIN_PATH),
 	]);
 }
 

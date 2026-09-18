@@ -1,13 +1,14 @@
 import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
-import { isNightTimeFraction } from "./MobConfig";
 import { Map1 } from "../Maps/Map1";
-import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import {
 	getLightByWorldCoords,
 	resolveBlockAtWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
+import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import { BlockType } from "../World/Texture/BlockType";
+import { isNightTimeFraction } from "./MobConfig";
+import { Bird } from "./Mobs/Bird";
 import type { Mob, MobRegistry, MobSpawnConfig } from "./Mobs/Mob";
 
 const SPAWN_MIN_RADIUS = 24;
@@ -22,6 +23,9 @@ const DESPAWN_CHANCE_PER_SEC = 0.3;
 const SPAWN_CHECK_INTERVAL = 3000;
 const MIN_SPAWN_HEIGHT = 1;
 const MAX_SPAWN_HEIGHT = 200;
+/** Flock cruise altitude above the player (blocks). */
+const FLOCK_ALTITUDE_MIN = 12;
+const FLOCK_ALTITUDE_MAX = 20;
 
 const _mobSnapshot: Mob[] = [];
 
@@ -138,6 +142,29 @@ export class SpawnCoordinator {
 			// Night spawners (zombies/skeletons) never roll during the day.
 			if (config.nightSpawn && !night) continue;
 
+			// Day spawners (birds) never roll at night.
+			if (config.daySpawn && night) continue;
+
+			// Flock spawners (birds) create the whole formation at one
+			// shared position instead of scattering solo spawns.
+			if (config.flockSize && config.mobType === "bird") {
+				const pos = this.#findAirSpawnPosition(playerPos, config);
+				if (pos) {
+					const flock = config.flockSize;
+					const count =
+						flock.min + Math.floor(Math.random() * (flock.max - flock.min + 1));
+					Bird.createFlock(
+						pos.x,
+						pos.y,
+						pos.z,
+						this.#scene,
+						count,
+						this.#registry,
+					);
+				}
+				continue;
+			}
+
 			const pos = this.#findSpawnPosition(playerPos, config);
 			if (pos) {
 				const mob = config.factory(pos.x, pos.y, pos.z, this.#scene);
@@ -222,6 +249,32 @@ export class SpawnCoordinator {
 		}
 
 		return null;
+	}
+
+	/**
+	 * Air spawn for flock birds: a loaded air cell at cruise altitude above
+	 * the player. No ground scan — flocks arrive mid-flight. Bails on
+	 * unloaded cells like the ground scans do.
+	 */
+	#findAirSpawnPosition(
+		playerPos: Vec3,
+		_config: MobSpawnConfig,
+	): { x: number; y: number; z: number } | null {
+		const angle = Math.random() * Math.PI * 2;
+		const dist =
+			SPAWN_MIN_RADIUS + Math.random() * (SPAWN_MAX_RADIUS - SPAWN_MIN_RADIUS);
+		const wx = Math.floor(playerPos.x + Math.cos(angle) * dist);
+		const wz = Math.floor(playerPos.z + Math.sin(angle) * dist);
+		const wy =
+			Math.floor(playerPos.y) +
+			FLOCK_ALTITUDE_MIN +
+			Math.floor(Math.random() * (FLOCK_ALTITUDE_MAX - FLOCK_ALTITUDE_MIN));
+
+		const cell = resolveBlockAtWorldCoords(wx, wy, wz);
+		if (!cell.loaded) return null;
+		if (cell.blockId !== BlockType.Air) return null;
+
+		return { x: wx + 0.5, y: wy + 0.5, z: wz + 0.5 };
 	}
 
 	#findWaterSpawnPosition(

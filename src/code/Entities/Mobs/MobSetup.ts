@@ -2,6 +2,7 @@ import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { Map1 } from "../../Maps/Map1";
 import { MOB_SPAWN_CONFIGS, MobTypeId } from "../MobConfig";
 import { SpawnCoordinator } from "../SpawnCoordinator";
+import { Bird } from "./Bird";
 import { Chicken } from "./Chicken";
 import { Cow } from "./Cow";
 import { Fish } from "./Fish";
@@ -10,6 +11,7 @@ import type { Mob } from "./Mob";
 import { MobRegistry, type MobSpawnConfig } from "./Mob";
 import { Sheep } from "./Sheep";
 import { Skeleton } from "./Skeleton";
+import { Songbird } from "./Songbird";
 import { Squid } from "./Squid";
 import { Zombie } from "./Zombie";
 
@@ -23,6 +25,12 @@ type MobFactoryEntry = {
 	) => Mob;
 	/** True for night-only natural spawners (see MobSpawnConfig). */
 	readonly nightSpawn?: boolean;
+	/** True for day-only natural spawners (see MobSpawnConfig). */
+	readonly daySpawn?: boolean;
+	/** True for mid-air spawners (see MobSpawnConfig). */
+	readonly airSpawn?: boolean;
+	/** Flock size range for group spawners (see MobSpawnConfig). */
+	readonly flockSize?: { min: number; max: number };
 };
 
 /** Map MobTypeId to mob type name and factory function. */
@@ -61,6 +69,18 @@ const MOB_FACTORIES: Readonly<Partial<Record<number, MobFactoryEntry>>> = {
 		factory: (x, y, z, scene) => new Skeleton(x, y, z, scene),
 		nightSpawn: true,
 	},
+	[MobTypeId.Bird]: {
+		mobType: "bird",
+		factory: (x, y, z, scene) => new Bird(x, y, z, scene),
+		daySpawn: true,
+		airSpawn: true,
+		flockSize: { min: 3, max: 7 },
+	},
+	[MobTypeId.Songbird]: {
+		mobType: "songbird",
+		factory: (x, y, z, scene) => new Songbird(x, y, z, scene),
+		daySpawn: true,
+	},
 };
 
 /**
@@ -88,6 +108,9 @@ function buildClientSpawnConfigs(): readonly MobSpawnConfig[] {
 			mobType: factoryEntry.mobType,
 			factory: factoryEntry.factory,
 			nightSpawn: factoryEntry.nightSpawn,
+			daySpawn: factoryEntry.daySpawn,
+			airSpawn: factoryEntry.airSpawn,
+			flockSize: factoryEntry.flockSize,
 		};
 	}
 

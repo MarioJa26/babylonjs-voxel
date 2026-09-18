@@ -325,6 +325,24 @@
 		"spawnMobType": "skeleton"
 	},
 	{
+		"id": 1116,
+		"name": "Bird Spawn Egg",
+		"description": "Spawns a bird where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/birdspawnegg/birdspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "bird"
+	},
+	{
+		"id": 1117,
+		"name": "Songbird Spawn Egg",
+		"description": "Spawns a songbird where you click.\nDoes not count toward the mob cap.",
+		"icon": "/texture/items/item/songbirdspawnegg/songbirdspawnegg_diff_1k.png",
+		"maxStack": 64,
+		"useAction": "use_spawn_egg",
+		"spawnMobType": "songbird"
+	},
+	{
 		"id": 1104,
 		"name": "Raw Chicken",
 		"description": "Dropped by chickens.\nRestores hunger.",
@@ -392,6 +410,13 @@
 		"name": "Bone",
 		"description": "Dropped by skeletons.\nPale and light.",
 		"icon": "/texture/items/item/bone/bone.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1114,
+		"name": "Feather",
+		"description": "Dropped by birds.\nLight as air.",
+		"icon": "/texture/items/item/feather/feather.png",
 		"maxStack": 64
 	}
 ]

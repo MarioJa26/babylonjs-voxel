@@ -1,7 +1,12 @@
 import {
 	addToScene,
 	createMeshFromData,
+	createShaderMaterial,
+	createSolidTexture2D,
+	type EngineContext,
+	loadTexture2D,
 	type Mesh,
+	type Texture2D,
 	onSceneDispose,
 	removeFromScene,
 	type SceneContext,
@@ -11,24 +16,29 @@ import {
 	setShaderVector3,
 } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
+import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import { isRegisteredBlockId } from "@/code/World/Shape/BlockShapes";
 import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
 import {
 	atlasSize,
 	atlasTileSize,
 	getDiffuseTexture2D,
+	getNormal,
 } from "@/code/World/Texture/TextureAtlasFactory";
 import type { Player } from "../Player";
 import {
-	acquireDroppedItemMaterial,
-	acquireSpriteMaterial,
+	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
+	packedLightToLightColor,
+	setRigHeldItemTransform,
+} from "../PlayerModel";
+import {
 	getBillboardQuadGeometry,
 	getBlockItemGeometry,
 	getIconTexture,
 	PLACEHOLDER_ICON_URL,
-	releaseDroppedItemMaterial,
-	releaseSpriteMaterial,
 } from "./DroppedItem";
+import { getRegisteredItemById } from "./ItemRegistry";
 
 /**
  * First-person held-item viewmodel: renders the selected hotbar item
@@ -74,6 +84,124 @@ const SWING_PUSH = 0.07;
 /** Upper bound on cached viewmodel meshes; oldest unused entry is retired. */
 const MAX_ENTRIES = 32;
 
+// ─── Held-item shader (normals + environment light) ──────────────────────────
+// The shared DroppedItem material is unlit (diffuse × flat tint); the hand
+// previously forced a white tint to stay readable. That made held blocks look
+// flat next to the normal-mapped, sun-shaded terrain. This isolated material
+// samples the SAME normal atlas the terrain uses (matched tile math), shades
+// with GLOBAL_VALUES' sun direction / day factor, and re-tints from packed
+// voxel light (packedLightToLightColor) so the item dims in caves and glows
+// near torches, first-person and on the third-person avatar alike.
+
+const heldItemVertexWGSL = /* wgsl */ `
+struct VSOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) vUV : vec2<f32>,
+  @location(1) vNormal : vec3<f32>,
+};
+
+@vertex
+fn mainVertex(input : VertexInput) -> VSOut {
+  var out : VSOut;
+  out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+  out.vUV = input.uv;
+  out.vNormal = input.normal;
+  return out;
+}
+`;
+
+const heldItemFragmentWGSL = /* wgsl */ `
+struct VSOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) vUV : vec2<f32>,
+  @location(1) vNormal : vec3<f32>,
+};
+
+@fragment
+fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
+  let atlasUV = in.vUV * shaderUniforms.uScale + shaderUniforms.uOffset;
+  let tex = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
+  // Alpha test for billboard item sprites (block atlas texels are opaque).
+  if (tex.a < 0.5) { discard; }
+
+  // Face normal straight from the mesh (per-face on cubes, +Z on sprites).
+  let nWorld = normalize(in.vNormal);
+
+  // Sun direction (terrain convention: lightDirection points TO the sun).
+  let lightDirection = shaderUniforms.lightDirection;
+
+  let diffuseIntensity = max(0.0, dot(nWorld, lightDirection));
+  let halfwayDir = normalize(nWorld + lightDirection);
+  let NH = max(dot(nWorld, halfwayDir), 0.0);
+  let spec = exp2(clamp(32.0 * 1.4427 * (NH - 1.0), -126.0, 0.0));
+
+  let skyLight = shaderUniforms.lightColor;
+  let sunIntensity = shaderUniforms.sunLightIntensity;
+
+  // Base voxel light (caves/torch) from packedLightToLightColor, plus a
+  // sun-facing diffuse/spec bump scaled by how much sun actually hits.
+  let lightMix = clamp(
+    skyLight + diffuseIntensity * sunIntensity * 0.5,
+    vec3<f32>(0.06),
+    vec3<f32>(1.0)
+  );
+
+  let color =
+    tex.rgb * lightMix +
+    vec3<f32>(0.25) * spec * sunIntensity * skyLight.x;
+
+  return vec4<f32>(color, 1.0);
+}
+`;
+
+function createHeldItemMaterial(name: string): ShaderMaterial {
+	return createShaderMaterial({
+		name,
+		vertexSource: heldItemVertexWGSL,
+		fragmentSource: heldItemFragmentWGSL,
+		attributes: ["position", "normal", "uv"],
+		uniforms: [
+			"world",
+			"worldViewProjection",
+			{ name: "uScale", type: "f32" },
+			{ name: "uOffset", type: "vec2<f32>" },
+			{ name: "tintColor", type: "vec3<f32>" },
+			{ name: "lightColor", type: "vec3<f32>" },
+			{ name: "lightDirection", type: "vec3<f32>" },
+			{ name: "sunLightIntensity", type: "f32" },
+		],
+		samplers: ["diffuseTexture", "normalTexture"],
+		backFaceCulling: true,
+	});
+}
+
+// Lite's ShaderMaterial type exposes no dispose — call it structurally
+// (same pattern as DroppedItem's local dispose? interface).
+function disposeItemMaterial(mat: ShaderMaterial): void {
+	(mat as unknown as { dispose?: () => void }).dispose?.();
+}
+
+// Cached solid placeholder textures so a mesh never draws with an unbound
+// sampler (lite builds bind groups at renderable construction and throws
+// #241 when a declared sampler has no Texture2D).
+let whiteFallback: Texture2D | null = null;
+function getWhiteFallback(engine: EngineContext): Texture2D {
+	if (!whiteFallback) {
+		whiteFallback = createSolidTexture2D(engine, 255, 255, 255, 255);
+	}
+	return whiteFallback;
+}
+
+let flatNormalFallback: Texture2D | null = null;
+function getFlatNormalFallback(engine: EngineContext): Texture2D {
+	if (!flatNormalFallback) {
+		// RGB (128, 128, 255) is the neutral tangent-space normal: items
+		// without normal art still shade like a flat surface.
+		flatNormalFallback = createSolidTexture2D(engine, 128, 128, 255, 255);
+	}
+	return flatNormalFallback;
+}
+
 type SpriteEntry = {
 	mesh: Mesh;
 	material: ShaderMaterial;
@@ -93,9 +221,17 @@ type CubeEntry = {
 	bound: boolean;
 };
 
-class HeldItemView {
+export class HeldItemView {
 	private _sprites = new Map<string, SpriteEntry>();
 	private _cubes = new Map<string, CubeEntry>();
+
+	// Reused light-color tuple for the per-crossing tint write (no allocs).
+	private _lightColor: [number, number, number] = [1, 1, 1];
+	/** Voxel the environment light was last sampled from (per active entry). */
+	private _activeLightX = Number.NaN;
+	private _activeLightY = Number.NaN;
+	private _activeLightZ = Number.NaN;
+	private _lastSunDirY = Number.NaN;
 
 	// Currently-shown selection. Declared up front (fixed hidden class,
 	// no shape transitions) and updated only when the selection changes;
@@ -139,6 +275,136 @@ class HeldItemView {
 		}
 	}
 
+	updateAvatar(
+		itemId: number,
+		blockState: number,
+		body: Mesh,
+		walkPhase: number,
+		walkAmp: number,
+	): void {
+		if (this._disposed) return;
+		const item = itemId === 0 ? undefined : getRegisteredItemById(itemId);
+		if (!body.visible || !item) {
+			this.hide();
+			return;
+		}
+		const blockId = item.blockId ?? -1;
+		const icon = item.icon || PLACEHOLDER_ICON_URL;
+		const useSprite = !isRegisteredBlockId(blockId);
+		blockState &= 63;
+		const changed = useSprite
+			? this._activeKind !== "sprite" || this._activeIcon !== icon
+			: this._activeKind !== "cube" ||
+				this._activeBlockId !== blockId ||
+				this._activeBlockState !== blockState;
+		if (changed) this._select(useSprite, icon, blockId, blockState);
+		if (!this._activeMesh && this._activeKind === "cube") {
+			this._getCube(blockId, blockState);
+		}
+		if (this._activeMesh) {
+			this._updateEnvironmentLight(
+				body.position.x,
+				body.position.y,
+				body.position.z,
+			);
+			setRigHeldItemTransform(this._activeMesh, body, walkPhase, walkAmp);
+		}
+	}
+
+	hide(): void {
+		this._clearActive();
+	}
+
+	dispose(): void {
+		this._dispose();
+	}
+
+	/**
+	 * Environment lighting: refresh the active entry's tint only when the
+	 * sampled voxel, the sun vector, or the day factor actually changed —
+	 * the same voxel-crossing + re-sample strategy Player.ts uses for its
+	 * third-person body, and the same light color math
+	 * (packedLightToLightColor) mobs and dropped items share.
+	 */
+	private _updateEnvironmentLight(x: number, y: number, z: number): void {
+		const dir = GLOBAL_VALUES.skyLightDirection;
+		if (dir.y !== this._lastSunDirY) {
+			this._lastSunDirY = dir.y;
+			this._writeSunUniforms();
+			// Sun moved -> re-derive the tint even in the same voxel.
+			this._activeLightX = Number.NaN;
+		}
+
+		const lx = Math.floor(x);
+		const ly = Math.floor(y + PLAYER_LIGHT_SAMPLE_Y_OFFSET);
+		const lz = Math.floor(z);
+		if (
+			lx === this._activeLightX &&
+			ly === this._activeLightY &&
+			lz === this._activeLightZ
+		) {
+			return;
+		}
+		this._activeLightX = lx;
+		this._activeLightY = ly;
+		this._activeLightZ = lz;
+
+		const packed = getLightByWorldCoords(
+			x,
+			y + PLAYER_LIGHT_SAMPLE_Y_OFFSET,
+			z,
+		);
+		const c = packedLightToLightColor(packed);
+		this._lightColor[0] = c[0];
+		this._lightColor[1] = c[1];
+		this._lightColor[2] = c[2];
+
+		const entry = this._activeEntryMaterial();
+		if (entry) setShaderVector3(entry, "lightColor", this._lightColor);
+	}
+
+	/** Sun direction + day intensity uniforms shared by every held material. */
+	private _writeSunUniforms(): void {
+		const dir = GLOBAL_VALUES.skyLightDirection;
+		// Terrain shaders negate skyLightDirection so the vector points
+		// TOWARD the sun (ChunkMesher.updateGlobalUniforms convention).
+		const sunX = -dir.x;
+		const sunY = -dir.y;
+		const sunZ = -dir.z;
+		// Same day-factor formula as DroppedItem/BlockBreakParticles.
+		const sunIntensity = Math.min(1, Math.max(0, (sunY + 0.1) * 4));
+		const u = [sunX, sunY, sunZ];
+		for (const mat of this._liveMaterials()) {
+			setShaderUniform(mat, "lightDirection", u);
+			setShaderUniform(mat, "sunLightIntensity", sunIntensity);
+		}
+	}
+
+	private _activeEntryMaterial(): ShaderMaterial | null {
+		if (this._activeKind === "sprite") {
+			const icon = this._activeIcon;
+			return icon !== null ? (this._sprites.get(icon)?.material ?? null) : null;
+		}
+		if (this._activeKind === "cube") {
+			for (const entry of this._cubes.values()) {
+				if (
+					entry.blockId === this._activeBlockId &&
+					entry.blockState === this._activeBlockState
+				) {
+					return entry.material;
+				}
+			}
+			return null;
+		}
+		return null;
+	}
+
+	/** Materials of all cached entries that currently have bound textures. */
+	private *_liveMaterials(): Generator<ShaderMaterial> {
+		for (const s of this._sprites.values()) if (s.bound) yield s.material;
+		for (const c of this._cubes.values()) if (c.bound) yield c.material;
+	}
+
 	private _updateInner(player: Player, dt: number): void {
 		const item =
 			player.playerInventory.inventory[0]?.[player.playerHud.selectedHotbarSlot]
@@ -166,6 +432,12 @@ class HeldItemView {
 
 		const mesh = this._activeMesh;
 		if (!mesh) return; // texture/atlas bind still in flight
+
+		this._updateEnvironmentLight(
+			player.position.x,
+			player.position.y,
+			player.position.z,
+		);
 
 		// Lens straight from the player camera (same source as the block
 		// raycaster — never a possibly-stale matrix).
@@ -297,7 +569,7 @@ class HeldItemView {
 			"heldItemSprite",
 			quad.positions,
 			quad.normals,
-			quad.indices,
+			new Uint32Array([...quad.indices, 0, 1, 2, 0, 2, 3]),
 			quad.uvs,
 		);
 		mesh.pickable = false;
@@ -305,15 +577,26 @@ class HeldItemView {
 		// Scale is constant for the lifetime of this mesh — set once here
 		// instead of every frame in _updateInner.
 		mesh.scaling.set(SPRITE_SCALE, SPRITE_SCALE, SPRITE_SCALE);
-		const material = acquireSpriteMaterial(icon);
+		const material = createHeldItemMaterial(`heldSprite_${icon}`);
 		mesh.material = material;
 		setShaderUniform(material, "uScale", 1);
 		setShaderUniform(material, "uOffset", [0, 0]);
-		// Pooled materials carry whatever tint the previous holder left:
-		// dropped sprites get theirs from voxel lighting, but the hand is
-		// fullbright, so reset to white or icons render black.
 		setShaderVector3(material, "tintColor", [1, 1, 1]);
-		entry = { mesh, material, icon, bound: false, binding: false };
+		// Bind placeholders synchronously (replaced by real textures when the
+		// icon resolves) so the sampler is never unbound at construction.
+		setShaderTexture(material, "diffuseTexture", getWhiteFallback(Map1.engine));
+		setShaderTexture(
+			material,
+			"normalTexture",
+			getFlatNormalFallback(Map1.engine),
+		);
+		entry = {
+			mesh,
+			material,
+			icon,
+			bound: false,
+			binding: false,
+		};
 		this._sprites.set(icon, entry);
 
 		entry.binding = true;
@@ -330,6 +613,13 @@ class HeldItemView {
 					return;
 				}
 				setShaderTexture(material, "diffuseTexture", tex);
+				// Sprite icons have no normal atlas tile: the flat-normal
+				// fallback keeps them evenly lit by the environment instead.
+				setShaderTexture(
+					material,
+					"normalTexture",
+					getFlatNormalFallback(Map1.engine),
+				);
 				entry.bound = true;
 				addToScene(Map1.mainScene, mesh);
 				if (this._activeKind === "sprite" && this._activeIcon === icon) {
@@ -366,7 +656,7 @@ class HeldItemView {
 		// Scale is constant for the lifetime of this mesh — set once here
 		// instead of every frame in _updateInner.
 		mesh.scaling.set(CUBE_SCALE, CUBE_SCALE, CUBE_SCALE);
-		const material = acquireDroppedItemMaterial(blockId);
+		const material = createHeldItemMaterial(`heldCube_${blockId}`);
 		mesh.material = material;
 
 		// Same atlas tile mapping as a dropped cube of this block.
@@ -380,9 +670,16 @@ class HeldItemView {
 			clampedX * tileSize,
 			atlasRow * tileSize,
 		]);
-		// Fullbright hand lighting (Minecraft-style; the hand ignores
-		// voxel darkness so the held item stays readable).
 		setShaderVector3(material, "tintColor", [1, 1, 1]);
+		// Same placeholder-first rule as sprites: the atlas bind in
+		// _finishCubeBind replaces the white diffuse; the flat-normal
+		// fallback stays until that bind swaps in the block normal atlas.
+		setShaderTexture(material, "diffuseTexture", getWhiteFallback(Map1.engine));
+		setShaderTexture(
+			material,
+			"normalTexture",
+			getFlatNormalFallback(Map1.engine),
+		);
 		entry = { mesh, material, blockId, blockState, bound: false };
 		this._cubes.set(key, entry);
 
@@ -397,6 +694,13 @@ class HeldItemView {
 		if (!atlas) return;
 
 		setShaderTexture(entry.material, "diffuseTexture", atlas);
+		// Same normal atlas the terrain uses for this block, so held cubes
+		// respond to bumps exactly like the placed surface. Sprites keep
+		// their flat-normal fallback (no per-icon normal art exists).
+		const normals = getNormal();
+		if (normals) {
+			setShaderTexture(entry.material, "normalTexture", normals);
+		}
 		entry.bound = true;
 		addToScene(Map1.mainScene, entry.mesh);
 		if (
@@ -444,7 +748,7 @@ class HeldItemView {
 		this._sprites.delete(icon);
 		if (this._activeMesh === entry.mesh) this._activeMesh = null;
 		removeFromScene(Map1.mainScene, entry.mesh);
-		releaseSpriteMaterial(entry.icon, entry.material);
+		disposeItemMaterial(entry.material);
 	}
 
 	private _retireCube(key: string): void {
@@ -453,7 +757,7 @@ class HeldItemView {
 		this._cubes.delete(key);
 		if (this._activeMesh === entry.mesh) this._activeMesh = null;
 		removeFromScene(Map1.mainScene, entry.mesh);
-		releaseDroppedItemMaterial(entry.blockId, entry.material);
+		disposeItemMaterial(entry.material);
 	}
 
 	private _dispose(): void {

@@ -23,6 +23,7 @@ import {
 	type ContainerSlotUpdateData,
 	type ContainerStateData,
 	type ExplosionData,
+	type HeldItemSelectionData,
 	type ItemDropData,
 	type ItemPickupData,
 	type ItemPickupRejectedData,
@@ -33,6 +34,7 @@ import {
 	type MobImpactData,
 	type MobSpawnRequestData,
 	type MobUpdateBatchEntry,
+	type PlayerHeldItemData,
 	type PlayerJoinData,
 	type PlayerLeaveData,
 	type PlayerSkinData,
@@ -609,6 +611,41 @@ export function encodePlayerLeave(data: PlayerLeaveData): Uint8Array {
 
 export function decodePlayerLeave(buffer: Uint8Array): number {
 	return buffer[1];
+}
+
+export function encodeHeldItemSelect(data: HeldItemSelectionData): Uint8Array {
+	const enc = new BinaryEncoder(4);
+	enc.writeUint8(MessageType.HeldItemSelect);
+	enc.writeUint16(data.itemId);
+	enc.writeUint8(data.blockState);
+	return enc.getBytes();
+}
+
+export function decodeHeldItemSelectInto(
+	dec: BinaryDecoder,
+	target: HeldItemSelectionData,
+): typeof target {
+	target.itemId = dec.readUint16();
+	target.blockState = dec.readUint8();
+	return target;
+}
+
+export function encodePlayerHeldItem(data: PlayerHeldItemData): Uint8Array {
+	const enc = new BinaryEncoder(5);
+	enc.writeUint8(MessageType.PlayerHeldItem);
+	enc.writeUint8(data.index);
+	enc.writeUint16(data.itemId);
+	enc.writeUint8(data.blockState);
+	return enc.getBytes();
+}
+
+export function decodePlayerHeldItemInto(
+	dec: BinaryDecoder,
+	target: PlayerHeldItemData,
+): typeof target {
+	target.index = dec.readUint8();
+	decodeHeldItemSelectInto(dec, target);
+	return target;
 }
 
 /**

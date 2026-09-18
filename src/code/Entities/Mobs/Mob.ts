@@ -40,6 +40,22 @@ export type MobSpawnConfig = {
 	 * ignore this and work any time.
 	 */
 	nightSpawn?: boolean;
+	/**
+	 * True for day-only spawners (birds): natural spawning only runs
+	 * during the day, and nightfall despawns them quietly. Spawn eggs
+	 * ignore this and work any time.
+	 */
+	daySpawn?: boolean;
+	/**
+	 * True for mid-air spawners (bird flocks): the spawn finder picks an
+	 * air cell above the player instead of scanning for ground.
+	 */
+	airSpawn?: boolean;
+	/**
+	 * Flock size range for group spawners (birds): one spawn event
+	 * creates this many members around a shared waypoint.
+	 */
+	flockSize?: { min: number; max: number };
 };
 
 export class MobRegistry {

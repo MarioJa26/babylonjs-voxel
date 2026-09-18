@@ -25,6 +25,8 @@ export const MOB_FISH_SKIN_PATH = "/texture/mobs/fish.png";
 export const MOB_KRAKEN_SKIN_PATH = "/texture/mobs/kraken.png";
 export const MOB_ZOMBIE_SKIN_PATH = "/texture/mobs/zombie.png";
 export const MOB_SKELETON_SKIN_PATH = "/texture/mobs/skeleton.png";
+export const MOB_BIRD_SKIN_PATH = "/texture/mobs/bird.png";
+export const MOB_SONGBIRD_SKIN_PATH = "/texture/mobs/songbird.png";
 export const MOB_SKIN_SIZE = 128;
 
 /** Pixel rect [x0, y0, x1, y1]; y0 is the TOP edge of the rect. */
@@ -178,3 +180,41 @@ export const SKELETON_ARM_R_UV = boxUvSet(68, 32, 5, 12, 5);
 /** Skeleton legs: boxes 6x14x6 texels. */
 export const SKELETON_LEG_L_UV = boxUvSet(48, 56, 6, 14, 6);
 export const SKELETON_LEG_R_UV = boxUvSet(80, 56, 6, 14, 6);
+
+// ─── Bird ───────────────────────────────────────────────────────────────────
+// Small flier: body + head + beak + tail + two flapping wings + tiny legs.
+// Own 128x128 file, so the layout only has to be self-consistent (and match
+// scripts/generate-mob-skins.mjs).
+
+/** Bird body: box 8x6x10 texels. */
+export const BIRD_BODY_UV = boxUvSet(0, 0, 8, 6, 10);
+/** Bird head: box 6x6x6 texels. */
+export const BIRD_HEAD_UV = boxUvSet(0, 20, 6, 6, 6);
+/** Bird beak: box 3x2x2 texels. */
+export const BIRD_BEAK_UV = boxUvSet(0, 36, 3, 2, 2);
+/** Bird tail: box 6x2x4 texels. */
+export const BIRD_TAIL_UV = boxUvSet(0, 44, 6, 2, 4);
+/** Bird wings: thin boxes 8x2x6 texels, animated with partIds 5/6. */
+export const BIRD_WING_L_UV = boxUvSet(40, 0, 8, 2, 6);
+export const BIRD_WING_R_UV = boxUvSet(40, 12, 8, 2, 6);
+/** Bird legs: tiny boxes 2x3x2 texels (dangle in flight, stand perched). */
+export const BIRD_LEG_L_UV = boxUvSet(72, 0, 2, 3, 2);
+export const BIRD_LEG_R_UV = boxUvSet(72, 8, 2, 3, 2);
+
+// ─── Songbird ───────────────────────────────────────────────────────────────
+// Same small-flier layout as the bird (own file, warmer palette).
+
+/** Songbird body: box 7x5x9 texels. */
+export const SONGBIRD_BODY_UV = boxUvSet(0, 0, 7, 5, 9);
+/** Songbird head: box 5x5x5 texels. */
+export const SONGBIRD_HEAD_UV = boxUvSet(0, 20, 5, 5, 5);
+/** Songbird beak: box 2x2x2 texels. */
+export const SONGBIRD_BEAK_UV = boxUvSet(0, 36, 2, 2, 2);
+/** Songbird tail: box 5x2x4 texels. */
+export const SONGBIRD_TAIL_UV = boxUvSet(0, 44, 5, 2, 4);
+/** Songbird wings: thin boxes 7x2x5 texels, animated with partIds 5/6. */
+export const SONGBIRD_WING_L_UV = boxUvSet(40, 0, 7, 2, 5);
+export const SONGBIRD_WING_R_UV = boxUvSet(40, 12, 7, 2, 5);
+/** Songbird legs: tiny boxes 2x3x2 texels. */
+export const SONGBIRD_LEG_L_UV = boxUvSet(72, 0, 2, 3, 2);
+export const SONGBIRD_LEG_R_UV = boxUvSet(72, 8, 2, 3, 2);

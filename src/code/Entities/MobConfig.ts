@@ -14,6 +14,8 @@ export const MobTypeId = {
 	Kraken: 6,
 	Zombie: 7,
 	Skeleton: 8,
+	Bird: 9,
+	Songbird: 10,
 } as const;
 
 /** Squared radius (meters) within which a nearby player triggers panic. */
@@ -143,6 +145,24 @@ export const MOB_STATS: Record<number, MobStats> = {
 		fleeRadiusSq: 0,
 		aquatic: false,
 	},
+	[MobTypeId.Bird]: {
+		hp: 3,
+		speed: 5.0,
+		halfHeight: 0.2,
+		feetHeight: 0.2,
+		halfExtents: { x: 0.25, y: 0.2, z: 0.25 },
+		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
+		aquatic: false,
+	},
+	[MobTypeId.Songbird]: {
+		hp: 3,
+		speed: 4.0,
+		halfHeight: 0.15,
+		feetHeight: 0.15,
+		halfExtents: { x: 0.2, y: 0.15, z: 0.2 },
+		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
+		aquatic: false,
+	},
 };
 
 /** Natural spawn configurations, keyed by MobTypeId. */
@@ -203,6 +223,20 @@ export const MOB_SPAWN_CONFIGS: Record<number, MobSpawnConfig> = {
 		despawnable: true,
 		spawnYOffset: 0.3,
 	},
+	[MobTypeId.Bird]: {
+		maxCount: 12,
+		spawnWeight: 1,
+		spawnBlockId: 0, // BlockType.Air — flocks spawn in the sky, see airSpawn
+		despawnable: true,
+		spawnYOffset: 0,
+	},
+	[MobTypeId.Songbird]: {
+		maxCount: 10,
+		spawnWeight: 1,
+		spawnBlockId: 15, // BlockType.Grass001 (anchor column; perches on leaves)
+		despawnable: true,
+		spawnYOffset: 0.3,
+	},
 };
 
 /** Get stats for a mob type, throwing if unknown. */
@@ -231,6 +265,30 @@ export function getMobSpawnConfig(typeId: number): MobSpawnConfig {
 export function isHostileTypeId(typeId: number): boolean {
 	return typeId === MobTypeId.Zombie || typeId === MobTypeId.Skeleton;
 }
+
+/**
+ * True for flying bird types (day-active, non-persistent). Both fly with
+ * the FlyingMob base / server bird branch instead of walking or swimming.
+ * Keyed by MobTypeId so client and server agree.
+ */
+export function isBirdTypeId(typeId: number): boolean {
+	return typeId === MobTypeId.Bird || typeId === MobTypeId.Songbird;
+}
+
+/**
+ * Canopy leaf block IDs songbirds can perch on (all collidable, so normal
+ * ground collision works for landing). Shared by the client leaf scan and
+ * the server simulation.
+ */
+export const LEAF_BLOCK_IDS: ReadonlySet<number> = new Set([
+	43, // ForestLeaves02
+	44, // LeavesForestGround
+	74, // BirchLeaves
+	86, // PalmLeaves
+	88, // SierranConiferLeaves
+	89, // PineLeaves
+	93, // SequoiaLeaves
+]);
 
 /**
  * True when a day-cycle fraction (0..1, same basis as WorldEnvironment and

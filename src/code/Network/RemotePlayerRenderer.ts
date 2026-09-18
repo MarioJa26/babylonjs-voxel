@@ -40,6 +40,7 @@ import {
 } from "@/code/Maps/BlockBreakParticles";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
+import { HeldItemView } from "../Player/Inventory/HeldItemView";
 import {
 	applyRigSkin,
 	createPlayerRigMesh,
@@ -358,6 +359,7 @@ export class RemotePlayerVisual {
 	readonly mesh: Mesh;
 
 	private readonly mat: ReturnType<typeof createRigShaderMaterial>;
+	private readonly heldItem = new HeldItemView();
 	private readonly tex: DynamicTexture2D;
 	private readonly atlas: SpriteAtlas;
 	private readonly billboard: FacingBillboardSpriteSystem;
@@ -790,6 +792,23 @@ export class RemotePlayerVisual {
 	}
 
 	update(camX: number, camY: number, camZ: number, now: number): void {
+		if (!this.alive) return;
+		this.updateBody(camX, camY, camZ, now);
+		this.heldItem.updateAvatar(
+			this.player.heldItemId,
+			this.player.heldItemBlockState,
+			this.mesh,
+			this.walkPhase,
+			this.walkAmp,
+		);
+	}
+
+	private updateBody(
+		camX: number,
+		camY: number,
+		camZ: number,
+		now: number,
+	): void {
 		const player = this.player;
 		const x = player.x;
 		const y = player.y;
@@ -822,6 +841,7 @@ export class RemotePlayerVisual {
 		} else if (distanceSquared >= REMOTE_CULL_ENTER_DIST_SQ) {
 			this.culled = true;
 			this.mesh.visible = false;
+			this.heldItem.hide();
 			this.walkSampleMs = Number.NaN;
 			this.sprintPrevMs = Number.NaN;
 			this.resetLandingTracking();
@@ -960,6 +980,7 @@ export class RemotePlayerVisual {
 		}
 
 		this.alive = false;
+		this.heldItem.dispose();
 		this.skinArrived = null;
 
 		this.mesh.visible = false;

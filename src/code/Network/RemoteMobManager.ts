@@ -37,6 +37,11 @@ import {
 	getSkeletonInstancePool,
 	SKELETON_HIT_HALF,
 } from "@/code/Entities/Mobs/Skeleton";
+import { BIRD_HIT_HALF, getBirdInstancePool } from "@/code/Entities/Mobs/Bird";
+import {
+	SONGBIRD_HIT_HALF,
+	getSongbirdInstancePool,
+} from "@/code/Entities/Mobs/Songbird";
 import {
 	getSquidInstancePool,
 	SQUID_HIT_HALF,
@@ -471,6 +476,12 @@ export class RemoteMobManager {
 			case MobTypeId.Skeleton:
 				return getSkeletonInstancePool();
 
+			case MobTypeId.Bird:
+				return getBirdInstancePool();
+
+			case MobTypeId.Songbird:
+				return getSongbirdInstancePool();
+
 			case MobTypeId.Chicken:
 			default:
 				return getChickenInstancePool();
@@ -501,6 +512,12 @@ export class RemoteMobManager {
 
 			case MobTypeId.Skeleton:
 				return SKELETON_HIT_HALF;
+
+			case MobTypeId.Bird:
+				return BIRD_HIT_HALF;
+
+			case MobTypeId.Songbird:
+				return SONGBIRD_HIT_HALF;
 
 			case MobTypeId.Chicken:
 			default:

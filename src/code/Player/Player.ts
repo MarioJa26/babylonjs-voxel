@@ -29,6 +29,7 @@ import {
 import { PauseMenu } from "./Hud/PauseMenu";
 import { PlayerHud } from "./Hud/PlayerHud";
 import { DroppedItem } from "./Inventory/DroppedItem";
+import { HeldItemView } from "./Inventory/HeldItemView";
 import { setOnBlockPlaced } from "./Inventory/Item";
 import { PlayerInventory } from "./Inventory/PlayerInventory";
 import { PlayerBodyControlState } from "./PlayerBody";
@@ -90,6 +91,7 @@ export class Player {
 	#loopController!: PlayerLoopController;
 	#playerBodyMesh: Mesh | null = null;
 	#playerBodyMat: ShaderMaterial | null = null;
+	#bodyHeldItem: HeldItemView | null = null;
 	#bodySkinBound = false;
 	// Third-person body facing: derived from movement (Minecraft-style).
 	#lastBodyX = Number.NaN;
@@ -185,6 +187,7 @@ export class Player {
 		addToScene(scene, body);
 		this.#playerBodyMesh = body;
 		this.#playerBodyMat = mat;
+		this.#bodyHeldItem = new HeldItemView();
 
 		applyRigSkin(this.engine, mat, () => {
 			this.#bodySkinBound = true;
@@ -230,6 +233,7 @@ export class Player {
 		body.visible = visible;
 
 		if (!visible) {
+			this.#bodyHeldItem?.hide();
 			this.#lastBodyX = Number.NaN;
 			return;
 		}
@@ -285,6 +289,16 @@ export class Player {
 		}
 		this.#lastBodyX = x;
 		this.#lastBodyZ = z;
+		const item =
+			this.#playerInventory.inventory[0]?.[this.#playerHud.selectedHotbarSlot]
+				?.item;
+		this.#bodyHeldItem?.updateAvatar(
+			item && item.stackSize > 0 ? item.itemId : 0,
+			item?.blockState ?? 0,
+			body,
+			this.#bodyWalkPhase,
+			this.#bodyWalkAmp,
+		);
 	}
 
 	#onPauseRequested(): void {

@@ -32,6 +32,32 @@ const HIP_PIVOT_Y = 12 * PX; // leg tops
 /** Max limb swing angle (radians) at amp 1. Applied CPU-side. */
 const SWING_MAX = 0.75;
 
+export function setRigHeldItemTransform(
+	item: Mesh,
+	body: Mesh,
+	phase: number,
+	amp: number,
+): void {
+	const swing = -Math.sin(phase) * SWING_MAX * amp;
+	const s = Math.sin(swing);
+	const c = Math.cos(swing);
+	const handX = 6 * PX;
+	const handY = -12 * PX;
+	const handZ = 3 * PX;
+	const localY =
+		SHOULDER_PIVOT_Y - PLAYER_MODEL_HEIGHT / 2 + handY * c - handZ * s;
+	const localZ = handY * s + handZ * c;
+	const yaw = body.rotation.y;
+	const sy = Math.sin(yaw);
+	const cy = Math.cos(yaw);
+	item.position.set(
+		body.position.x + handX * cy + localZ * sy,
+		body.position.y + localY,
+		body.position.z - handX * sy + localZ * cy,
+	);
+	item.rotation.set(swing, yaw, 0);
+}
+
 // ─── Rig shader sources (unlit textured, brightness uniform) ────────────────
 // Mirrors the proven DroppedItem shader so no scene lights or
 // StandardMaterial state can interfere with how the model looks.

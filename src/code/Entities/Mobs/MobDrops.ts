@@ -15,6 +15,9 @@ export const FOOD_KRAKEN_MEAT = 1109;
 export const ITEM_ROTTEN_FLESH = 1110;
 export const ITEM_BONE = 1115;
 
+/** Bird drop ID (see public/data/items.json). */
+export const ITEM_FEATHER = 1114;
+
 /** Per-mob food drop ranges, agreed with design: chicken/sheep/fish/squid 1-2, cow 1-3, kraken 3-5. */
 export const MOB_FOOD_DROPS: Readonly<
 	Record<string, { itemId: number; min: number; max: number }>
@@ -97,6 +100,8 @@ export const MOB_ITEM_DROPS: Readonly<
 		{ itemId: ITEM_BONE, min: 1, max: 2 },
 		{ itemId: 1023, min: 0, max: 2 }, // Wooden Arrow
 	],
+	bird: [{ itemId: ITEM_FEATHER, min: 1, max: 2 }],
+	songbird: [{ itemId: ITEM_FEATHER, min: 1, max: 1 }],
 };
 
 /** Drop every configured item stack for a hostile mobType. No-op for unknown types. */

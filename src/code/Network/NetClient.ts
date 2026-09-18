@@ -14,6 +14,7 @@ import {
 	BinaryEncoder,
 	decodeBlockEditBroadcastInto,
 	decodeBlockEditRejectedInto,
+	decodePlayerHeldItemInto,
 	decodePlayerJoinInto,
 	decodePlayerStateBatchEntriesInto,
 	decodeSpawnPositionInto,
@@ -22,6 +23,7 @@ import {
 	encodeContainerClose,
 	encodeContainerOpen,
 	encodeContainerSetSlot,
+	encodeHeldItemSelect,
 	encodeSkinUpload,
 	type WorldConfigData,
 } from "./protocol/encoder";
@@ -31,6 +33,7 @@ import {
 	type ChatMessageData,
 	MAX_SKIN_BYTES,
 	MessageType,
+	type PlayerHeldItemData,
 	type PlayerJoinData,
 	type PlayerStateBatchEntry,
 	type TntIgniteData,
@@ -48,6 +51,8 @@ export interface RemotePlayer {
 	animation: number;
 	/** Server-synced avatar skin PNG (null until received). */
 	skinPng: Uint8Array | null;
+	heldItemId: number;
+	heldItemBlockState: number;
 	// Interpolation targets, yaw stored in degrees.
 	targetX: number;
 	targetY: number;
@@ -111,6 +116,11 @@ export class NetClient {
 
 	private readonly batchScratch: PlayerStateBatchEntry[] = [];
 	private readonly warnedUnknownIndices = new Set<number>();
+	private readonly playerHeldItemScratch: PlayerHeldItemData = {
+		index: 0,
+		itemId: 0,
+		blockState: 0,
+	};
 	private readonly playerJoinScratch: PlayerJoinData = {
 		index: 0,
 		sessionId: "",
@@ -343,6 +353,19 @@ export class NetClient {
 						this.handlePlayerJoin(dec);
 						break;
 
+					case MessageType.PlayerHeldItem: {
+						const selection = decodePlayerHeldItemInto(
+							dec,
+							this.playerHeldItemScratch,
+						);
+						const player = this.playersByIndex[selection.index];
+						if (player !== undefined) {
+							player.heldItemId = selection.itemId;
+							player.heldItemBlockState = selection.blockState;
+						}
+						break;
+					}
+
 					case MessageType.PlayerSkin: {
 						const index = dec.readUint8();
 						const len = dec.readUint16();
@@ -572,6 +595,8 @@ export class NetClient {
 			player.yaw = 0;
 			player.pitch = 0;
 			player.animation = 0;
+			player.heldItemId = 0;
+			player.heldItemBlockState = 0;
 
 			player.targetX = 0;
 			player.targetY = 80;
@@ -589,6 +614,8 @@ export class NetClient {
 				pitch: 0,
 				animation: 0,
 				skinPng: null,
+				heldItemId: 0,
+				heldItemBlockState: 0,
 				targetX: 0,
 				targetY: 80,
 				targetZ: 0,
@@ -619,6 +646,23 @@ export class NetClient {
 		this.warnedUnknownIndices.delete(index);
 
 		this.callbacks.onPlayerLeave?.(existing.sessionId, existing.name);
+	}
+
+	sendHeldItemSelection(itemId: number, blockState = 0): boolean {
+		const room = this.getConnectedRoom();
+		if (room === null) return false;
+		if (
+			!Number.isInteger(itemId) ||
+			itemId < 0 ||
+			itemId > 65535 ||
+			!Number.isInteger(blockState) ||
+			blockState < 0 ||
+			blockState > 63 ||
+			(itemId === 0 && blockState !== 0)
+		)
+			return false;
+		room.sendBytes("binary", encodeHeldItemSelect({ itemId, blockState }));
+		return true;
 	}
 
 	sendPlayerState(

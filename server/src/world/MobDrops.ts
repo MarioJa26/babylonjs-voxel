@@ -37,6 +37,8 @@ export const MOB_ITEM_DROPS: Readonly<Record<number, MobFoodDrop[]>> = {
 		{ itemId: 1115, min: 1, max: 2 },
 		{ itemId: 1023, min: 0, max: 2 },
 	],
+	[MobTypeId.Bird]: [{ itemId: 1114, min: 1, max: 2 }],
+	[MobTypeId.Songbird]: [{ itemId: 1114, min: 1, max: 1 }],
 };
 
 export interface RolledFoodDrop {

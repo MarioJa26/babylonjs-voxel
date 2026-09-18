@@ -26,6 +26,7 @@ export const MessageType = {
 	ChunkRequestBatch: 0x04,
 	ItemDrop: 0x05, // C→S: a player dropped an item into the world
 	ItemPickup: 0x06, // C→S: a player picked up a server item (by instance id)
+	HeldItemSelect: 0x08,
 	SkinUpload: 0x07, // C→S: this client's avatar skin as PNG bytes
 	MobSpawnRequest: 0x2a, // C→S: a player used a spawn egg (cap-exempt mob)
 	MobDamage: 0x20, // C→S request / S→C accepted hit effect for a server mob
@@ -50,6 +51,7 @@ export const MessageType = {
 	WorldConfig: 0x1a, // Server → client: authoritative world seed on join
 	SpawnPosition: 0x1b, // Server → client: teleport player to saved position
 	BlockEditRejected: 0x1d, // Server → client: a block edit was rejected
+	PlayerHeldItem: 0x1f,
 	PlayerSkin: 0x1e, // S→C: another player's skin PNG, keyed by room index
 
 	// Server → Client: server-authoritative mobs
@@ -161,6 +163,15 @@ export interface PlayerJoinData {
 }
 
 export interface PlayerLeaveData {
+	index: number;
+}
+
+export interface HeldItemSelectionData {
+	itemId: number;
+	blockState: number;
+}
+
+export interface PlayerHeldItemData extends HeldItemSelectionData {
 	index: number;
 }
 

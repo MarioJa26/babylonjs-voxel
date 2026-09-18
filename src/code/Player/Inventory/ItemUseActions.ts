@@ -86,6 +86,8 @@ const SPAWN_EGG_MOB_TYPE_IDS: Readonly<Record<string, number>> = {
 	kraken: MobTypeId.Kraken,
 	zombie: MobTypeId.Zombie,
 	skeleton: MobTypeId.Skeleton,
+	bird: MobTypeId.Bird,
+	songbird: MobTypeId.Songbird,
 };
 
 function useTool(player: Player): void {
@@ -321,7 +323,8 @@ function useSpawnEgg(player: Player): void {
 			return;
 		}
 	} else {
-		// Land mobs (chicken/sheep/cow/zombie/skeleton): require air headroom.
+		// Land mobs (chicken/sheep/cow/zombie/skeleton/bird/songbird):
+		// require air headroom. Birds take off on their first tick.
 		if (
 			getBlockByWorldCoords(cellX, cellY, cellZ) !== BlockType.Air ||
 			getBlockByWorldCoords(cellX, cellY + 1, cellZ) !== BlockType.Air
