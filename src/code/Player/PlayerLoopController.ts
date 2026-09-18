@@ -240,7 +240,7 @@ export class PlayerLoopController {
 		this.playerHud.crossHair.setTargetHit(pickHit);
 
 		frameProfiler.begin("boats");
-		CustomBoat.tickAllActiveBoats(this.scene, playerPos);
+		CustomBoat.tickAllActiveBoats(this.scene, deltaMs, playerPos);
 		frameProfiler.end("boats");
 
 		frameProfiler.begin("physics");

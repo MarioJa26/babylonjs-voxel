@@ -210,6 +210,20 @@ export class Player {
 		const body = this.#playerBodyMesh;
 		if (!body) return;
 
+		// Don't render until the skin texture is bound (unbound sampler would
+		// produce an invalid pass), and only in third person.
+		// PERF: checked first — in first person (the common case) this skips
+		// the walk-phase math and rig uniform writes below entirely. Phase
+		// simply freezes while invisible and eases back on return.
+		const visible = this.#playerCamera.isThirdPerson && this.#bodySkinBound;
+		body.visible = visible;
+
+		if (!visible) {
+			this.#bodyHeldItem?.hide();
+			this.#lastBodyX = Number.NaN;
+			return;
+		}
+
 		// Walk swing: phase advances with ground speed; amplitude eases toward
 		// full stride at WALK_REF_SPEED and decays back to the rest pose.
 		{
@@ -225,17 +239,6 @@ export class Player {
 				setRigWalk(mat, this.#bodyWalkPhase, this.#bodyWalkAmp);
 				setRigHeadPitch(mat, this.#playerCamera.cameraPitch);
 			}
-		}
-
-		// Don't render until the skin texture is bound (unbound sampler would
-		// produce an invalid pass), and only in third person.
-		const visible = this.#playerCamera.isThirdPerson && this.#bodySkinBound;
-		body.visible = visible;
-
-		if (!visible) {
-			this.#bodyHeldItem?.hide();
-			this.#lastBodyX = Number.NaN;
-			return;
 		}
 
 		const { x, y, z } = this.position;

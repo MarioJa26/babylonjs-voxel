@@ -93,6 +93,7 @@ export class CustomBoat implements IUsable {
 
 	public static tickAllActiveBoats(
 		scene: SceneContext,
+		deltaMs: number,
 		playerPos?: Vec3,
 	): void {
 		const cullDistSq =
@@ -103,7 +104,7 @@ export class CustomBoat implements IUsable {
 				const dz = boat.#boat.position.z - playerPos!.z;
 				if (dx * dx + dz * dz > cullDistSq) continue;
 			}
-			boat.#tick(scene);
+			boat.#tick(scene, deltaMs);
 		}
 	}
 
@@ -293,7 +294,6 @@ export class CustomBoat implements IUsable {
 
 	#chunkBindingHandle?: symbol;
 	#isDisposed = false;
-	#lastTickTime = performance.now();
 
 	#tmpWorldPoint = vec3Zero();
 	#tmpTorque = vec3Zero();
@@ -500,11 +500,12 @@ export class CustomBoat implements IUsable {
 		setVec3(bp[8], cox + ix, y, coz + iz);
 	}
 
-	#tick(_scene: SceneContext): void {
-		const now = performance.now();
-		let dt = (now - this.#lastTickTime) / 1000;
-		this.#lastTickTime = now;
-		if (dt <= 0) return;
+	#tick(_scene: SceneContext, deltaMs: number): void {
+		// PERF: frame dt comes from the central tick (PlayerLoopController),
+		// so no performance.now() per boat per frame. Clamp semantics are
+		// unchanged: non-positive dt skips, hitches clamp to 1/24 max.
+		if (deltaMs <= 0) return;
+		let dt = deltaMs * 0.001;
 		dt = Math.min(Math.max(dt, this.#cfg.dtClamp.min), this.#cfg.dtClamp.max);
 
 		this.#submergedPoints = 0;
@@ -555,8 +556,10 @@ export class CustomBoat implements IUsable {
 					? this.#cfg.damping.waterAngular
 					: this.#cfg.damping.airAngular;
 
-			scaleVec3InPlace(this.#linearVelocity, d ** (dt * 60));
-			scaleVec3InPlace(this.#angularVelocity, ad ** (dt * 60));
+			// PERF: hoist dt*60 out of the two pow calls.
+			const k = dt * 60;
+			scaleVec3InPlace(this.#linearVelocity, d ** k);
+			scaleVec3InPlace(this.#angularVelocity, ad ** k);
 		}
 
 		// Move
