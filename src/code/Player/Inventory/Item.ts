@@ -1,7 +1,11 @@
 import type { ShaderMaterial } from "@babylonjs/lite";
 import type { IUsable } from "@/code/Interface/IUsable";
+import { playPlace } from "@/code/Maps/BlockBreakParticles";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
-import { setBlock } from "@/code/World/Chunk/ChunkLoadingSystem";
+import {
+	getLightByWorldCoords,
+	setBlock,
+} from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	getShapeForBlockId,
 	isRegisteredBlockId,
@@ -324,7 +328,20 @@ export class Item implements IUsable {
 			const plZ = boatCtx.localZ + boatCtx.localHitNz;
 
 			if (boatCtx.boatChunk.isInsideLocalBounds(plX, plY, plZ)) {
+				const worldCenter = boatCtx.boatChunk.localToWorldCenter(plX, plY, plZ);
+				const packedLight = getLightByWorldCoords(
+					worldCenter.x,
+					worldCenter.y,
+					worldCenter.z,
+				);
 				boatCtx.boatChunk.setBlockLocal(plX, plY, plZ, blockId, blockState);
+				playPlace(
+					worldCenter.x,
+					worldCenter.y,
+					worldCenter.z,
+					blockId,
+					packedLight,
+				);
 				if (player.stats.gamemode !== Gamemodes.Creative) {
 					player.playerInventory.removeItems(item.itemId, 1);
 				}
@@ -332,7 +349,11 @@ export class Item implements IUsable {
 			}
 		}
 
+		// Sample light BEFORE setBlock: the placed voxel is solid afterwards
+		// and stores no light, so particles sampled after would come out black.
+		const packedLight = getLightByWorldCoords(x + 0.5, y + 0.5, z + 0.5);
 		setBlock(x, y, z, blockId, blockState);
+		playPlace(x + 0.5, y + 0.5, z + 0.5, blockId, packedLight);
 		_onBlockPlaced?.(x, y, z, blockId, blockState);
 		if (player.stats.gamemode !== Gamemodes.Creative) {
 			player.playerInventory.removeItems(item.itemId, 1);

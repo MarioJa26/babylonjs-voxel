@@ -20,7 +20,7 @@ import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { debugLog } from "@/code/Lib/debugLog";
 import { setIsPaused } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
-import { play, playDebris } from "@/code/Maps/BlockBreakParticles";
+import { play, playDebris, playPlace } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
 import { Gamemodes } from "@/code/Player/PlayerStats";
@@ -450,7 +450,16 @@ export class NetworkManager {
 		}
 
 		if (action === BlockActionType.Place) {
+			// Sample light BEFORE setBlock: the placed voxel is solid
+			// afterwards and stores no light (same reason local placement in
+			// Item.place samples first). Fall back to the brightest neighbor
+			// when the target voxel itself reads dark (e.g. replacing water).
+			const px = x + 0.5;
+			const py = y + 0.5;
+			const pz = z + 0.5;
+			const packedLight = this.sampleBreakLight(px, py, pz);
 			setBlock(x, y, z, blockId, blockState);
+			playPlace(px, py, pz, blockId, packedLight);
 			return;
 		}
 

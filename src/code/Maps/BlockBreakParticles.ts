@@ -42,6 +42,8 @@ const PARTICLES_PER_BREAK = 198;
 const MINING_PARTICLES_PER_EMIT = 6;
 const MINING_PARTICLE_INTERVAL_MS = 67;
 
+const PLACE_PARTICLES_PER_EMIT = 20;
+
 const SPRINT_PARTICLES_PER_EMIT = 6;
 const SPRINT_PARTICLE_INTERVAL_MS = 120;
 
@@ -247,6 +249,50 @@ export function playDebris(
 	const light = computeLight(packedLight);
 
 	spawnDebrisBurst(x, y, z, frame, light.r, light.g, light.b);
+}
+
+/**
+ * Small dust puff when a block is placed. Deliberately subtler than the
+ * break burst (fewer, smaller, slower, shorter-lived particles, no voxel
+ * collision — the freshly placed block is solid, so colliding debris would
+ * instantly stick). `x/y/z` is the placed block center.
+ */
+export function playPlace(
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+	packedLight: number,
+): void {
+	if (!billboard) return;
+
+	const frame = getBlockFrame(blockId);
+	const light = computeLight(packedLight);
+	const shade = 0.85 + getPRNGUnit2() * 0.15;
+
+	for (let i = 0; i < PLACE_PARTICLES_PER_EMIT; i++) {
+		const angle = getPRNGUnit2() * Math.PI * 2;
+		const outSpeed = 1.7 + getPRNGUnit2();
+
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.7,
+			y + (getPRNGUnit2() - 0.5),
+			z + (getPRNGUnit2() - 0.5) * 0.7,
+			Math.cos(angle) * outSpeed,
+			0.75 + getPRNGUnit2() * 1.2,
+			Math.sin(angle) * outSpeed,
+			0.85 + getPRNGUnit2(),
+			0.06 + getPRNGUnit2() * 0.124,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 3,
+			frame,
+			light.r * shade,
+			light.g * shade,
+			light.b * shade,
+			1,
+			1,
+		);
+	}
 }
 
 /**
