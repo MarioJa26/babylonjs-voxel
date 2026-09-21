@@ -449,6 +449,15 @@ function buildChunkMaterial(
 		needAlphaBlending: isTransparent,
 		needAlphaTesting: isCutout,
 		blendMode: isTransparent ? "alpha" : undefined,
+		// Water faces share one unsorted buffer (X/Z sides + Y tops). With
+		// the default depthWrite:false for blended materials, deep side
+		// faces at ocean-bottom cave openings composite OVER the surface
+		// when viewed from above (buffer order is draw order). Explicit
+		// depthWrite:true makes water self-occluding: nearest wins
+		// regardless of emission order, so the surface occludes deep cave
+		// water from above. Opaque already drew first (renderOrder 0 vs 1),
+		// so this only affects water-vs-water.
+		depthWrite: isTransparent ? true : undefined,
 	});
 
 	registerPackedMaterial(material);

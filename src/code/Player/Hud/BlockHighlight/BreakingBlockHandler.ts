@@ -210,6 +210,11 @@ export class BlockBreakingHandler {
 		this.#active = true;
 	}
 
+	/** True while the mouse is held for mining (until stop()/reset()). */
+	public get isActive(): boolean {
+		return this.#active;
+	}
+
 	public stop(): void {
 		this.#active = false;
 		this.reset();

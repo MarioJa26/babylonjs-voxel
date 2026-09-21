@@ -1,4 +1,5 @@
 import type { ShaderMaterial } from "@babylonjs/lite";
+import { playBlockPlace } from "@/code/Audio/SurfaceAudio";
 import type { IUsable } from "@/code/Interface/IUsable";
 import { playPlace } from "@/code/Maps/BlockBreakParticles";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
@@ -342,6 +343,7 @@ export class Item implements IUsable {
 					blockId,
 					packedLight,
 				);
+				playBlockPlace(blockId);
 				if (player.stats.gamemode !== Gamemodes.Creative) {
 					player.playerInventory.removeItems(item.itemId, 1);
 				}
@@ -354,6 +356,7 @@ export class Item implements IUsable {
 		const packedLight = getLightByWorldCoords(x + 0.5, y + 0.5, z + 0.5);
 		setBlock(x, y, z, blockId, blockState);
 		playPlace(x + 0.5, y + 0.5, z + 0.5, blockId, packedLight);
+		playBlockPlace(blockId);
 		_onBlockPlaced?.(x, y, z, blockId, blockState);
 		if (player.stats.gamemode !== Gamemodes.Creative) {
 			player.playerInventory.removeItems(item.itemId, 1);

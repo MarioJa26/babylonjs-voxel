@@ -40,7 +40,13 @@ const FACE_NAME_TABLE: FaceName[] = [
 const FACE_BIT_TABLE = [FACE_PX, FACE_NX, FACE_PY, FACE_NY, FACE_PZ, FACE_NZ];
 
 function needsRawDim(blockId: number, width: number, height: number): boolean {
-	return blockId !== WATER_BLOCK_ID || width > 31 || height > 31;
+	if (width > 31 || height > 31) return true;
+	if (blockId === WATER_BLOCK_ID) return false;
+	// Virtual water variants behave like water.
+	if (typeof blockId === "number" && blockId >= 500) {
+		return Math.floor((blockId - 500) / 5) + 1 !== WATER_BLOCK_ID;
+	}
+	return true;
 }
 
 /**
@@ -107,7 +113,11 @@ export class VoxelFaceEmitterAdapter {
 		const materialType = getMaterialType(blockId);
 
 		const isTransparentMaterial = materialType === MaterialType.WaterOrGlass;
-		const isWater = isTransparentMaterial && blockId === WATER_BLOCK_ID;
+		const isWater =
+			isTransparentMaterial &&
+			(blockId === WATER_BLOCK_ID ||
+				(blockId >= 500 &&
+					Math.floor((blockId - 500) / 5) + 1 === WATER_BLOCK_ID));
 
 		const session = this._session;
 
@@ -355,7 +365,7 @@ export class VoxelFaceEmitterAdapter {
 				light,
 				ao,
 				faceName,
-				MaterialType.Default,
+				getMaterialType(blockId),
 				0,
 				0,
 				rawDim,

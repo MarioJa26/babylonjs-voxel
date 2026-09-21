@@ -286,6 +286,10 @@ export function createLod2TransparentMaterial(
 		backFaceCulling: false,
 		needAlphaBlending: true,
 		blendMode: "alpha",
+		// Water self-occlusion: unsorted blended faces otherwise let deep
+		// cave-opening sides composite over the surface (see
+		// OpaqueShaderLite transparent depthWrite).
+		depthWrite: true,
 	});
 
 	registerPackedMaterial(material);

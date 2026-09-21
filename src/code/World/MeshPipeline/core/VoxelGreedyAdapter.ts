@@ -55,6 +55,16 @@ export class VoxelGreedyAdapter {
 	/**
 	 * Runs greedy meshing on all 3 axes.
 	 * Emits quads for all voxel faces into the session's quad buffers.
+	 *
+	 * Axis order is X, Z, Y (sides first, horizontal tops/bottoms last).
+	 * The water bucket is alpha-blended with depthWrite enabled but no
+	 * per-face sorting, so buffer order IS draw order. Z side faces emitted
+	 * after Y tops used to composite over the ocean surface when viewed
+	 * from above — deep water walls at cave openings appeared on top of
+	 * the surface. Emitting Y last keeps the surface (near from above,
+	 * far slices first → near slices last within Y) on top for the
+	 * dominant top-down view. Opaque/cutout are depth-resolved so order
+	 * is irrelevant for them.
 	 */
 	public build(): void {
 		const session = this._session;
@@ -70,10 +80,10 @@ export class VoxelGreedyAdapter {
 		extractAllSliceMasksX(session, maskBank, lightBank);
 		greedyMesh(session, null, this._emitFaceX, maskBank, lightBank);
 
-		extractAllSliceMasksY(session, maskBank, lightBank);
-		greedyMesh(session, null, this._emitFaceY, maskBank, lightBank);
-
 		extractAllSliceMasksZ(session, maskBank, lightBank);
 		greedyMesh(session, null, this._emitFaceZ, maskBank, lightBank);
+
+		extractAllSliceMasksY(session, maskBank, lightBank);
+		greedyMesh(session, null, this._emitFaceY, maskBank, lightBank);
 	}
 }

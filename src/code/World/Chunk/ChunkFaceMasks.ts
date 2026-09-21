@@ -16,6 +16,7 @@ import {
 	unpackBlockId,
 	unpackBlockState,
 } from "./DataStructures/BlockEncoding";
+import { getSourceBlockId } from "../Texture/BlockMaterial";
 import { WATER_BLOCK_ID } from "./Worker/ChunkMesherConstants";
 
 // ---------------------------------------------------------------------------
@@ -180,7 +181,10 @@ function getClosedFaceMaskForPacked(blockPacked: number): number {
 		blockId === 0 ||
 		blockId === WATER_BLOCK_ID ||
 		blockId === GLASS_01_BLOCK_ID ||
-		blockId === GLASS_02_BLOCK_ID
+		blockId === GLASS_02_BLOCK_ID ||
+		getSourceBlockId(blockId) === WATER_BLOCK_ID ||
+		getSourceBlockId(blockId) === GLASS_01_BLOCK_ID ||
+		getSourceBlockId(blockId) === GLASS_02_BLOCK_ID
 	) {
 		CLOSED_FACE_MASK_CACHE[cacheIndex] = 0;
 		return 0;

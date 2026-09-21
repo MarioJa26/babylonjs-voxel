@@ -37,10 +37,18 @@ export function setRigHeldItemTransform(
 	body: Mesh,
 	phase: number,
 	amp: number,
+	punchT = Number.POSITIVE_INFINITY,
 ): void {
 	const swing = -Math.sin(phase) * SWING_MAX * amp;
-	const s = Math.sin(swing);
-	const c = Math.cos(swing);
+	// Total hand angle mirrors the rig shader's right-arm rotation exactly
+	// (walk swing plus the punch raise, negative = forward). Rotating the
+	// hand offset by this same angle about the shoulder pivot keeps the
+	// item rigidly in the grip; a linear nudge can't follow the arc and
+	// leaves the item floating behind the hand.
+	const punchCurve = punchT >= 0 && punchT < 1 ? Math.sin(punchT * Math.PI) : 0;
+	const theta = swing - punchCurve * PUNCH_MAX_ANGLE;
+	const s = Math.sin(theta);
+	const c = Math.cos(theta);
 	const handX = 6 * PX;
 	const handY = -12 * PX;
 	const handZ = 3 * PX;
@@ -55,7 +63,7 @@ export function setRigHeldItemTransform(
 		body.position.y + localY,
 		body.position.z - handX * sy + localZ * cy,
 	);
-	item.rotation.set(swing, yaw, 0);
+	item.rotation.set(theta, yaw, 0);
 }
 
 // ─── Rig shader sources (unlit textured, brightness uniform) ────────────────
@@ -63,15 +71,18 @@ export function setRigHeldItemTransform(
 // StandardMaterial state can interfere with how the model looks.
 //
 // All per-frame animation math runs on the CPU: every player-material writes
-// ONE vec4 uniform (uAnim) holding precomputed sin/cos pairs — no trig and no
-// per-part select chains in the vertex shader, and idle players write nothing
-// at all (callers can hammer setRigWalk/setRigHeadPitch; unchanged values are
-// dropped before they reach the material).
+// precomputed sin/cos pairs — no trig and no per-part select chains in the
+// vertex shader, and idle players write nothing at all (callers can hammer
+// setRigWalk/setRigHeadPitch/setRigPunch; unchanged values are dropped
+// before they reach the material).
 //
 // uAnim layout: [sin(swing), sin(headPitch), cos(headPitch), cos(swing)].
 // The cos slots are only read when their sin sibling is non-zero, so an
 // all-zero (never-written) uniform buffer still renders the rest pose
 // correctly through the early-outs below.
+//
+// uPunch layout: [sin(punchAngle), cos(punchAngle)] for the RIGHT arm only.
+// Rests at [0, 1]; the punch angle adds to the walk angle for that arm.
 //
 // Per-vertex limb metadata rides in the normal attribute (the unlit fragment
 // shader never reads normals): x = part id, y = pivot Y (model space,
@@ -96,8 +107,20 @@ fn animateRig(p : vec3<f32>, tag : vec3<f32>) -> vec3<f32> {
 		}
 		s = shaderUniforms.uAnim.y;
 		c = shaderUniforms.uAnim.z;
+	} else if (tag.x > 1.5 && tag.x < 2.5) {
+		// right arm: walk swing plus the punch raise. Both arrive as
+		// sin/cos pairs, so the total rotation is plain angle addition.
+		if (shaderUniforms.uAnim.x == 0.0 && shaderUniforms.uPunch.x == 0.0) {
+			return p;
+		}
+		let ws = shaderUniforms.uAnim.x * tag.z;
+		let wc = shaderUniforms.uAnim.w;
+		let ps = shaderUniforms.uPunch.x;
+		let pc = shaderUniforms.uPunch.y;
+		s = ws * pc + wc * ps;
+		c = wc * pc - ws * ps;
 	} else {
-		// arms and legs swing about their pivot, mirrored by sign
+		// left arm and legs swing about their pivot, mirrored by sign
 		if (shaderUniforms.uAnim.x == 0.0) {
 			return p;
 		}
@@ -528,7 +551,8 @@ export function applyRigSkin(
 ): void {
 	setShaderUniform(mat, "uLightColor", [1, 1, 1]);
 	setShaderUniform(mat, "uAnim", REST_ANIM);
-	rigAnimStates.set(mat, { phase: 0, amp: 0, pitch: 0 });
+	setShaderUniform(mat, "uPunch", REST_PUNCH);
+	rigAnimStates.set(mat, { phase: 0, amp: 0, pitch: 0, punch: 0 });
 	setShaderTexture(mat, "diffuseTexture", getFallbackTexture(engine));
 	loadSkin(engine)
 		.then((tex) => {
@@ -585,6 +609,7 @@ export function createRigShaderMaterial(name: string): ShaderMaterial {
 			"worldViewProjection",
 			{ name: "uLightColor", type: "vec3<f32>" },
 			{ name: "uAnim", type: "vec4<f32>" },
+			{ name: "uPunch", type: "vec2<f32>" },
 		],
 		samplers: ["diffuseTexture"],
 		backFaceCulling: true,
@@ -621,15 +646,29 @@ interface RigAnimState {
 	phase: number;
 	amp: number;
 	pitch: number;
+	/** Punch curve 0 (rest) to 1 (peak); drives the uPunch uniform. */
+	punch: number;
 }
 
 // Last-written animation state per material. Powers the skip-unchanged fast
-// path: idle players re-issuing the same (phase, amp, pitch) every frame cost
-// zero uniform writes. WeakMap so disposed materials don't leak.
+// path: idle players re-issuing the same state every frame cost zero uniform
+// writes. WeakMap so disposed materials don't leak.
 const rigAnimStates = new WeakMap<ShaderMaterial, RigAnimState>();
 
 /** uAnim = [sin(swing), sin(pitch), cos(pitch), cos(swing)] rest value. */
 const REST_ANIM: readonly number[] = [0, 0, 1, 1];
+
+/** uPunch = [sin(punchAngle), cos(punchAngle)] rest value (arm down). */
+const REST_PUNCH: readonly number[] = [0, 1];
+
+/** Full punch duration in seconds (wind-up + strike + recover). */
+export const PUNCH_DURATION_S = 0.32;
+
+/** Peak right-arm raise (radians) at the middle of a punch. */
+const PUNCH_MAX_ANGLE = 1.15;
+
+// PERF: scratch buffer for the per-frame punch write (setShaderUniform copies).
+const _punchUniform = [0, 1];
 
 // PERF: scratch buffer for the per-frame write (setShaderUniform copies).
 const _animUniform = [0, 0, 1, 1];
@@ -656,7 +695,7 @@ export function setRigWalk(
 		st.phase = phase;
 		st.amp = clampedAmp;
 	} else {
-		st = { phase, amp: clampedAmp, pitch: 0 };
+		st = { phase, amp: clampedAmp, pitch: 0, punch: 0 };
 		rigAnimStates.set(mat, st);
 	}
 	writeRigAnim(mat, st);
@@ -677,8 +716,31 @@ export function setRigHeadPitch(mat: ShaderMaterial, pitch: number): void {
 		if (st.pitch === clamped) return; // no-op frame
 		st.pitch = clamped;
 	} else {
-		st = { phase: 0, amp: 0, pitch: clamped };
+		st = { phase: 0, amp: 0, pitch: clamped, punch: 0 };
 		rigAnimStates.set(mat, st);
 	}
 	writeRigAnim(mat, st);
+}
+
+/**
+ * Raise the right arm for a punch/mining strike. punchT is the normalized
+ * punch progress in [0, 1); anything outside that range is the rest pose.
+ * The curve peaks mid-swing (sin) so the arm snaps up and eases back down.
+ */
+export function setRigPunch(mat: ShaderMaterial, punchT: number): void {
+	const curve = punchT >= 0 && punchT < 1 ? Math.sin(punchT * Math.PI) : 0;
+	let st = rigAnimStates.get(mat);
+	if (st) {
+		if (st.punch === curve) return; // no-op frame
+		st.punch = curve;
+	} else {
+		st = { phase: 0, amp: 0, pitch: 0, punch: curve };
+		rigAnimStates.set(mat, st);
+	}
+	// Negative angle raises the arm forward (+Z front); the shader adds it
+	// to the walk angle for the right arm only.
+	const ang = curve * PUNCH_MAX_ANGLE;
+	_punchUniform[0] = -Math.sin(ang);
+	_punchUniform[1] = Math.cos(ang);
+	setShaderUniform(mat, "uPunch", _punchUniform);
 }

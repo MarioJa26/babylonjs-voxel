@@ -384,10 +384,19 @@ ${boundaryRestoreBlock}`;
     faceU = cuF;
     faceV = cvF;
   } else {
+    // World-aligned UV offsets: each offset is the face origin's fraction
+    // along that UV's own axis. The old code only used X/Z fractions, so
+    // vertical faces at fractional Y (stair risers, upper-step sides) and
+    // faces on fractional planes (stair riser at z=0.5) sampled the wrong
+    // half of the tile — invisible on uniform stone, glaring on framed
+    // glass ("inside texture half off" / wrapped). baseY holds the true
+    // Y origin (chunk offsets are whole blocks, so fract() is exact for
+    // halves like 0.5).
     let fractionalX = fract(posX);
+    let fractionalY = fract(baseY);
     let fractionalZ = fract(posZ);
-    let uvOffsetU = select(fractionalX, fractionalZ, uAxis == 0u);
-    let uvOffsetV = select(fractionalX, fractionalZ, vAxis == 0u);
+    let uvOffsetU = select(select(fractionalX, fractionalZ, uAxis == 2u), fractionalY, uAxis == 1u);
+    let uvOffsetV = select(select(fractionalX, fractionalZ, vAxis == 2u), fractionalY, vAxis == 1u);
 
     let pu = cuF * faceWidth;
     let pv = cvF * faceHeight;

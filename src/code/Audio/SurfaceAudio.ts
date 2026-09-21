@@ -97,6 +97,7 @@ interface KindTaps {
 	step: TapPreset;
 	hit: TapPreset;
 	break: TapPreset;
+	place: TapPreset;
 }
 
 const KIND_TAPS: Record<SurfaceKind, KindTaps> = {
@@ -121,6 +122,13 @@ const KIND_TAPS: Record<SurfaceKind, KindTaps> = {
 			freqEnd: 220,
 			duration: 0.2,
 			gain: 0.45,
+		},
+		place: {
+			filter: "lowpass",
+			freq: 800,
+			freqEnd: 350,
+			duration: 0.09,
+			gain: 0.35,
 		},
 	},
 	wood: {
@@ -148,6 +156,14 @@ const KIND_TAPS: Record<SurfaceKind, KindTaps> = {
 			gain: 0.45,
 			osc: { type: "triangle", freq: 140, duration: 0.12, gain: 0.3 },
 		},
+		place: {
+			filter: "bandpass",
+			freq: 520,
+			q: 1.1,
+			duration: 0.08,
+			gain: 0.35,
+			osc: { type: "triangle", freq: 185, duration: 0.06, gain: 0.24 },
+		},
 	},
 	dirt: {
 		step: {
@@ -170,6 +186,13 @@ const KIND_TAPS: Record<SurfaceKind, KindTaps> = {
 			freqEnd: 200,
 			duration: 0.22,
 			gain: 0.42,
+		},
+		place: {
+			filter: "lowpass",
+			freq: 500,
+			freqEnd: 260,
+			duration: 0.1,
+			gain: 0.32,
 		},
 	},
 	grass: {
@@ -196,6 +219,13 @@ const KIND_TAPS: Record<SurfaceKind, KindTaps> = {
 			duration: 0.24,
 			gain: 0.38,
 		},
+		place: {
+			filter: "lowpass",
+			freq: 850,
+			freqEnd: 480,
+			duration: 0.1,
+			gain: 0.3,
+		},
 	},
 	sand: {
 		step: {
@@ -213,11 +243,19 @@ const KIND_TAPS: Record<SurfaceKind, KindTaps> = {
 			duration: 0.22,
 			gain: 0.38,
 		},
+		place: {
+			filter: "bandpass",
+			freq: 1300,
+			q: 0.8,
+			duration: 0.12,
+			gain: 0.28,
+		},
 	},
 	leaves: {
 		step: { filter: "highpass", freq: 3800, duration: 0.06, gain: 0.14 },
 		hit: { filter: "highpass", freq: 4000, duration: 0.05, gain: 0.16 },
 		break: { filter: "highpass", freq: 3200, duration: 0.12, gain: 0.3 },
+		place: { filter: "highpass", freq: 3900, duration: 0.05, gain: 0.18 },
 	},
 	metal: {
 		step: {
@@ -240,6 +278,13 @@ const KIND_TAPS: Record<SurfaceKind, KindTaps> = {
 			q: 3,
 			duration: 0.3,
 			gain: 0.42,
+		},
+		place: {
+			filter: "bandpass",
+			freq: 1500,
+			q: 4,
+			duration: 0.12,
+			gain: 0.3,
 		},
 	},
 	glass: {
@@ -264,6 +309,13 @@ const KIND_TAPS: Record<SurfaceKind, KindTaps> = {
 			gain: 0.4,
 			osc: { type: "sine", freq: 1400, duration: 0.25, gain: 0.2 },
 		},
+		place: {
+			filter: "highpass",
+			freq: 1600,
+			duration: 0.07,
+			gain: 0.26,
+			osc: { type: "sine", freq: 2000, duration: 0.08, gain: 0.12 },
+		},
 	},
 	water: {
 		step: {
@@ -286,6 +338,13 @@ const KIND_TAPS: Record<SurfaceKind, KindTaps> = {
 			freqEnd: 250,
 			duration: 0.3,
 			gain: 0.36,
+		},
+		place: {
+			filter: "lowpass",
+			freq: 1000,
+			freqEnd: 300,
+			duration: 0.16,
+			gain: 0.28,
 		},
 	},
 };
@@ -385,6 +444,11 @@ export function playMineHit(blockId: number): void {
 /** Crunch when a block breaks. */
 export function playBlockBreak(blockId: number): void {
 	playTap(KIND_TAPS[surfaceKindForBlock(blockId)].break, 1);
+}
+
+/** Short thud when a block is placed. */
+export function playBlockPlace(blockId: number, intensity = 1): void {
+	playTap(KIND_TAPS[surfaceKindForBlock(blockId)].place, intensity);
 }
 
 /**

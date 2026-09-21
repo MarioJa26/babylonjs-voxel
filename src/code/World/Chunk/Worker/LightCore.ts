@@ -319,7 +319,18 @@ function getClosedFaceMaskForPacked(packed: number): number {
 	if (cached !== -1) return cached;
 
 	const blockId = unpackBlockId(packed);
-	const quick = QUICK_CLOSED_MASK[blockId];
+	// Virtual glass/water variants inherit full transparency like the cube.
+	if (blockId >= 500) {
+		const source = Math.floor((blockId - 500) / 5) + 1;
+		if (source === WATER_BLOCK_ID || source === 60 || source === 61) {
+			CLOSED_FACE_MASK_CACHE[cacheIndex] = 0;
+			return 0;
+		}
+	}
+	const quick =
+		blockId >= 0 && blockId < QUICK_CLOSED_MASK.length
+			? QUICK_CLOSED_MASK[blockId]
+			: FACE_ALL;
 	CLOSED_FACE_MASK_CACHE[cacheIndex] = quick;
 	return quick;
 }

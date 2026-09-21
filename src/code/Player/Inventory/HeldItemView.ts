@@ -29,6 +29,7 @@ import {
 import type { Player } from "../Player";
 import {
 	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
+	PUNCH_DURATION_S,
 	packedLightToLightColor,
 	setRigHeldItemTransform,
 } from "../PlayerModel";
@@ -78,9 +79,14 @@ const CUBE_SCALE = 0.22;
 const CUBE_YAW_OFFSET = 0.6;
 const CUBE_PITCH = 0.45;
 const SPRITE_TILT = -0.1;
-const SWING_DURATION = 0.28;
-const SWING_DIP = 0.16;
-const SWING_PUSH = 0.07;
+/** Forward thrust along the view at the middle of a punch (meters). */
+const PUNCH_PUSH = 0.16;
+/** Upward lift at the middle of a punch (meters). */
+const PUNCH_RISE = 0.06;
+/** Extra pitch at the middle of a punch (radians). */
+const PUNCH_TILT = 0.7;
+/** Yaw twist at the middle of a punch (radians). */
+const PUNCH_TWIST = 0.35;
 /** Upper bound on cached viewmodel meshes; oldest unused entry is retired. */
 const MAX_ENTRIES = 32;
 
@@ -253,7 +259,7 @@ export class HeldItemView {
 		});
 	}
 
-	/** Punch/mining swing: dip the held item briefly. */
+	/** Punch/mining swing: thrust the held item briefly. */
 	swing(): void {
 		if (this._disposed) return;
 		this._swingT = 0;
@@ -281,6 +287,7 @@ export class HeldItemView {
 		body: Mesh,
 		walkPhase: number,
 		walkAmp: number,
+		punchT = Number.POSITIVE_INFINITY,
 	): void {
 		if (this._disposed) return;
 		const item = itemId === 0 ? undefined : getRegisteredItemById(itemId);
@@ -307,7 +314,13 @@ export class HeldItemView {
 				body.position.y,
 				body.position.z,
 			);
-			setRigHeldItemTransform(this._activeMesh, body, walkPhase, walkAmp);
+			setRigHeldItemTransform(
+				this._activeMesh,
+				body,
+				walkPhase,
+				walkAmp,
+				punchT,
+			);
 		}
 	}
 
@@ -471,34 +484,33 @@ export class HeldItemView {
 		const upY = 1;
 		const upZ = 0;
 
-		// Swing dip: down a touch and forward along the view. Advancing
-		// swingT and deriving dip from it are combined into one branch
-		// (rather than two separate `swingT < SWING_DURATION` checks) —
-		// nothing in between depends on swingT, so there's no reason to
-		// test it twice on every frame.
-		let dip = 0;
-		if (this._swingT < SWING_DURATION) {
-			this._swingT = Math.min(SWING_DURATION, this._swingT + dt);
-			dip = Math.sin((this._swingT / SWING_DURATION) * Math.PI);
+		// Punch thrust: forward along the view with a slight lift and
+		// twist, peaking mid-swing. Advancing swingT and deriving the
+		// curve from it are combined into one branch — nothing in between
+		// depends on swingT, so there's no reason to test it twice.
+		let punch = 0;
+		if (this._swingT < PUNCH_DURATION_S) {
+			this._swingT = Math.min(PUNCH_DURATION_S, this._swingT + dt);
+			punch = Math.sin((this._swingT / PUNCH_DURATION_S) * Math.PI);
 		}
-		const dipDown = dip * SWING_DIP;
-		const dipFwd = dip * SWING_PUSH;
+		const punchFwd = punch * PUNCH_PUSH;
+		const punchUp = punch * PUNCH_RISE;
 
 		const px =
 			camX +
-			fwdX * (FORWARD_DIST + dipFwd) +
+			fwdX * (FORWARD_DIST + punchFwd) +
 			rightX * RIGHT_DIST -
-			upX * (DOWN_DIST + dipDown);
+			upX * (DOWN_DIST - punchUp);
 		const py =
 			camY +
-			fwdY * (FORWARD_DIST + dipFwd) +
+			fwdY * (FORWARD_DIST + punchFwd) +
 			rightY * RIGHT_DIST -
-			upY * (DOWN_DIST + dipDown);
+			upY * (DOWN_DIST - punchUp);
 		const pz =
 			camZ +
-			fwdZ * (FORWARD_DIST + dipFwd) +
+			fwdZ * (FORWARD_DIST + punchFwd) +
 			rightZ * RIGHT_DIST -
-			upZ * (DOWN_DIST + dipDown);
+			upZ * (DOWN_DIST - punchUp);
 
 		// Yaw the item to face the camera (same convention as dropped-item
 		// billboarding: local +Z ends up pointing at the lens).
@@ -507,9 +519,17 @@ export class HeldItemView {
 		// Scaling is constant per kind and set once at mesh creation (see
 		// _getSprite/_getCube) — only rotation needs a per-frame write.
 		if (this._activeKind === "sprite") {
-			mesh.rotation.set(SPRITE_TILT - dip * 0.4, yaw, 0);
+			mesh.rotation.set(
+				SPRITE_TILT - punch * PUNCH_TILT,
+				yaw + punch * PUNCH_TWIST,
+				0,
+			);
 		} else {
-			mesh.rotation.set(CUBE_PITCH - dip * 0.4, yaw + CUBE_YAW_OFFSET, 0);
+			mesh.rotation.set(
+				CUBE_PITCH - punch * PUNCH_TILT,
+				yaw + CUBE_YAW_OFFSET + punch * PUNCH_TWIST,
+				0,
+			);
 		}
 	}
 

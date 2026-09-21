@@ -15,6 +15,7 @@ import {
 	getFenceDynamicShape,
 } from "../../Shape/FenceConnect";
 import { FaceName, getFaceName } from "../../Texture/FaceName";
+import { getSourceBlockId } from "../../Texture/BlockMaterial";
 import { MaterialType } from "../types/MeshTypes";
 
 import { computeAO } from "./AOPipeline";
@@ -112,11 +113,15 @@ function isWaterGlassInterface(curr: ParsedBlock, nbr: ParsedBlock): boolean {
 	if (!curr.isSolid || !nbr.isSolid) return false;
 	if (!curr.isTransparent || !nbr.isTransparent) return false;
 
-	return (
-		curr.materialType === MaterialType.WaterOrGlass &&
-		nbr.materialType === MaterialType.WaterOrGlass &&
-		curr.blockId !== nbr.blockId
-	);
+	if (
+		curr.materialType !== MaterialType.WaterOrGlass ||
+		nbr.materialType !== MaterialType.WaterOrGlass
+	) {
+		return false;
+	}
+	// Compare material sources so glass_01 cube vs glass_01 stairs
+	// (same source, different virtual IDs) cull instead of preserving.
+	return getSourceBlockId(curr.blockId) !== getSourceBlockId(nbr.blockId);
 }
 
 /**
@@ -178,7 +183,7 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 				const blockId = getCachedBlockId(packed);
 				const out =
 					flags & FLAG_WATER_GLASS
-						? blockId === WATER_BLOCK_ID
+						? getSourceBlockId(blockId) === WATER_BLOCK_ID
 							? waterOut
 							: cutoutOut
 						: opaqueOut;
@@ -635,6 +640,28 @@ function emitBoxFace(
 			currentBlock,
 			neighbor,
 		);
+
+		// Same-source glass (cube vs stairs of the same glass) shares no
+		// visible interface even though both masks are 0 (fully
+		// transparent). Cull it here; different glass types preserve.
+		if (
+			currentBlock.isSolid &&
+			neighbor.isSolid &&
+			currentBlock.isTransparent &&
+			neighbor.isTransparent &&
+			currentBlock.materialType === MaterialType.WaterOrGlass &&
+			neighbor.materialType === MaterialType.WaterOrGlass &&
+			getSourceBlockId(currentBlock.blockId) ===
+				getSourceBlockId(neighbor.blockId)
+		) {
+			const currIsWater =
+				getSourceBlockId(currentBlock.blockId) === WATER_BLOCK_ID;
+			const nbrIsWater = getSourceBlockId(neighbor.blockId) === WATER_BLOCK_ID;
+			if (!(currIsWater && nbrIsWater)) return;
+			const currLevel = (packedBlock >>> 10) & 0xf;
+			const nbrLevel = (neighborPacked >>> 10) & 0xf;
+			if (currLevel === nbrLevel) return;
+		}
 
 		// If the neighbor closes this boundary, cull the face,
 		// except for water/glass interfaces which should remain visible.

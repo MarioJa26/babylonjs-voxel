@@ -49,6 +49,15 @@ export class LightGenerator {
 		lut[64] = 1;
 		lut[66] = 1;
 		lut[91] = 1;
+		// Virtual shape variants inherit source transparency (glass stairs
+		// read as glass, not opaque).
+		for (const source of [WATER_BLOCK_ID, 60, 61, 64, 66, 91]) {
+			const base = 500 + (source - 1) * 5;
+			for (let i = 0; i < 5; i++) {
+				const virtualId = base + i;
+				if (virtualId >= 0 && virtualId < lut.length) lut[virtualId] = 1;
+			}
+		}
 		return lut;
 	})();
 
@@ -654,19 +663,37 @@ export class LightGenerator {
 	}
 
 	public static isBlockTransparent(blockId: number): boolean {
-		return (
-			blockId >= 0 &&
-			blockId < 1024 &&
-			LightGenerator._transparentLUT[blockId] !== 0
-		);
+		if (typeof blockId !== "number" || !Number.isFinite(blockId)) return false;
+		const id = Math.floor(blockId);
+		if (id >= 0 && id < 1024) {
+			if (LightGenerator._transparentLUT[id] !== 0) return true;
+		}
+		// Fallback beyond the LUT: virtual -> source inheritance.
+		if (id >= 500) {
+			const source = Math.floor((id - 500) / 5) + 1;
+			return (
+				source === 0 ||
+				source === WATER_BLOCK_ID ||
+				source === 60 ||
+				source === 61 ||
+				source === 64 ||
+				source === 66 ||
+				source === 91
+			);
+		}
+		return false;
 	}
 
 	public static blockFiltersFullSunlight(blockId: number): boolean {
-		return (
-			blockId >= 0 &&
-			blockId < 1024 &&
-			LightGenerator._filtersFullSunLUT[blockId] !== 0
-		);
+		if (typeof blockId !== "number" || !Number.isFinite(blockId)) return false;
+		const id = Math.floor(blockId);
+		if (id >= 0 && id < 1024) {
+			if (LightGenerator._filtersFullSunLUT[id] !== 0) return true;
+		}
+		if (id >= 500) {
+			return Math.floor((id - 500) / 5) + 1 === WATER_BLOCK_ID;
+		}
+		return false;
 	}
 }
 

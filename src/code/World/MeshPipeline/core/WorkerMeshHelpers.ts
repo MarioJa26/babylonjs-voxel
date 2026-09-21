@@ -47,6 +47,19 @@ export type PaddedGrids = {
 	light: Uint8Array<ArrayBuffer>;
 	opaque: Uint8Array<ArrayBuffer>;
 	needsCustom: Uint8Array<ArrayBuffer>;
+	/**
+	 * Per-chunk border-top cache for LOD skirts (4 sides × size columns:
+	 * slot 0=-X indexed by z, 1=+X by z, 2=-Z by x, 3=+Z by x).
+	 * borderTopY holds the top solid y, -1 = no solid, -2 = unknown.
+	 * borderTopPacked holds the packed block at that y (topology only;
+	 * light is always re-read fresh since relights change it).
+	 * Populated during full builds, reused on light-only relights where
+	 * the block grid is provably unchanged (same generation/blockRevision).
+	 */
+	borderTopY?: Int16Array;
+	borderTopPacked?: Uint16Array;
+	borderTopSize?: number;
+	borderTopStep?: number;
 };
 
 // ── Precomputed neighbor offset table ─────────────────────────────────────────
@@ -119,6 +132,23 @@ export class MeshBuildSession implements MeshContext {
 	 */
 	public borderSkirtSides = 0xf;
 	public borderSkirtNearInset = 0;
+	/**
+	 * Uniform fill id from the build input (undefined = dense grid).
+	 * 0 means all-air: LOD skirts can skip every column scan.
+	 */
+	public uniformFillId: number | undefined = undefined;
+	/**
+	 * Grids object backing this build (per-chunk relight entry, if any).
+	 * Used for the border-top cache; undefined when using owned fallback
+	 * grids (no cross-build reuse).
+	 */
+	public activeGrids: PaddedGrids | undefined = undefined;
+	/**
+	 * True when the block grid was (re)filled this build (full mesh).
+	 * False on light-only relights where blocks are provably unchanged —
+	 * cached border tops may be reused (light is still re-read fresh).
+	 */
+	public blocksChangedThisBuild = true;
 
 	// --- active padded grids ---
 	public block = new Uint16Array(0);
@@ -245,6 +275,9 @@ export class MeshBuildSession implements MeshContext {
 		this.size = size;
 		this.lod = lod;
 		this.disableAO = lod >= 2;
+		this.uniformFillId = input.uniformFill;
+		this.activeGrids = grids;
+		this.blocksChangedThisBuild = !skipBlockFill;
 
 		// Downsampling begins at LOD4 (user spec): LOD4 -> step 2, LOD5 -> 4...
 		// Fall back to full resolution if the chunk size is not evenly

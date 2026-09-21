@@ -20,8 +20,34 @@ for (const id of [WATER_BLOCK_ID, 60, 61, 64, 66]) {
 	BLOCK_TYPE[id] = BLOCK_TYPE_TRANSPARENT;
 }
 
+// Transparent shape variants (e.g. glass stairs) inherit their source
+// material: mark every virtual ID derived from a transparent base as
+// transparent as well. Must stay in sync with BlockMaterial.ts.
+{
+	const TRANSPARENT_SOURCES = [WATER_BLOCK_ID, 60, 61, 64, 66];
+	const VIRTUAL_START = 500;
+	const VIRTUAL_SHAPE_COUNT = 5;
+	for (const source of TRANSPARENT_SOURCES) {
+		const base = VIRTUAL_START + (source - 1) * VIRTUAL_SHAPE_COUNT;
+		for (let i = 0; i < VIRTUAL_SHAPE_COUNT; i++) {
+			const virtualId = base + i;
+			if (virtualId >= 0 && virtualId < BLOCK_TYPE.length) {
+				BLOCK_TYPE[virtualId] = BLOCK_TYPE_TRANSPARENT;
+			}
+		}
+	}
+}
+
 export function filtersFullSunlight(blockId: number): boolean {
-	return blockId === WATER_BLOCK_ID;
+	if (typeof blockId !== "number" || !Number.isFinite(blockId)) return false;
+	const id = Math.floor(blockId);
+	if (id === WATER_BLOCK_ID) return true;
+	// Virtual water variants (water slab/stairs/...) filter like water.
+	if (id >= 500) {
+		const source = Math.floor((id - 500) / 5) + 1;
+		return source === WATER_BLOCK_ID;
+	}
+	return false;
 }
 
 export const BLOCK_PACK_MASK =

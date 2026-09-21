@@ -23,6 +23,7 @@ import {
 	getShapeInfo,
 	isGlassBlock,
 } from "./BlockInfoCache";
+import { getSourceBlockId } from "../../Texture/BlockMaterial";
 import { quantizeLightForLOD } from "./LightPipeline";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
@@ -90,6 +91,11 @@ export function extractAllSliceMasksX(
 	occ.fill(0, 0, gridSize + 1);
 
 	const hasPosNeighbor = session.hasNeighborChunk(1, 0, 0);
+	// Downsampled builds: when this chunk owns the +X border skirt, the
+	// skirt is the sole wall on that plane. Emitting the greedy far slice
+	// too would place a second quad at x=size with different tessellation
+	// (bit-exact coplanar → z-fighting on vertical chunk borders).
+	const skirtOwnsPosX = step > 1 && (session.borderSkirtSides & 2) !== 0;
 
 	const blockArr = session.block;
 	const lightArr = session.light;
@@ -152,7 +158,7 @@ export function extractAllSliceMasksX(
 				}
 			}
 
-			if (hasPosNeighbor) {
+			if (hasPosNeighbor && !skirtOwnsPosX) {
 				const bx = (gridSize - 1) * step;
 				const curIdx = bx + 1 + rowIdx;
 				const nbrIdx = curIdx + step; // padding layer at voxel size
@@ -324,6 +330,10 @@ export function extractAllSliceMasksZ(
 	occ.fill(0, 0, gridSize + 1);
 
 	const hasPosNeighbor = session.hasNeighborChunk(0, 0, 1);
+	// Same far-side ownership rule as the X sweep: the +Z skirt replaces
+	// the greedy far slice on downsampled builds so the border plane
+	// z=size is never walled twice.
+	const skirtOwnsPosZ = step > 1 && (session.borderSkirtSides & 8) !== 0;
 
 	const blockArr = session.block;
 	const lightArr = session.light;
@@ -380,7 +390,7 @@ export function extractAllSliceMasksZ(
 			}
 		}
 
-		if (hasPosNeighbor) {
+		if (hasPosNeighbor && !skirtOwnsPosZ) {
 			const bz = (gridSize - 1) * step;
 			const curZBase = (bz + 1) * ps2;
 			const outSliceBase = gridSize * area;
@@ -506,6 +516,8 @@ function processCell(
 	let nbrId = -1;
 
 	// IDs are only needed for water/glass interface and water-level behavior.
+	// Virtual variants resolve to their source for comparison so glass_01
+	// cube vs glass_01 stairs (same source) cull like the same block.
 	if (
 		currSolid !== 0 &&
 		nbrSolid !== 0 &&
@@ -516,12 +528,36 @@ function processCell(
 		nbrId = getIdFromCombined(nbrCombined);
 
 		// Same water/glass cube state with same level is hidden.
-		if (bothCube && currId === nbrId) {
+		// Compare source IDs so virtual variants cull against their base.
+		if (bothCube && getSourceBlockId(currId) === getSourceBlockId(nbrId)) {
 			const currLevel =
 				(currentPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
 			const nbrLevel =
 				(neighborPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
 
+			if (currLevel === nbrLevel) {
+				mask[outIndex] = 0;
+				return;
+			}
+		}
+
+		// Same-source glass (e.g. glass cube vs glass stairs) never shows
+		// an internal face. Water with differing levels falls through to
+		// the sliver logic below.
+		if (getSourceBlockId(currId) === getSourceBlockId(nbrId)) {
+			const currIsWater =
+				currId === WATER_BLOCK_ID ||
+				getSourceBlockId(currId) === WATER_BLOCK_ID;
+			const nbrIsWater =
+				nbrId === WATER_BLOCK_ID || getSourceBlockId(nbrId) === WATER_BLOCK_ID;
+			if (!(currIsWater && nbrIsWater)) {
+				mask[outIndex] = 0;
+				return;
+			}
+			const currLevel =
+				(currentPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
+			const nbrLevel =
+				(neighborPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
 			if (currLevel === nbrLevel) {
 				mask[outIndex] = 0;
 				return;
@@ -542,7 +578,7 @@ function processCell(
 		if (currId < 0) currId = getIdFromCombined(currCombined);
 		if (nbrId < 0) nbrId = getIdFromCombined(nbrCombined);
 
-		if (currId !== nbrId) {
+		if (getSourceBlockId(currId) !== getSourceBlockId(nbrId)) {
 			preserveInterface = 1;
 		}
 	}
@@ -612,7 +648,7 @@ function processCell(
 			return;
 		}
 
-		if ((packedMask & BLOCK_ID_MASK) === WATER_BLOCK_ID) {
+		if (getSourceBlockId(packedMask & BLOCK_ID_MASK) === WATER_BLOCK_ID) {
 			packedMask &= ~(WATER_LEVEL_MASK_3 << WATER_SHALLOWER_SHIFT);
 
 			if (isWaterAt(blockArr, session.ps, session.ps2, bx, by + 1, bz)) {
@@ -677,7 +713,10 @@ function processCell(
 		if (currId < 0) currId = getIdFromCombined(currCombined);
 		if (nbrId < 0) nbrId = getIdFromCombined(nbrCombined);
 
-		if (currId === WATER_BLOCK_ID && nbrId === WATER_BLOCK_ID) {
+		if (
+			getSourceBlockId(currId) === WATER_BLOCK_ID &&
+			getSourceBlockId(nbrId) === WATER_BLOCK_ID
+		) {
 			waterCurrLevel =
 				(currentPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
 			waterNbrLevel =
@@ -722,7 +761,7 @@ function processCell(
 		return;
 	}
 
-	if ((packedMask & BLOCK_ID_MASK) === WATER_BLOCK_ID) {
+	if (getSourceBlockId(packedMask & BLOCK_ID_MASK) === WATER_BLOCK_ID) {
 		packedMask &= ~(WATER_LEVEL_MASK_3 << WATER_SHALLOWER_SHIFT);
 
 		// waterAbove must reflect the block whose top defines the face.
@@ -793,7 +832,8 @@ function isWaterAt(
 	z: number,
 ): boolean {
 	return (
-		(blockArr[x + 1 + (y + 1) * ps + (z + 1) * ps2] & BLOCK_ID_MASK) ===
-		WATER_BLOCK_ID
+		getSourceBlockId(
+			blockArr[x + 1 + (y + 1) * ps + (z + 1) * ps2] & BLOCK_ID_MASK,
+		) === WATER_BLOCK_ID
 	);
 }

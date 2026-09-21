@@ -44,6 +44,11 @@ import {
 	type ShapeBounds,
 } from "../../Shape/BlockShapeTransforms";
 import { isFenceBlockId } from "../../Shape/FenceConnect";
+import {
+	getSourceBlockId,
+	getVirtualBlockIdsForSource,
+	isGlassBlockId,
+} from "../../Texture/BlockMaterial";
 import { type BlockShapeInfo, MaterialType } from "../types/MeshTypes";
 
 // ---------------------------------------------------------------------------
@@ -105,23 +110,35 @@ function canUseDenseCache(packed: number): boolean {
 // ---------------------------------------------------------------------------
 
 const GLASS_BLOCK_IDS = new Set([60, 61]);
-// Sized to BLOCK_ID_MASK range (10-bit ids) so hot paths can index directly
-// without bounds guards: any id from unpacked packed values hits the LUT.
+// Sized to cover base + virtual mason IDs so hot paths can index directly
+// without bounds guards. Virtual glass variants (e.g. glass stairs) inherit
+// their source material — see BlockMaterial.ts.
 export const GLASS_ID_LUT = (() => {
-	const lut = new Uint8Array(1024);
-	for (const id of GLASS_BLOCK_IDS) lut[id] = 1;
+	const lut = new Uint8Array(2048);
+	for (const id of GLASS_BLOCK_IDS) {
+		lut[id] = 1;
+		for (const virtualId of getVirtualBlockIdsForSource(id)) {
+			if (virtualId >= 0 && virtualId < lut.length) lut[virtualId] = 1;
+		}
+	}
 	return lut;
 })();
 
 export function isGlassBlock(blockId: number): boolean {
-	return blockId >= 0 && blockId < 1024 && GLASS_ID_LUT[blockId] !== 0;
+	if (typeof blockId !== "number" || !Number.isFinite(blockId)) return false;
+	const id = Math.floor(blockId);
+	if (id >= 0 && id < GLASS_ID_LUT.length) {
+		if (GLASS_ID_LUT[id] !== 0) return true;
+	}
+	// Fallback for IDs beyond the LUT: resolve virtual -> source.
+	return isGlassBlockId(id);
 }
 
 // ---------------------------------------------------------------------------
 // Material / tint LUTs (indexed by block id, not packed value)
 // ---------------------------------------------------------------------------
 
-const TINT_BUCKET_LUT_SIZE = 128;
+const TINT_BUCKET_LUT_SIZE = 2048;
 const TINT_BUCKET_LUT: Uint8Array = new Uint8Array(TINT_BUCKET_LUT_SIZE).fill(
 	1,
 );
@@ -132,26 +149,81 @@ for (const id of [3, 8, 14, 23, 45, 46, 47]) TINT_BUCKET_LUT[id] = 2;
 for (const id of [10, 11, 12, 13, 22, 28, 31]) TINT_BUCKET_LUT[id] = 5;
 for (let id = 32; id <= 42; id++) TINT_BUCKET_LUT[id] = 5;
 
+// Virtual mason variants inherit their source tint (glass stairs tint like
+// glass, stone stairs tint like stone). Covers the current virtual range.
+for (let source = 1; source < 128; source++) {
+	const tint = TINT_BUCKET_LUT[source];
+	if (tint === 1) continue;
+	const base = 500 + (source - 1) * 5;
+	for (let i = 0; i < 5; i++) {
+		const virtualId = base + i;
+		if (virtualId >= 0 && virtualId < TINT_BUCKET_LUT_SIZE) {
+			TINT_BUCKET_LUT[virtualId] = tint;
+		}
+	}
+}
+// Glass/water virtuals must be tint 4 even if the loop above missed them.
+for (const source of [WATER_BLOCK_ID, 60, 61]) {
+	for (const virtualId of getVirtualBlockIdsForSource(source)) {
+		if (virtualId >= 0 && virtualId < TINT_BUCKET_LUT_SIZE) {
+			TINT_BUCKET_LUT[virtualId] = 4;
+		}
+	}
+}
+
 /**
  * Packed tint lookup table for hot-path access.
- * Sized to cover BlockType enum range. Built once at module load.
+ * Sized to cover base + virtual mason IDs. Built once at module load.
  */
 export const BlockTint: Uint8Array = new Uint8Array(TINT_BUCKET_LUT_SIZE);
 for (let id = 0; id < TINT_BUCKET_LUT_SIZE; id++) {
 	BlockTint[id] = TINT_BUCKET_LUT[id];
 }
 
-const MATERIAL_TYPE_LUT_SIZE = 128;
+/**
+ * Tint bucket with virtual -> source inheritance and OOB safety.
+ * Use this instead of raw BlockTint[] indexing for virtual IDs.
+ */
+export function getBlockTint(blockId: number): number {
+	if (typeof blockId !== "number" || !Number.isFinite(blockId)) return 1;
+	const id = Math.floor(blockId);
+	if (id >= 0 && id < BlockTint.length) return BlockTint[id];
+	const source = getSourceBlockId(id);
+	if (source >= 0 && source < BlockTint.length) return BlockTint[source];
+	return 1;
+}
+
+const MATERIAL_TYPE_LUT_SIZE = 2048;
 const MATERIAL_TYPE_LUT: Uint8Array = new Uint8Array(MATERIAL_TYPE_LUT_SIZE);
 for (const id of [WATER_BLOCK_ID, 60, 61]) {
 	MATERIAL_TYPE_LUT[id] = MaterialType.WaterOrGlass;
+	for (const virtualId of getVirtualBlockIdsForSource(id)) {
+		if (virtualId >= 0 && virtualId < MATERIAL_TYPE_LUT_SIZE) {
+			MATERIAL_TYPE_LUT[virtualId] = MaterialType.WaterOrGlass;
+		}
+	}
 }
 
 /**
  * Transparent/water bucket selection.
+ * Virtual variants inherit their source material (glass stairs -> glass).
  */
 export function getMaterialType(blockId: number): MaterialType {
-	return (MATERIAL_TYPE_LUT[blockId] ?? MaterialType.Default) as MaterialType;
+	if (typeof blockId !== "number" || !Number.isFinite(blockId)) {
+		return MaterialType.Default;
+	}
+	const id = Math.floor(blockId);
+	if (id >= 0 && id < MATERIAL_TYPE_LUT.length) {
+		const viaLut = MATERIAL_TYPE_LUT[id];
+		if (viaLut !== MaterialType.Default) return viaLut as MaterialType;
+		// LUT hit for Default could still be a virtual of glass/water if the
+		// LUT range missed it — fall through to the source check below.
+	}
+	const source = getSourceBlockId(id);
+	if (source === WATER_BLOCK_ID || source === 60 || source === 61) {
+		return MaterialType.WaterOrGlass;
+	}
+	return MaterialType.Default;
 }
 
 // ---------------------------------------------------------------------------
@@ -532,15 +604,19 @@ function buildEntry(packed: number): number {
 	const blockState = unpackBlockState(packed);
 	const shape = getShapeForBlockId(id);
 	const boxes = getTransformedShapeBoxes(id, blockState);
+	const materialType = getMaterialType(id);
+
+	// Glass/water (including virtual stairs/slabs/...) are fully
+	// non-occluding like the base glass cube: closedMask 0 so neighbours
+	// never cull against them and light passes through.
+	const isGlassOrWater = materialType === MaterialType.WaterOrGlass;
 
 	const shapeInfo: BlockShapeInfo = {
 		isCube: isFullCubeFromBoxes(shape.boxes.length, boxes),
 		isSliceCompatible: shape.usesSliceState,
 		sliceMask: shape.usesSliceState ? (blockState >> 3) & 0x7 : 0,
-		closedFaceMask: computeClosedFaceMaskFromBoxes(boxes),
+		closedFaceMask: isGlassOrWater ? 0 : computeClosedFaceMaskFromBoxes(boxes),
 	};
-
-	const materialType = getMaterialType(id);
 	const greedyCompatible = isGreedyCompatibleFromShape(
 		id,
 		packed,

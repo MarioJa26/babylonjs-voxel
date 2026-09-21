@@ -40,6 +40,11 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	#drawStartTime = 0;
 	#drawProgress = 0;
 
+	// Punch/mining swing: held-mouse repeats the swing until release.
+	#miningHeld = false;
+	#lastPunchMs = 0;
+	static readonly PUNCH_REPEAT_MS = 350;
+
 	static readonly #HOTBAR_KEY_MAP = new Map<string, number>([
 		["1", 0],
 		["!", 0],
@@ -106,10 +111,17 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		}
 	}
 
+	/** Fire one punch swing: first-person viewmodel + third-person arm. */
+	#firePunch(): void {
+		swingHeldItemView();
+		this.#player.triggerPunch();
+		this.#lastPunchMs = performance.now();
+	}
+
 	public handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void {
 		if (WalkingControls.MOUSE1.includes(mouseEvent.button)) {
 			if (isKeyDown) {
-				swingHeldItemView();
+				this.#firePunch();
 				const target = Crosshair.pickMobTarget(this.#player);
 				if (target) {
 					const mob = resolveMobFromPick(target.mesh, target.thinInstanceIndex);
@@ -124,7 +136,9 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 				// remote mobs along the view ray and send a validated hit.
 				if (this.#tryRemoteMelee()) return;
 				this.#blockBreaking.start();
+				this.#miningHeld = true;
 			} else {
+				this.#miningHeld = false;
 				this.#blockBreaking.stop();
 			}
 			return;
@@ -239,6 +253,17 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	public update(hit?: BlockRaycastHit | null): void {
 		this.#blockBreaking.update(hit);
 
+		// While the mining button is held, repeat the punch swing so the
+		// arm keeps striking until release or the block breaks.
+		if (this.#miningHeld && this.#blockBreaking.isActive) {
+			if (
+				performance.now() - this.#lastPunchMs >=
+				WalkingControls.PUNCH_REPEAT_MS
+			) {
+				this.#firePunch();
+			}
+		}
+
 		if (this.#isDrawing) {
 			const elapsed = (performance.now() - this.#drawStartTime) / 1000;
 			const progress = Math.min(1, elapsed / BOW_DRAW_TIME);
@@ -268,6 +293,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	 * held mouse button doesn't keep breaking a block while the menu is up.
 	 */
 	public stopBlockBreaking(): void {
+		this.#miningHeld = false;
 		this.#blockBreaking.stop();
 	}
 

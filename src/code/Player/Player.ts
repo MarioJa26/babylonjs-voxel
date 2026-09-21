@@ -42,9 +42,11 @@ import {
 	createPlayerRigMesh,
 	createRigShaderMaterial,
 	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
+	PUNCH_DURATION_S,
 	packedLightToLightColor,
 	setRigHeadPitch,
 	setRigLightColor,
+	setRigPunch,
 	setRigWalk,
 	WALK_REF_SPEED,
 	WALK_STRIDE_FACTOR,
@@ -106,6 +108,8 @@ export class Player {
 	// Walk-swing state for the third-person rig.
 	#bodyWalkPhase = 0;
 	#bodyWalkAmp = 0;
+	// Punch/mining swing progress in [0, 1); Infinity = rest pose.
+	#punchT = Number.POSITIVE_INFINITY;
 
 	networkManager?: import("../Network/NetworkManager").NetworkManager;
 
@@ -206,9 +210,21 @@ export class Player {
 		this.#updatePlayerBody(deltaMs);
 	}
 
+	/** Start a punch/mining swing (third-person arm + avatar item). */
+	public triggerPunch(): void {
+		this.#punchT = 0;
+	}
+
 	#updatePlayerBody(deltaMs: number): void {
 		const body = this.#playerBodyMesh;
 		if (!body) return;
+
+		// Advance the punch clock in every view (the rig below only renders
+		// it in third person; first person runs its own viewmodel swing).
+		if (this.#punchT < 1) {
+			this.#punchT += deltaMs / 1000 / PUNCH_DURATION_S;
+			if (this.#punchT >= 1) this.#punchT = Number.POSITIVE_INFINITY;
+		}
 
 		// Don't render until the skin texture is bound (unbound sampler would
 		// produce an invalid pass), and only in third person.
@@ -238,6 +254,7 @@ export class Player {
 			if (mat) {
 				setRigWalk(mat, this.#bodyWalkPhase, this.#bodyWalkAmp);
 				setRigHeadPitch(mat, this.#playerCamera.cameraPitch);
+				setRigPunch(mat, this.#punchT);
 			}
 		}
 
@@ -301,6 +318,7 @@ export class Player {
 			body,
 			this.#bodyWalkPhase,
 			this.#bodyWalkAmp,
+			this.#punchT,
 		);
 	}
 

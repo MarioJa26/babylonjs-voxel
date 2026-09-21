@@ -61,23 +61,25 @@ function lodStepOfLod(lod: number | null | undefined): number {
  * skirt only when its neighbor is MISSING or FINER; same-level boundaries
  * are seamless via padded slabs and coarser neighbors own their own side.
  *
+ * When a far (+X/+Z) skirt is owned, the skirt replaces the greedy far
+ * slice on that plane (see VoxelMaskExtractor skirtOwnsPosX/Z) — the two
+ * would otherwise sit bit-exact coplanar at x/z=size.
+ *
+ * Near (-X/-Z) skirts sit exactly on x/z=0: the greedy extractor never
+ * emits a slice -1 wall (bank stays zero), so no inset is needed. The old
+ * 1-block inset only recessed the wall inside the chunk and left a gap.
+ *
  * PERF: returns one packed int — low nibble = sides, high nibble = near-inset
- * sides — instead of a fresh {sides, nearInset} literal per remesh/relight
- * dispatch.
+ * sides (always 0 now, kept for worker-protocol compat) — instead of a
+ * fresh {sides, nearInset} literal per remesh/relight dispatch.
  */
 export function computeBorderSkirtMasks(chunk: Chunk): number {
 	const myStep = lodStepOfLod(chunk.lodLevel);
 	if (myStep <= 1) return 0;
 
 	let sides = 0;
-	let nearInset = 0;
 
-	const check = (
-		dx: number,
-		dz: number,
-		bit: number,
-		isNearSide: boolean,
-	): void => {
+	const check = (dx: number, dz: number, bit: number): void => {
 		const n = getChunk(chunk.chunkX + dx, chunk.chunkY, chunk.chunkZ + dz);
 
 		if (!n?.isLoaded) {
@@ -87,18 +89,15 @@ export function computeBorderSkirtMasks(chunk: Chunk): number {
 
 		if (lodStepOfLod(n.lodLevel) < myStep) {
 			sides |= bit;
-			// Near planes coincide with the greedy mesher's slice=-1
-			// boundary walls when a neighbor exists — inset by one block.
-			if (isNearSide) nearInset |= bit;
 		}
 	};
 
-	check(-1, 0, 1, true);
-	check(1, 0, 2, false);
-	check(0, -1, 4, true);
-	check(0, 1, 8, false);
+	check(-1, 0, 1);
+	check(1, 0, 2);
+	check(0, -1, 4);
+	check(0, 1, 8);
 
-	return sides | (nearInset << 4);
+	return sides;
 }
 
 export class ChunkWorker {
