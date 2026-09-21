@@ -38,16 +38,26 @@ for (const id of [WATER_BLOCK_ID, 60, 61, 64, 66]) {
 	}
 }
 
-export function filtersFullSunlight(blockId: number): boolean {
-	if (typeof blockId !== "number" || !Number.isFinite(blockId)) return false;
-	const id = Math.floor(blockId);
-	if (id === WATER_BLOCK_ID) return true;
-	// Virtual water variants (water slab/stairs/...) filter like water.
-	if (id >= 500) {
-		const source = Math.floor((id - 500) / 5) + 1;
-		return source === WATER_BLOCK_ID;
+// Water is the only material that dims (but doesn't block) sunlight, and
+// its slab/stair/... shape variants filter identically. Only two id sets
+// can ever return true — WATER_BLOCK_ID itself and its virtual variants
+// (500 + (30-1)*5 .. +4 = 645..649, same encoding as above) — all below
+// 1024, so a 1 KiB lookup table answers every input with zero branches:
+// out-of-range, negative, NaN, and Infinity ids all read back `undefined`,
+// which is !== 1 (false), exactly matching the old early-outs.
+const FILTERS_SUNLIGHT_LUT = new Uint8Array(1024);
+FILTERS_SUNLIGHT_LUT[WATER_BLOCK_ID] = 1;
+{
+	const VIRTUAL_START = 500;
+	const VIRTUAL_SHAPE_COUNT = 5;
+	const base = VIRTUAL_START + (WATER_BLOCK_ID - 1) * VIRTUAL_SHAPE_COUNT;
+	for (let i = 0; i < VIRTUAL_SHAPE_COUNT; i++) {
+		FILTERS_SUNLIGHT_LUT[base + i] = 1;
 	}
-	return false;
+}
+
+export function filtersFullSunlight(blockId: number): boolean {
+	return FILTERS_SUNLIGHT_LUT[Math.floor(blockId)] === 1;
 }
 
 export const BLOCK_PACK_MASK =
