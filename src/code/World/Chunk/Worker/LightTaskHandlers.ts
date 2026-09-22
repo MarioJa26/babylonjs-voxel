@@ -366,7 +366,9 @@ export function handleMutateBatch(req: LightMutateBatchRequest): void {
 			muts[i + 3],
 			muts[i + 4],
 		);
-		dirty.forEach((slot) => _dirtyScratch.add(slot));
+		for (const slot of dirty) {
+			_dirtyScratch.add(slot);
+		}
 	}
 
 	postDirty(req.seq, _dirtyScratch, registry);

@@ -1371,8 +1371,10 @@ export class Observable<T> {
 		this.#notifySnapshot = null;
 	}
 	notifyObservers(data: T): void {
-		const list =
-			this.#notifySnapshot ?? (this.#notifySnapshot = this.#observers.slice());
+		if (!this.#notifySnapshot) {
+			this.#notifySnapshot = this.#observers.slice();
+		}
+		const list = this.#notifySnapshot;
 		for (const o of list) o(data);
 	}
 	get hasObservers(): boolean {

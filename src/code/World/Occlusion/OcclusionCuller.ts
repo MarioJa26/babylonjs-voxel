@@ -26,7 +26,16 @@ import { Map1 } from "@/code/Maps/Map1";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { Chunk, getChunk } from "../Chunk/Chunk";
 import { facePairIndex } from "../Chunk/ChunkFaceMasks";
-import { consumeGroupsMutated, getAllGroups } from "../Chunk/MergedMeshManager";
+import {
+	consumeGroupsMutated,
+	getAllGroups,
+	type MergedMeshGroup,
+} from "../Chunk/MergedMeshManager";
+import {
+	FrustumHint,
+	getOctreeGroupCount,
+	traverseGroupOctree,
+} from "./GroupOctree";
 
 // ---------------------------------------------------------------------------
 export interface OcclusionStats {
@@ -153,15 +162,23 @@ function aabbInFrustum(
 	maxY: number,
 	maxZ: number,
 ): boolean {
+	// Positive-vertex test vs the 6 cached inward-normal planes (frustum
+	// interior is n·x+d >= 0): the box is outside iff even its p-vertex
+	// (corner maximizing n·x) falls beyond -FRUSTUM_MARGIN on some plane.
+	// NOTE: the vertex choice here used to be flipped (n-vertex), which
+	// over-culled boxes straddling the side planes — visible slivers up to a
+	// group wide popped out at the screen edges. Fixed alongside the
+	// GroupOctree introduction; both were verified against live Lite VP
+	// matrices (dead-ahead visible, behind culled, straddlers visible).
 	let off = 0;
 	let nx = _frustumPacked[off];
 	let ny = _frustumPacked[off + 1];
 	let nz = _frustumPacked[off + 2];
 	let d = _frustumPacked[off + 3];
 	if (
-		nx * (nx >= 0 ? minX : maxX) +
-			ny * (ny >= 0 ? minY : maxY) +
-			nz * (nz >= 0 ? minZ : maxZ) +
+		nx * (nx >= 0 ? maxX : minX) +
+			ny * (ny >= 0 ? maxY : minY) +
+			nz * (nz >= 0 ? maxZ : minZ) +
 			d <
 		-FRUSTUM_MARGIN
 	)
@@ -172,9 +189,9 @@ function aabbInFrustum(
 	nz = _frustumPacked[off + 2];
 	d = _frustumPacked[off + 3];
 	if (
-		nx * (nx >= 0 ? minX : maxX) +
-			ny * (ny >= 0 ? minY : maxY) +
-			nz * (nz >= 0 ? minZ : maxZ) +
+		nx * (nx >= 0 ? maxX : minX) +
+			ny * (ny >= 0 ? maxY : minY) +
+			nz * (nz >= 0 ? maxZ : minZ) +
 			d <
 		-FRUSTUM_MARGIN
 	)
@@ -185,9 +202,9 @@ function aabbInFrustum(
 	nz = _frustumPacked[off + 2];
 	d = _frustumPacked[off + 3];
 	if (
-		nx * (nx >= 0 ? minX : maxX) +
-			ny * (ny >= 0 ? minY : maxY) +
-			nz * (nz >= 0 ? minZ : maxZ) +
+		nx * (nx >= 0 ? maxX : minX) +
+			ny * (ny >= 0 ? maxY : minY) +
+			nz * (nz >= 0 ? maxZ : minZ) +
 			d <
 		-FRUSTUM_MARGIN
 	)
@@ -198,9 +215,9 @@ function aabbInFrustum(
 	nz = _frustumPacked[off + 2];
 	d = _frustumPacked[off + 3];
 	if (
-		nx * (nx >= 0 ? minX : maxX) +
-			ny * (ny >= 0 ? minY : maxY) +
-			nz * (nz >= 0 ? minZ : maxZ) +
+		nx * (nx >= 0 ? maxX : minX) +
+			ny * (ny >= 0 ? maxY : minY) +
+			nz * (nz >= 0 ? maxZ : minZ) +
 			d <
 		-FRUSTUM_MARGIN
 	)
@@ -211,9 +228,9 @@ function aabbInFrustum(
 	nz = _frustumPacked[off + 2];
 	d = _frustumPacked[off + 3];
 	if (
-		nx * (nx >= 0 ? minX : maxX) +
-			ny * (ny >= 0 ? minY : maxY) +
-			nz * (nz >= 0 ? minZ : maxZ) +
+		nx * (nx >= 0 ? maxX : minX) +
+			ny * (ny >= 0 ? maxY : minY) +
+			nz * (nz >= 0 ? maxZ : minZ) +
 			d <
 		-FRUSTUM_MARGIN
 	)
@@ -224,9 +241,9 @@ function aabbInFrustum(
 	nz = _frustumPacked[off + 2];
 	d = _frustumPacked[off + 3];
 	if (
-		nx * (nx >= 0 ? minX : maxX) +
-			ny * (ny >= 0 ? minY : maxY) +
-			nz * (nz >= 0 ? minZ : maxZ) +
+		nx * (nx >= 0 ? maxX : minX) +
+			ny * (ny >= 0 ? maxY : minY) +
+			nz * (nz >= 0 ? maxZ : minZ) +
 			d <
 		-FRUSTUM_MARGIN
 	)
@@ -450,6 +467,14 @@ export class OcclusionCuller {
 		// All terrain renders through merged groups, so this loop is the single
 		// culling point. Individual chunk meshes exist only for boat chunks,
 		// which manage their own visibility.
+		//
+		// Frustum stage is hierarchical: traverseGroupOctree() skips whole
+		// outside/inside subtrees (hint OUTSIDE/INSIDE) so genuinely straddling
+		// groups (hint INTERSECT) are the only ones paying per-group plane
+		// math. If the octree ever disagrees with the group registry about how
+		// many groups exist (should be impossible — both update in the same
+		// MergedMeshManager functions), fall back to the flat loop so no group
+		// can get stuck with a stale visibility flag.
 		const allGroups = getAllGroups();
 		const G = 4;
 		const groupExtent = G * SIZE;
@@ -475,8 +500,11 @@ export class OcclusionCuller {
 		const activeSlot = this._sweepSlot;
 		const nearDistSq = OcclusionCuller.SWEEP_NEAR_DIST_SQ;
 
-		for (let i = 0; i < allGroups.length; i++) {
-			const group = allGroups[i];
+		const processGroup = (
+			group: MergedMeshGroup,
+			i: number,
+			hint: FrustumHint,
+		): void => {
 			const minGX = group.gridX * groupExtent;
 			const minGY = group.gridY * groupExtent;
 			const minGZ = group.gridZ * groupExtent;
@@ -495,49 +523,62 @@ export class OcclusionCuller {
 			if (!fullPass) {
 				const distSq = ddx * ddx + ddy * ddy + ddz * ddz;
 				if (distSq > nearDistSq && i % slotCount !== activeSlot) {
-					continue;
+					return;
 				}
 			}
 
 			const isSurfaceGroup = centerGY >= SEA_LEVEL;
 
-			// Distance check between group AABB and camera chunk range in chunk coordinates.
-			const minChunkX = group.gridX * G;
-			const maxChunkX = minChunkX + G - 1;
-			const minChunkY = group.gridY * G;
-			const maxChunkY = minChunkY + G - 1;
-			const minChunkZ = group.gridZ * G;
-			const maxChunkZ = minChunkZ + G - 1;
+			let inFrustum: boolean;
+			if (hint === FrustumHint.OUTSIDE) {
+				// An ancestor octree node proved fully outside all 6 planes
+				// (the eye-in-node fail-open is handled inside the traversal,
+				// so eye-containing groups never arrive with this hint).
+				inFrustum = false;
+			} else {
+				// Distance check between group AABB and camera chunk range in chunk coordinates.
+				const minChunkX = group.gridX * G;
+				const maxChunkX = minChunkX + G - 1;
+				const minChunkY = group.gridY * G;
+				const maxChunkY = minChunkY + G - 1;
+				const minChunkZ = group.gridZ * G;
+				const maxChunkZ = minChunkZ + G - 1;
 
-			const inRange =
-				minChunkX <= camCX + MAX_RENDER_RADIUS &&
-				camCX - maxChunkX <= MAX_RENDER_RADIUS &&
-				minChunkY <= camCY + MAX_RENDER_RADIUS &&
-				camCY - maxChunkY <= MAX_RENDER_RADIUS &&
-				minChunkZ <= camCZ + MAX_RENDER_RADIUS &&
-				camCZ - maxChunkZ <= MAX_RENDER_RADIUS;
+				const inRange =
+					minChunkX <= camCX + MAX_RENDER_RADIUS &&
+					camCX - maxChunkX <= MAX_RENDER_RADIUS &&
+					minChunkY <= camCY + MAX_RENDER_RADIUS &&
+					camCY - maxChunkY <= MAX_RENDER_RADIUS &&
+					minChunkZ <= camCZ + MAX_RENDER_RADIUS &&
+					camCZ - maxChunkZ <= MAX_RENDER_RADIUS;
 
-			const maxGX = minGX + groupExtent;
-			const maxGY = minGY + groupExtent;
-			const maxGZ = minGZ + groupExtent;
+				if (!inRange) {
+					inFrustum = false;
+				} else if (hint === FrustumHint.INSIDE || DISABLE_FRUSTUM_CULL) {
+					// An ancestor node proved fully inside — no plane math.
+					inFrustum = true;
+				} else {
+					const maxGX = minGX + groupExtent;
+					const maxGY = minGY + groupExtent;
+					const maxGZ = minGZ + groupExtent;
 
-			// An AABB that contains the eye (camera) always intersects the
-			// frustum. The positive-vertex test below can otherwise falsely cull
-			// it on the near plane (its far corner sits behind z=0 by more than
-			// FRUSTUM_MARGIN), hiding the very chunks around the camera.
-			const eyeInAABB =
-				camPos.x >= minGX &&
-				camPos.x <= maxGX &&
-				camPos.y >= minGY &&
-				camPos.y <= maxGY &&
-				camPos.z >= minGZ &&
-				camPos.z <= maxGZ;
+					// An AABB that contains the eye (camera) always intersects the
+					// frustum. The positive-vertex test below can otherwise falsely cull
+					// it on the near plane (its far corner sits behind z=0 by more than
+					// FRUSTUM_MARGIN), hiding the very chunks around the camera.
+					const eyeInAABB =
+						camPos.x >= minGX &&
+						camPos.x <= maxGX &&
+						camPos.y >= minGY &&
+						camPos.y <= maxGY &&
+						camPos.z >= minGZ &&
+						camPos.z <= maxGZ;
 
-			const inFrustum =
-				inRange &&
-				(DISABLE_FRUSTUM_CULL ||
-					eyeInAABB ||
-					aabbInFrustum(minGX, minGY, minGZ, maxGX, maxGY, maxGZ));
+					inFrustum =
+						eyeInAABB ||
+						aabbInFrustum(minGX, minGY, minGZ, maxGX, maxGY, maxGZ);
+				}
+			}
 
 			// BFS reachability — hide groups sealed off from the camera's air
 			// region (Minecraft-style cave culling). Surface groups bypass the
@@ -577,7 +618,7 @@ export class OcclusionCuller {
 					groupTotal++;
 					const mesh = group.opaqueMeshRef;
 					if (!mesh || mesh.isVisible === false) groupHidden++;
-					continue;
+					return;
 				}
 
 				vis = inFrustum && bfsReachable;
@@ -594,6 +635,24 @@ export class OcclusionCuller {
 			}
 			if (group.cutoutMeshRef && group.cutoutMeshRef.isVisible !== vis) {
 				group.cutoutMeshRef.isVisible = vis;
+			}
+		};
+
+		if (_frustumValid && getOctreeGroupCount() === allGroups.length) {
+			let ordinal = 0;
+			traverseGroupOctree(
+				_frustumPacked,
+				FRUSTUM_MARGIN,
+				camPos.x,
+				camPos.y,
+				camPos.z,
+				(group, hint) => {
+					processGroup(group as MergedMeshGroup, ordinal++, hint);
+				},
+			);
+		} else {
+			for (let i = 0; i < allGroups.length; i++) {
+				processGroup(allGroups[i], i, FrustumHint.INTERSECT);
 			}
 		}
 

@@ -3,7 +3,10 @@ import {
 	update as updateDistantTerrain,
 } from "@/code/Generation/DistantTerrain/DistantTerrain";
 import { SURFACE_DENSITY_INFLUENCE_RANGE } from "@/code/Generation/SurfaceGenerator";
-import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
+import {
+	effectiveColumnTopChunkY,
+	getFinalTerrainHeight,
+} from "@/code/Generation/TerrainHeightMap";
 import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
 import { FarTileManager } from "../../FarTiles/FarTileManager";
@@ -162,7 +165,7 @@ function columnTopChunkY(x: number, z: number): number {
 	}
 
 	const h = getFinalTerrainHeight(x * Chunk.SIZE + 16, z * Chunk.SIZE + 16);
-	const topY = Math.ceil(h / Chunk.SIZE);
+	const topY = effectiveColumnTopChunkY(h);
 	colTopCache.set(key, topY);
 	if (frameCacheActive) frameColTopCache.set(key, topY);
 

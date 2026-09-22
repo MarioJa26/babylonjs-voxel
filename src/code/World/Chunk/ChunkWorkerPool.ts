@@ -1408,7 +1408,10 @@ export class ChunkWorkerPool {
 		// timers to ~4ms, which fragmented heavy streaming into hundreds of
 		// clamped timer callbacks. A posted message is a true macrotask
 		// with no clamp and fires before the next frame's timers.
-		const ch = (this._centralChannel ??= new MessageChannel());
+		if (!this._centralChannel) {
+			this._centralChannel = new MessageChannel();
+		}
+		const ch = this._centralChannel;
 		ch.port1.onmessage = this._centralFlush;
 		ch.port2.postMessage(0);
 	}

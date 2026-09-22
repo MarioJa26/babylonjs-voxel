@@ -1,5 +1,10 @@
 ﻿import type { Mesh } from "@babylonjs/lite";
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
+import {
+	octreeClear,
+	octreeInsert,
+	octreeRemove,
+} from "../Occlusion/GroupOctree";
 import type { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";
 import { disposePackedMesh, maxFacesPerArena } from "./PackedChunkMesh.js";
@@ -628,6 +633,7 @@ export function assignChunkToGroup(
 			cutoutMeshRef: null,
 		};
 		groups.set(groupKey, group);
+		octreeInsert(group);
 	}
 
 	const existing = group.members.get(chunk.numericId);
@@ -732,6 +738,7 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 
 		groups.delete(groupKey);
 		dirtyGroups.delete(group);
+		octreeRemove(group);
 
 		clearDiscardedGroup(group);
 
@@ -978,6 +985,7 @@ export function disposeAll(): void {
 
 	groups.clear();
 	dirtyGroups.clear();
+	octreeClear();
 	_flushSnapshot.length = 0;
 	_allGroupsReuse.length = 0;
 }

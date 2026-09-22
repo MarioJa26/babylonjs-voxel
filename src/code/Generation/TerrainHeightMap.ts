@@ -531,6 +531,26 @@ function computeFinalTerrainHeight(
 	return Math.floor(splineBaseHeight + sBase + noiseHeight + detail);
 }
 
+/**
+ * Effective column top (exclusive: first chunk fully above the surface) for
+ * the streaming allocation guard. Pure function of terrain height, headless-
+ * importable for unit tests.
+ *
+ * The heightmap reports SOLID height (seabed in ocean), but water fills every
+ * column up to SEA_LEVEL. Without the water term, deep columns (seabed below
+ * y=0) fail the `y > top+1` guard for the y=1 surface-water chunk (32..63,
+ * contains the water surface) — deep-ocean water never loads. In a trench
+ * even the y=0 water chunk is dropped.
+ */
+export function effectiveColumnTopChunkY(terrainHeight: number): number {
+	const solidTop = Math.ceil(terrainHeight / CHUNK_SIZE);
+	if (terrainHeight < GenerationParams.SEA_LEVEL) {
+		const waterTop = Math.floor(GenerationParams.SEA_LEVEL / CHUNK_SIZE);
+		if (waterTop > solidTop) return waterTop;
+	}
+	return solidTop;
+}
+
 export function getFinalTerrainHeight(x: number, z: number): number {
 	const slot = fhcSlot(x, z);
 
