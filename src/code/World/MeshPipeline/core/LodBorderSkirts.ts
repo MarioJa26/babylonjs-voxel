@@ -1,4 +1,6 @@
 import { unpackBlockId } from "../../Chunk/DataStructures/BlockEncoding";
+import { WATER_BLOCK_ID } from "../../Chunk/Worker/ChunkMesherConstants";
+import { getSourceBlockId } from "../../Texture/BlockMaterial";
 import { type FaceName, getFaceName } from "../../Texture/FaceName";
 import { FLAG_SOLID, getCachedFlagsAndId } from "./BlockInfoCache";
 import { quantizeByteForLOD } from "./LightPipeline";
@@ -8,37 +10,19 @@ import type { MeshBuildSession, PaddedGrids } from "./WorkerMeshHelpers";
 /**
  * Border skirts for downsampled chunks (LOD4+).
  *
- * When a coarse chunk borders a finer one, the shared boundary cannot match
- * exactly (the coarse mesh samples every lodStep-th voxel). Instead of
- * stitching geometry per neighbor — which would require knowing each
- * neighbor's LOD at mesh time — we drop an outward-facing wall along the
- * chunk's four vertical borders, extending below the highest solid voxel of
- * each border column. Any crack against a finer neighbor is hidden behind
- * this wall, exactly like geo-clipmap skirts.
+ * A coarse chunk bordering a finer one can't match it exactly (the coarse
+ * mesh samples every lodStep-th voxel), so we drop an outward-facing wall
+ * along owned borders, hiding cracks like geo-clipmap skirts. One skirt
+ * segment is emitted per contiguous solid run: walls never span air gaps
+ * (canopy overhangs, tower floors), each run keeps its own texture, and
+ * light is sampled from air — never from inside the solid voxel (~0 light
+ * rendered every skirt black in daylight).
  *
- * On far (+X/+Z) borders the skirt REPLACES the greedy far slice at
- * x/z=size (skipped via skirtOwnsPosX/Z in VoxelMaskExtractor) — emitting
- * both would stack two quads bit-exact coplanar with different
- * tessellation and z-fight.
- *
- * PERF notes (all behavior-preserving):
- * - One loop per owned side (not per axis with dead side checks inside).
- * - faceName/stepSpan/out hoisted out of the per-column path.
- * - topSolidAt uses the precomputed opaque[] bit to accept solid columns
- *   without a getCachedFlagsAndId decode, and a strength-reduced index.
- * - disableAO is always true here (step>1 implies lod>=4), so the LUT
- *   quantizeByteForLOD is called directly.
- * - Border tops (y + packed, topology only) are cached on the per-chunk
- *   PaddedGrids and reused on light-only relights where the block grid is
- *   provably unchanged; light is always re-read fresh.
+ * Far (+X/+Z) skirts REPLACE the greedy far slice (skipped via
+ * skirtOwnsPosX/Z in VoxelMaskExtractor) — emitting both would z-fight.
  */
 
-function skirtDepthFor(step: number): number {
-	return Math.min(48, step * 8);
-}
-
-// PERF: hoisted out of the per-column path (getFaceName does a table
-// lookup per call; these two values are constant for all skirts).
+// PERF: getFaceName does a table lookup per call; these never change.
 const FACE_PX: FaceName = getFaceName(0, false);
 const FACE_PZ: FaceName = getFaceName(2, false);
 
@@ -46,21 +30,13 @@ const FACE_PZ: FaceName = getFaceName(2, false);
 const TOP_NONE = -1;
 const TOP_UNKNOWN = -2;
 
-// Skirts exist only on downsampled builds (see early-out above), so every
-// face here is emitted through QuadBuffer.emitQuadRawUnits — whole-block
-// coordinates written verbatim. The old ×8-scaled encoding could not reach
-// the far border plane (255/8 = 31.875 blocks max), so it nudged the plane
-// inward by a sub-block amount; raw units encode `size` exactly.
-
 export function emitLodBorderSkirts(session: MeshBuildSession): void {
 	const size = session.size;
 	const step = session.lodStep;
 	const grids = session.activeGrids;
 
-	// Full rebuild: block topology may have changed — drop cached tops
-	// first, before any early-out, so a build that emits no skirts
-	// (step 1, no owned sides, all air) can't leave stale entries behind
-	// for a later relight to reuse.
+	// Full rebuild may have changed topology — invalidate first, before any
+	// early-out, so a skirtless build can't leave stale tops for a relight.
 	if (session.blocksChangedThisBuild && grids) {
 		invalidateBorderCache(grids, size, step);
 	}
@@ -70,35 +46,85 @@ export function emitLodBorderSkirts(session: MeshBuildSession): void {
 	const sides = session.borderSkirtSides;
 	if (sides === 0) return;
 
-	// All-air uniform chunk: no solid column can exist — skip every scan.
+	// All-air uniform chunk: no solid column can exist.
 	if (session.uniformFillId === 0) return;
 
-	const depth = skirtDepthFor(step);
-	const stepSpan = step < size ? step : size;
+	const depth = Math.min(48, step * 8);
+	const span = step < size ? step : size;
 	const out = session.quadOpaque;
 
-	// One loop per owned side: slot 0=-X (by z), 1=+X (by z),
-	// 2=-Z (by x), 3=+Z (by x).
+	// Slot 0=-X (by z), 1=+X (by z), 2=-Z (by x), 3=+Z (by x).
+	// Near (-X/-Z) planes sit exactly on x/z=0: the greedy extractor never
+	// emits a slice=-1 wall, so the skirt is the sole wall there — no
+	// inset. It meets the neighbor's far wall back-to-back.
 	if (sides & 1)
-		emitSideX(session, out, 0, 0, 0, 1, size, step, depth, stepSpan);
+		emitSide(session, out, 0, 0, 0, 1, size, step, depth, span, true, FACE_PX);
 	if (sides & 2)
-		emitSideX(session, out, 1, size - 1, size, 0, size, step, depth, stepSpan);
+		emitSide(
+			session,
+			out,
+			1,
+			size - 1,
+			size,
+			0,
+			size,
+			step,
+			depth,
+			span,
+			true,
+			FACE_PX,
+		);
 	if (sides & 4)
-		emitSideZ(session, out, 2, 0, 0, 1, size, step, depth, stepSpan);
+		emitSide(session, out, 2, 0, 0, 1, size, step, depth, span, false, FACE_PZ);
 	if (sides & 8)
-		emitSideZ(session, out, 3, size - 1, size, 0, size, step, depth, stepSpan);
+		emitSide(
+			session,
+			out,
+			3,
+			size - 1,
+			size,
+			0,
+			size,
+			step,
+			depth,
+			span,
+			false,
+			FACE_PZ,
+		);
 }
 
-interface TopSolid {
-	y: number;
-	packed: number;
-	lightLevel: number;
+function emitSide(
+	session: MeshBuildSession,
+	out: QuadBuffer,
+	slot: number,
+	fixed: number,
+	plane: number,
+	back: number,
+	size: number,
+	step: number,
+	depth: number,
+	span: number,
+	isX: boolean,
+	face: FaceName,
+): void {
+	for (let i = 0; i < size; i += step) {
+		emitBorderColumn(
+			session,
+			out,
+			slot,
+			i,
+			isX ? fixed : i,
+			isX ? i : fixed,
+			isX ? 0 : 2,
+			back,
+			isX ? plane : i,
+			isX ? i : plane,
+			span,
+			depth,
+			face,
+		);
+	}
 }
-
-// PERF: module-level scratch — callers consume the result synchronously
-// (emitSkirt reads fields, nothing retains it across the next topSolidAt
-// call), so this removes one heap allocation per border column.
-const _topSolidScratch: TopSolid = { y: 0, packed: 0, lightLevel: 0 };
 
 function ensureBorderCache(
 	grids: PaddedGrids,
@@ -129,222 +155,207 @@ function invalidateBorderCache(
 	grids.borderTopY!.fill(TOP_UNKNOWN);
 }
 
-/**
- * Fast top-solid scan for one border column.
- *
- * opaque[]==1 implies FLAG_SOLID (opaque requires SOLID|GREEDY and forbids
- * TRANSPARENT|PARTIAL), so opaque-capped columns — the common terrain case —
- * return with zero flag decodes. opaque==0 still needs the decode to tell
- * transparent/partial solids (glass, leaves) apart from air.
- */
-function topSolidFast(
+/** Packed block at idx if solid (opaque, or any FLAG_SOLID), else 0. */
+function solidPacked(session: MeshBuildSession, idx: number): number {
+	if (session.opaque[idx] === 1) return session.block[idx];
+	const packed = session.block[idx];
+	return packed && (getCachedFlagsAndId(packed) & 0xffff & FLAG_SOLID) !== 0
+		? packed
+		: 0;
+}
+
+/** Skirt light: air above the run top, maxed with outward neighbor air. */
+function skirtLight(
 	session: MeshBuildSession,
-	x: number,
-	z: number,
-): TopSolid | null {
-	const block = session.block;
+	slot: number,
+	idx: number,
+): number {
 	const light = session.light;
-	const opaque = session.opaque;
-	const ps = session.ps;
-	const ps2 = session.ps2;
-	const size = session.size;
+	const above = light[idx + session.ps];
+	const outward =
+		slot === 0
+			? light[idx - 1]
+			: slot === 1
+				? light[idx + 1]
+				: slot === 2
+					? light[idx - session.ps2]
+					: light[idx + session.ps2];
+	return above > outward ? above : outward;
+}
 
-	// Strength-reduced descent: one subtraction per row instead of two
-	// multiplications. Starts at the top row (y = size-1).
-	let idx = x + 1 + size * ps + (z + 1) * ps2;
-	for (let y = size - 1; y >= 0; y--) {
-		if (opaque[idx] === 1) {
-			_topSolidScratch.y = y;
-			_topSolidScratch.packed = block[idx];
-			_topSolidScratch.lightLevel = light[idx];
-			return _topSolidScratch;
-		}
+function isWaterPacked(packed: number): boolean {
+	return getSourceBlockId(unpackBlockId(packed & 0xffff)) === WATER_BLOCK_ID;
+}
 
-		const packed = block[idx];
-		if (packed) {
-			const flags = getCachedFlagsAndId(packed) & 0xffff;
-			if ((flags & FLAG_SOLID) !== 0) {
-				_topSolidScratch.y = y;
-				_topSolidScratch.packed = packed;
-				_topSolidScratch.lightLevel = light[idx];
-				return _topSolidScratch;
-			}
-		}
+function emitSkirt(
+	out: QuadBuffer,
+	yTop: number,
+	packed: number,
+	light: number,
+	axis: number,
+	back: number,
+	x: number,
+	yBottomRaw: number,
+	z: number,
+	span: number,
+	face: FaceName,
+): void {
+	const blockId = unpackBlockId(packed & 0xffff);
+	// Water sides are culled on downsampled builds; glass/water here would
+	// land an opaque wall in the wrong bucket.
+	if (blockId <= 0 || isWaterPacked(packed)) return;
 
-		idx -= ps;
-	}
+	// Positions are unsigned bytes; clamp so deep skirts never wrap.
+	const yBottom = Math.max(0, yBottomRaw);
+	if (yBottom >= yTop + 1) return;
 
-	return null;
+	const vertical = yTop + 1 - yBottom;
+	// Downsampled builds imply lod>=4 (disableAO always true): raw units,
+	// zero meta, LUT lighting. Axis 0 (±X): w=Y, h=Z; axis 2: w=X, h=Y.
+	out.emitQuadRawUnits(
+		x,
+		yBottom,
+		z,
+		axis,
+		axis === 0 ? vertical : span,
+		axis === 0 ? span : vertical,
+		blockId,
+		back,
+		quantizeByteForLOD(light) & 0xff,
+		0,
+		face,
+	);
 }
 
 /**
- * Cached variant: on light-only relights (blocks provably unchanged) the
- * stored y/packed are reused and only light is re-read fresh. Unknown
- * entries (side newly owned since the full build) fall back to the scan
- * and populate the cache.
+ * One border column, single top-to-bottom pass: finds the top, then emits
+ * one skirt segment per contiguous solid run down to stopY. On light-only
+ * relights (blocks provably unchanged) the cached top is reused as the
+ * start; light is always re-read fresh.
  */
-function topSolidCached(
+function emitBorderColumn(
 	session: MeshBuildSession,
+	out: QuadBuffer,
 	slot: number,
 	col: number,
-	x: number,
-	z: number,
-	size: number,
-): TopSolid | null {
-	const grids = session.activeGrids;
-	const step = session.lodStep;
+	cx: number,
+	cz: number,
+	axis: number,
+	back: number,
+	qx: number,
+	qz: number,
+	span: number,
+	depth: number,
+	face: FaceName,
+): void {
+	const size = session.size;
+	const ps = session.ps;
+	const ps2 = session.ps2;
 
+	let startY = size - 1;
+	let cacheHit = false;
+	const grids = session.activeGrids;
 	if (
 		grids &&
 		!session.blocksChangedThisBuild &&
 		grids.borderTopY &&
 		grids.borderTopPacked &&
 		grids.borderTopSize === size &&
-		grids.borderTopStep === step
+		grids.borderTopStep === session.lodStep
 	) {
-		const ci = slot * size + col;
-		const cy = grids.borderTopY[ci];
+		const cy = grids.borderTopY[slot * size + col];
+		if (cy === TOP_NONE) return;
 		if (cy !== TOP_UNKNOWN) {
-			if (cy === TOP_NONE) return null;
-			const packed = grids.borderTopPacked[ci];
-			const idx = x + 1 + (cy + 1) * session.ps + (z + 1) * session.ps2;
-			_topSolidScratch.y = cy;
-			_topSolidScratch.packed = packed;
-			_topSolidScratch.lightLevel = session.light[idx];
-			return _topSolidScratch;
+			startY = cy;
+			cacheHit = true;
 		}
-		// else: unknown — fall through to scan + store below.
 	}
 
-	const top = topSolidFast(session, x, z);
+	let firstY = -1;
+	let firstPacked = 0;
+	let stopY = 0;
+	let runTop = -1;
+	let runPacked = 0;
+	let runLight = 0;
 
-	if (grids) {
-		ensureBorderCache(grids, size, step);
+	let idx = cx + 1 + (startY + 1) * ps + (cz + 1) * ps2;
+	for (let y = startY; y >= 0; y--, idx -= ps) {
+		if (firstY >= 0 && y + 1 <= stopY) {
+			if (runTop >= 0) {
+				emitSkirt(
+					out,
+					runTop,
+					runPacked,
+					runLight,
+					axis,
+					back,
+					qx,
+					stopY,
+					qz,
+					span,
+					face,
+				);
+				runTop = -1;
+			}
+			break;
+		}
+		const packed = solidPacked(session, idx);
+		if (!packed) {
+			if (runTop >= 0) {
+				emitSkirt(
+					out,
+					runTop,
+					runPacked,
+					runLight,
+					axis,
+					back,
+					qx,
+					y + 1,
+					qz,
+					span,
+					face,
+				);
+				runTop = -1;
+			}
+			continue;
+		}
+		if (firstY < 0) {
+			firstY = y;
+			firstPacked = packed;
+			stopY = y + 1 - depth;
+			if (isWaterPacked(packed)) break;
+		}
+		if (runTop < 0) {
+			runTop = y;
+			runPacked = packed;
+			runLight = skirtLight(session, slot, idx);
+		}
+	}
+	if (runTop >= 0) {
+		emitSkirt(
+			out,
+			runTop,
+			runPacked,
+			runLight,
+			axis,
+			back,
+			qx,
+			stopY,
+			qz,
+			span,
+			face,
+		);
+	}
+
+	if (grids && !cacheHit) {
+		ensureBorderCache(grids, size, session.lodStep);
 		const ci = slot * size + col;
-		if (top) {
-			grids.borderTopY![ci] = top.y;
-			grids.borderTopPacked![ci] = top.packed;
-		} else {
+		if (firstY < 0) {
 			grids.borderTopY![ci] = TOP_NONE;
 			grids.borderTopPacked![ci] = 0;
-		}
-	}
-
-	return top;
-}
-
-function emitSkirt(
-	out: QuadBuffer,
-	top: TopSolid,
-	axis: number,
-	backFace: number,
-	x: number,
-	yBottomUnclamped: number,
-	z: number,
-	tangentBlocks: number,
-	faceName: FaceName,
-): void {
-	const blockId = unpackBlockId(top.packed & 0xffff);
-	if (blockId <= 0) return;
-
-	// Positions are unsigned bytes; clamp so deep skirts never wrap.
-	const yBottom = Math.max(0, yBottomUnclamped);
-	if (yBottom >= top.y + 1) return;
-
-	// Skirts only run on downsampled builds (lod>=4, disableAO always
-	// true) — call the LUT directly instead of re-checking the flag.
-	const quantizedLight = quantizeByteForLOD(top.lightLevel) & 0xff;
-	const vertical = top.y + 1 - yBottom;
-
-	// Axis dimension convention matches QuadBuffer:
-	//   axis 0 (±X): w=Y-extent, h=Z-extent
-	//   axis 2 (±Z): w=X-extent, h=Y-extent
-	let width: number;
-	let height: number;
-
-	if (axis === 0) {
-		width = vertical;
-		height = tangentBlocks;
-	} else {
-		width = tangentBlocks;
-		height = vertical;
-	}
-
-	out.emitQuadRawUnits(
-		x,
-		yBottom,
-		z,
-		axis,
-		width,
-		height,
-		blockId,
-		backFace,
-		quantizedLight,
-		0,
-		faceName,
-	);
-}
-
-function emitSideX(
-	session: MeshBuildSession,
-	out: QuadBuffer,
-	slot: number,
-	colX: number,
-	planeX: number,
-	back: number,
-	size: number,
-	step: number,
-	depth: number,
-	stepSpan: number,
-): void {
-	for (let z = 0; z < size; z += step) {
-		// Near (-X) plane sits exactly on x=0: the greedy extractor never
-		// emits a slice=-1 wall (bank stays zero), so this skirt is the
-		// sole wall here — no inset. It meets the neighbor's far wall
-		// back-to-back on the shared world plane.
-		const top = topSolidCached(session, slot, z, colX, z, size);
-		if (top) {
-			emitSkirt(
-				out,
-				top,
-				0,
-				back,
-				planeX,
-				top.y + 1 - depth,
-				z,
-				stepSpan,
-				FACE_PX,
-			);
-		}
-	}
-}
-
-function emitSideZ(
-	session: MeshBuildSession,
-	out: QuadBuffer,
-	slot: number,
-	colZ: number,
-	planeZ: number,
-	back: number,
-	size: number,
-	step: number,
-	depth: number,
-	stepSpan: number,
-): void {
-	for (let x = 0; x < size; x += step) {
-		const top = topSolidCached(session, slot, x, x, colZ, size);
-		if (top) {
-			emitSkirt(
-				out,
-				top,
-				2,
-				back,
-				x,
-				top.y + 1 - depth,
-				planeZ,
-				stepSpan,
-				FACE_PZ,
-			);
+		} else {
+			grids.borderTopY![ci] = firstY;
+			grids.borderTopPacked![ci] = firstPacked;
 		}
 	}
 }
