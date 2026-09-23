@@ -203,6 +203,20 @@ export class WorldEnvironment {
 	 * changed. This avoids unnecessary world-matrix version bumps and mesh
 	 * UBO writes on idle frames.
 	 */
+	/**
+	 * Unit vector toward a body running the daily schedule at `dayFrac`
+	 * (0..1). Shared by the sun (frac = time of day) and the moon
+	 * (frac = time of day + phase).
+	 */
+	private orbitDirection(dayFrac: number, out: [number, number, number]): void {
+		const a = dayFrac * TWO_PI;
+		const e = Math.sin(a) * MAX_SUN_ELEVATION;
+		const c = Math.cos(e);
+		out[0] = c * Math.cos(a);
+		out[1] = Math.sin(e);
+		out[2] = c * Math.sin(a);
+	}
+
 	private syncDome(): void {
 		const skybox = this.skybox;
 		const cam = this.scene.camera;
@@ -244,9 +258,7 @@ export class WorldEnvironment {
 		// Twinkle clock runs even while the sun is held static so the star
 		// field never freezes on paused-time debug views.
 		if (this.skyMaterial) {
-			this.elapsedSec += deltaMs / 1000;
-			if (this.elapsedSec >= TWINKLE_WRAP_SEC)
-				this.elapsedSec %= TWINKLE_WRAP_SEC;
+			this.elapsedSec = (this.elapsedSec + deltaMs / 1000) % TWINKLE_WRAP_SEC;
 			setShaderUniform(this.skyMaterial, "time", this.elapsedSec);
 		}
 
@@ -276,22 +288,16 @@ export class WorldEnvironment {
 		this.forceSunUpdate = false;
 
 		const t = this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS;
-		const angle = t * TWO_PI;
-
-		const sinAngle = Math.sin(angle);
-		const cosAngle = Math.cos(angle);
-		const elevationAngle = sinAngle * MAX_SUN_ELEVATION;
-		const cosElevation = Math.cos(elevationAngle);
-
-		const sx = cosElevation * cosAngle;
-		const sz = cosElevation * sinAngle;
-		const sy = Math.sin(elevationAngle);
+		this.orbitDirection(t, this.sunDirectionUniform);
+		const sx = this.sunDirectionUniform[0];
+		const sy = this.sunDirectionUniform[1];
+		const sz = this.sunDirectionUniform[2];
 
 		GLOBAL_VALUES.skyLightDirection.x = -sx;
 		GLOBAL_VALUES.skyLightDirection.y = -sy;
 		GLOBAL_VALUES.skyLightDirection.z = -sz;
 
-		const sunIntensity = Math.max(0.0, sinAngle);
+		const sunIntensity = Math.max(0.0, Math.sin(t * TWO_PI));
 
 		if (this.dirLight && sunIntensity !== this.lastSunIntensity) {
 			this.dirLight.intensity = sunIntensity;
@@ -322,26 +328,21 @@ export class WorldEnvironment {
 			this.lastSunDirZ = sz;
 		}
 
-		// --- Moon: same daily schedule as the sun, shifted by the phase ---
-		// phase 0 (new) = follows the sun, 0.5 (full) = opposite the sun.
-		// Phase advances with smoothly elapsed game-days only; teleports
-		// (debug setTime / server join jumps) hold the phase steady.
+		// Moon runs the sun's schedule shifted by phase: 0 (new) trails the
+		// sun, 0.5 (full) opposes it, so daytime visibility follows phase.
+		// Only smooth elapsed time advances the phase; teleports (debug
+		// setTime / server join jumps) hold it steady. The +1 keeps the
+		// small negative step inside [0, 1) for a single modulo.
 		const dayDelta =
 			(this.timeOfDay - prevTimeOfDay) / SETTING_PARAMS.DAY_DURATION_MS;
 		if (Math.abs(dayDelta) <= 0.25) {
-			this.moonPhase =
-				(((this.moonPhase + dayDelta / MOON_CYCLE_DAYS) % 1) + 1) % 1;
+			this.moonPhase = (this.moonPhase + 1 + dayDelta / MOON_CYCLE_DAYS) % 1;
 		}
 
-		const moonT = (t + this.moonPhase) % 1;
-		const moonAngle = moonT * TWO_PI;
-		const moonSin = Math.sin(moonAngle);
-		const moonCos = Math.cos(moonAngle);
-		const moonElevAngle = moonSin * MAX_SUN_ELEVATION;
-		const moonCosElev = Math.cos(moonElevAngle);
-		const mx = moonCosElev * moonCos;
-		const mz = moonCosElev * moonSin;
-		const my = Math.sin(moonElevAngle);
+		this.orbitDirection((t + this.moonPhase) % 1, this.moonDirectionUniform);
+		const mx = this.moonDirectionUniform[0];
+		const my = this.moonDirectionUniform[1];
+		const mz = this.moonDirectionUniform[2];
 
 		if (
 			this.skyMaterial &&

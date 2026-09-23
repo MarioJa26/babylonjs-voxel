@@ -4,9 +4,7 @@ import {
 	createShaderMaterial,
 	createSolidTexture2D,
 	type EngineContext,
-	loadTexture2D,
 	type Mesh,
-	type Texture2D,
 	onSceneDispose,
 	removeFromScene,
 	type SceneContext,
@@ -14,6 +12,7 @@ import {
 	setShaderTexture,
 	setShaderUniform,
 	setShaderVector3,
+	type Texture2D,
 } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
@@ -45,30 +44,22 @@ import { getRegisteredItemById } from "./ItemRegistry";
  * First-person held-item viewmodel: renders the selected hotbar item
  * bottom-right of the camera, Minecraft-style.
  *
- * One cached mesh per distinct icon / block id (only one visible at a
- * time): a billboarded icon quad for art-backed items (tools, food,
- * eggs, ...) and a small atlas-textured cube for block items (which have
- * no icon PNG). Both reuse the DroppedItem material pools and geometry
- * caches, so the viewmodel costs no extra pipelines or textures.
+ * One cached mesh per icon / block id (only one visible at a time): an
+ * icon quad for art-backed items (tools, food, ...) and a small
+ * atlas-textured cube for block items. Geometry and icon PNGs are shared
+ * with DroppedItem's caches, so the viewmodel adds no pipelines.
  *
  * Engine rule (see removeFromScene docs): a mesh removed from its last
- * scene is retired — re-adding throws. Meshes are therefore added to the
- * scene exactly once and only ever toggled via `visible`. Hidden in third
- * person, with an empty hand, or before the scene exists.
+ * scene is retired — re-adding throws. Meshes are therefore added exactly
+ * once and only ever toggled via `visible`. Hidden in third person, with
+ * an empty hand, or before the scene exists.
  *
- * Hot-path note: `update()` runs every frame, but the selected hotbar
- * item usually doesn't change frame-to-frame. The active selection is
- * therefore tracked directly (`_activeKind`/`_activeIcon`/
- * `_activeBlockId`/`_activeMesh`) instead of being rebuilt from a
- * template-string key each call. On an unchanged frame this drops the
- * per-frame cost to a couple of field reads and comparisons — no Map
- * lookups, no LRU reinsertion, no full-cache visibility sweep, and no
- * object allocation. That machinery only runs on the (rare) frame where
- * the selection actually changes.
- *
- * Per-frame writes are limited to what can actually change frame-to-frame
- * (position, rotation) — scaling is constant per kind, so it's written
- * once when a mesh is created rather than redundantly every frame.
+ * Hot path: `update()` runs every frame but the selection rarely changes,
+ * so it's tracked as a single key (one comparison per frame; no Map
+ * lookups, no allocation). Shown entries render from placeholder textures
+ * until the real icon/atlas lands, so swapping slots never blanks the hand.
+ * Per-frame writes are position + orientation only; scale is set once at
+ * mesh creation.
  */
 
 const FORWARD_DIST = 0.55;
@@ -103,32 +94,47 @@ const PUNCH_TWIST = 0.35;
 /** Upper bound on cached viewmodel meshes; oldest unused entry is retired. */
 const MAX_ENTRIES = 32;
 
-/**
- * Yaw-outside quaternion qY(yaw) * qX(pitch) as an [x, y, z, w] tuple.
- * Matches lite's eulerXYZToQuatTuple for z=0 exactly (verified), in case
- * the composition below ever needs cross-checking against Euler input.
- */
-function yawOuterQuat(
-	yaw: number,
-	pitch: number,
-): [number, number, number, number] {
+type QuatTuple = [number, number, number, number];
+
+/** Write qY(yaw) * qX(pitch) into out. */
+function setYawOuter(out: QuatTuple, yaw: number, pitch: number): void {
 	const sy = Math.sin(yaw * 0.5);
 	const cy = Math.cos(yaw * 0.5);
 	const sx = Math.sin(pitch * 0.5);
 	const cx = Math.cos(pitch * 0.5);
-	return [cy * sx, sy * cx, -sy * sx, cy * cx];
+	out[0] = cy * sx;
+	out[1] = sy * cx;
+	out[2] = -sy * sx;
+	out[3] = cy * cx;
 }
 
+/** out = a * b (b applies first). Alias-safe: a, b, out may overlap. */
+function mulQuat(a: QuatTuple, b: QuatTuple, out: QuatTuple): void {
+	const ax = a[0];
+	const ay = a[1];
+	const az = a[2];
+	const aw = a[3];
+	out[0] = aw * b[0] + ax * b[3] + ay * b[2] - az * b[1];
+	out[1] = aw * b[1] - ax * b[2] + ay * b[3] + az * b[0];
+	out[2] = aw * b[2] + ax * b[1] - ay * b[0] + az * b[3];
+	out[3] = aw * b[3] - ax * b[0] - ay * b[1] - az * b[2];
+}
+
+// Per-frame composition scratch (module scope: no per-frame allocation).
+const _qCam: QuatTuple = [0, 0, 0, 0];
+const _qPunch: QuatTuple = [0, 0, 0, 0];
+const _qMix: QuatTuple = [0, 0, 0, 0];
+
 /**
- * Fixed rest orientation of the viewmodel in CAMERA space (constant, so the
- * item is exactly rigid — zero drift at any look angle). Framing reproduces
- * the legacy rest faces (angled tool sprite, front-top-side cube).
+ * Fixed rest orientation in CAMERA space (constant, so the item is exactly
+ * rigid — zero drift at any look angle). Framing reproduces the legacy
+ * rest faces (angled tool sprite, front-top-side cube).
  */
-const SPRITE_BASE_Q = yawOuterQuat(
-	Math.PI + LEGACY_YAW_OFFSET,
-	SPRITE_REST_TILT,
-);
-const CUBE_BASE_Q = yawOuterQuat(
+const SPRITE_BASE_Q: QuatTuple = [0, 0, 0, 0];
+const CUBE_BASE_Q: QuatTuple = [0, 0, 0, 0];
+setYawOuter(SPRITE_BASE_Q, Math.PI + LEGACY_YAW_OFFSET, SPRITE_REST_TILT);
+setYawOuter(
+	CUBE_BASE_Q,
 	Math.PI + LEGACY_YAW_OFFSET + CUBE_YAW_OFFSET,
 	CUBE_REST_TILT,
 );
@@ -251,51 +257,45 @@ function getFlatNormalFallback(engine: EngineContext): Texture2D {
 	return flatNormalFallback;
 }
 
-type SpriteEntry = {
+/**
+ * Cache key: the icon URL for sprites, blockId * 64 + state for cubes.
+ * Map keys compare by type, so string and number keys never collide.
+ */
+type EntryKey = string | number;
+
+type Entry = {
 	mesh: Mesh;
 	material: ShaderMaterial;
-	icon: string;
-	/** True once the real icon texture is bound (placeholder before that). */
-	bound: boolean;
-	/** True while an icon load is in flight (never start two). */
-	binding: boolean;
-	/** True once the mesh has been added to the scene (exactly once). */
+	/** Sprite quad or atlas cube. */
+	kind: "sprite" | "cube";
+	/** True once the mesh entered the scene (exactly once — re-adding throws). */
 	added: boolean;
 };
 
-type CubeEntry = {
-	mesh: Mesh;
-	material: ShaderMaterial;
-	blockId: number;
-	blockState: number;
-	/** True once the atlas is bound (white placeholder before that). */
-	bound: boolean;
-	/** True once the mesh has been added to the scene (exactly once). */
-	added: boolean;
-};
+/** Zero-allocation selection key for the per-frame change check. */
+function entryKey(
+	useSprite: boolean,
+	icon: string,
+	blockId: number,
+	blockState: number,
+): EntryKey {
+	return useSprite ? icon : blockId * 64 + (blockState & 63);
+}
 
 export class HeldItemView {
-	private _sprites = new Map<string, SpriteEntry>();
-	private _cubes = new Map<string, CubeEntry>();
+	private _entries = new Map<EntryKey, Entry>();
 
-	// Reused light-color tuple for the per-crossing tint write (no allocs).
-	private _lightColor: [number, number, number] = [1, 1, 1];
 	/** Voxel the environment light was last sampled from (per active entry). */
 	private _activeLightX = Number.NaN;
 	private _activeLightY = Number.NaN;
 	private _activeLightZ = Number.NaN;
 	private _lastSunDirY = Number.NaN;
 
-	// Currently-shown selection. Declared up front (fixed hidden class,
-	// no shape transitions) and updated only when the selection changes;
-	// `_activeMesh` is null whenever nothing is visible (third person,
-	// empty hand) or the scene isn't ready yet — newly-selected entries
-	// show immediately with their placeholder texture, so a pending
-	// icon/atlas load never leaves the hand empty.
-	private _activeKind: "sprite" | "cube" | null = null;
-	private _activeIcon: string | null = null;
-	private _activeBlockId: number | null = null;
-	private _activeBlockState: number | null = null;
+	// Active selection: null when nothing is visible (third person, empty
+	// hand) or the scene isn't ready yet. New selections show immediately
+	// with placeholder textures, so a pending icon/atlas load never blanks
+	// the hand.
+	private _activeKey: EntryKey | null = null;
 	private _activeMesh: Mesh | null = null;
 
 	private _swingT = Number.POSITIVE_INFINITY;
@@ -347,16 +347,7 @@ export class HeldItemView {
 		const blockId = item.blockId ?? -1;
 		const icon = item.icon || PLACEHOLDER_ICON_URL;
 		const useSprite = !isRegisteredBlockId(blockId);
-		blockState &= 63;
-		const changed = useSprite
-			? this._activeKind !== "sprite" || this._activeIcon !== icon
-			: this._activeKind !== "cube" ||
-				this._activeBlockId !== blockId ||
-				this._activeBlockState !== blockState;
-		if (changed) this._select(useSprite, icon, blockId, blockState);
-		if (!this._activeMesh) {
-			this._retryActiveBind();
-		}
+		this._syncSelection(useSprite, icon, blockId, blockState);
 		if (this._activeMesh) {
 			this._updateEnvironmentLight(
 				body.position.x,
@@ -382,11 +373,10 @@ export class HeldItemView {
 	}
 
 	/**
-	 * Environment lighting: refresh the active entry's tint only when the
-	 * sampled voxel, the sun vector, or the day factor actually changed —
-	 * the same voxel-crossing + re-sample strategy Player.ts uses for its
-	 * third-person body, and the same light color math
-	 * (packedLightToLightColor) mobs and dropped items share.
+	 * Environment lighting: refresh the active tint only when the sampled
+	 * voxel or sun vector changed (same voxel-crossing strategy as the
+	 * third-person body). setShaderUniform copies values synchronously, so
+	 * the shared packedLightToLightColor scratch can pass straight through.
 	 */
 	private _updateEnvironmentLight(x: number, y: number, z: number): void {
 		const dir = GLOBAL_VALUES.skyLightDirection;
@@ -411,60 +401,33 @@ export class HeldItemView {
 		this._activeLightY = ly;
 		this._activeLightZ = lz;
 
-		const packed = getLightByWorldCoords(
-			x,
-			y + PLAYER_LIGHT_SAMPLE_Y_OFFSET,
-			z,
-		);
-		const c = packedLightToLightColor(packed);
-		this._lightColor[0] = c[0];
-		this._lightColor[1] = c[1];
-		this._lightColor[2] = c[2];
-
-		const entry = this._activeEntryMaterial();
-		if (entry) setShaderVector3(entry, "lightColor", this._lightColor);
+		const material =
+			this._activeKey === null
+				? null
+				: (this._entries.get(this._activeKey)?.material ?? null);
+		if (material) {
+			setShaderVector3(
+				material,
+				"lightColor",
+				packedLightToLightColor(
+					getLightByWorldCoords(x, y + PLAYER_LIGHT_SAMPLE_Y_OFFSET, z),
+				),
+			);
+		}
 	}
 
 	/** Sun direction + day intensity uniforms shared by every held material. */
 	private _writeSunUniforms(): void {
 		const dir = GLOBAL_VALUES.skyLightDirection;
-		// Terrain shaders negate skyLightDirection so the vector points
-		// TOWARD the sun (ChunkMesher.updateGlobalUniforms convention).
-		const sunX = -dir.x;
-		const sunY = -dir.y;
-		const sunZ = -dir.z;
+		// Negated so the vector points TOWARD the sun (terrain convention).
+		const sun: [number, number, number] = [-dir.x, -dir.y, -dir.z];
 		// Same day-factor formula as DroppedItem/BlockBreakParticles.
-		const sunIntensity = Math.min(1, Math.max(0, (sunY + 0.1) * 4));
-		const u = [sunX, sunY, sunZ];
-		for (const mat of this._liveMaterials()) {
-			setShaderUniform(mat, "lightDirection", u);
-			setShaderUniform(mat, "sunLightIntensity", sunIntensity);
+		const sunIntensity = Math.min(1, Math.max(0, (sun[1] + 0.1) * 4));
+		for (const entry of this._entries.values()) {
+			if (!entry.added) continue;
+			setShaderUniform(entry.material, "lightDirection", sun);
+			setShaderUniform(entry.material, "sunLightIntensity", sunIntensity);
 		}
-	}
-
-	private _activeEntryMaterial(): ShaderMaterial | null {
-		if (this._activeKind === "sprite") {
-			const icon = this._activeIcon;
-			return icon !== null ? (this._sprites.get(icon)?.material ?? null) : null;
-		}
-		if (this._activeKind === "cube") {
-			for (const entry of this._cubes.values()) {
-				if (
-					entry.blockId === this._activeBlockId &&
-					entry.blockState === this._activeBlockState
-				) {
-					return entry.material;
-				}
-			}
-			return null;
-		}
-		return null;
-	}
-
-	/** Materials of all cached entries currently in the scene (including ones still on placeholder textures, so their sun uniforms are correct before the real texture lands). */
-	private *_liveMaterials(): Generator<ShaderMaterial> {
-		for (const s of this._sprites.values()) if (s.added) yield s.material;
-		for (const c of this._cubes.values()) if (c.added) yield c.material;
 	}
 
 	private _updateInner(player: Player, dt: number): void {
@@ -480,23 +443,12 @@ export class HeldItemView {
 
 		const useSprite =
 			!isRegisteredBlockId(item.blockId ?? -1) && item.icon !== "";
-		const blockId = item.blockId ?? -1;
-		const blockState = item.blockState ?? 0;
-
-		const changed = useSprite
-			? this._activeKind !== "sprite" || this._activeIcon !== item.icon
-			: this._activeKind !== "cube" ||
-				this._activeBlockId !== blockId ||
-				this._activeBlockState !== blockState;
-		if (changed) {
-			this._select(useSprite, item.icon, blockId, blockState);
-		}
-
-		// The selection may still be waiting on its first scene-add (no
-		// scene yet) or atlas bind — retry so it can never stick invisible.
-		if (!this._activeMesh) {
-			this._retryActiveBind();
-		}
+		this._syncSelection(
+			useSprite,
+			item.icon,
+			item.blockId ?? -1,
+			item.blockState ?? 0,
+		);
 		const mesh = this._activeMesh;
 		if (!mesh) return;
 
@@ -532,16 +484,13 @@ export class HeldItemView {
 		const camYaw = player.playerCamera.cameraYaw;
 		const camPitch = player.playerCamera.cameraPitch;
 		const rightX = Math.cos(camYaw);
-		const rightY = 0;
 		const rightZ = -Math.sin(camYaw);
-		// Camera up, not world up: u = f × r (same convention as the
-		// look-at yAxis = zAxis × xAxis). Offsetting "down" along world-up
-		// mixes frames: depth then breathes with pitch (nearer looking up,
-		// farther looking down). In the true camera basis the offset is a
-		// constant (right, down, forward) triple — constant distance too.
-		const upX = fwdY * rightZ - fwdZ * rightY;
+		// Camera up, not world up: u = f × r. A world-up "down" offset
+		// mixes frames and makes depth breathe with pitch; in the true
+		// camera basis the offset is a constant (right, down, forward).
+		const upX = fwdY * rightZ;
 		const upY = fwdZ * rightX - fwdX * rightZ;
-		const upZ = fwdX * rightY - fwdY * rightX;
+		const upZ = -fwdY * rightX;
 
 		// Punch thrust: forward along the view with a slight lift and
 		// twist, peaking mid-swing. Advancing swingT and deriving the
@@ -561,161 +510,86 @@ export class HeldItemView {
 			rightX * RIGHT_DIST -
 			upX * (DOWN_DIST - punchUp);
 		const py =
-			camY +
-			fwdY * (FORWARD_DIST + punchFwd) +
-			rightY * RIGHT_DIST -
-			upY * (DOWN_DIST - punchUp);
+			camY + fwdY * (FORWARD_DIST + punchFwd) - upY * (DOWN_DIST - punchUp);
 		const pz =
 			camZ +
 			fwdZ * (FORWARD_DIST + punchFwd) +
 			rightZ * RIGHT_DIST -
 			upZ * (DOWN_DIST - punchUp);
 
-		// Camera-locked orientation: q = qCam * qPunch * qBase, built with
-		// plain scalars (hot path: no allocation). qCam is the camera world
-		// rotation, so the item is EXACTLY rigid — the face-to-lens angle is
-		// bit-constant at any yaw/pitch (verified numerically against the
-		// engine's own quat/matrix functions). The old world-space billboard
-		// re-aimed with atan2 every frame fed the fresh position back into
-		// the orientation, which made the item visibly counter-rotate while
-		// turning; its pitch also stayed world-fixed, so looking up/down
-		// swung the item against the screen. qBase holds the legacy rest
-		// framing (constant per kind); qPunch is the transient swing in
-		// camera space with legacy-matched signs (twist +, tilt −).
-		const base = this._activeKind === "sprite" ? SPRITE_BASE_Q : CUBE_BASE_Q;
-		// qCam = qY(camYaw) * qX(camPitch): maps local +Z onto the view
-		// forward, +X onto screen-right, +Y onto screen-up.
-		const hY = camYaw * 0.5;
-		const hP = camPitch * 0.5;
-		const sY = Math.sin(hY);
-		const cY = Math.cos(hY);
-		const sP = Math.sin(hP);
-		const cP = Math.cos(hP);
-		const qcx = cY * sP;
-		const qcy = sY * cP;
-		const qcz = -sY * sP;
-		const qcw = cY * cP;
-		// qCP = qCam * qPunch (qCam alone at rest).
-		let ax = qcx;
-		let ay = qcy;
-		let az = qcz;
-		let aw = qcw;
+		// Rigid viewmodel orientation: q = qCam * qPunch * qBase. qCam is the
+		// camera world rotation, so the face-to-lens angle never changes;
+		// qBase is the constant rest framing, qPunch the transient swing.
+		setYawOuter(_qCam, camYaw, camPitch);
+		const base =
+			typeof this._activeKey === "string" ? SPRITE_BASE_Q : CUBE_BASE_Q;
 		if (punch > 0) {
-			const tw = punch * PUNCH_TWIST;
-			const ti = punch * PUNCH_TILT;
-			const sTw = Math.sin(tw * 0.5);
-			const cTw = Math.cos(tw * 0.5);
-			const sTi = Math.sin(ti * 0.5);
-			const cTi = Math.cos(ti * 0.5);
-			// qPunch = qY(tw) * qX(-ti), legacy signs.
-			const px = -cTw * sTi;
-			const py = sTw * cTi;
-			const pz = sTw * sTi;
-			const pw = cTw * cTi;
-			ax = qcw * px + qcx * pw + qcy * pz - qcz * py;
-			ay = qcw * py - qcx * pz + qcy * pw + qcz * px;
-			az = qcw * pz + qcx * py - qcy * px + qcz * pw;
-			aw = qcw * pw - qcx * px - qcy * py - qcz * pz;
+			// Legacy swing signs (twist +, tilt −), in camera space.
+			setYawOuter(_qPunch, punch * PUNCH_TWIST, -punch * PUNCH_TILT);
+			mulQuat(_qCam, _qPunch, _qMix);
+			mulQuat(_qMix, base, _qMix);
+		} else {
+			mulQuat(_qCam, base, _qMix);
 		}
 		mesh.position.set(px, py, pz);
-		// Scaling is constant per kind and set once at mesh creation (see
-		// _getSprite/_getCube) — only position + orientation per frame.
-		mesh.rotationQuaternion.set(
-			aw * base[0] + ax * base[3] + ay * base[2] - az * base[1],
-			aw * base[1] - ax * base[2] + ay * base[3] + az * base[0],
-			aw * base[2] + ax * base[1] - ay * base[0] + az * base[3],
-			aw * base[3] - ax * base[0] - ay * base[1] - az * base[2],
-		);
+		// Scale is set once at mesh creation — only position + orientation here.
+		mesh.rotationQuaternion.set(_qMix[0], _qMix[1], _qMix[2], _qMix[3]);
 	}
 
 	/**
-	 * Retry showing the active selection when it has no mesh yet (scene
-	 * wasn't ready on the selection frame, or the cube atlas was missing).
-	 * Reuses the cached entry — never starts a duplicate icon load.
+	 * Track the current hotbar item (called every frame; the key compare is
+	 * the fast path) and make sure its mesh is shown — placeholder texture
+	 * until the real one lands, retried if the scene/atlas wasn't ready.
 	 */
-	private _retryActiveBind(): void {
-		if (this._activeMesh || this._disposed) return;
-		if (this._activeKind === "sprite") {
-			const icon = this._activeIcon;
-			if (icon === null) return;
-			const entry = this._getSprite(icon);
-			if (entry.added) {
-				entry.mesh.visible = true;
-				this._activeMesh = entry.mesh;
-			}
-		} else if (this._activeKind === "cube") {
-			if (this._activeBlockId === null || this._activeBlockState === null) {
-				return;
-			}
-			const entry = this._getCube(this._activeBlockId, this._activeBlockState);
-			if (entry.added) {
-				entry.mesh.visible = true;
-				this._activeMesh = entry.mesh;
-			}
-		}
-	}
-
-	/** Hide whatever's currently shown and clear the active selection. */
-	private _clearActive(): void {
-		if (this._activeKind === null) return; // already clear — skip the writes
-		if (this._activeMesh) this._activeMesh.visible = false;
-		this._activeMesh = null;
-		this._activeKind = null;
-		this._activeIcon = null;
-		this._activeBlockId = null;
-		this._activeBlockState = null;
-	}
-
-	/**
-	 * Switch the active selection to `icon`/`blockId`. Only called on the
-	 * frame the hotbar selection actually changes. Hides the previous
-	 * mesh (if any — cheap direct toggle, no cache-wide sweep needed
-	 * since at most one mesh is ever visible), then gets-or-creates the
-	 * target entry and shows it immediately with its placeholder texture
-	 * (the real icon/atlas upgrades it in place). The hand therefore
-	 * never sits empty for an async load — worst case the new item shows
-	 * white for a frame or two instead of vanishing.
-	 */
-	private _select(
+	private _syncSelection(
 		useSprite: boolean,
 		icon: string,
 		blockId: number,
 		blockState: number,
 	): void {
-		if (this._activeMesh) this._activeMesh.visible = false;
-		this._activeMesh = null;
-		this._activeKind = useSprite ? "sprite" : "cube";
-		this._activeIcon = useSprite ? icon : null;
-		this._activeBlockId = useSprite ? null : blockId;
-		this._activeBlockState = useSprite ? null : blockState;
+		const key = entryKey(useSprite, icon, blockId, blockState);
+		if (key !== this._activeKey) {
+			if (this._activeMesh) this._activeMesh.visible = false;
+			this._activeMesh = null;
+			this._activeKey = key;
+		}
+		this._showActive();
+	}
 
-		const entry = useSprite
-			? this._getSprite(icon)
-			: this._getCube(blockId, blockState);
-		// No scene yet (fresh join): leave _activeMesh null so
-		// _retryActiveBind picks the selection up once the scene exists.
+	private _showActive(): void {
+		const key = this._activeKey;
+		if (key === null || this._activeMesh || this._disposed) return;
+		const entry =
+			typeof key === "string" ? this._getSprite(key) : this._getCube(key);
 		if (entry.added) {
 			entry.mesh.visible = true;
 			this._activeMesh = entry.mesh;
 		}
 	}
 
-	/** Add a sprite mesh to the scene exactly once; false if no scene yet. */
-	private _ensureSpriteAdded(entry: SpriteEntry): boolean {
-		if (entry.added || this._disposed) return entry.added;
-		if (!Map1.mainScene) return false;
-		addToScene(Map1.mainScene, entry.mesh);
-		entry.added = true;
-		return true;
+	/** Hide whatever's currently shown and clear the active selection. */
+	private _clearActive(): void {
+		if (this._activeKey === null) return; // already clear — skip the writes
+		if (this._activeMesh) this._activeMesh.visible = false;
+		this._activeMesh = null;
+		this._activeKey = null;
 	}
 
-	private _getSprite(icon: string): SpriteEntry {
-		let entry = this._sprites.get(icon);
+	/** Add a mesh to the scene exactly once (skipped until a scene exists). */
+	private _ensureAdded(entry: Entry): void {
+		if (entry.added || this._disposed || !Map1.mainScene) return;
+		addToScene(Map1.mainScene, entry.mesh);
+		entry.added = true;
+	}
+
+	/** Get-or-create + LRU refresh; ensures scene-add (and atlas for cubes). */
+	private _getSprite(icon: string): Entry {
+		const key: EntryKey = icon;
+		let entry = this._entries.get(key);
 		if (entry) {
-			// Refresh recency for eviction.
-			this._sprites.delete(icon);
-			this._sprites.set(icon, entry);
-			this._ensureSpriteAdded(entry);
+			this._entries.delete(key);
+			this._entries.set(key, entry);
+			this._ensureAdded(entry);
 			return entry;
 		}
 
@@ -747,21 +621,13 @@ export class HeldItemView {
 			"normalTexture",
 			getFlatNormalFallback(Map1.engine),
 		);
-		entry = {
-			mesh,
-			material,
-			icon,
-			bound: false,
-			binding: false,
-			added: false,
-		};
-		this._sprites.set(icon, entry);
+		entry = { mesh, material, kind: "sprite", added: false };
+		this._entries.set(key, entry);
 		// Visible immediately with the white placeholder (samplers are
 		// already bound, so the bind group is valid) — the icon upgrades
 		// the texture in place when it resolves.
-		this._ensureSpriteAdded(entry);
+		this._ensureAdded(entry);
 
-		entry.binding = true;
 		void getIconTexture(icon)
 			.then((tex) => {
 				if (tex) return tex;
@@ -769,42 +635,26 @@ export class HeldItemView {
 				return getIconTexture(PLACEHOLDER_ICON_URL);
 			})
 			.then((tex) => {
-				entry.binding = false;
 				// Drop stale results: a newer entry or session took over.
-				if (this._disposed || !tex || this._sprites.get(icon) !== entry) {
+				if (this._disposed || !tex || this._entries.get(key) !== entry) {
 					return;
 				}
 				setShaderTexture(material, "diffuseTexture", tex);
-				// Sprite icons have no normal atlas tile: the flat-normal
-				// fallback keeps them evenly lit by the environment instead.
-				setShaderTexture(
-					material,
-					"normalTexture",
-					getFlatNormalFallback(Map1.engine),
-				);
-				entry.bound = true;
-				this._ensureSpriteAdded(entry);
-				if (
-					entry.added &&
-					this._activeKind === "sprite" &&
-					this._activeIcon === icon &&
-					!this._activeMesh
-				) {
-					mesh.visible = true;
-					this._activeMesh = mesh;
-				}
+				this._ensureAdded(entry);
+				this._showActive();
 			});
 		return entry;
 	}
 
-	private _getCube(blockId: number, blockState: number): CubeEntry {
-		const key = `${blockId}:${blockState & 63}`;
-		let entry = this._cubes.get(key);
+	private _getCube(key: number): Entry {
+		const blockId = (key / 64) | 0;
+		const blockState = key % 64;
+		let entry = this._entries.get(key);
 		if (entry) {
 			// Refresh recency for eviction.
-			this._cubes.delete(key);
-			this._cubes.set(key, entry);
-			this._finishCubeBind(entry);
+			this._entries.delete(key);
+			this._entries.set(key, entry);
+			this._bindAtlas(entry);
 			return entry;
 		}
 
@@ -838,116 +688,65 @@ export class HeldItemView {
 			atlasRow * tileSize,
 		]);
 		setShaderVector3(material, "tintColor", [1, 1, 1]);
-		// Same placeholder-first rule as sprites: the atlas bind in
-		// _finishCubeBind replaces the white diffuse; the flat-normal
-		// fallback stays until that bind swaps in the block normal atlas.
+		// Placeholder-first like sprites: _bindAtlas replaces the white
+		// diffuse; the flat-normal fallback stays until the block normal
+		// atlas swaps in.
 		setShaderTexture(material, "diffuseTexture", getWhiteFallback(Map1.engine));
 		setShaderTexture(
 			material,
 			"normalTexture",
 			getFlatNormalFallback(Map1.engine),
 		);
-		entry = { mesh, material, blockId, blockState, bound: false, added: false };
-		this._cubes.set(key, entry);
+		entry = { mesh, material, kind: "cube", added: false };
+		this._entries.set(key, entry);
 
-		this._finishCubeBind(entry);
+		this._bindAtlas(entry);
 		return entry;
 	}
 
-	/** Add a cube mesh to the scene exactly once; false if no scene yet. */
-	private _ensureCubeAdded(entry: CubeEntry): boolean {
-		if (entry.added || this._disposed) return entry.added;
-		if (!Map1.mainScene) return false;
-		addToScene(Map1.mainScene, entry.mesh);
-		entry.added = true;
-		return true;
-	}
-
 	/**
-	 * Bind the shared atlas to a cube entry once it exists; safe to call
-	 * every frame (cheap early-outs). The mesh is added with its white
-	 * placeholder even while the atlas is missing, so selection never
-	 * waits on it — the atlas upgrades the texture in place on arrival.
+	 * Bind the shared atlas (idempotent — safe to retry every frame). The
+	 * mesh is added with its white placeholder even while the atlas is
+	 * missing, so selection never waits on it.
 	 */
-	private _finishCubeBind(entry: CubeEntry): void {
+	private _bindAtlas(entry: Entry): void {
 		if (this._disposed) return;
-		// Scene presence is independent of the atlas: join-world frames
-		// have neither, mid-game frames always have both.
-		this._ensureCubeAdded(entry);
-		if (entry.bound) return;
+		this._ensureAdded(entry);
 		const atlas = getDiffuseTexture2D();
 		if (!atlas) return;
 
 		setShaderTexture(entry.material, "diffuseTexture", atlas);
-		// Same normal atlas the terrain uses for this block, so held cubes
-		// respond to bumps exactly like the placed surface. Sprites keep
-		// their flat-normal fallback (no per-icon normal art exists).
+		// Same normal atlas the terrain uses, so held cubes shade like the
+		// placed surface. Sprites keep the flat-normal fallback (no icon
+		// normal art exists).
 		const normals = getNormal();
 		if (normals) {
 			setShaderTexture(entry.material, "normalTexture", normals);
-		}
-		entry.bound = true;
-		if (
-			entry.added &&
-			this._activeKind === "cube" &&
-			this._activeBlockId === entry.blockId &&
-			this._activeBlockState === entry.blockState &&
-			!this._activeMesh
-		) {
-			entry.mesh.visible = true;
-			this._activeMesh = entry.mesh;
 		}
 	}
 
 	/** Retire the least-recently shown entry to bound mesh count. */
 	private _evictIfNeeded(): void {
-		while (this._sprites.size + this._cubes.size >= MAX_ENTRIES) {
-			const oldestSprite = this._sprites.keys().next();
-			const spriteKey = oldestSprite.done ? null : oldestSprite.value;
-			if (
-				spriteKey !== null &&
-				!(this._activeKind === "sprite" && this._activeIcon === spriteKey)
-			) {
-				this._retireSprite(spriteKey);
-				continue;
+		while (this._entries.size >= MAX_ENTRIES) {
+			let victim: EntryKey | null = null;
+			for (const key of this._entries.keys()) {
+				if (key !== this._activeKey) {
+					victim = key;
+					break;
+				}
 			}
-			const oldestCube = this._cubes.keys().next();
-			const cubeKey = oldestCube.done ? null : oldestCube.value;
-			if (
-				cubeKey !== null &&
-				!(
-					this._activeKind === "cube" &&
-					this._cubes.get(cubeKey)?.blockId === this._activeBlockId &&
-					this._cubes.get(cubeKey)?.blockState === this._activeBlockState
-				)
-			) {
-				this._retireCube(cubeKey);
-				continue;
-			}
-			return;
+			if (victim === null) return;
+			this._retire(victim);
 		}
 	}
 
-	private _retireSprite(icon: string): void {
-		const entry = this._sprites.get(icon);
+	private _retire(key: EntryKey): void {
+		const entry = this._entries.get(key);
 		if (!entry) return;
-		this._sprites.delete(icon);
+		this._entries.delete(key);
 		if (this._activeMesh === entry.mesh) this._activeMesh = null;
 		if (entry.added && Map1.mainScene) {
 			removeFromScene(Map1.mainScene, entry.mesh);
-			entry.added = false;
-		}
-		disposeItemMaterial(entry.material);
-	}
-
-	private _retireCube(key: string): void {
-		const entry = this._cubes.get(key);
-		if (!entry) return;
-		this._cubes.delete(key);
-		if (this._activeMesh === entry.mesh) this._activeMesh = null;
-		if (entry.added && Map1.mainScene) {
-			removeFromScene(Map1.mainScene, entry.mesh);
-			entry.added = false;
 		}
 		disposeItemMaterial(entry.material);
 	}
@@ -956,13 +755,9 @@ export class HeldItemView {
 		if (this._disposed) return;
 		this._disposed = true;
 
-		for (const icon of [...this._sprites.keys()]) this._retireSprite(icon);
-		for (const id of [...this._cubes.keys()]) this._retireCube(id);
+		for (const key of [...this._entries.keys()]) this._retire(key);
 		this._activeMesh = null;
-		this._activeKind = null;
-		this._activeIcon = null;
-		this._activeBlockId = null;
-		this._activeBlockState = null;
+		this._activeKey = null;
 	}
 }
 
