@@ -21,6 +21,7 @@
 import type { FreeCamera, Mat4 } from "@babylonjs/lite";
 import { getCameraPosition, getViewProjectionMatrix } from "@babylonjs/lite";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
+import { isOceanFloorBandChunk } from "@/code/Generation/TerrainHeightMap";
 import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { Map1 } from "@/code/Maps/Map1";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
@@ -339,6 +340,7 @@ export class OcclusionCuller {
 	private _lastOccluded = 0;
 
 	private _dirtyConnectivityChunks: Chunk[] = [];
+	private _oceanFloorGroupCache = new WeakMap<MergedMeshGroup, boolean>();
 
 	private _bfsInProgress = false;
 	private _bfsQHead = 0;
@@ -356,6 +358,27 @@ export class OcclusionCuller {
 	private static readonly SWEEP_AMORTIZE_FRAMES = 3;
 	private static readonly SWEEP_NEAR_DIST_SQ = (10 * Chunk.SIZE) ** 2;
 	private _sweepSlot = 0;
+
+	private hasOceanFloorGroupMember(group: MergedMeshGroup): boolean {
+		const cached = this._oceanFloorGroupCache.get(group);
+		if (cached !== undefined) return cached;
+
+		const members = group.membersArray;
+		let hasOceanFloor = false;
+		for (let i = 0; i < members.length; i++) {
+			const chunk = members[i]?.chunk;
+			if (
+				chunk &&
+				isOceanFloorBandChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
+			) {
+				hasOceanFloor = true;
+				break;
+			}
+		}
+
+		this._oceanFloorGroupCache.set(group, hasOceanFloor);
+		return hasOceanFloor;
+	}
 
 	// ─── update ────────────────────────────────────────────────────────────────
 	update(out: OcclusionStats): OcclusionStats {
@@ -449,6 +472,7 @@ export class OcclusionCuller {
 		}
 
 		const groupsMutated = consumeGroupsMutated();
+		if (groupsMutated) this._oceanFloorGroupCache = new WeakMap();
 		const needSweep =
 			cameraMoved ||
 			vpChanged ||
@@ -580,12 +604,17 @@ export class OcclusionCuller {
 				}
 			}
 
+			const isOceanFloorGroup =
+				inFrustum && !isSurfaceGroup && this.hasOceanFloorGroupMember(group);
+
 			// BFS reachability — hide groups sealed off from the camera's air
 			// region (Minecraft-style cave culling). Surface groups bypass the
 			// gate while the camera is outside, so open-sky terrain never pays
 			// the reachability cost.
 			const bypassBFS =
-				!bfsGateActive || (isSurfaceGroup && !cameraUnderground);
+				!bfsGateActive ||
+				(isSurfaceGroup && !cameraUnderground) ||
+				isOceanFloorGroup;
 
 			let vis: boolean;
 			if (bypassBFS) {

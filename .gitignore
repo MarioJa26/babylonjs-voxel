@@ -64,3 +64,5 @@ scripts/far-tile-selftest.ts
 tools/generate-bow-arrow-icons.mjs
 plans/*
 .opencode/*
+benchmarks/simd-after.json
+benchmarks/simd-baseline.json

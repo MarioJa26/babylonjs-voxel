@@ -9,6 +9,7 @@ import {
 	removeFromScene,
 	type SceneContext,
 	type ShaderMaterial,
+	setMeshVisible,
 	setShaderTexture,
 	setShaderUniform,
 	setShaderVector3,
@@ -549,9 +550,13 @@ export class HeldItemView {
 	): void {
 		const key = entryKey(useSprite, icon, blockId, blockState);
 		if (key !== this._activeKey) {
-			if (this._activeMesh) this._activeMesh.visible = false;
+			if (this._activeMesh) setMeshVisible(this._activeMesh, false);
 			this._activeMesh = null;
 			this._activeKey = key;
+			this._swingT = Number.POSITIVE_INFINITY;
+			this._activeLightX = Number.NaN;
+			this._activeLightY = Number.NaN;
+			this._activeLightZ = Number.NaN;
 		}
 		this._showActive();
 	}
@@ -562,7 +567,7 @@ export class HeldItemView {
 		const entry =
 			typeof key === "string" ? this._getSprite(key) : this._getCube(key);
 		if (entry.added) {
-			entry.mesh.visible = true;
+			setMeshVisible(entry.mesh, true);
 			this._activeMesh = entry.mesh;
 		}
 	}
@@ -570,7 +575,7 @@ export class HeldItemView {
 	/** Hide whatever's currently shown and clear the active selection. */
 	private _clearActive(): void {
 		if (this._activeKey === null) return; // already clear — skip the writes
-		if (this._activeMesh) this._activeMesh.visible = false;
+		if (this._activeMesh) setMeshVisible(this._activeMesh, false);
 		this._activeMesh = null;
 		this._activeKey = null;
 	}
