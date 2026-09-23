@@ -9,6 +9,7 @@ import {
 	FACE_PY,
 	FACE_PZ,
 } from "../../Shape/BlockShapes";
+import { getSourceBlockId } from "../../Texture/BlockMaterial";
 import type { BlockShapeInfo } from "../types/MeshTypes";
 import { computeAO } from "./AOPipeline";
 import {
@@ -23,7 +24,6 @@ import {
 	getShapeInfo,
 	isGlassBlock,
 } from "./BlockInfoCache";
-import { getSourceBlockId } from "../../Texture/BlockMaterial";
 import { quantizeLightForLOD } from "./LightPipeline";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 

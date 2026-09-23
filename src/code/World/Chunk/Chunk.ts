@@ -1711,8 +1711,14 @@ export class Chunk {
 
 	public computeFaceConnectivity(): number {
 		if (!this._hasVoxelData || this._isUniform) {
+			// Water is transparent: BFS must flood through open water exactly
+			// like air. (Mixed water already traverses via the flood-fill
+			// below; this just removes the uniform-vs-mixed inconsistency
+			// that collapsed reachability — and hid the ocean floor — as soon
+			// as the camera sat inside a uniform-water chunk while diving.)
 			const mask =
-				this._isUniform && this._uniformBlockId === 0
+				this._isUniform &&
+				(this._uniformBlockId === 0 || this._uniformBlockId === WATER_BLOCK_ID)
 					? connectFacesMask(0x3f)
 					: 0;
 

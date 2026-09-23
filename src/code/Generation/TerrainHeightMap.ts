@@ -551,6 +551,45 @@ export function effectiveColumnTopChunkY(terrainHeight: number): number {
 	return solidTop;
 }
 
+/**
+ * Minimum solid height over a chunk column's 32×32 footprint — the same
+ * 5-sample min `buriedTopChunkY` uses (corners + center). Deliberately shares
+ * no cache with it: `getFinalTerrainHeight` already memoizes per-coordinate
+ * in a slot array, so these are cheap hits after warmup.
+ */
+export function columnMinHeight(chunkX: number, chunkZ: number): number {
+	const wx = chunkX * CHUNK_SIZE;
+	const wz = chunkZ * CHUNK_SIZE;
+	const mid = CHUNK_SIZE >> 1;
+	let minH = getFinalTerrainHeight(wx, wz);
+	minH = Math.min(minH, getFinalTerrainHeight(wx + CHUNK_SIZE, wz));
+	minH = Math.min(minH, getFinalTerrainHeight(wx, wz + CHUNK_SIZE));
+	minH = Math.min(
+		minH,
+		getFinalTerrainHeight(wx + CHUNK_SIZE, wz + CHUNK_SIZE),
+	);
+	minH = Math.min(minH, getFinalTerrainHeight(wx + mid, wz + mid));
+	return minH;
+}
+
+/**
+ * True when (chunkX, chunkY, chunkZ) lies in the solid band of an ocean
+ * column, from the chunk containing the seabed surface up to y=-1. Open water
+ * above is visible from the sky, so this band must render like surface
+ * terrain — never be subjected to sealed-cave vertical windows. Everything
+ * below the seabed chunk keeps the existing burial culls.
+ */
+export function isOceanFloorBandChunk(
+	chunkX: number,
+	chunkY: number,
+	chunkZ: number,
+): boolean {
+	if (chunkY >= 0) return false;
+	const minH = columnMinHeight(chunkX, chunkZ);
+	if (minH >= GenerationParams.SEA_LEVEL) return false;
+	return chunkY >= Math.floor(minH / CHUNK_SIZE);
+}
+
 export function getFinalTerrainHeight(x: number, z: number): number {
 	const slot = fhcSlot(x, z);
 

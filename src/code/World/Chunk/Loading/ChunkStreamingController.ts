@@ -4,8 +4,10 @@ import {
 } from "@/code/Generation/DistantTerrain/DistantTerrain";
 import { SURFACE_DENSITY_INFLUENCE_RANGE } from "@/code/Generation/SurfaceGenerator";
 import {
+	columnMinHeight,
 	effectiveColumnTopChunkY,
 	getFinalTerrainHeight,
+	isOceanFloorBandChunk,
 } from "@/code/Generation/TerrainHeightMap";
 import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
@@ -64,7 +66,18 @@ function undergroundDesired(
 		return false;
 	}
 
-	return vDist <= undergroundVerticalRange(lodRuleSet);
+	// Open water columns are visible from the sky, not sealed caves: the
+	// solid band from the seabed chunk up to y=-1 (slopes included) is judged
+	// by the surface vertical window instead of the cave cap. Rock below the
+	// seabed chunk keeps the culls above. (Burial can never fire inside the
+	// band — its boundary sits 1+ chunks below the seabed by construction.)
+	let verticalCap = undergroundVerticalRange(lodRuleSet);
+	if (isOceanFloorBandChunk(chunkX, chunkY, chunkZ)) {
+		const surfaceWindow = lodRuleSet.verticalRadiusFor(0);
+		if (surfaceWindow > verticalCap) verticalCap = surfaceWindow;
+	}
+
+	return vDist <= verticalCap;
 }
 
 function undergroundVerticalRange(lodRuleSet: ChunkLodRuleSet): number {
@@ -220,17 +233,7 @@ function buriedTopChunkY(x: number, z: number): number {
 		return cached;
 	}
 
-	const wx = x * Chunk.SIZE;
-	const wz = z * Chunk.SIZE;
-	const mid = Chunk.SIZE >> 1;
-	let minH = getFinalTerrainHeight(wx, wz);
-	minH = Math.min(minH, getFinalTerrainHeight(wx + Chunk.SIZE, wz));
-	minH = Math.min(minH, getFinalTerrainHeight(wx, wz + Chunk.SIZE));
-	minH = Math.min(
-		minH,
-		getFinalTerrainHeight(wx + Chunk.SIZE, wz + Chunk.SIZE),
-	);
-	minH = Math.min(minH, getFinalTerrainHeight(wx + mid, wz + mid));
+	const minH = columnMinHeight(x, z);
 
 	const topY = Math.floor((minH - BURIED_SAFETY_MARGIN) / Chunk.SIZE);
 	buriedCache.set(key, topY);

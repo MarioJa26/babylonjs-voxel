@@ -77,8 +77,21 @@ const DOWN_DIST = 0.3;
 const SPRITE_SCALE = 0.3;
 const CUBE_SCALE = 0.22;
 const CUBE_YAW_OFFSET = 0.6;
-const CUBE_PITCH = 0.45;
-const SPRITE_TILT = -0.1;
+/**
+ * Static yaw the legacy world-space billboard baked in: the item sits
+ * RIGHT_DIST off the lens axis, so facing the camera meant turning
+ * atan2(RIGHT_DIST, FORWARD_DIST) ≈ 0.5 past face-on. Preserved so the
+ * rest framing matches what players know (angled tool, 3-face block).
+ */
+const LEGACY_YAW_OFFSET = 0.5;
+/**
+ * Rest tilts in camera space, solved numerically against the engine's own
+ * quat/matrix functions to reproduce the legacy rest faces (old tuning was
+ * SPRITE_TILT −0.1 / CUBE_PITCH 0.45 in pitch-outer Euler, which is a
+ * different frame — see the yaw-outer note at the rotation write).
+ */
+const SPRITE_REST_TILT = 0.088;
+const CUBE_REST_TILT = -0.199;
 /** Forward thrust along the view at the middle of a punch (meters). */
 const PUNCH_PUSH = 0.16;
 /** Upward lift at the middle of a punch (meters). */
@@ -89,6 +102,36 @@ const PUNCH_TILT = 0.7;
 const PUNCH_TWIST = 0.35;
 /** Upper bound on cached viewmodel meshes; oldest unused entry is retired. */
 const MAX_ENTRIES = 32;
+
+/**
+ * Yaw-outside quaternion qY(yaw) * qX(pitch) as an [x, y, z, w] tuple.
+ * Matches lite's eulerXYZToQuatTuple for z=0 exactly (verified), in case
+ * the composition below ever needs cross-checking against Euler input.
+ */
+function yawOuterQuat(
+	yaw: number,
+	pitch: number,
+): [number, number, number, number] {
+	const sy = Math.sin(yaw * 0.5);
+	const cy = Math.cos(yaw * 0.5);
+	const sx = Math.sin(pitch * 0.5);
+	const cx = Math.cos(pitch * 0.5);
+	return [cy * sx, sy * cx, -sy * sx, cy * cx];
+}
+
+/**
+ * Fixed rest orientation of the viewmodel in CAMERA space (constant, so the
+ * item is exactly rigid — zero drift at any look angle). Framing reproduces
+ * the legacy rest faces (angled tool sprite, front-top-side cube).
+ */
+const SPRITE_BASE_Q = yawOuterQuat(
+	Math.PI + LEGACY_YAW_OFFSET,
+	SPRITE_REST_TILT,
+);
+const CUBE_BASE_Q = yawOuterQuat(
+	Math.PI + LEGACY_YAW_OFFSET + CUBE_YAW_OFFSET,
+	CUBE_REST_TILT,
+);
 
 // ─── Held-item shader (normals + environment light) ──────────────────────────
 // The shared DroppedItem material is unlit (diffuse × flat tint); the hand
@@ -212,10 +255,12 @@ type SpriteEntry = {
 	mesh: Mesh;
 	material: ShaderMaterial;
 	icon: string;
-	/** True once a texture is bound (mesh is in the scene from then on). */
+	/** True once the real icon texture is bound (placeholder before that). */
 	bound: boolean;
 	/** True while an icon load is in flight (never start two). */
 	binding: boolean;
+	/** True once the mesh has been added to the scene (exactly once). */
+	added: boolean;
 };
 
 type CubeEntry = {
@@ -223,8 +268,10 @@ type CubeEntry = {
 	material: ShaderMaterial;
 	blockId: number;
 	blockState: number;
-	/** True once the atlas is bound (mesh is in the scene from then on). */
+	/** True once the atlas is bound (white placeholder before that). */
 	bound: boolean;
+	/** True once the mesh has been added to the scene (exactly once). */
+	added: boolean;
 };
 
 export class HeldItemView {
@@ -241,8 +288,10 @@ export class HeldItemView {
 
 	// Currently-shown selection. Declared up front (fixed hidden class,
 	// no shape transitions) and updated only when the selection changes;
-	// `_activeMesh` is null whenever nothing is visible, including while
-	// a newly-selected entry's texture/atlas bind is still in flight.
+	// `_activeMesh` is null whenever nothing is visible (third person,
+	// empty hand) or the scene isn't ready yet — newly-selected entries
+	// show immediately with their placeholder texture, so a pending
+	// icon/atlas load never leaves the hand empty.
 	private _activeKind: "sprite" | "cube" | null = null;
 	private _activeIcon: string | null = null;
 	private _activeBlockId: number | null = null;
@@ -305,8 +354,8 @@ export class HeldItemView {
 				this._activeBlockId !== blockId ||
 				this._activeBlockState !== blockState;
 		if (changed) this._select(useSprite, icon, blockId, blockState);
-		if (!this._activeMesh && this._activeKind === "cube") {
-			this._getCube(blockId, blockState);
+		if (!this._activeMesh) {
+			this._retryActiveBind();
 		}
 		if (this._activeMesh) {
 			this._updateEnvironmentLight(
@@ -412,10 +461,10 @@ export class HeldItemView {
 		return null;
 	}
 
-	/** Materials of all cached entries that currently have bound textures. */
+	/** Materials of all cached entries currently in the scene (including ones still on placeholder textures, so their sun uniforms are correct before the real texture lands). */
 	private *_liveMaterials(): Generator<ShaderMaterial> {
-		for (const s of this._sprites.values()) if (s.bound) yield s.material;
-		for (const c of this._cubes.values()) if (c.bound) yield c.material;
+		for (const s of this._sprites.values()) if (s.added) yield s.material;
+		for (const c of this._cubes.values()) if (c.added) yield c.material;
 	}
 
 	private _updateInner(player: Player, dt: number): void {
@@ -443,8 +492,13 @@ export class HeldItemView {
 			this._select(useSprite, item.icon, blockId, blockState);
 		}
 
+		// The selection may still be waiting on its first scene-add (no
+		// scene yet) or atlas bind — retry so it can never stick invisible.
+		if (!this._activeMesh) {
+			this._retryActiveBind();
+		}
 		const mesh = this._activeMesh;
-		if (!mesh) return; // texture/atlas bind still in flight
+		if (!mesh) return;
 
 		this._updateEnvironmentLight(
 			player.position.x,
@@ -476,13 +530,18 @@ export class HeldItemView {
 		// Screen-right from the camera yaw (matches the movement mapping:
 		// at yaw 0 the camera faces +Z and strafe-right moves +X).
 		const camYaw = player.playerCamera.cameraYaw;
+		const camPitch = player.playerCamera.cameraPitch;
 		const rightX = Math.cos(camYaw);
 		const rightY = 0;
 		const rightZ = -Math.sin(camYaw);
-		// No camera roll exists, so world-up is exact here.
-		const upX = 0;
-		const upY = 1;
-		const upZ = 0;
+		// Camera up, not world up: u = f × r (same convention as the
+		// look-at yAxis = zAxis × xAxis). Offsetting "down" along world-up
+		// mixes frames: depth then breathes with pitch (nearer looking up,
+		// farther looking down). In the true camera basis the offset is a
+		// constant (right, down, forward) triple — constant distance too.
+		const upX = fwdY * rightZ - fwdZ * rightY;
+		const upY = fwdZ * rightX - fwdX * rightZ;
+		const upZ = fwdX * rightY - fwdY * rightX;
 
 		// Punch thrust: forward along the view with a slight lift and
 		// twist, peaking mid-swing. Advancing swingT and deriving the
@@ -512,24 +571,87 @@ export class HeldItemView {
 			rightZ * RIGHT_DIST -
 			upZ * (DOWN_DIST - punchUp);
 
-		// Yaw the item to face the camera (same convention as dropped-item
-		// billboarding: local +Z ends up pointing at the lens).
-		const yaw = Math.atan2(camX - px, camZ - pz);
+		// Camera-locked orientation: q = qCam * qPunch * qBase, built with
+		// plain scalars (hot path: no allocation). qCam is the camera world
+		// rotation, so the item is EXACTLY rigid — the face-to-lens angle is
+		// bit-constant at any yaw/pitch (verified numerically against the
+		// engine's own quat/matrix functions). The old world-space billboard
+		// re-aimed with atan2 every frame fed the fresh position back into
+		// the orientation, which made the item visibly counter-rotate while
+		// turning; its pitch also stayed world-fixed, so looking up/down
+		// swung the item against the screen. qBase holds the legacy rest
+		// framing (constant per kind); qPunch is the transient swing in
+		// camera space with legacy-matched signs (twist +, tilt −).
+		const base = this._activeKind === "sprite" ? SPRITE_BASE_Q : CUBE_BASE_Q;
+		// qCam = qY(camYaw) * qX(camPitch): maps local +Z onto the view
+		// forward, +X onto screen-right, +Y onto screen-up.
+		const hY = camYaw * 0.5;
+		const hP = camPitch * 0.5;
+		const sY = Math.sin(hY);
+		const cY = Math.cos(hY);
+		const sP = Math.sin(hP);
+		const cP = Math.cos(hP);
+		const qcx = cY * sP;
+		const qcy = sY * cP;
+		const qcz = -sY * sP;
+		const qcw = cY * cP;
+		// qCP = qCam * qPunch (qCam alone at rest).
+		let ax = qcx;
+		let ay = qcy;
+		let az = qcz;
+		let aw = qcw;
+		if (punch > 0) {
+			const tw = punch * PUNCH_TWIST;
+			const ti = punch * PUNCH_TILT;
+			const sTw = Math.sin(tw * 0.5);
+			const cTw = Math.cos(tw * 0.5);
+			const sTi = Math.sin(ti * 0.5);
+			const cTi = Math.cos(ti * 0.5);
+			// qPunch = qY(tw) * qX(-ti), legacy signs.
+			const px = -cTw * sTi;
+			const py = sTw * cTi;
+			const pz = sTw * sTi;
+			const pw = cTw * cTi;
+			ax = qcw * px + qcx * pw + qcy * pz - qcz * py;
+			ay = qcw * py - qcx * pz + qcy * pw + qcz * px;
+			az = qcw * pz + qcx * py - qcy * px + qcz * pw;
+			aw = qcw * pw - qcx * px - qcy * py - qcz * pz;
+		}
 		mesh.position.set(px, py, pz);
 		// Scaling is constant per kind and set once at mesh creation (see
-		// _getSprite/_getCube) — only rotation needs a per-frame write.
+		// _getSprite/_getCube) — only position + orientation per frame.
+		mesh.rotationQuaternion.set(
+			aw * base[0] + ax * base[3] + ay * base[2] - az * base[1],
+			aw * base[1] - ax * base[2] + ay * base[3] + az * base[0],
+			aw * base[2] + ax * base[1] - ay * base[0] + az * base[3],
+			aw * base[3] - ax * base[0] - ay * base[1] - az * base[2],
+		);
+	}
+
+	/**
+	 * Retry showing the active selection when it has no mesh yet (scene
+	 * wasn't ready on the selection frame, or the cube atlas was missing).
+	 * Reuses the cached entry — never starts a duplicate icon load.
+	 */
+	private _retryActiveBind(): void {
+		if (this._activeMesh || this._disposed) return;
 		if (this._activeKind === "sprite") {
-			mesh.rotation.set(
-				SPRITE_TILT - punch * PUNCH_TILT,
-				yaw + punch * PUNCH_TWIST,
-				0,
-			);
-		} else {
-			mesh.rotation.set(
-				CUBE_PITCH - punch * PUNCH_TILT,
-				yaw + CUBE_YAW_OFFSET + punch * PUNCH_TWIST,
-				0,
-			);
+			const icon = this._activeIcon;
+			if (icon === null) return;
+			const entry = this._getSprite(icon);
+			if (entry.added) {
+				entry.mesh.visible = true;
+				this._activeMesh = entry.mesh;
+			}
+		} else if (this._activeKind === "cube") {
+			if (this._activeBlockId === null || this._activeBlockState === null) {
+				return;
+			}
+			const entry = this._getCube(this._activeBlockId, this._activeBlockState);
+			if (entry.added) {
+				entry.mesh.visible = true;
+				this._activeMesh = entry.mesh;
+			}
 		}
 	}
 
@@ -549,7 +671,10 @@ export class HeldItemView {
 	 * frame the hotbar selection actually changes. Hides the previous
 	 * mesh (if any — cheap direct toggle, no cache-wide sweep needed
 	 * since at most one mesh is ever visible), then gets-or-creates the
-	 * target entry and shows it immediately if already bound.
+	 * target entry and shows it immediately with its placeholder texture
+	 * (the real icon/atlas upgrades it in place). The hand therefore
+	 * never sits empty for an async load — worst case the new item shows
+	 * white for a frame or two instead of vanishing.
 	 */
 	private _select(
 		useSprite: boolean,
@@ -567,10 +692,21 @@ export class HeldItemView {
 		const entry = useSprite
 			? this._getSprite(icon)
 			: this._getCube(blockId, blockState);
-		if (entry.bound) {
+		// No scene yet (fresh join): leave _activeMesh null so
+		// _retryActiveBind picks the selection up once the scene exists.
+		if (entry.added) {
 			entry.mesh.visible = true;
 			this._activeMesh = entry.mesh;
 		}
+	}
+
+	/** Add a sprite mesh to the scene exactly once; false if no scene yet. */
+	private _ensureSpriteAdded(entry: SpriteEntry): boolean {
+		if (entry.added || this._disposed) return entry.added;
+		if (!Map1.mainScene) return false;
+		addToScene(Map1.mainScene, entry.mesh);
+		entry.added = true;
+		return true;
 	}
 
 	private _getSprite(icon: string): SpriteEntry {
@@ -579,6 +715,7 @@ export class HeldItemView {
 			// Refresh recency for eviction.
 			this._sprites.delete(icon);
 			this._sprites.set(icon, entry);
+			this._ensureSpriteAdded(entry);
 			return entry;
 		}
 
@@ -616,8 +753,13 @@ export class HeldItemView {
 			icon,
 			bound: false,
 			binding: false,
+			added: false,
 		};
 		this._sprites.set(icon, entry);
+		// Visible immediately with the white placeholder (samplers are
+		// already bound, so the bind group is valid) — the icon upgrades
+		// the texture in place when it resolves.
+		this._ensureSpriteAdded(entry);
 
 		entry.binding = true;
 		void getIconTexture(icon)
@@ -641,8 +783,13 @@ export class HeldItemView {
 					getFlatNormalFallback(Map1.engine),
 				);
 				entry.bound = true;
-				addToScene(Map1.mainScene, mesh);
-				if (this._activeKind === "sprite" && this._activeIcon === icon) {
+				this._ensureSpriteAdded(entry);
+				if (
+					entry.added &&
+					this._activeKind === "sprite" &&
+					this._activeIcon === icon &&
+					!this._activeMesh
+				) {
 					mesh.visible = true;
 					this._activeMesh = mesh;
 				}
@@ -700,16 +847,34 @@ export class HeldItemView {
 			"normalTexture",
 			getFlatNormalFallback(Map1.engine),
 		);
-		entry = { mesh, material, blockId, blockState, bound: false };
+		entry = { mesh, material, blockId, blockState, bound: false, added: false };
 		this._cubes.set(key, entry);
 
 		this._finishCubeBind(entry);
 		return entry;
 	}
 
-	/** Bind the shared atlas to a cube entry once it exists; retried. */
+	/** Add a cube mesh to the scene exactly once; false if no scene yet. */
+	private _ensureCubeAdded(entry: CubeEntry): boolean {
+		if (entry.added || this._disposed) return entry.added;
+		if (!Map1.mainScene) return false;
+		addToScene(Map1.mainScene, entry.mesh);
+		entry.added = true;
+		return true;
+	}
+
+	/**
+	 * Bind the shared atlas to a cube entry once it exists; safe to call
+	 * every frame (cheap early-outs). The mesh is added with its white
+	 * placeholder even while the atlas is missing, so selection never
+	 * waits on it — the atlas upgrades the texture in place on arrival.
+	 */
 	private _finishCubeBind(entry: CubeEntry): void {
-		if (entry.bound || this._disposed) return;
+		if (this._disposed) return;
+		// Scene presence is independent of the atlas: join-world frames
+		// have neither, mid-game frames always have both.
+		this._ensureCubeAdded(entry);
+		if (entry.bound) return;
 		const atlas = getDiffuseTexture2D();
 		if (!atlas) return;
 
@@ -722,11 +887,12 @@ export class HeldItemView {
 			setShaderTexture(entry.material, "normalTexture", normals);
 		}
 		entry.bound = true;
-		addToScene(Map1.mainScene, entry.mesh);
 		if (
+			entry.added &&
 			this._activeKind === "cube" &&
 			this._activeBlockId === entry.blockId &&
-			this._activeBlockState === entry.blockState
+			this._activeBlockState === entry.blockState &&
+			!this._activeMesh
 		) {
 			entry.mesh.visible = true;
 			this._activeMesh = entry.mesh;
@@ -767,7 +933,10 @@ export class HeldItemView {
 		if (!entry) return;
 		this._sprites.delete(icon);
 		if (this._activeMesh === entry.mesh) this._activeMesh = null;
-		removeFromScene(Map1.mainScene, entry.mesh);
+		if (entry.added && Map1.mainScene) {
+			removeFromScene(Map1.mainScene, entry.mesh);
+			entry.added = false;
+		}
 		disposeItemMaterial(entry.material);
 	}
 
@@ -776,7 +945,10 @@ export class HeldItemView {
 		if (!entry) return;
 		this._cubes.delete(key);
 		if (this._activeMesh === entry.mesh) this._activeMesh = null;
-		removeFromScene(Map1.mainScene, entry.mesh);
+		if (entry.added && Map1.mainScene) {
+			removeFromScene(Map1.mainScene, entry.mesh);
+			entry.added = false;
+		}
 		disposeItemMaterial(entry.material);
 	}
 

@@ -35,6 +35,16 @@ const DOME_MOVE_THRESHOLD = 1.25;
 const SKY_BOX_FAR_SCALE = 0.5;
 const MAX_SUN_ELEVATION = 1.1;
 const TWO_PI = Math.PI * 2;
+/**
+ * Game-days per lunar cycle. The moon's sky position is the sun's schedule
+ * shifted by the phase (new = follows the sun, full = opposite the sun),
+ * so this also controls phase-dependent daytime visibility. 8 days keeps
+ * phase changes observable within a few play sessions; use ~30 for realism.
+ */
+const MOON_CYCLE_DAYS = 8;
+/** Twinkle clock wraps here; 200*PI spans exactly 120 star periods
+ * (2PI/1.2), so sin(time*1.2) stays continuous across the wrap. */
+const TWINKLE_WRAP_SEC = Math.PI * 200;
 
 /**
  * Camera-centred unit cube (half-extent 1): 24 verts / 12 tris.
@@ -122,6 +132,19 @@ export class WorldEnvironment {
 
 	// Reused uniform payload to avoid allocating [sx, sy, sz] every sun update.
 	private readonly sunDirectionUniform: [number, number, number] = [0, 0, 0];
+	private readonly moonDirectionUniform: [number, number, number] = [0, -1, 0];
+
+	// Lunar phase 0..1 (0/1 = new, 0.5 = full). Advances with elapsed
+	// game-days; starts near-full so the first night shows a bright moon.
+	private moonPhase = 0.5;
+	private lastMoonDirX = NaN;
+	private lastMoonDirY = NaN;
+	private lastMoonDirZ = NaN;
+	private lastMoonPhase = NaN;
+
+	// Twinkle clock (seconds) for the sky shader's star field. Independent
+	// of the sun — stars keep twinkling while the sun is held static.
+	private elapsedSec = 0;
 
 	// Forces one sun/material refresh even when timeScale === 0.
 	private forceSunUpdate = true;
@@ -218,12 +241,23 @@ export class WorldEnvironment {
 
 		if (this.isPaused) return;
 
+		// Twinkle clock runs even while the sun is held static so the star
+		// field never freezes on paused-time debug views.
+		if (this.skyMaterial) {
+			this.elapsedSec += deltaMs / 1000;
+			if (this.elapsedSec >= TWINKLE_WRAP_SEC)
+				this.elapsedSec %= TWINKLE_WRAP_SEC;
+			setShaderUniform(this.skyMaterial, "time", this.elapsedSec);
+		}
+
 		const shouldAdvanceTime = this.timeScale !== 0;
 
 		// Static sun: after the first refresh, or after setTime(), skip all
 		// lighting/material writes.
 		if (!shouldAdvanceTime && !this.forceSunUpdate && this.serverSyncAt === 0)
 			return;
+
+		const prevTimeOfDay = this.timeOfDay;
 
 		if (shouldAdvanceTime) {
 			this.timeOfDay += deltaMs * this.timeScale;
@@ -286,6 +320,51 @@ export class WorldEnvironment {
 			this.lastSunDirX = sx;
 			this.lastSunDirY = sy;
 			this.lastSunDirZ = sz;
+		}
+
+		// --- Moon: same daily schedule as the sun, shifted by the phase ---
+		// phase 0 (new) = follows the sun, 0.5 (full) = opposite the sun.
+		// Phase advances with smoothly elapsed game-days only; teleports
+		// (debug setTime / server join jumps) hold the phase steady.
+		const dayDelta =
+			(this.timeOfDay - prevTimeOfDay) / SETTING_PARAMS.DAY_DURATION_MS;
+		if (Math.abs(dayDelta) <= 0.25) {
+			this.moonPhase =
+				(((this.moonPhase + dayDelta / MOON_CYCLE_DAYS) % 1) + 1) % 1;
+		}
+
+		const moonT = (t + this.moonPhase) % 1;
+		const moonAngle = moonT * TWO_PI;
+		const moonSin = Math.sin(moonAngle);
+		const moonCos = Math.cos(moonAngle);
+		const moonElevAngle = moonSin * MAX_SUN_ELEVATION;
+		const moonCosElev = Math.cos(moonElevAngle);
+		const mx = moonCosElev * moonCos;
+		const mz = moonCosElev * moonSin;
+		const my = Math.sin(moonElevAngle);
+
+		if (
+			this.skyMaterial &&
+			(mx !== this.lastMoonDirX ||
+				my !== this.lastMoonDirY ||
+				mz !== this.lastMoonDirZ ||
+				this.moonPhase !== this.lastMoonPhase)
+		) {
+			this.moonDirectionUniform[0] = mx;
+			this.moonDirectionUniform[1] = my;
+			this.moonDirectionUniform[2] = mz;
+
+			setShaderUniform(
+				this.skyMaterial,
+				"moonDirection",
+				this.moonDirectionUniform,
+			);
+			setShaderUniform(this.skyMaterial, "moonPhase", this.moonPhase);
+
+			this.lastMoonDirX = mx;
+			this.lastMoonDirY = my;
+			this.lastMoonDirZ = mz;
+			this.lastMoonPhase = this.moonPhase;
 		}
 	}
 
