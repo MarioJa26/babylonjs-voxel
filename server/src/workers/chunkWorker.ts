@@ -195,7 +195,7 @@ async function initializeGenerator(
 	] = await Promise.all([
 		import("@/code/Generation/WorldGenerator"),
 		import("@/code/Generation/NoiseAndParameters/GenerationParams"),
-		import("@/code/World/Chunk/ChunkFaceMasks"),
+		import("@/code/World/Chunk/Meshing/ChunkFaceMasks"),
 		import("@/code/Generation/LightGenerator"),
 		import("@/code/World/Shape/BlockShapes"),
 	]);

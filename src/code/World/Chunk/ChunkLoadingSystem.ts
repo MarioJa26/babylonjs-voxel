@@ -30,7 +30,7 @@ import {
 	checkNewInfiniteSource,
 	scheduleBlockBreakWaterUpdates,
 	scheduleBlockPlaceWaterUpdates,
-} from "./Worker/WaterSimulation";
+} from "./Simulation/WaterSimulation";
 
 export type DynamicBlockSample = {
 	blockId: number;
@@ -395,6 +395,21 @@ export function validateChunksAround(
 	}
 }
 
+let remoteGenerationPumpScheduled = false;
+
+function pumpRemoteGenerationDeferred(): void {
+	if (remoteGenerationPumpScheduled) {
+		return;
+	}
+
+	remoteGenerationPumpScheduled = true;
+
+	setTimeout(() => {
+		remoteGenerationPumpScheduled = false;
+		ChunkWorkerPool.getInstance().pumpRemoteGeneration();
+	}, 0);
+}
+
 export async function processFrameBudgetedStreamingWork(
 	playerChunkX: number,
 	playerChunkY: number,
@@ -415,16 +430,17 @@ export async function processFrameBudgetedStreamingWork(
 		await processScheduler.processQueues();
 	}
 
-	// Always pump remote generation every frame. This sends queued chunks
-	// to the server. Even if processQueues hasn't reached ScheduleGeneration
-	// yet, pumping is a no-op when the queue is empty.
+	const elapsedMs = performance.now() - sliceStart;
 	const pool = ChunkWorkerPool.getInstance();
-	if (performance.now() - sliceStart > getProcessFrameBudgetMs() * 4) {
-		// The streaming slice already consumed its share of the frame —
-		// defer the remote pump to a macrotask so its IndexedDB read + apply
-		// work lands outside the render frame instead of stacking into it.
-		setTimeout(() => pool.pumpRemoteGeneration(), 0);
-	} else {
+
+	if (elapsedMs > getProcessFrameBudgetMs() * 4) {
+		pumpRemoteGenerationDeferred();
+		return;
+	}
+
+	// If a deferred pump already exists, let it perform the work rather than
+	// pumping now and then immediately pumping again from the queued callback.
+	if (!remoteGenerationPumpScheduled) {
 		pool.pumpRemoteGeneration();
 	}
 }

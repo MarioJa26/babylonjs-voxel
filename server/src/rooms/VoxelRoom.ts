@@ -101,8 +101,8 @@ import {
 	TOOL_MATERIALS,
 } from "@/code/Player/Inventory/ProceduralTools";
 import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding.ts";
-import { BlockTickScheduler } from "@/code/World/Chunk/Worker/BlockTickScheduler.ts";
-import { WaterSimulation } from "@/code/World/Chunk/Worker/WaterSimulation.ts";
+import { BlockTickScheduler } from "@/code/World/Chunk/Simulation/BlockTickScheduler.ts";
+import { WaterSimulation } from "@/code/World/Chunk/Simulation/WaterSimulation.ts";
 import {
 	blastMobDamages,
 	collectExplosionTargets,

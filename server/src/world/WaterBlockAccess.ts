@@ -16,7 +16,7 @@ import {
 	unpackBlockId,
 	unpackBlockState,
 } from "@/code/World/Chunk/DataStructures/BlockEncoding";
-import type { WaterBlockAccess } from "@/code/World/Chunk/Worker/WaterSimulation";
+import type { WaterBlockAccess } from "@/code/World/Chunk/Simulation/WaterSimulation";
 import type { ServerWorldStorage } from "./ServerWorldStorage.ts";
 
 export interface WaterBlockChange {

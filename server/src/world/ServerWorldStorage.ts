@@ -9,7 +9,7 @@
 import { LightGenerator } from "@/code/Generation/LightGenerator";
 import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
 import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath.ts";
-import { precomputeClosedFaceMasks } from "@/code/World/Chunk/ChunkFaceMasks";
+import { precomputeClosedFaceMasks } from "@/code/World/Chunk/Meshing/ChunkFaceMasks";
 import {
 	packBlockValue,
 	unpackBlockId,

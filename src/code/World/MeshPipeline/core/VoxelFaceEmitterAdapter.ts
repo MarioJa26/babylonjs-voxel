@@ -16,7 +16,6 @@ import { getMaterialType, getRuntimeShapeBoxes } from "./BlockInfoCache";
 import type { QuadBuffer } from "./QuadBuffer";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
-const BACK_FACE_MASK = 0x80000000;
 const NON_CUBE_MASK = 0x40000000;
 const PACKED_ID_STATE_MASK = 0x0000ffff;
 // Water-specific flags live ABOVE the id/state region and must survive the
@@ -49,27 +48,6 @@ function needsRawDim(blockId: number, width: number, height: number): boolean {
 	return true;
 }
 
-/**
- * P2.5: All four emit paths share one signature so they can be dispatched
- * through a per-instance array of bound method references. The previous
- * version routed through module-level wrappers that called
- * `a["emitCubeFace"](...)` — string-keyed property dispatch that defeats V8
- * inlining. Binding once in the constructor gives direct method calls with
- * none of the per-call megamorphic overhead.
- */
-type EmitFn = (
-	out: QuadBuffer,
-	axis: number,
-	desc: GreedyFaceDescriptor,
-	packedBlock: number,
-	blockId: number,
-	back: number,
-	light: number,
-	ao: number,
-	faceName: FaceName,
-	faceBit: number,
-) => void;
-
 type SplitTransparentSession = MeshBuildSession & {
 	/**
 	 * Optional GPU-optimized buckets.
@@ -84,93 +62,136 @@ type SplitTransparentSession = MeshBuildSession & {
 export class VoxelFaceEmitterAdapter {
 	private readonly _session: SplitTransparentSession;
 
-	// Dispatch LUT indexed by (isWater << 1) | isCube:
-	//   0 = custom shape non-water, 1 = cube non-water,
-	//   2 = custom shape water, 3 = cube water
-	private readonly _dispatch: readonly EmitFn[];
-
 	constructor(session: MeshBuildSession) {
 		this._session = session as SplitTransparentSession;
-		this._dispatch = [
-			this.emitCustomShapeFace.bind(this),
-			this.emitCubeFace.bind(this),
-			this.emitWaterCustomShapeFace.bind(this),
-			this.emitWaterFace.bind(this),
-		];
 	}
 
 	public emitVoxelFace(axis: number, desc: GreedyFaceDescriptor): void {
 		const rawMask = desc.idState | 0;
 		const packedBlock = rawMask & PACKED_WATER_MASK;
 
-		if (!packedBlock) return;
+		if (packedBlock === 0) return;
 
 		const blockId = unpackBlockId(packedBlock);
-		// PERF: NON_CUBE_MASK is set by the mask extractor exactly when the
-		// block's shape is non-cube (it compares against getShapeInfo().isCube
-		// itself), so the per-face getShapeInfo cache probe is redundant —
-		// isCube is simply !isNonCube.
 		const materialType = getMaterialType(blockId);
+		const isTransparent = materialType === MaterialType.WaterOrGlass;
 
-		const isTransparentMaterial = materialType === MaterialType.WaterOrGlass;
-		const isWater =
-			isTransparentMaterial &&
-			(blockId === WATER_BLOCK_ID ||
-				(blockId >= 500 &&
-					Math.floor((blockId - 500) / 5) + 1 === WATER_BLOCK_ID));
+		let isWater = false;
+
+		if (isTransparent) {
+			if (blockId === WATER_BLOCK_ID) {
+				isWater = true;
+			} else if (blockId >= 500) {
+				const virtualBaseBlockId = (((blockId - 500) / 5) | 0) + 1;
+
+				isWater = virtualBaseBlockId === WATER_BLOCK_ID;
+			}
+		}
 
 		const session = this._session;
+		const step = session.lodStep;
 
-		// Downsampled builds: cull water SIDE faces outright. Shoreline
-		// slivers are sub-pixel behind terrain at these distances, and any
-		// wall geometry there reads as artifacts (floating water rims).
-		if (session.lodStep > 1 && isWater && axis !== 1) return;
+		// At reduced LOD, water side faces produce distant shoreline artifacts.
+		if (step > 1 && isWater && axis !== 1) return;
 
-		// GPU-important split:
-		// - true water goes to quadWater if available
-		// - other transparent/cutout/glass goes to quadCutout if available
-		// - old path falls back to quadTransparent
-		const out = isTransparentMaterial
-			? isWater
-				? (session.quadWater ?? session.quadTransparent)
-				: (session.quadCutout ?? session.quadTransparent)
-			: session.quadOpaque;
+		let out: QuadBuffer;
 
-		const ao = desc.light & 0xff;
-		const light = (desc.light >> 8) & 0xff;
+		if (!isTransparent) {
+			out = session.quadOpaque;
+		} else if (isWater) {
+			out = session.quadWater ?? session.quadTransparent;
+		} else {
+			out = session.quadCutout ?? session.quadTransparent;
+		}
 
-		const back = (rawMask >>> 31) & 1;
+		const packedLight = desc.light;
+		const ao = packedLight & 0xff;
+		const light = (packedLight >>> 8) & 0xff;
+
+		const back = rawMask >>> 31;
 		const faceIndex = (axis << 1) | back;
 		const faceName = FACE_NAME_TABLE[faceIndex];
 		const faceBit = FACE_BIT_TABLE[faceIndex];
 
-		const isNonCube = (rawMask & NON_CUBE_MASK) !== 0;
-		// Downsampled builds (lodStep > 1) collapse every participating cell
-		// to a full cube: sub-block shapes (slabs, crosses) cannot be
-		// represented meaningfully at that scale, and box-scaled emission
-		// would stretch partial shapes across whole regions.
-		const step = session.lodStep;
-		const forceCube = step > 1;
-		const isCube = forceCube ? true : !isNonCube;
-		// Water also rides the cube path when downsampled: emitWaterQuad's
-		// fractional level-span math assumes <=31-block runs and breaks under
-		// merged stepped dimensions (rawDim decodes the fraction carrier as
-		// whole blocks -> shoreline walls render far above the surface).
-		const dispatchKey = (isWater && !forceCube ? 2 : 0) | (isCube ? 1 : 0);
-		this._dispatch[dispatchKey](
-			out,
-			axis,
-			desc,
-			packedBlock,
-			blockId,
-			back,
-			light,
-			ao,
-			faceName,
-			faceBit,
-		);
-	}
+		// Reduced-LOD meshes represent every source shape as a full cube.
+		if (step > 1) {
+			this.emitCubeFace(
+				out,
+				axis,
+				desc,
+				packedBlock,
+				blockId,
+				back,
+				light,
+				ao,
+				faceName,
+				faceBit,
+			);
+			return;
+		}
 
+		const isCube = (rawMask & NON_CUBE_MASK) === 0;
+
+		if (isWater) {
+			if (isCube) {
+				this.emitWaterFace(
+					out,
+					axis,
+					desc,
+					packedBlock,
+					blockId,
+					back,
+					light,
+					ao,
+					faceName,
+					faceBit,
+				);
+			} else {
+				this.emitWaterCustomShapeFace(
+					out,
+					axis,
+					desc,
+					packedBlock,
+					blockId,
+					back,
+					light,
+					ao,
+					faceName,
+					faceBit,
+				);
+			}
+
+			return;
+		}
+
+		if (isCube) {
+			this.emitCubeFace(
+				out,
+				axis,
+				desc,
+				packedBlock,
+				blockId,
+				back,
+				light,
+				ao,
+				faceName,
+				faceBit,
+			);
+		} else {
+			this.emitCustomShapeFace(
+				out,
+				axis,
+				desc,
+				packedBlock,
+				blockId,
+				back,
+				light,
+				ao,
+				faceName,
+				faceBit,
+			);
+		}
+	}
 	private emitCubeFace(
 		out: QuadBuffer,
 		axis: number,

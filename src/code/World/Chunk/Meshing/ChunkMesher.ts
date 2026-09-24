@@ -11,32 +11,32 @@ import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
 import MapFog from "@/code/Maps/MapFog";
 import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
-import { GLOBAL_VALUES } from "../GLOBAL_VALUES";
+import { GLOBAL_VALUES } from "../../GLOBAL_VALUES";
 import {
 	createLod2OpaqueMaterial,
 	createLod2TransparentMaterial,
-} from "../Light/Lod2ShaderLite";
+} from "../../Light/Lod2ShaderLite";
 import {
 	createLod3OpaqueMaterial,
 	createLod3TransparentMaterial,
-} from "../Light/Lod3ShaderLite";
+} from "../../Light/Lod3ShaderLite";
 import {
 	createLod4OpaqueMaterial,
 	createLod4TransparentMaterial,
-} from "../Light/Lod4ShaderLite";
+} from "../../Light/Lod4ShaderLite";
 import {
 	createChunkCutoutMaterial,
 	createChunkOpaqueMaterial,
 	createChunkTransparentMaterial,
-} from "../Light/OpaqueShaderLite";
-import { packAtlas } from "../Texture/AtlasPacker";
+} from "../../Light/OpaqueShaderLite";
+import { packAtlas } from "../../Texture/AtlasPacker";
 import {
 	atlasTileSize,
 	setDiffuseArray,
 	setNormalArray,
-} from "../Texture/TextureAtlasFactory";
-import type { Chunk } from "./Chunk";
-import type { MeshData } from "./DataStructures/MeshData";
+} from "../../Texture/TextureAtlasFactory";
+import type { Chunk } from "../Chunk";
+import type { MeshData } from "../DataStructures/MeshData";
 import {
 	assignChunkToGroup,
 	disposeAll,

@@ -16,7 +16,7 @@ import {
 	setShaderUniform,
 	type Texture2D,
 } from "@babylonjs/lite";
-import { registerPackedMaterial } from "../Chunk/PackedChunkMesh.js";
+import { registerPackedMaterial } from "../Chunk/Meshing/PackedChunkMesh.js";
 import { buildPackedVertexWGSL } from "./PackedChunkShaderWGSL.js";
 
 const lod2OpaqueFragmentWGSL = /* wgsl */ `

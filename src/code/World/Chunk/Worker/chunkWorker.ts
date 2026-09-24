@@ -1,4 +1,4 @@
-import { Chunk, getChunk } from "./Chunk";
+import { Chunk, getChunk } from "../Chunk";
 import {
 	type GenerateDistantTerrainRequest,
 	type GenerateFarTileRequest,
@@ -23,7 +23,7 @@ import {
 	type VoxelUpdateChunkBuffersRequest,
 	type WorkerResponseData,
 	WorkerTaskType,
-} from "./DataStructures/WorkerMessageType";
+} from "../DataStructures/WorkerMessageType";
 
 // Offset order must match the voxel worker's NEIGHBOR_OFFSETS table
 // (slot i = mask bit i): dz outer → dx inner, center (0,0,0) omitted.

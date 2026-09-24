@@ -17,13 +17,13 @@ import { shapeInitPromise } from "../Shape/BlockShapes";
 import { getWorldNameFromUrl, worldSeedFor } from "../WorldContext";
 import { WorldStorage } from "../WorldStorage";
 import { addChunkDisposeHook, Chunk, getChunk } from "./Chunk";
-import { precomputeClosedFaceMasks } from "./ChunkFaceMasks";
-import { createMeshFromData } from "./ChunkMesher";
+import { precomputeClosedFaceMasks } from "./Meshing/ChunkFaceMasks";
+import { createMeshFromData } from "./Meshing/ChunkMesher";
 import {
 	ChunkWorker,
 	NEIGHBOR_OFFSETS_26,
 	neighborMaskCache,
-} from "./chunkWorker";
+} from "./Worker/chunkWorker";
 import { packCoords } from "./DataStructures/ChunkCoords";
 import type { MeshData } from "./DataStructures/MeshData";
 import { RingBuffer } from "./DataStructures/RingBuffer";
@@ -41,12 +41,15 @@ import {
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
-import { flushDirtyMergedGroups, setRequestFlush } from "./MergedMeshManager";
+import {
+	flushDirtyMergedGroups,
+	setRequestFlush,
+} from "./Meshing/MergedMeshManager";
 import {
 	hasStableVoxelNeighborsForCachedMesh,
 	maybeRemeshNeighborsNowStable,
 	scheduleChunkAndNeighborsRemesh,
-} from "./Worker/NeighborHelpers";
+} from "./Runtime/NeighborHelpers";
 
 export type WorkerMessageData = WorkerResponseData;
 

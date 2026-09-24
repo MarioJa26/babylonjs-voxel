@@ -1,17 +1,17 @@
-// src/code/World/Chunk/voxel.worker.ts
+// src/code/World/Chunk/Worker/voxel.worker.ts
 
-import { MeshEmitters } from "../MeshPipeline/core/MeshEmitters";
+import { MeshEmitters } from "../../MeshPipeline/core/MeshEmitters";
 import {
 	createEmptyWorkerInternalMeshData,
 	MeshBuildSession,
 	type PaddedGrids,
 	type WorkerMeshInput,
-} from "../MeshPipeline/core/WorkerMeshHelpers";
-import { packCoords } from "./DataStructures/ChunkCoords";
-import { MeshData } from "./DataStructures/MeshData";
-import { expandPalette } from "./DataStructures/PaletteExpander";
-import type { ResizableTypedArray } from "./DataStructures/ResizableTypedArray";
-import type { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData";
+} from "../../MeshPipeline/core/WorkerMeshHelpers";
+import { packCoords } from "../DataStructures/ChunkCoords";
+import { MeshData } from "../DataStructures/MeshData";
+import { expandPalette } from "../DataStructures/PaletteExpander";
+import type { ResizableTypedArray } from "../DataStructures/ResizableTypedArray";
+import type { WorkerInternalMeshData } from "../DataStructures/WorkerInternalMeshData";
 import {
 	type FullMeshMessage,
 	type GenerateFullMeshRequest,
@@ -24,7 +24,7 @@ import {
 	type VoxelUnregisterChunkRequest,
 	type VoxelUpdateChunkBuffersRequest,
 	WorkerTaskType,
-} from "./DataStructures/WorkerMessageType";
+} from "../DataStructures/WorkerMessageType";
 
 export type VoxelWorkerRequest =
 	| GenerateFullMeshRequest

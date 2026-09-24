@@ -1,8 +1,8 @@
 /**
  * Advanced Cave Culling — Graph-based BFS Occlusion Culler.
  *
- * All BFS state lives directly on Chunk objects (bfsQueryId, bfsVisitedFaces,
- * _fSteps, etc.) as declared class fields. Ring buffers store Chunk refs
+ * All BFS state lives directly on Chunk objects (query stamps, visited-face
+ * bits, and packed face-step words). Ring buffers store Chunk refs
  * directly — no Map.get() on dequeue, no bigint/number conversion.
  *
  * [TYPED ARRAYS]   FACE_PAIR_FLAT: 6×6 Int32Array for connectivity lookups.
@@ -26,12 +26,12 @@ import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { Map1 } from "@/code/Maps/Map1";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { Chunk, getChunk } from "../Chunk/Chunk";
-import { facePairIndex } from "../Chunk/ChunkFaceMasks";
+import { facePairIndex } from "../Chunk/Meshing/ChunkFaceMasks";
 import {
 	consumeGroupsMutated,
 	getAllGroups,
 	type MergedMeshGroup,
-} from "../Chunk/MergedMeshManager";
+} from "../Chunk/Meshing/MergedMeshManager";
 import {
 	FrustumHint,
 	getOctreeGroupCount,
@@ -253,16 +253,27 @@ function aabbInFrustum(
 }
 
 // ---------------------------------------------------------------------------
+function getFStep(chunk: Chunk, face: number): number {
+	const steps = face < 4 ? chunk.bfsSteps0 : chunk.bfsSteps1;
+	return (steps >>> ((face & 3) * 8)) & 0xff;
+}
+
+function setFStep(chunk: Chunk, face: number, value: number): void {
+	const shift = (face & 3) * 8;
+	const mask = ~(0xff << shift);
+	if (face < 4) {
+		chunk.bfsSteps0 = (chunk.bfsSteps0 & mask) | (value << shift);
+	} else {
+		chunk.bfsSteps1 = (chunk.bfsSteps1 & mask) | (value << shift);
+	}
+}
+
 /** Reset a chunk's BFS state for a new query. */
 function resetChunkBfs(chunk: Chunk, queryId: number): void {
 	chunk.bfsQueryId = queryId;
 	chunk.bfsVisitedFaces = 0;
-	chunk._fSteps[0] = 0;
-	chunk._fSteps[1] = 0;
-	chunk._fSteps[2] = 0;
-	chunk._fSteps[3] = 0;
-	chunk._fSteps[4] = 0;
-	chunk._fSteps[5] = 0;
+	chunk.bfsSteps0 = 0;
+	chunk.bfsSteps1 = 0;
 }
 
 /**
@@ -282,15 +293,13 @@ function ensureNeighborRefs(chunk: Chunk): void {
 }
 
 /** Find minimum non-zero fSteps value across 6 faces. */
-function minFSteps(fs: Uint8Array): number {
-	let m = 255;
-	if (fs[0] > 0 && fs[0] < m) m = fs[0];
-	if (fs[1] > 0 && fs[1] < m) m = fs[1];
-	if (fs[2] > 0 && fs[2] < m) m = fs[2];
-	if (fs[3] > 0 && fs[3] < m) m = fs[3];
-	if (fs[4] > 0 && fs[4] < m) m = fs[4];
-	if (fs[5] > 0 && fs[5] < m) m = fs[5];
-	return m === 255 ? 0 : m;
+function minFSteps(chunk: Chunk): number {
+	let min = 255;
+	for (let face = 0; face < 6; face++) {
+		const steps = getFStep(chunk, face);
+		if (steps > 0 && steps < min) min = steps;
+	}
+	return min === 255 ? 0 : min;
 }
 
 /** Hand-unrolled connectivity check: does the neighbour have face connectivity from any visited face to the exit face? */
@@ -752,7 +761,7 @@ export class OcclusionCuller {
 			if (!canPass) continue;
 
 			// Derive step count from cheapest neighbour entry
-			const minNbrSteps = minFSteps(neighbor._fSteps);
+			const minNbrSteps = minFSteps(neighbor);
 
 			let newSteps = minNbrSteps + 1;
 			if (nY * SIZE < SEA_LEVEL) newSteps++;
@@ -767,7 +776,7 @@ export class OcclusionCuller {
 
 			const faceBit = 1 << entryForNew;
 			newChunk.bfsVisitedFaces |= faceBit;
-			newChunk._fSteps[entryForNew] = newSteps;
+			setFStep(newChunk, entryForNew, newSteps);
 
 			// Enqueue new chunk for BFS propagation
 			const nextTail = (qTail + 1) & BFS_MASK;
@@ -827,13 +836,13 @@ export class OcclusionCuller {
 				}
 				const faceBit = 1 << nextEntry;
 				if ((nbr.bfsVisitedFaces & faceBit) !== 0) {
-					if (newSteps >= nbr._fSteps[nextEntry]) continue;
+					if (newSteps >= getFStep(nbr, nextEntry)) continue;
 				}
 
 				if (nbr.connectivityDirty) nbr.computeFaceConnectivity();
 
 				nbr.bfsVisitedFaces |= faceBit;
-				nbr._fSteps[nextEntry] = newSteps;
+				setFStep(nbr, nextEntry, newSteps);
 				const nextTail = (qTail + 1) & BFS_MASK;
 				if (nextTail !== qHead) {
 					_incBfsChunks[qTail] = nbr;
@@ -988,10 +997,10 @@ export class OcclusionCuller {
 				}
 				const faceBit = 1 << nextEntry;
 				if ((nbr.bfsVisitedFaces & faceBit) !== 0) {
-					if (newSteps >= nbr._fSteps[nextEntry]) continue;
+					if (newSteps >= getFStep(nbr, nextEntry)) continue;
 				}
 				nbr.bfsVisitedFaces |= faceBit;
-				nbr._fSteps[nextEntry] = newSteps;
+				setFStep(nbr, nextEntry, newSteps);
 
 				const nextTail = (qTail + 1) & BFS_MASK;
 				if (nextTail !== qHead) {

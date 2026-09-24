@@ -11,7 +11,7 @@ import {
 	disposeSharedResources,
 	initAtlas,
 	initEngineContext,
-} from "../World/Chunk/ChunkMesher";
+} from "../World/Chunk/Meshing/ChunkMesher";
 import { FarTileManager } from "../World/FarTiles/FarTileManager";
 import { WorldStorage } from "../World/WorldStorage";
 import { WorldEnvironment } from "./WorldEnvironment";

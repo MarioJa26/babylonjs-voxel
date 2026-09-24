@@ -6,20 +6,20 @@ import { GenerationParams } from "@/code/Generation/NoiseAndParameters/Generatio
 import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { WorldGenerator } from "@/code/Generation/WorldGenerator";
 import { enableWasmNoise } from "@/code/Lib/WasmNoise";
-import { packCoords } from "./DataStructures/ChunkCoords";
+import { packCoords } from "../DataStructures/ChunkCoords";
 import {
 	type LightRegisterChunkBatchRequest,
 	type LightRegisterChunkRequest,
 	WorkerTaskType,
-} from "./DataStructures/WorkerMessageType";
-import { WATER_BLOCK_ID } from "./Worker/ChunkMesherConstants";
-import { LightTaskHandlers } from "./Worker/LightTaskHandlers";
+} from "../DataStructures/WorkerMessageType";
+import { WATER_BLOCK_ID } from "./ChunkMesherConstants";
+import { LightTaskHandlers } from "./LightTaskHandlers";
 import {
 	handleGenerateDistantTerrain,
 	handleGenerateFarTile,
 	handleGenerateTerrain,
 	handleInitDistantTerrainShared,
-} from "./Worker/WorkerTaskHandlers";
+} from "./WorkerTaskHandlers";
 
 // ---------------------------------------------------------------------------
 // Worker-to-worker channel: The OPFS worker sends SAB refs + coords through

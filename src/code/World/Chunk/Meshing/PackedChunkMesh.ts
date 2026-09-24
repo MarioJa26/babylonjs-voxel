@@ -45,8 +45,8 @@ import {
 	setThinInstances,
 	updateStorageBuffer,
 } from "@babylonjs/lite";
-import { onGpuWorkDone } from "../Light/liteGpuBuffer.js";
-import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
+import { onGpuWorkDone } from "../../Light/liteGpuBuffer.js";
+import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import type { MergedFaceRange } from "./MergedMeshManager.js";
 
 // Babylon Lite's public type surface omits the thinInstances field and a few

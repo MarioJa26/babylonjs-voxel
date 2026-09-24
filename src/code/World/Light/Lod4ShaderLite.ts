@@ -24,7 +24,7 @@ import {
 	setShaderUniform,
 	type Texture2D,
 } from "@babylonjs/lite";
-import { registerPackedMaterial } from "../Chunk/PackedChunkMesh.js";
+import { registerPackedMaterial } from "../Chunk/Meshing/PackedChunkMesh.js";
 import { buildPackedVertexWGSL } from "./PackedChunkShaderWGSL.js";
 
 // Bakes the 6-entry tint LUT into WGSL. `var<private>` (not `const`) so the

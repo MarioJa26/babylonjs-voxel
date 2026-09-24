@@ -4,9 +4,9 @@ import {
 	octreeClear,
 	octreeInsert,
 	octreeRemove,
-} from "../Occlusion/GroupOctree";
-import type { Chunk } from "./Chunk";
-import type { MeshData } from "./DataStructures/MeshData";
+} from "../../Occlusion/GroupOctree";
+import type { Chunk } from "../Chunk";
+import type { MeshData } from "../DataStructures/MeshData";
 import { disposePackedMesh, maxFacesPerArena } from "./PackedChunkMesh.js";
 
 // Lite `Mesh` has no `.dispose()` — free its packed-arena slices, unregister

@@ -10,14 +10,14 @@ import {
 	getCubeShapeIndex,
 	getShapeByBlockId,
 	getShapeDefinitions,
-} from "../Shape/BlockShapes";
-import { getSliceAxis, transformBox } from "../Shape/BlockShapeTransforms";
+} from "../../Shape/BlockShapes";
+import { getSliceAxis, transformBox } from "../../Shape/BlockShapeTransforms";
 import {
 	unpackBlockId,
 	unpackBlockState,
-} from "./DataStructures/BlockEncoding";
-import { getSourceBlockId } from "../Texture/BlockMaterial";
-import { WATER_BLOCK_ID } from "./Worker/ChunkMesherConstants";
+} from "../DataStructures/BlockEncoding";
+import { getSourceBlockId } from "../../Texture/BlockMaterial";
+import { WATER_BLOCK_ID } from "../Worker/ChunkMesherConstants";
 
 // ---------------------------------------------------------------------------
 // Face-rect scratch buffers (used by getClosedFaceMaskForPacked).

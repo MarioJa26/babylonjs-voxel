@@ -31,13 +31,13 @@ import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
 import {
 	getMergedLayerMemoryStats,
 	getMergedMeshFlushStats,
-} from "../World/Chunk/MergedMeshManager";
-import { getPackedMeshMemoryStats } from "../World/Chunk/PackedChunkMesh";
-import { BlockTickScheduler } from "../World/Chunk/Worker/BlockTickScheduler";
+} from "../World/Chunk/Meshing/MergedMeshManager";
+import { getPackedMeshMemoryStats } from "../World/Chunk/Meshing/PackedChunkMesh";
+import { BlockTickScheduler } from "../World/Chunk/Simulation/BlockTickScheduler";
 import {
 	ensureDefaultInstance,
 	processWaterUpdate,
-} from "../World/Chunk/Worker/WaterSimulation";
+} from "../World/Chunk/Simulation/WaterSimulation";
 import { FarTileManager } from "../World/FarTiles/FarTileManager";
 import { onGpuWorkDone } from "../World/Light/liteGpuBuffer";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
