@@ -351,6 +351,7 @@ export class VoxelRoom extends Room {
 		{ x: number; y: number; z: number; yaw: number; pitch: number }
 	>();
 	private chunkGen!: ChunkGenerationService;
+	private disposing = false;
 	private config = getServerConfig();
 	private playersReady = new Set<string>();
 	private protocolViolations = new Map<string, number>();
@@ -906,6 +907,7 @@ export class VoxelRoom extends Room {
 	}
 
 	async onDispose() {
+		this.disposing = true;
 		console.log("[VoxelRoom] disposed");
 		if (this.tickInterval) {
 			clearInterval(this.tickInterval);
@@ -2802,6 +2804,15 @@ export class VoxelRoom extends Room {
 		}
 	}
 
+	private isClientActive(client: Client): boolean {
+		return (
+			!this.disposing &&
+			client.state !== ClientState.LEAVING &&
+			client.state !== ClientState.CLOSED &&
+			this.players.has(client.sessionId)
+		);
+	}
+
 	private async handleChunkRequest(
 		client: Client,
 		cx: number,
@@ -2809,15 +2820,21 @@ export class VoxelRoom extends Room {
 		cz: number,
 		cachedVersion: number,
 	): Promise<void> {
+		if (!this.isClientActive(client)) return;
+
 		try {
 			const key = packChunkKeyFast(cx, cy, cz);
 			const keyScratch = this.singleChunkKeyScratch;
 			keyScratch[0] = key;
 
 			await this.ensureEditsApplied(keyScratch);
+			if (!this.isClientActive(client)) return;
 
 			const stored = await this.worldStorage.readChunk(cx, cy, cz);
+			if (!this.isClientActive(client)) return;
+
 			const chunk = stored ?? (await this.chunkGen.generateChunk(cx, cy, cz));
+			if (!this.isClientActive(client)) return;
 
 			if (stored?.version === cachedVersion) {
 				if (DEBUG_ENABLED) {
@@ -2854,6 +2871,7 @@ export class VoxelRoom extends Room {
 			if (entry === undefined) {
 				const blob = this.serializeStored(chunk);
 				const payload = await deflate(blob);
+				if (!this.isClientActive(client)) return;
 
 				entry = {
 					version: chunk.version,
@@ -2875,6 +2893,8 @@ export class VoxelRoom extends Room {
 				}),
 			);
 		} catch (error) {
+			if (!this.isClientActive(client)) return;
+
 			console.error(
 				`[VoxelRoom] Chunk gen failed for ${cx},${cy},${cz}:`,
 				error,
@@ -2892,6 +2912,8 @@ export class VoxelRoom extends Room {
 			cachedVersion: number;
 		}>,
 	): Promise<void> {
+		if (!this.isClientActive(client)) return;
+
 		const requestCount = requests.length;
 		if (requestCount === 0) return;
 
@@ -2994,8 +3016,10 @@ export class VoxelRoom extends Room {
 			keys.length = uniqueCount;
 
 			await this.ensureEditsApplied(keys);
+			if (!this.isClientActive(client)) return;
 
 			const storedMap = await this.worldStorage.readChunks(coords);
+			if (!this.isClientActive(client)) return;
 
 			let missingCount = 0;
 			let fullCount = 0;
@@ -3049,6 +3073,8 @@ export class VoxelRoom extends Room {
 			fullChunks.length = fullCount;
 			unchangedChunks.length = unchangedCount;
 
+			if (!this.isClientActive(client)) return;
+
 			if (fullCount !== 0) {
 				await this.sendChunkDataBatch(client, fullChunks);
 			}
@@ -3062,9 +3088,12 @@ export class VoxelRoom extends Room {
 			try {
 				const generated =
 					await this.chunkGen.generateChunksBatch(missingCoords);
+				if (!this.isClientActive(client)) return;
 
 				await this.sendChunkDataBatch(client, generated);
 			} catch (batchError) {
+				if (!this.isClientActive(client)) return;
+
 				console.warn(
 					`[VoxelRoom] Batch generation failed; retrying ${missingCount} chunks individually`,
 					batchError,
@@ -3074,15 +3103,20 @@ export class VoxelRoom extends Room {
 					missingCoords,
 					4,
 					async (coord): Promise<void> => {
+						if (!this.isClientActive(client)) return;
+
 						try {
 							const data = await this.chunkGen.generateChunk(
 								coord.chunkX,
 								coord.chunkY,
 								coord.chunkZ,
 							);
+							if (!this.isClientActive(client)) return;
 
 							await this.sendChunkDataBatch(client, [data]);
 						} catch (singleError) {
+							if (!this.isClientActive(client)) return;
+
 							console.error(
 								`[VoxelRoom] Single chunk gen failed: ${coord.chunkX},${coord.chunkY},${coord.chunkZ}`,
 								singleError,
@@ -3092,6 +3126,8 @@ export class VoxelRoom extends Room {
 				);
 			}
 		} catch (error) {
+			if (!this.isClientActive(client)) return;
+
 			console.error(
 				`[VoxelRoom] Batch chunk request FAILED (${requestCount} chunks):`,
 				error,

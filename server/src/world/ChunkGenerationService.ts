@@ -535,6 +535,7 @@ export class ChunkGenerationService {
 		}
 
 		this.terminating = true;
+		const activeGenerations = Array.from(this.dedupMap.values());
 
 		try {
 			/*
@@ -542,6 +543,7 @@ export class ChunkGenerationService {
 			 * deferred batch promises and single-generation promises to settle.
 			 */
 			await this.pool.terminate();
+			await Promise.allSettled(activeGenerations);
 		} finally {
 			this.dedupMap.clear();
 			this.initPromise = null;

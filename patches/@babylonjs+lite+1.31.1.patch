@@ -1,0 +1,110 @@
+diff --git a/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js b/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js
+index bfaa7ec..e9169f7 100644
+--- a/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js
++++ b/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js
+@@ -1,20 +1,29 @@
+ import { syncThinInstanceBuffers, syncThinInstanceForDraw } from "../../mesh/thin-instance-gpu.js";
+ //#region src/material/shader/shader-thin-instance.ts
+ /** Append matching GPU layouts and WGSL inputs from the same matrix-row locations. */
+-function appendInstanceInputs(layouts, baseLocation, hasColor) {
++function appendInstanceInputs(layouts, baseLocation, hasColor, compact) {
+ 	const attributes = [];
+ 	let source = ``;
+-	for (let row = 0; row < 4; row++) {
+-		const shaderLocation = baseLocation + row;
++	if (compact) {
+ 		attributes.push({
+-			shaderLocation,
+-			offset: row * 16,
++			shaderLocation: baseLocation,
++			offset: 0,
+ 			format: "float32x4"
+ 		});
+-		source = `${source}@location(${shaderLocation})world${row}:vec4<f32>,`;
++		source = `@location(${baseLocation})instData:vec4<f32>,`;
++	} else {
++		for (let row = 0; row < 4; row++) {
++			const shaderLocation = baseLocation + row;
++			attributes.push({
++				shaderLocation,
++				offset: row * 16,
++				format: "float32x4"
++			});
++			source = `${source}@location(${shaderLocation})world${row}:vec4<f32>,`;
++		}
+ 	}
+ 	layouts.push({
+-		arrayStride: 64,
++		arrayStride: compact ? 16 : 64,
+ 		stepMode: "instance",
+ 		attributes
+ 	});
+@@ -38,10 +47,11 @@ function createShaderInstancedRenderable(scene, material, packet, bindings, isOv
+ 	const mesh = packet.mesh;
+ 	const ti = mesh.thinInstances;
+ 	const hasColor = !!ti.colors && material._tic != 0;
++	const compact = !!ti.compact;
+ 	const baseLocation = material.attributes.length;
+-	const variantKey = `${+hasColor}${vertexLayout?._key ?? mesh._gpu._vbKey ?? ""}`;
++	const variantKey = `${+hasColor}:${+compact}${vertexLayout?._key ?? mesh._gpu._vbKey ?? ""}`;
+ 	const vertexBuffers = [...vertexLayout?._vbs ?? bindings.vertexBuffers];
+-	const instanceAttrs = appendInstanceInputs(vertexBuffers, baseLocation, hasColor);
++	const instanceAttrs = appendInstanceInputs(vertexBuffers, baseLocation, hasColor, compact);
+ 	if (!vertexLayout && mesh._gpu._vbLayout) for (let index = 0; index < material.attributes.length; index++) {
+ 		const packing = mesh._gpu._vbLayout[material.attributes[index]];
+ 		if (packing) {
+diff --git a/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js b/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
+index b10f925..7b2c833 100644
+--- a/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
++++ b/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
+@@ -11,17 +11,19 @@ import { writeMeshIndexedIndirectArgs } from "./mesh-indexed-indirect.js";
+ function syncThinInstanceGpuData(engine, ti, hasColor) {
+ 	const device = engine._device;
+ 	const needsStorage = ti._gpuCullingEnabled;
++	const stride = ti.compact ? 16 : 64;
++	const floatsPerInstance = ti.compact ? 4 : 16;
+ 	let retiredMatrix = null;
+ 	let retiredColor = null;
+ 	let recreated = false;
+-	if (ti._version !== ti._gpuVersion) {
+-		const byteSize = ti.count * 64;
++	if (ti._version !== ti._gpuVersion || ti._gpuBufferStorage !== needsStorage) {
++		const byteSize = ti.count * stride;
+ 		let bufferRecreated = false;
+-		if (!ti._gpuBuffer || ti._gpuBuffer.size < byteSize) {
++		if (!ti._gpuBuffer || ti._gpuBuffer.size < byteSize || ti._gpuBufferStorage !== needsStorage) {
+ 			if (ti._gpuBuffer) retiredMatrix = ti._gpuBuffer;
+ 			ti._gpuBuffer = device.createBuffer({
+ 				label: "thin-instance-matrices",
+-				size: Math.max(ti._capacity * 64, 4),
++				size: Math.max(ti._capacity * stride, 4),
+ 				usage: BU.VERTEX | BU.COPY_DST | BU.STORAGE
+ 			});
+ 			bufferRecreated = true;
+@@ -30,14 +32,22 @@ function syncThinInstanceGpuData(engine, ti, hasColor) {
+ 		const dirtyMin = bufferRecreated ? 0 : ti._dirtyMin;
+ 		const dirtyMax = bufferRecreated ? ti.count : Math.min(ti._dirtyMax, ti.count);
+ 		if (dirtyMax > dirtyMin) {
+-			const minByte = dirtyMin * 64;
+-			const maxByte = dirtyMax * 64;
++			const minByte = dirtyMin * stride;
++			const maxByte = dirtyMax * stride;
+ 			if (ti.matrices instanceof F32) device.queue.writeBuffer(ti._gpuBuffer, minByte, ti.matrices.buffer, ti.matrices.byteOffset + minByte, maxByte - minByte);
+ 			else {
+-				const neededFloats = ti._capacity * 16;
++				const neededFloats = ti._capacity * floatsPerInstance;
+ 				if (!ti._uploadF32 || ti._uploadF32.length < neededFloats) ti._uploadF32 = new F32(neededFloats);
+ 				const upload = ti._uploadF32;
+-				for (let i = dirtyMin; i < dirtyMax; i++) packMat4IntoF32(upload, ti.matrices, i * 16, i * 16);
++				if (ti.compact) {
++					for (let i = dirtyMin; i < dirtyMax; i++) {
++						const s = i * 4, d = i * 4;
++						upload[d] = ti.matrices[s];
++						upload[d + 1] = ti.matrices[s + 1];
++						upload[d + 2] = ti.matrices[s + 2];
++						upload[d + 3] = ti.matrices[s + 3];
++					}
++				} else for (let i = dirtyMin; i < dirtyMax; i++) packMat4IntoF32(upload, ti.matrices, i * 16, i * 16);
+ 				device.queue.writeBuffer(ti._gpuBuffer, minByte, upload.buffer, upload.byteOffset + minByte, maxByte - minByte);
+ 			}
+ 		}
