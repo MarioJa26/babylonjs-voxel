@@ -211,10 +211,14 @@ function emitSkirt(
 
 /**
  * One border column, single top-to-bottom pass: finds the top, then emits
- * one skirt segment per contiguous same-block run down to stopY. Water
- * breaks runs (it never emits skirt quads); light is the max air-side
- * light seen over the run, re-read fresh on every build including
- * light-only relights (blocks provably unchanged, cached top reused).
+ * one skirt segment per contiguous same-block run down to stopY.
+ *
+ * Optimized hot path:
+ * - reads block and opacity arrays only once per voxel;
+ * - decodes each solid block only once;
+ * - avoids repeated session and grid property lookups;
+ * - consolidates repeated segment-closing logic;
+ * - preserves fresh air-side lighting during light-only rebuilds.
  */
 function emitBorderColumn(
 	session: MeshBuildSession,
@@ -232,29 +236,43 @@ function emitBorderColumn(
 	face: FaceName,
 ): void {
 	const size = session.size;
+	const step = session.lodStep;
 	const ps = session.ps;
 	const ps2 = session.ps2;
-	const light = session.light;
-	// Single-step offset from a column voxel to its outward air neighbor
-	// (slot 0=-X, 1=+X, 2=-Z, 3=+Z). The wall is lit from the air side —
-	// never from inside the solid, whose stored light is ~0.
-	const outwardOff = slot === 0 ? -1 : slot === 1 ? 1 : slot === 2 ? -ps2 : ps2;
+
+	// Cache hot array references locally. Typed-array property access through
+	// session is otherwise repeated for every voxel in the column.
+	const blocks = session.block;
+	const opaque = session.opaque;
+	const lights = session.light;
+	const grids = session.activeGrids;
+
+	// Offset from a border voxel to the neighboring air voxel outside the
+	// chunk: slot 0=-X, 1=+X, 2=-Z, 3=+Z.
+	const outwardOffset =
+		slot === 0 ? -1 : slot === 1 ? 1 : slot === 2 ? -ps2 : ps2;
+
+	const cacheIndex = slot * size + col;
 
 	let startY = size - 1;
 	let cacheHit = false;
-	const grids = session.activeGrids;
+
 	if (
-		grids &&
+		grids !== undefined &&
 		!session.blocksChangedThisBuild &&
-		grids.borderTopY &&
-		grids.borderTopPacked &&
+		grids.borderTopY !== undefined &&
+		grids.borderTopPacked !== undefined &&
 		grids.borderTopSize === size &&
-		grids.borderTopStep === session.lodStep
+		grids.borderTopStep === step
 	) {
-		const cy = grids.borderTopY[slot * size + col];
-		if (cy === TOP_NONE) return;
-		if (cy !== TOP_UNKNOWN) {
-			startY = cy;
+		const cachedTopY = grids.borderTopY[cacheIndex];
+
+		if (cachedTopY === TOP_NONE) {
+			return;
+		}
+
+		if (cachedTopY !== TOP_UNKNOWN) {
+			startY = cachedTopY;
 			cacheHit = true;
 		}
 	}
@@ -262,13 +280,17 @@ function emitBorderColumn(
 	let firstY = -1;
 	let firstPacked = 0;
 	let stopY = 0;
+
 	let runTop = -1;
 	let runPacked = 0;
 	let runBlockId = 0;
 	let runLight = 0;
 
 	let idx = cx + 1 + (startY + 1) * ps + (cz + 1) * ps2;
+
 	for (let y = startY; y >= 0; y--, idx -= ps) {
+		// Once below the requested skirt depth, close the active run directly
+		// at stopY and stop scanning.
 		if (firstY >= 0 && y + 1 <= stopY) {
 			if (runTop >= 0) {
 				emitSkirt(
@@ -284,12 +306,23 @@ function emitBorderColumn(
 					span,
 					face,
 				);
-				runTop = -1;
 			}
+
+			runTop = -1;
 			break;
 		}
-		const packed = solidPacked(session, idx);
-		if (!packed) {
+
+		// Read the packed block once. Opaque blocks are inherently solid;
+		// non-opaque blocks require the cached solid flag.
+		const packed = blocks[idx];
+
+		let isSolid = opaque[idx] === 1;
+
+		if (!isSolid && packed !== 0) {
+			isSolid = (getCachedFlagsAndId(packed) & 0xffff & FLAG_SOLID) !== 0;
+		}
+
+		if (!isSolid || packed === 0) {
 			if (runTop >= 0) {
 				emitSkirt(
 					out,
@@ -306,47 +339,63 @@ function emitBorderColumn(
 				);
 				runTop = -1;
 			}
+
 			continue;
 		}
-		if (isWaterPacked(packed)) {
-			// Water never emits skirt quads (opaque bucket): a lake-surface
-			// column keeps its prior look (no skirt below the waterline),
-			// deeper water just breaks the run like an air gap.
-			if (firstY < 0) break;
-			if (runTop >= 0) {
-				emitSkirt(
-					out,
-					runTop,
-					runPacked,
-					runLight,
-					axis,
-					back,
-					qx,
-					y + 1,
-					qz,
-					span,
-					face,
-				);
-				runTop = -1;
-			}
-			continue;
-		}
+
+		// Decode once and reuse for both water classification and run identity.
 		const blockId = unpackBlockId(packed & 0xffff);
+		const isWater = getSourceBlockId(blockId) === WATER_BLOCK_ID;
+
+		if (isWater) {
+			// A water surface at the top means this column emits no opaque
+			// skirt. Water encountered deeper down breaks the current run.
+			if (firstY < 0) {
+				break;
+			}
+
+			if (runTop >= 0) {
+				emitSkirt(
+					out,
+					runTop,
+					runPacked,
+					runLight,
+					axis,
+					back,
+					qx,
+					y + 1,
+					qz,
+					span,
+					face,
+				);
+				runTop = -1;
+			}
+
+			continue;
+		}
+
 		if (firstY < 0) {
 			firstY = y;
 			firstPacked = packed;
 			stopY = y + 1 - depth;
 		}
+
 		if (runTop < 0) {
 			runTop = y;
 			runPacked = packed;
 			runBlockId = blockId;
-			const above = light[idx + ps];
-			const outward = light[idx + outwardOff];
-			runLight = above > outward ? above : outward;
-		} else if (blockId !== runBlockId) {
-			// Different block = different texture/tint: close and reopen so
-			// the wall matches the block it goes down from.
+
+			const aboveLight = lights[idx + ps];
+			const outwardLight = lights[idx + outwardOffset];
+
+			runLight = aboveLight > outwardLight ? aboveLight : outwardLight;
+
+			continue;
+		}
+
+		if (blockId !== runBlockId) {
+			// Different source material or block variant requires a separate
+			// segment so its texture and tint remain correct.
 			emitSkirt(
 				out,
 				runTop,
@@ -360,19 +409,28 @@ function emitBorderColumn(
 				span,
 				face,
 			);
+
 			runTop = y;
 			runPacked = packed;
 			runBlockId = blockId;
-			const above = light[idx + ps];
-			const outward = light[idx + outwardOff];
-			runLight = above > outward ? above : outward;
-		} else {
-			// Same texture: extend the run, keeping the brightest air-side
-			// light seen so a shaded run top can't blacken a lit wall.
-			const outward = light[idx + outwardOff];
-			if (outward > runLight) runLight = outward;
+
+			const aboveLight = lights[idx + ps];
+			const outwardLight = lights[idx + outwardOffset];
+
+			runLight = aboveLight > outwardLight ? aboveLight : outwardLight;
+
+			continue;
+		}
+
+		// Same block run. Only outward light needs to be considered below the
+		// run top, preserving the original lighting behavior.
+		const outwardLight = lights[idx + outwardOffset];
+
+		if (outwardLight > runLight) {
+			runLight = outwardLight;
 		}
 	}
+
 	if (runTop >= 0) {
 		emitSkirt(
 			out,
@@ -389,15 +447,18 @@ function emitBorderColumn(
 		);
 	}
 
-	if (grids && !cacheHit) {
-		ensureBorderCache(grids, size, session.lodStep);
-		const ci = slot * size + col;
+	if (grids !== undefined && !cacheHit) {
+		ensureBorderCache(grids, size, step);
+
+		const topYCache = grids.borderTopY!;
+		const packedCache = grids.borderTopPacked!;
+
 		if (firstY < 0) {
-			grids.borderTopY![ci] = TOP_NONE;
-			grids.borderTopPacked![ci] = 0;
+			topYCache[cacheIndex] = TOP_NONE;
+			packedCache[cacheIndex] = 0;
 		} else {
-			grids.borderTopY![ci] = firstY;
-			grids.borderTopPacked![ci] = firstPacked;
+			topYCache[cacheIndex] = firstY;
+			packedCache[cacheIndex] = firstPacked;
 		}
 	}
 }

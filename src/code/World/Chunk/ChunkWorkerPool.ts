@@ -372,6 +372,7 @@ export class ChunkWorkerPool {
 	private distantTerrainInFlight = false;
 	private nextDistantTerrainRequestId = 1;
 	private latestDistantTerrainRequestId = 0;
+	private distantTerrainWorkerIndex = 0;
 
 	// ---------------------------------------------------------------------------
 	// LevelDB chunk storage (replaces OPFS)
@@ -629,10 +630,6 @@ export class ChunkWorkerPool {
 
 	public invalidateDistantTerrain(): void {
 		this.latestDistantTerrainRequestId = 0;
-	}
-
-	private getDistantTerrainWorkerIndex(): number {
-		return Math.min(1, Math.max(0, this.workers.length - 1));
 	}
 
 	// -------------------------------------------------------------------------
@@ -1566,6 +1563,7 @@ export class ChunkWorkerPool {
 	}
 
 	private constructor(poolSize: number) {
+		this.distantTerrainWorkerIndex = poolSize > 1 ? 1 : 0;
 		// Allocate the workspace-wide light header SAB and broadcast it to
 		// every worker.  Each worker wraps the buffer and keeps a local
 		// ChunkViewRegistry.
@@ -3769,10 +3767,8 @@ export class ChunkWorkerPool {
 				this.distantTerrainTaskQueueReadIdx <
 					this.distantTerrainTaskQueue.length &&
 				!this.distantTerrainInFlight &&
-				this.distantTerrainReadyWorkers.has(
-					this.getDistantTerrainWorkerIndex(),
-				) &&
-				this.idleWorkerSet.has(this.getDistantTerrainWorkerIndex())
+				this.distantTerrainReadyWorkers.has(this.distantTerrainWorkerIndex) &&
+				this.idleWorkerSet.has(this.distantTerrainWorkerIndex)
 			) {
 				distantTask =
 					this.distantTerrainTaskQueue[this.distantTerrainTaskQueueReadIdx++];
@@ -3894,11 +3890,12 @@ export class ChunkWorkerPool {
 			}
 
 			if (taskType === TaskType.DistantTerrain) {
-				const distantWorkerIndex = this.getDistantTerrainWorkerIndex();
 				if (
-					!this.distantTerrainReadyWorkers.has(distantWorkerIndex) ||
-					!this.idleWorkerSet.has(distantWorkerIndex) ||
-					!this._swapPreferredIdleWorkerToFront(distantWorkerIndex)
+					!this.distantTerrainReadyWorkers.has(
+						this.distantTerrainWorkerIndex,
+					) ||
+					!this.idleWorkerSet.has(this.distantTerrainWorkerIndex) ||
+					!this._swapPreferredIdleWorkerToFront(this.distantTerrainWorkerIndex)
 				) {
 					this.distantTerrainTaskQueueReadIdx--;
 					break;

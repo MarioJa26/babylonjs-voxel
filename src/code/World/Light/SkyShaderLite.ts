@@ -1,15 +1,10 @@
 /**
  * Babylon Lite (native) port of the sky shader.
- * Needs `position` + `sunDirection`/`moonDirection`/`moonIllum`/`time`
- * uniforms (driven by WorldEnvironment). The skybox mesh is a
- * camera-centred box (WorldEnvironment keeps it camera-locked); any
- * star-shaped surface around the camera produces identical output because
- * the fragment shader only uses normalize(vPosition).
  *
- * Moon: placeholder procedural disc opposite the sun's schedule (see
- * WorldEnvironment moon math). getMoonColor() is the seam for a future
- * textured moon — swap its body for a texture sample using the provided
- * disc UV + phase without touching the disc/halo compositing.
+ * Moon basis vectors are prepared per vertex and interpolated across the
+ * skybox. Because the basis is constant for the entire draw, interpolation
+ * produces the same value for every fragment while avoiding repeated
+ * cross products and normalization in the fragment shader.
  */
 import {
 	createShaderMaterial,
@@ -21,13 +16,29 @@ export const skyVertexWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vPosition : vec3<f32>,
+  @location(1) moonUAxis : vec3<f32>,
+  @location(2) moonVAxis : vec3<f32>,
 };
 
 @vertex
 fn mainVertex(input : VertexInput) -> VSOut {
   var out : VSOut;
-  out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+
+  let moonDir = shaderUniforms.moonDirection;
+  let upRef = select(
+    vec3<f32>(0.0, 1.0, 0.0),
+    vec3<f32>(1.0, 0.0, 0.0),
+    abs(moonDir.y) > 0.99
+  );
+  let moonUAxis = normalize(cross(upRef, moonDir));
+
+  out.pos =
+    shaderSystem.worldViewProjection *
+    vec4<f32>(input.position, 1.0);
   out.vPosition = input.position;
+  out.moonUAxis = moonUAxis;
+  out.moonVAxis = cross(moonDir, moonUAxis);
+
   return out;
 }
 `;
@@ -36,82 +47,197 @@ export const skyFragmentWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vPosition : vec3<f32>,
+  @location(1) moonUAxis : vec3<f32>,
+  @location(2) moonVAxis : vec3<f32>,
 };
 
 const TAU = 6.2831853;
 
-// Cheap integer cell hash: exact under f32, unlike fract(sin(dot)*43758)
-// whose sin() of large arguments loses precision and clusters many cells.
+const DAY_HORIZON_COLOR = vec3<f32>(0.5, 0.7, 0.9);
+const DAY_ZENITH_COLOR = vec3<f32>(0.1, 0.3, 0.6);
+const NIGHT_SKY_COLOR = vec3<f32>(0.1, 0.1, 0.2);
+
+const SUN_GLOW_COLOR = vec3<f32>(1.0, 0.9, 0.7);
+const SUN_DISC_COLOR = vec3<f32>(1.0, 1.0, 0.9);
+
+const MOON_BASE_COLOR = vec3<f32>(0.92, 0.93, 0.96);
+const MOON_HALO_COLOR = vec3<f32>(0.55, 0.6, 0.75);
+const STAR_COLOR = vec3<f32>(0.9, 0.93, 1.0);
+
+const MOON_UV_SCALE = 31.25;
+const HASH_TO_FLOAT = 1.0 / 4294967295.0;
+
+// Cheap integer cell hash. All star-cell coordinates remain in a range that
+// converts exactly to integer values before hashing.
 fn hash13(p : vec3<f32>) -> f32 {
-  let q = vec3<u32>(vec3<i32>(p) + 200);
-  var h = q.x * 374761393u + q.y * 668265263u + q.z * 1440662683u;
+  let q = vec3<u32>(vec3<i32>(p) + vec3<i32>(200));
+
+  var h =
+    q.x * 374761393u +
+    q.y * 668265263u +
+    q.z * 1440662683u;
+
   h = (h ^ (h >> 13u)) * 1274126177u;
-  return f32(h ^ (h >> 16u)) / 4294967295.0;
+  h = h ^ (h >> 16u);
+
+  return f32(h) * HASH_TO_FLOAT;
 }
 
-// Placeholder for the future textured moon: moonUv spans [0, 1] across the
-// disc.
+// Placeholder for a future textured moon. moonUv spans [0, 1] across
+// the disc.
 fn getMoonColor(moonUv : vec2<f32>) -> vec3<f32> {
-  let d = length(moonUv - vec2<f32>(0.5)) * 2.0;
-  return vec3<f32>(0.92, 0.93, 0.96) * (1.0 - d * d * 0.25);
+  let centeredUv = moonUv - vec2<f32>(0.5);
+  let normalizedRadiusSquared = dot(centeredUv, centeredUv) * 4.0;
+
+  // Equivalent to:
+  // 1.0 - pow(length(centeredUv) * 2.0, 2.0) * 0.25
+  return MOON_BASE_COLOR * (1.0 - normalizedRadiusSquared * 0.25);
 }
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let viewDirection = normalize(in.vPosition);
+  let sunDirection = shaderUniforms.sunDirection;
+  let sunHeight = sunDirection.y;
 
   let skyFactor = smoothstep(0.0, 0.4, viewDirection.y);
-  var finalColor = mix(vec3<f32>(0.5, 0.7, 0.9), vec3<f32>(0.1, 0.3, 0.6), skyFactor);
 
-  let sunDot = dot(viewDirection, shaderUniforms.sunDirection);
-  finalColor = finalColor + smoothstep(0.995, 1.0, sunDot) * vec3<f32>(1.0, 0.9, 0.7) * 0.3;
-  finalColor = finalColor + smoothstep(0.9998875, 0.99995, sunDot) * vec3<f32>(1.0, 1.0, 0.9);
+  var finalColor = mix(
+    DAY_HORIZON_COLOR,
+    DAY_ZENITH_COLOR,
+    skyFactor
+  );
 
-  if (shaderUniforms.sunDirection.y < 0.0) {
-    finalColor = mix(finalColor, vec3<f32>(0.1, 0.1, 0.2), -shaderUniforms.sunDirection.y * 2.0);
+  let sunDot = dot(viewDirection, sunDirection);
+
+  let sunGlow = smoothstep(0.995, 1.0, sunDot);
+  let sunDisc = smoothstep(0.9998875, 0.99995, sunDot);
+
+  finalColor += sunGlow * SUN_GLOW_COLOR * 0.3;
+  finalColor += sunDisc * SUN_DISC_COLOR;
+
+  if (sunHeight < 0.0) {
+    finalColor = mix(
+      finalColor,
+      NIGHT_SKY_COLOR,
+      min(-sunHeight * 2.0, 1.0)
+    );
   }
 
-  // 1 at night, 0 by day (1 - smoothstep: reversed edges are UB in WGSL).
-  let night = 1.0 - smoothstep(-0.15, 0.15, shaderUniforms.sunDirection.y);
+  // 1 at night and 0 by day. Reversed smoothstep edges are avoided because
+  // their behavior is undefined in WGSL.
+  let night = 1.0 - smoothstep(-0.15, 0.15, sunHeight);
 
-  // ---- Moon: placeholder disc (getMoonColor is the seam for a texture) ----
-  // moonDirection must stay normalized (WorldEnvironment guarantees it), so
-  // no per-pixel normalize. moonIllum 0 = new moon: skip the block entirely.
-  let moonDot = dot(viewDirection, shaderUniforms.moonDirection);
-  if (moonDot > 0.997 && shaderUniforms.moonIllum > 0.01) {
-    // Disc UV for the future texture (axes are ⊥ moonDir, so projecting
-    // viewDirection alone is exact).
-    let moonDir = shaderUniforms.moonDirection;
-    let upRef = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(moonDir.y) > 0.99);
-    let uAxis = normalize(cross(upRef, moonDir));
-    let off = vec2<f32>(dot(viewDirection, uAxis), dot(viewDirection, cross(moonDir, uAxis)));
-    // Full moon is faintly visible by day; illumination is precomputed on CPU.
-    let moonVis = shaderUniforms.moonIllum * (0.2 + 0.8 * night);
-    let moonLight = getMoonColor(off / 0.032 + vec2<f32>(0.5, 0.5)) * moonVis;
-    finalColor = finalColor + smoothstep(0.99988, 0.99995, moonDot) * moonLight * 1.2;
-    finalColor = finalColor + smoothstep(0.997, 1.0, moonDot) * vec3<f32>(0.55, 0.6, 0.75) * moonVis * 0.35;
-  }
+  // Moon calculations are skipped when illumination is negligible.
+  let moonIllum = shaderUniforms.moonIllum;
 
-  // ---- Stars: hash cells + twinkle, night only ----
-  let starVis = night * smoothstep(-0.08, 0.12, viewDirection.y);
-  if (starVis > 0.001) {
-    let grid = viewDirection * 140.0;
-    let cell = floor(grid);
-    let h = hash13(cell);
-    if (h > 0.992) {
-      // Magnitude, twinkle depth AND phase use independent hashes: h is
-      // gated to 0.992..1.0, so deriving anything from it traps that value
-      // in a tiny range (same brightness, twinkling in unison).
-      let mag = hash13(cell + vec3<f32>(19.0, 7.0, 5.0));
-      let star = 1.0 - smoothstep(0.05, 0.1 + 0.3 * mag, length(fract(grid) - vec3<f32>(0.5)));
-      let twAmt = 0.2 + 0.6 * hash13(cell + vec3<f32>(-13.0, 29.0, -7.0));
-      let twPhase = hash13(cell + vec3<f32>(-5.0, 17.0, -23.0)) * TAU;
-      let brightness = (0.1 + 0.9 * mag * mag) * (1.0 - twAmt * (0.5 + 0.5 * sin(shaderUniforms.time * 1.2 + twPhase)));
-      finalColor = finalColor + vec3<f32>(0.9, 0.93, 1.0) * (star * brightness * starVis);
+  if (moonIllum > 0.01) {
+    let moonDot = dot(
+      viewDirection,
+      shaderUniforms.moonDirection
+    );
+
+    if (moonDot > 0.997) {
+      let moonOffset = vec2<f32>(
+        dot(viewDirection, in.moonUAxis),
+        dot(viewDirection, in.moonVAxis)
+      );
+
+      let moonUv =
+        moonOffset * MOON_UV_SCALE +
+        vec2<f32>(0.5);
+
+      // A full moon remains faintly visible during the day.
+      let moonVisibility =
+        moonIllum *
+        (0.2 + 0.8 * night);
+
+      let moonLight =
+        getMoonColor(moonUv) *
+        moonVisibility;
+
+      let moonDisc =
+        smoothstep(0.99988, 0.99995, moonDot);
+
+      let moonHalo =
+        smoothstep(0.997, 1.0, moonDot);
+
+      finalColor += moonDisc * moonLight * 1.2;
+      finalColor +=
+        moonHalo *
+        MOON_HALO_COLOR *
+        moonVisibility *
+        0.35;
     }
   }
 
-  return vec4<f32>(clamp(finalColor, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+  // Stars are evaluated only above the horizon and when sufficiently dark.
+  let starVisibility =
+    night *
+    smoothstep(-0.08, 0.12, viewDirection.y);
+
+  if (starVisibility > 0.001) {
+    let grid = viewDirection * 140.0;
+    let cell = floor(grid);
+    let presenceHash = hash13(cell);
+
+    if (presenceHash > 0.992) {
+      // Independent hashes prevent magnitude, twinkle depth, and phase from
+      // becoming correlated with the star-presence threshold.
+      let magnitude = hash13(
+        cell + vec3<f32>(19.0, 7.0, 5.0)
+      );
+
+      let localPosition =
+        fract(grid) -
+        vec3<f32>(0.5);
+
+      let starShape =
+        1.0 -
+        smoothstep(
+          0.05,
+          0.1 + 0.3 * magnitude,
+          length(localPosition)
+        );
+
+      let twinkleAmount =
+        0.2 +
+        0.6 *
+        hash13(cell + vec3<f32>(-13.0, 29.0, -7.0));
+
+      let twinklePhase =
+        hash13(cell + vec3<f32>(-5.0, 17.0, -23.0)) *
+        TAU;
+
+      let twinkle =
+        1.0 -
+        twinkleAmount *
+        (
+          0.5 +
+          0.5 *
+          sin(shaderUniforms.time * 1.2 + twinklePhase)
+        );
+
+      let brightness =
+        (0.1 + 0.9 * magnitude * magnitude) *
+        twinkle;
+
+      finalColor +=
+        STAR_COLOR *
+        starShape *
+        brightness *
+        starVisibility;
+    }
+  }
+
+  return vec4<f32>(
+    clamp(
+      finalColor,
+      vec3<f32>(0.0),
+      vec3<f32>(1.0)
+    ),
+    1.0
+  );
 }
 `;
 
@@ -131,9 +257,11 @@ export function createSkyMaterial(): ShaderMaterial {
 		backFaceCulling: false,
 		depthWrite: false,
 	});
+
 	setShaderUniform(material, "sunDirection", [0, 1, 0]);
 	setShaderUniform(material, "moonDirection", [0, -1, 0]);
 	setShaderUniform(material, "moonIllum", 1);
 	setShaderUniform(material, "time", 0);
+
 	return material;
 }

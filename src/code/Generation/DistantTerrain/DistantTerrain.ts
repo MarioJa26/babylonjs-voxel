@@ -539,10 +539,6 @@ export async function initDistantTerrain(): Promise<void> {
 	);
 
 	ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
-		if (data.failed) return;
-		if (data.centerChunkX !== lastChunkX || data.centerChunkZ !== lastChunkZ) {
-			return;
-		}
 		const worldX = data.centerChunkX * Chunk.SIZE;
 		const worldZ = data.centerChunkZ * Chunk.SIZE;
 		applyTerrainData(
