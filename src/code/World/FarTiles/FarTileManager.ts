@@ -370,12 +370,17 @@ class WindingMesh {
 	records = new Float32Array(0);
 	count = 0;
 	capacityFaces = 0;
+
 	dirtyMin = Number.POSITIVE_INFINITY;
 	dirtyMax = 0;
-	// Arena slots are normally appended in ascending order. Hole reuse can
-	// append a lower face index after a higher one, so retain the invariant
-	// explicitly instead of making batched removal assume it forever.
+
 	private recordsSortedByFaceIndex = true;
+
+	/**
+	 * Count changes must trigger synchronization even when no surviving
+	 * records moved. This occurs when removal only trims records from the end.
+	 */
+	private countDirty = false;
 
 	readonly straight: boolean;
 
@@ -383,50 +388,53 @@ class WindingMesh {
 		this.straight = straight;
 	}
 
+	hasPendingSync(): boolean {
+		return this.countDirty || this.dirtyMax > this.dirtyMin;
+	}
+
 	appendFace(faceIndex: number): void {
 		this.ensureRecordCapacity(this.count + 1);
 
+		const oldCount = this.count;
+
 		if (
 			this.recordsSortedByFaceIndex &&
-			this.count > 0 &&
-			faceIndex < this.records[(this.count - 1) * 4]
+			oldCount > 0 &&
+			faceIndex < this.records[(oldCount - 1) * 4]
 		) {
 			this.recordsSortedByFaceIndex = false;
 		}
 
-		const recordOffset = this.count * 4;
-		this.records[recordOffset] = faceIndex;
+		const offset = oldCount * 4;
+		const records = this.records;
 
-		// The remaining lanes are already zero for newly allocated typed-array
-		// storage. Explicitly clear them because this slot may be reused after
-		// compaction.
-		this.records[recordOffset + 1] = 0;
-		this.records[recordOffset + 2] = 0;
-		this.records[recordOffset + 3] = 0;
+		records[offset] = faceIndex;
+		records[offset + 1] = 0;
+		records[offset + 2] = 0;
+		records[offset + 3] = 0;
 
-		const changedIndex = this.count++;
-		this.markDirty(changedIndex, changedIndex + 1);
+		this.count = oldCount + 1;
+		this.countDirty = true;
+		this.markDirty(oldCount, oldCount + 1);
 	}
 
 	/**
-	 * Allocation-free single-slot removal.
-	 *
-	 * This avoids removeSlots([slot]), which allocates a temporary array and
-	 * previously also cloned the slot.
+	 * Allocation-free removal of every record whose face index belongs to
+	 * the supplied arena slot.
 	 */
 	removeSlot(slot: FarSlot): void {
 		const oldCount = this.count;
 
-		if (oldCount === 0 || slot.count === 0) {
+		if (oldCount === 0 || slot.count <= 0) {
 			return;
 		}
 
 		const removeStart = slot.base;
 		const removeEnd = removeStart + slot.count;
+		const records = this.records;
 
 		let write = 0;
 		let firstChanged = Number.POSITIVE_INFINITY;
-		const records = this.records;
 
 		for (let read = 0; read < oldCount; read++) {
 			const sourceOffset = read * 4;
@@ -436,12 +444,14 @@ class WindingMesh {
 				if (firstChanged === Number.POSITIVE_INFINITY) {
 					firstChanged = write;
 				}
+
 				continue;
 			}
 
 			if (write !== read) {
 				const targetOffset = write * 4;
-				records[targetOffset] = records[sourceOffset];
+
+				records[targetOffset] = faceIndex;
 				records[targetOffset + 1] = records[sourceOffset + 1];
 				records[targetOffset + 2] = records[sourceOffset + 2];
 				records[targetOffset + 3] = records[sourceOffset + 3];
@@ -450,24 +460,25 @@ class WindingMesh {
 			write++;
 		}
 
-		this.count = write;
+		if (write === oldCount) {
+			return;
+		}
 
-		if (firstChanged !== Number.POSITIVE_INFINITY && write > firstChanged) {
+		this.count = write;
+		this.countDirty = true;
+
+		// Only surviving records need uploading. If removal trimmed the tail,
+		// this range can be empty, but countDirty still forces count sync.
+		if (firstChanged < write) {
 			this.markDirty(firstChanged, write);
 		}
 	}
 
 	/**
-	 * Batched order-preserving removal.
+	 * Batched, order-preserving removal.
 	 *
-	 * The supplied array is sorted in place, but the FarSlot objects are not
-	 * mutated. In this manager all callers pass reusable scratch arrays, so
-	 * sorting the array has no observable effect.
-	 *
-	 * Records are sorted while the arena only grows. Once a freed arena hole is
-	 * reused, however, the newly appended records can have lower face indices
-	 * than records already in this list. Keep the O(n + m) scan for the common
-	 * ordered case, and use allocation-free binary interval lookups otherwise.
+	 * The slot array is sorted in place. Slot objects themselves are not
+	 * modified.
 	 */
 	removeSlots(slots: FarSlot[]): void {
 		const oldCount = this.count;
@@ -485,10 +496,12 @@ class WindingMesh {
 		slots.sort(compareSlotsByBase);
 
 		const records = this.records;
+		const recordsSorted = this.recordsSortedByFaceIndex;
+
 		let write = 0;
 		let intervalIndex = 0;
 		let firstChanged = Number.POSITIVE_INFINITY;
-		const recordsSorted = this.recordsSortedByFaceIndex;
+
 		let previousKeptFaceIndex = Number.NEGATIVE_INFINITY;
 		let keptRecordsRemainSorted = true;
 
@@ -498,17 +511,13 @@ class WindingMesh {
 			let remove = false;
 
 			if (recordsSorted) {
-				// Advance past intervals that end before this face. This is the
-				// O(n + m) path used until arena-hole reuse changes record order.
 				while (intervalIndex < slotCount) {
 					const interval = slots[intervalIndex];
 
-					if (interval.count <= 0) {
-						intervalIndex++;
-						continue;
-					}
-
-					if (faceIndex >= interval.base + interval.count) {
+					if (
+						interval.count <= 0 ||
+						faceIndex >= interval.base + interval.count
+					) {
 						intervalIndex++;
 						continue;
 					}
@@ -517,8 +526,6 @@ class WindingMesh {
 				}
 
 				if (intervalIndex < slotCount) {
-					// Handle overlapping or contiguous input slots without
-					// allocating a merged interval list.
 					let scanIndex = intervalIndex;
 
 					while (scanIndex < slotCount) {
@@ -542,25 +549,28 @@ class WindingMesh {
 					}
 				}
 			} else {
-				// Reused holes append lower arena indices at the tail, so the
-				// record order is arbitrary. Binary-search the sorted removal
-				// intervals to keep this fallback allocation-free.
-				let lo = 0;
-				let hi = slotCount;
+				// Records can become unordered when an arena hole is reused.
+				// Find the first interval whose end exceeds faceIndex.
+				let low = 0;
+				let high = slotCount;
 
-				while (lo < hi) {
-					const middle = (lo + hi) >>> 1;
+				while (low < high) {
+					const middle = (low + high) >>> 1;
 					const interval = slots[middle];
 
-					if (interval.base + interval.count <= faceIndex) {
-						lo = middle + 1;
+					if (
+						interval.count <= 0 ||
+						interval.base + interval.count <= faceIndex
+					) {
+						low = middle + 1;
 					} else {
-						hi = middle;
+						high = middle;
 					}
 				}
 
-				if (lo < slotCount) {
-					const interval = slots[lo];
+				if (low < slotCount) {
+					const interval = slots[low];
+
 					remove =
 						interval.count > 0 &&
 						faceIndex >= interval.base &&
@@ -572,17 +582,20 @@ class WindingMesh {
 				if (firstChanged === Number.POSITIVE_INFINITY) {
 					firstChanged = write;
 				}
+
 				continue;
 			}
 
 			if (faceIndex < previousKeptFaceIndex) {
 				keptRecordsRemainSorted = false;
 			}
+
 			previousKeptFaceIndex = faceIndex;
 
 			if (write !== read) {
 				const targetOffset = write * 4;
-				records[targetOffset] = records[sourceOffset];
+
+				records[targetOffset] = faceIndex;
 				records[targetOffset + 1] = records[sourceOffset + 1];
 				records[targetOffset + 2] = records[sourceOffset + 2];
 				records[targetOffset + 3] = records[sourceOffset + 3];
@@ -591,10 +604,15 @@ class WindingMesh {
 			write++;
 		}
 
+		if (write === oldCount) {
+			return;
+		}
+
 		this.count = write;
+		this.countDirty = true;
 		this.recordsSortedByFaceIndex = keptRecordsRemainSorted;
 
-		if (firstChanged !== Number.POSITIVE_INFINITY && write > firstChanged) {
+		if (firstChanged < write) {
 			this.markDirty(firstChanged, write);
 		}
 	}
@@ -603,8 +621,6 @@ class WindingMesh {
 		const requiredLanes = this.count * 4;
 		const currentLanes = this.records.length;
 
-		// Growth is already normally handled by appendFace(), but retain this
-		// path for callers that may change count by another route.
 		if (requiredLanes > currentLanes) {
 			let capacity = currentLanes > 0 ? currentLanes : 1024;
 
@@ -614,11 +630,10 @@ class WindingMesh {
 
 			const next = new Float32Array(capacity);
 			next.set(this.records);
+
 			this.records = next;
 			this.markDirty(0, this.count);
 		} else if (currentLanes >= 16384 && requiredLanes * 8 <= currentLanes) {
-			// Round shrinking to a power-of-two capacity. Shrinking exactly to
-			// requiredLanes causes an immediate allocation on the next append.
 			let capacity = 1024;
 			const target = Math.max(1024, requiredLanes * 2);
 
@@ -627,7 +642,11 @@ class WindingMesh {
 			}
 
 			const next = new Float32Array(capacity);
-			next.set(this.records.subarray(0, requiredLanes));
+
+			if (requiredLanes > 0) {
+				next.set(this.records.subarray(0, requiredLanes));
+			}
+
 			this.records = next;
 			this.markDirty(0, this.count);
 		}
@@ -635,9 +654,10 @@ class WindingMesh {
 		this.capacityFaces = this.records.length >>> 2;
 	}
 
-	clearDirty(): void {
+	clearSyncState(): void {
 		this.dirtyMin = Number.POSITIVE_INFINITY;
 		this.dirtyMax = 0;
+		this.countDirty = false;
 	}
 
 	private ensureRecordCapacity(requiredFaces: number): void {
@@ -654,7 +674,11 @@ class WindingMesh {
 		}
 
 		const next = new Float32Array(capacity);
-		next.set(this.records.subarray(0, this.count * 4));
+
+		if (this.count > 0) {
+			next.set(this.records.subarray(0, this.count * 4));
+		}
+
 		this.records = next;
 		this.capacityFaces = capacity >>> 2;
 
@@ -664,7 +688,9 @@ class WindingMesh {
 	}
 
 	private markDirty(start: number, end: number): void {
-		if (end <= start) return;
+		if (end <= start) {
+			return;
+		}
 
 		if (start < this.dirtyMin) {
 			this.dirtyMin = start;
@@ -675,6 +701,7 @@ class WindingMesh {
 		}
 	}
 }
+
 function compareSlotsByBase(a: FarSlot, b: FarSlot): number {
 	return a.base - b.base;
 }
@@ -834,145 +861,221 @@ class FarTileManagerImpl {
 
 		frameProfiler.begin("farTiles");
 
-		const levels = getFarTileLevels();
-		const pcx = Math.floor(playerWorldX / 32);
-		const pcz = Math.floor(playerWorldZ / 32);
+		try {
+			const levels = getFarTileLevels();
+			const pcx = Math.floor(playerWorldX / 32);
+			const pcz = Math.floor(playerWorldZ / 32);
 
-		if (pcx === this.lastPlayerChunkX && pcz === this.lastPlayerChunkZ) {
-			frameProfiler.end("farTiles");
-			return;
-		}
-		this.lastPlayerChunkX = pcx;
-		this.lastPlayerChunkZ = pcz;
+			if (pcx === this.lastPlayerChunkX && pcz === this.lastPlayerChunkZ) {
+				return;
+			}
 
-		// Reuse scratch arrays — no per-frame object/string allocations
-		const wantedKeys = this._wantedKeys;
-		const wantedLevels = this._wantedLevels;
-		const wantedTx = this._wantedTx;
-		const wantedTz = this._wantedTz;
-		const wantedDist = this._wantedDist;
-		wantedKeys.length = 0;
-		wantedLevels.length = 0;
-		wantedTx.length = 0;
-		wantedTz.length = 0;
-		wantedDist.length = 0;
+			this.lastPlayerChunkX = pcx;
+			this.lastPlayerChunkZ = pcz;
 
-		for (let li = 0; li < levels.length; li++) {
-			const lv = levels[li];
-			const span = lv.tileSizeChunks;
-			const half = span / 2;
+			/*
+			 * Keep only the nearest MAX_TILE_REQUESTS_PER_UPDATE candidates.
+			 * These existing arrays now remain bounded to 24 entries rather than
+			 * growing to contain every tile in every level's search rectangle.
+			 */
+			const wantedKeys = this._wantedKeys;
+			const wantedLevels = this._wantedLevels;
+			const wantedTx = this._wantedTx;
+			const wantedTz = this._wantedTz;
+			const wantedDist = this._wantedDist;
 
-			const txMin = Math.floor((pcx - lv.ringOuterChunks) / span);
-			const txMax = Math.floor((pcx + lv.ringOuterChunks) / span);
-			const tzMin = Math.floor((pcz - lv.ringOuterChunks) / span);
-			const tzMax = Math.floor((pcz + lv.ringOuterChunks) / span);
+			wantedKeys.length = 0;
+			wantedLevels.length = 0;
+			wantedTx.length = 0;
+			wantedTz.length = 0;
+			wantedDist.length = 0;
 
-			for (let tx = txMin; tx <= txMax; tx++) {
-				for (let tz = tzMin; tz <= tzMax; tz++) {
-					const centerX = tx * span + half;
-					const centerZ = tz * span + half;
-					const d = Math.max(Math.abs(centerX - pcx), Math.abs(centerZ - pcz));
+			let wantedCount = 0;
+			let worstIndex = -1;
+			let worstDistance = Number.NEGATIVE_INFINITY;
 
-					if (
-						d < lv.ringInnerChunks ||
-						d >= lv.ringOuterChunks + UNLOAD_MARGIN_CHUNKS
-					) {
+			for (let levelIndex = 0; levelIndex < levels.length; levelIndex++) {
+				const level = levels[levelIndex];
+				const span = level.tileSizeChunks;
+				const halfSpan = span * 0.5;
+
+				const outer = level.ringOuterChunks;
+				const inner = level.ringInnerChunks;
+				const unloadOuter = outer + UNLOAD_MARGIN_CHUNKS;
+
+				const txMin = Math.floor((pcx - outer) / span);
+				const txMax = Math.floor((pcx + outer) / span);
+				const tzMin = Math.floor((pcz - outer) / span);
+				const tzMax = Math.floor((pcz + outer) / span);
+
+				for (let tx = txMin; tx <= txMax; tx++) {
+					const distanceX = Math.abs(tx * span + halfSpan - pcx);
+
+					/*
+					 * Chebyshev distance can never become smaller than distanceX,
+					 * regardless of tz. Skip the whole column when it cannot
+					 * intersect the level's loading window.
+					 */
+					if (distanceX >= unloadOuter) {
 						continue;
 					}
 
-					const key = packTileKey(li, tx, tz);
-					if (this.tiles.has(key) || this.pendingByKey.has(key)) continue;
+					for (let tz = tzMin; tz <= tzMax; tz++) {
+						const distanceZ = Math.abs(tz * span + halfSpan - pcz);
+						const distance = distanceX > distanceZ ? distanceX : distanceZ;
 
-					wantedKeys.push(key);
-					wantedLevels.push(li);
-					wantedTx.push(tx);
-					wantedTz.push(tz);
-					wantedDist.push(d);
+						if (distance < inner || distance >= unloadOuter) {
+							continue;
+						}
+
+						/*
+						 * Once the bounded candidate list is full, candidates
+						 * farther away than its current worst entry cannot enter
+						 * the nearest-24 set. Avoid key creation and Map/Set
+						 * lookups for those candidates.
+						 *
+						 * Use <= so equal-distance candidates retain the original
+						 * first-encountered behavior.
+						 */
+						if (
+							wantedCount === MAX_TILE_REQUESTS_PER_UPDATE &&
+							distance >= worstDistance
+						) {
+							continue;
+						}
+
+						const key = packTileKey(levelIndex, tx, tz);
+
+						if (this.tiles.has(key) || this.pendingByKey.has(key)) {
+							continue;
+						}
+
+						if (wantedCount < MAX_TILE_REQUESTS_PER_UPDATE) {
+							const index = wantedCount++;
+
+							wantedKeys[index] = key;
+							wantedLevels[index] = levelIndex;
+							wantedTx[index] = tx;
+							wantedTz[index] = tz;
+							wantedDist[index] = distance;
+
+							if (distance > worstDistance) {
+								worstDistance = distance;
+								worstIndex = index;
+							}
+
+							continue;
+						}
+
+						/*
+						 * Replace the farthest retained candidate. Finding the
+						 * new farthest item scans at most 24 entries, so this is
+						 * bounded constant work rather than a scan over every
+						 * discovered candidate.
+						 */
+						wantedKeys[worstIndex] = key;
+						wantedLevels[worstIndex] = levelIndex;
+						wantedTx[worstIndex] = tx;
+						wantedTz[worstIndex] = tz;
+						wantedDist[worstIndex] = distance;
+
+						worstIndex = 0;
+						worstDistance = wantedDist[0];
+
+						for (let i = 1; i < wantedCount; i++) {
+							if (wantedDist[i] > worstDistance) {
+								worstDistance = wantedDist[i];
+								worstIndex = i;
+							}
+						}
+					}
 				}
 			}
-		}
 
-		// Select nearest MAX_TILE_REQUESTS_PER_UPDATE without full sort (allocation-free)
-		const wantedCount = wantedKeys.length;
-		const toRequest =
-			wantedCount < MAX_TILE_REQUESTS_PER_UPDATE
-				? wantedCount
-				: MAX_TILE_REQUESTS_PER_UPDATE;
-		for (let r = 0; r < toRequest; r++) {
-			let bestIdx = r;
-			let bestDist = wantedDist[r];
-			for (let i = r + 1; i < wantedCount; i++) {
-				const d = wantedDist[i];
-				if (d < bestDist) {
-					bestDist = d;
-					bestIdx = i;
+			/*
+			 * Sort the retained candidates nearest-first. Insertion sort is a
+			 * good fit because the list contains at most 24 entries and avoids
+			 * creating comparator closures or candidate objects.
+			 */
+			for (let i = 1; i < wantedCount; i++) {
+				const key = wantedKeys[i];
+				const levelIndex = wantedLevels[i];
+				const tx = wantedTx[i];
+				const tz = wantedTz[i];
+				const distance = wantedDist[i];
+
+				let insertAt = i;
+
+				while (insertAt > 0 && wantedDist[insertAt - 1] > distance) {
+					wantedKeys[insertAt] = wantedKeys[insertAt - 1];
+					wantedLevels[insertAt] = wantedLevels[insertAt - 1];
+					wantedTx[insertAt] = wantedTx[insertAt - 1];
+					wantedTz[insertAt] = wantedTz[insertAt - 1];
+					wantedDist[insertAt] = wantedDist[insertAt - 1];
+					insertAt--;
+				}
+
+				wantedKeys[insertAt] = key;
+				wantedLevels[insertAt] = levelIndex;
+				wantedTx[insertAt] = tx;
+				wantedTz[insertAt] = tz;
+				wantedDist[insertAt] = distance;
+			}
+
+			const pool = ChunkWorkerPool.getInstance();
+
+			for (let i = 0; i < wantedCount; i++) {
+				const key = wantedKeys[i];
+				const requestId = pool.scheduleFarTile(
+					wantedLevels[i],
+					wantedTx[i],
+					wantedTz[i],
+				);
+
+				this.pendingByKey.add(key);
+				this.keyByRequestId.set(requestId, key);
+			}
+
+			/*
+			 * Find loaded tiles that have moved outside their level's active
+			 * window. This Map scan is necessary because loaded tiles can come
+			 * from any previous player position.
+			 */
+			const evictKeys = this._evictKeys;
+			const evictEntries = this._evictEntries;
+
+			evictKeys.length = 0;
+			evictEntries.length = 0;
+
+			for (const [key, entry] of this.tiles) {
+				const level = levels[entry.levelIndex];
+				if (!level) continue;
+
+				const span = level.tileSizeChunks;
+				const halfSpan = span * 0.5;
+				const distanceX = Math.abs(entry.tx * span + halfSpan - pcx);
+				const distanceZ = Math.abs(entry.tz * span + halfSpan - pcz);
+				const distance = distanceX > distanceZ ? distanceX : distanceZ;
+
+				if (
+					distance >= level.ringOuterChunks + UNLOAD_MARGIN_CHUNKS ||
+					distance < level.ringInnerChunks
+				) {
+					evictKeys.push(key);
+					evictEntries.push(entry);
 				}
 			}
-			if (bestIdx !== r) {
-				const tmpKey = wantedKeys[r];
-				wantedKeys[r] = wantedKeys[bestIdx];
-				wantedKeys[bestIdx] = tmpKey;
-				let tmp: number;
-				tmp = wantedLevels[r];
-				wantedLevels[r] = wantedLevels[bestIdx];
-				wantedLevels[bestIdx] = tmp;
-				tmp = wantedTx[r];
-				wantedTx[r] = wantedTx[bestIdx];
-				wantedTx[bestIdx] = tmp;
-				tmp = wantedTz[r];
-				wantedTz[r] = wantedTz[bestIdx];
-				wantedTz[bestIdx] = tmp;
-				tmp = wantedDist[r];
-				wantedDist[r] = wantedDist[bestIdx];
-				wantedDist[bestIdx] = tmp;
+
+			if (evictEntries.length === 0) {
+				return;
 			}
-		}
 
-		const pool = ChunkWorkerPool.getInstance();
-		for (let i = 0; i < toRequest; i++) {
-			const key = wantedKeys[i];
-			const requestId = pool.scheduleFarTile(
-				wantedLevels[i],
-				wantedTx[i],
-				wantedTz[i],
-			);
-			this.pendingByKey.add(key);
-			this.keyByRequestId.set(requestId, key);
-		}
-
-		// Unload tiles outside their window — batched single-pass compaction
-		// to avoid O(m*n) repeated scans (previous per-tile removeSlot).
-		const evictKeys = this._evictKeys;
-		const evictEntries = this._evictEntries;
-		evictKeys.length = 0;
-		evictEntries.length = 0;
-		for (const [key, entry] of this.tiles) {
-			const lv = levels[entry.levelIndex];
-			if (!lv) continue;
-
-			const span = lv.tileSizeChunks;
-			const centerX = entry.tx * span + span / 2;
-			const centerZ = entry.tz * span + span / 2;
-			const d = Math.max(Math.abs(centerX - pcx), Math.abs(centerZ - pcz));
-
-			if (
-				d >= lv.ringOuterChunks + UNLOAD_MARGIN_CHUNKS ||
-				d < lv.ringInnerChunks
-			) {
-				evictKeys.push(key);
-				evictEntries.push(entry);
-			}
-		}
-
-		if (evictEntries.length > 0) {
 			const straightByLevel = this._evictStraightByLevel;
 			const reversedByLevel = this._evictReversedByLevel;
 			const waterSlots = this._evictWaterSlots;
 
 			waterSlots.length = 0;
 
-			// Reuse all per-level arrays rather than Map.clear() followed by creation
-			// of new arrays during every eviction update.
 			for (
 				let levelIndex = 0;
 				levelIndex < straightByLevel.length;
@@ -985,14 +1088,17 @@ class FarTileManagerImpl {
 			for (let i = 0; i < evictEntries.length; i++) {
 				const entry = evictEntries[i];
 				const levelIndex = entry.levelIndex;
-				const arena = this.terrainArenas[levelIndex];
 				const opaque = entry.opaque;
 				const water = entry.water;
 
-				if (arena && opaque) {
-					arena.free(opaque);
-					straightByLevel[levelIndex].push(opaque);
-					reversedByLevel[levelIndex].push(opaque);
+				if (opaque) {
+					const arena = this.terrainArenas[levelIndex];
+
+					if (arena) {
+						arena.free(opaque);
+						straightByLevel[levelIndex].push(opaque);
+						reversedByLevel[levelIndex].push(opaque);
+					}
 				}
 
 				if (water) {
@@ -1003,6 +1109,10 @@ class FarTileManagerImpl {
 				this.releaseOrigin(entry.originSlot);
 			}
 
+			/*
+			 * Compact each winding mesh once per level instead of once per tile.
+			 * removeSlots() performs one record pass for all evicted slots.
+			 */
 			for (
 				let levelIndex = 0;
 				levelIndex < straightByLevel.length;
@@ -1010,27 +1120,31 @@ class FarTileManagerImpl {
 			) {
 				const straightSlots = straightByLevel[levelIndex];
 
-				if (straightSlots.length > 0) {
+				if (straightSlots.length !== 0) {
 					this.terrainStraight[levelIndex].removeSlots(straightSlots);
 				}
 
 				const reversedSlots = reversedByLevel[levelIndex];
 
-				if (reversedSlots.length > 0) {
+				if (reversedSlots.length !== 0) {
 					this.terrainReversed[levelIndex].removeSlots(reversedSlots);
 				}
 			}
 
-			if (waterSlots.length > 0) {
+			if (waterSlots.length !== 0) {
 				this.waterReversed.removeSlots(waterSlots);
 			}
 
 			for (let i = 0; i < evictKeys.length; i++) {
 				this.tiles.delete(evictKeys[i]);
 			}
+		} finally {
+			/*
+			 * Guarantees balanced profiler calls if scheduling or another
+			 * dependency unexpectedly throws.
+			 */
+			frameProfiler.end("farTiles");
 		}
-
-		frameProfiler.end("farTiles");
 	}
 
 	public handleResult(data: FarTileGeneratedMessage): void {
@@ -1240,35 +1354,61 @@ class FarTileManagerImpl {
 	}
 
 	private hasPendingFarWork(): boolean {
-		if (this.pendingByKey.size > 0) return true;
-		for (const arena of this.terrainArenas) {
-			if (arena.hasDirty()) return true;
-		}
-		if (this.waterArena.hasDirty()) return true;
-		if (Number.isFinite(this.originsDirtyMin)) return true;
-		for (const wm of this.terrainStraight) {
-			if (wm.dirtyMax > wm.dirtyMin) return true;
-		}
-		for (const wm of this.terrainReversed) {
-			if (wm.dirtyMax > wm.dirtyMin) return true;
-		}
-		if (this.waterReversed.dirtyMax > this.waterReversed.dirtyMin) return true;
-		// Mesh creation/rebind lives in ensureLevelMesh/ensureWaterMesh, which
-		// the early-out skips. A missing mesh or rebound buffer with live
-		// faces must still run the frame pump even when no dirty flags remain.
+		// Pending worker requests do not imply any main-thread or GPU work.
+		// handleResult() marks the relevant arenas and meshes dirty when a result
+		// actually arrives.
 		for (let i = 0; i < this.terrainArenas.length; i++) {
 			const arena = this.terrainArenas[i];
-			if (!arena || !arena.buffer) continue;
-			if (arena.bufferRebound) return true;
-			if (arena.appendedFaces > 0) {
-				if (!this.terrainStraight[i]?.mesh || !this.terrainReversed[i]?.mesh) {
-					return true;
-				}
+
+			if (arena.hasDirty()) {
+				return true;
+			}
+
+			if (arena.bufferRebound) {
+				return true;
+			}
+
+			if (
+				arena.buffer &&
+				arena.appendedFaces > 0 &&
+				(!this.terrainStraight[i]?.mesh || !this.terrainReversed[i]?.mesh)
+			) {
+				return true;
 			}
 		}
-		if (this.waterArena.buffer && this.waterArena.appendedFaces > 0) {
-			if (!this.waterReversed.mesh) return true;
+
+		if (this.waterArena.hasDirty() || this.waterArena.bufferRebound) {
+			return true;
 		}
+
+		if (Number.isFinite(this.originsDirtyMin)) {
+			return true;
+		}
+
+		for (let i = 0; i < this.terrainStraight.length; i++) {
+			if (this.terrainStraight[i].hasPendingSync()) {
+				return true;
+			}
+		}
+
+		for (let i = 0; i < this.terrainReversed.length; i++) {
+			if (this.terrainReversed[i].hasPendingSync()) {
+				return true;
+			}
+		}
+
+		if (this.waterReversed.hasPendingSync()) {
+			return true;
+		}
+
+		if (
+			this.waterArena.buffer &&
+			this.waterArena.appendedFaces > 0 &&
+			!this.waterReversed.mesh
+		) {
+			return true;
+		}
+
 		return false;
 	}
 
@@ -1601,61 +1741,71 @@ function createQuadInstanceMesh(
 function syncThinInstanceCount(mesh: FarMeshLike, wm: WindingMesh): void {
 	const count = wm.count;
 	const capacity = wm.capacityFaces;
+	const existing = mesh.thinInstances;
+
 	if (capacity === 0 && count === 0) {
-		wm.clearDirty();
+		if (existing) {
+			existing.count = 0;
+		}
+
+		wm.clearSyncState();
 		return;
 	}
 
-	const anyMesh = mesh as FarMeshLike;
-	let ti = anyMesh.thinInstances;
-	const needsGrowth = !ti?._gpuBuffer || capacity > (ti._capacity ?? 0);
+	let thinInstances = existing;
+
+	const needsGrowth =
+		!thinInstances?._gpuBuffer || capacity > (thinInstances._capacity ?? 0);
 
 	if (needsGrowth && capacity > 0) {
 		setThinInstances(mesh, wm.records, capacity);
-		ti = anyMesh.thinInstances;
-		if (ti) {
-			ti.compact = true;
-			ti._capacity = capacity;
-			ti.count = count;
-			ti._dirtyMin = 0;
-			ti._dirtyMax = count;
+		thinInstances = mesh.thinInstances;
+
+		if (thinInstances) {
+			thinInstances.compact = true;
+			thinInstances._capacity = capacity;
+			thinInstances.count = count;
+			thinInstances._dirtyMin = 0;
+			thinInstances._dirtyMax = count;
 		}
-		wm.clearDirty();
+
+		wm.clearSyncState();
 		return;
 	}
 
-	if (!ti) {
-		wm.clearDirty();
+	if (!thinInstances) {
+		wm.clearSyncState();
 		return;
 	}
-	if (!ti.compact) {
-		// Buffer created before compact mode: force a full re-upload +
-		// pipeline rebuild via a fresh version (mirrors PackedChunkMesh).
-		ti.compact = true;
-		ti._gpuVersion = -1;
+
+	if (!thinInstances.compact) {
+		thinInstances.compact = true;
+		thinInstances._gpuVersion = -1;
 	}
-	ti.matrices = wm.records;
-	ti.count = count;
+
+	thinInstances.matrices = wm.records;
+	thinInstances.count = count;
 
 	if (wm.dirtyMax > wm.dirtyMin && Number.isFinite(wm.dirtyMin)) {
-		const lo = Math.max(0, wm.dirtyMin);
-		const hi = Math.min(count, wm.dirtyMax);
-		if (hi > lo) {
-			// Lite's thin-instance GPU sync only uploads when
-			// _version !== _gpuVersion. Without the bump below, in-place
-			// record updates (the common case once capacity is grown)
-			// never reach the GPU: instances keep pointing at stale face
-			// indices while the face-word + origin buffers DID update —
-			// tiles render at wrong origins / heights (floating + shifted)
-			// as soon as the player moves and new tiles stream in.
-			// Union with a still-pending range instead of clobbering it.
-			const inSync = ti._version === ti._gpuVersion;
-			ti._dirtyMin = inSync ? lo : Math.min(ti._dirtyMin, lo);
-			ti._dirtyMax = inSync ? hi : Math.max(ti._dirtyMax, hi);
-			ti._version++;
+		const low = Math.max(0, wm.dirtyMin);
+		const high = Math.min(count, wm.dirtyMax);
+
+		if (high > low) {
+			const gpuIsCurrent = thinInstances._version === thinInstances._gpuVersion;
+
+			thinInstances._dirtyMin = gpuIsCurrent
+				? low
+				: Math.min(thinInstances._dirtyMin, low);
+
+			thinInstances._dirtyMax = gpuIsCurrent
+				? high
+				: Math.max(thinInstances._dirtyMax, high);
+
+			thinInstances._version++;
 		}
 	}
-	wm.clearDirty();
+
+	wm.clearSyncState();
 }
 
 function maxFarFacesPerArena(): number {

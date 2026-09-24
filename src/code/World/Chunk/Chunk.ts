@@ -67,6 +67,16 @@ function makeSharedUint8(length: number): Uint8Array {
 	return new Uint8Array(new SharedArrayBuffer(length));
 }
 
+function nextPowerOfTwo(value: number): number {
+	value = Math.max(8, value | 0) - 1;
+	value |= value >>> 1;
+	value |= value >>> 2;
+	value |= value >>> 4;
+	value |= value >>> 8;
+	value |= value >>> 16;
+	return (value + 1) >>> 0;
+}
+
 import { BIAS_XZ, BIAS_Y, RANGE_XZ, RANGE_Y } from "../Storage/ChunkKey.js";
 import {
 	connectFacesMask,
@@ -138,8 +148,63 @@ function _inNumericRange(cx: number, cy: number, cz: number): boolean {
 // build-time CHUNK_SIZE constant; shared across all chunk loads because
 // the function is synchronous and never re-enters itself.
 const _sunlightSeedQueue = new Uint16Array(
-	Math.max(8, 1 << Math.ceil(Math.log2(GenerationParams.CHUNK_SIZE ** 3 + 1))),
+	nextPowerOfTwo(GenerationParams.CHUNK_SIZE ** 3 + 1),
 );
+
+const LIGHT_MUTATION_WIDTH = 5;
+const INITIAL_LIGHT_MUTATION_CAPACITY = 40;
+
+class LightMutationBuffer {
+	public data: Uint32Array;
+	public length = 0;
+
+	public constructor(capacity = INITIAL_LIGHT_MUTATION_CAPACITY) {
+		this.data = new Uint32Array(capacity);
+	}
+
+	public push(
+		x: number,
+		y: number,
+		z: number,
+		oldPacked: number,
+		newPacked: number,
+	): void {
+		const required = this.length + LIGHT_MUTATION_WIDTH;
+
+		if (required > this.data.length) {
+			this.grow(required);
+		}
+
+		const data = this.data;
+		let offset = this.length;
+
+		data[offset++] = x;
+		data[offset++] = y;
+		data[offset++] = z;
+		data[offset++] = oldPacked;
+		data[offset++] = newPacked;
+
+		this.length = offset;
+	}
+
+	public payload(): Uint32Array {
+		return this.length === this.data.length
+			? this.data
+			: this.data.subarray(0, this.length);
+	}
+
+	private grow(required: number): void {
+		let capacity = this.data.length || INITIAL_LIGHT_MUTATION_CAPACITY;
+
+		while (capacity < required) {
+			capacity *= 2;
+		}
+
+		const expanded = new Uint32Array(capacity);
+		expanded.set(this.data);
+		this.data = expanded;
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Chunk dispose hooks
@@ -183,7 +248,8 @@ export class Chunk {
 	public static readonly chunkByNumericKey = new Map<number, Chunk>();
 
 	// Pooled shells to avoid `new Chunk` churn in streaming (≈344 kB / frame).
-	private static _pool: Chunk[] = [];
+	private static readonly MAX_POOL_SIZE = 512;
+	private static readonly _pool: Chunk[] = [];
 
 	private static allocPooledChunk(x: number, y: number, z: number): Chunk {
 		const pool = Chunk._pool;
@@ -209,6 +275,7 @@ export class Chunk {
 			(c as any)._hasVoxelData = false;
 			(c as any)._cachedLODMeshes = null;
 			c.isLoaded = false;
+			c.isBoatChunk = false;
 			c.isModified = false;
 			c.isDirty = false;
 			c.isTerrainScheduled = false;
@@ -238,6 +305,7 @@ export class Chunk {
 			if (_inNumericRange(x, y, z)) {
 				Chunk.chunkByNumericKey.set(_packNumericKey(x, y, z), c);
 			}
+			invalidateFastChunkCache(c);
 			c.linkNeighbors();
 			return c;
 		}
@@ -317,7 +385,10 @@ export class Chunk {
 	// Pending light mutations accumulated while a batch is open: flat
 	// [x,y,z,oldPacked,newPacked] quintuples per chunk, flushed as one
 	// LightMutateBatch message per chunk by endBlockEditBatch().
-	private static readonly _pendingLightMutates = new Map<Chunk, number[]>();
+	private static readonly _pendingLightMutates = new Map<
+		Chunk,
+		LightMutationBuffer
+	>();
 
 	public static beginBlockEditBatch(): void {
 		Chunk._blockEditBatchDepth++;
@@ -360,16 +431,16 @@ export class Chunk {
 		const pending = Chunk._pendingLightMutates;
 		if (pending.size === 0) return;
 		const pool = Chunk._lightPool;
-		if (!pool) {
+		if (pool === null) {
 			pending.clear();
 			return;
 		}
-		for (const [chunk, muts] of pending) {
-			if (muts.length === 0) continue;
+		for (const [chunk, mutations] of pending) {
+			if (mutations.length === 0) continue;
 			pool.postLightMutateBatch({
 				chunkId: chunk.id,
 				headerSlot: chunk.lightHeaderSlot,
-				muts: new Uint32Array(muts),
+				muts: mutations.payload(),
 				seq: pool.nextLightSeq(),
 			});
 		}
@@ -603,6 +674,7 @@ export class Chunk {
 				this,
 			);
 		}
+		invalidateFastChunkCache(this);
 		this.linkNeighbors();
 	}
 
@@ -821,19 +893,52 @@ export class Chunk {
 		if (lod < 0 || lod > Chunk.MAX_CACHED_LOD) return;
 		let cache = this._cachedLODMeshes;
 		if (cache === null) {
-			cache = new Array<CachedLODMesh | null>(Chunk.LOD_CACHE_SIZE).fill(null);
+			cache = new Array<CachedLODMesh | null>(Chunk.LOD_CACHE_SIZE);
+			for (let i = 0; i < cache.length; i++) {
+				cache[i] = null;
+			}
 			this._cachedLODMeshes = cache;
 		}
-		const entry = cache[lod];
-		if (entry) {
-			entry.opaque = mesh.opaque ?? null;
-			entry.water = mesh.water ?? null;
-			entry.cutout = mesh.cutout ?? null;
+		let entry = cache[lod];
+		if (entry === null) {
+			entry = {
+				opaque: null,
+				water: null,
+				cutout: null,
+			};
+			cache[lod] = entry;
+		}
+		entry.opaque = mesh.opaque;
+		entry.water = mesh.water;
+		entry.cutout = mesh.cutout;
+		this.pruneDistantLODCaches(lod);
+	}
+
+	private setCachedLODMeshParts(
+		lod: number,
+		opaque: MeshData | null,
+		water: MeshData | null,
+		cutout: MeshData | null,
+	): void {
+		if (lod < 0 || lod > Chunk.MAX_CACHED_LOD) return;
+		let cache = this._cachedLODMeshes;
+		if (cache === null) {
+			cache = new Array<CachedLODMesh | null>(Chunk.LOD_CACHE_SIZE);
+			for (let i = 0; i < cache.length; i++) {
+				cache[i] = null;
+			}
+			this._cachedLODMeshes = cache;
+		}
+		const existing = cache[lod];
+		if (existing !== null) {
+			existing.opaque = opaque;
+			existing.water = water;
+			existing.cutout = cutout;
 		} else {
 			cache[lod] = {
-				opaque: mesh.opaque ?? null,
-				water: mesh.water ?? null,
-				cutout: mesh.cutout ?? null,
+				opaque,
+				water,
+				cutout,
 			};
 		}
 		this.pruneDistantLODCaches(lod);
@@ -863,9 +968,8 @@ export class Chunk {
 		}
 	}
 	public clearCachedLODMeshes(): void {
-		const cache = this._cachedLODMeshes;
-		if (!cache) return;
-		for (let i = 0; i < cache.length; i++) cache[i] = null;
+		if (this._cachedLODMeshes === null) return;
+		this._cachedLODMeshes = null;
 	}
 
 	// Diagnostics: live-chunk census for the memory HUD. A heap snapshot
@@ -988,41 +1092,27 @@ export class Chunk {
 		return hasEntries ? output : undefined;
 	}
 
-	public restoreLODMeshCache(cache?: SerializedLODMeshCache): void {
-		// Drop the old Map rather than clearing it. This releases its internal
-		// bucket storage, which can be significant after a large cache.
+	public restoreLODMeshCache(serialized?: SerializedLODMeshCache): void {
 		this._cachedLODMeshes = null;
+		if (serialized === undefined) return;
 
-		if (cache === undefined) {
-			return;
-		}
-
-		// for...in avoids allocating an Object.keys() array.
-		for (const key in cache) {
-			if (!Object.hasOwn(cache, key)) {
-				continue;
-			}
+		for (const key in serialized) {
+			if (!Object.hasOwn(serialized, key)) continue;
 
 			const lod = Number(key);
-
-			if (!Number.isFinite(lod)) {
+			if (!Number.isInteger(lod) || lod < 0 || lod > Chunk.MAX_CACHED_LOD) {
 				continue;
 			}
 
-			const entry = cache[lod];
+			const entry = serialized[lod];
+			if (entry === undefined) continue;
 
-			if (
-				entry === undefined ||
-				(!entry.opaque && !entry.water && !entry.cutout)
-			) {
-				continue;
-			}
+			const opaque = entry.opaque ?? null;
+			const water = entry.water ?? null;
+			const cutout = entry.cutout ?? null;
+			if (opaque === null && water === null && cutout === null) continue;
 
-			this.setCachedLODMesh(lod, {
-				opaque: entry.opaque ?? null,
-				water: entry.water ?? null,
-				cutout: entry.cutout ?? null,
-			});
+			this.setCachedLODMeshParts(lod, opaque, water, cutout);
 		}
 	}
 
@@ -1562,12 +1652,12 @@ export class Chunk {
 		// Inside a batch, accumulate per chunk; endBlockEditBatch flushes
 		// one LightMutateBatch per chunk instead of a postMessage per block.
 		if (Chunk._blockEditBatchDepth > 0) {
-			let muts = Chunk._pendingLightMutates.get(this);
-			if (!muts) {
-				muts = [];
-				Chunk._pendingLightMutates.set(this, muts);
+			let mutations = Chunk._pendingLightMutates.get(this);
+			if (mutations === undefined) {
+				mutations = new LightMutationBuffer();
+				Chunk._pendingLightMutates.set(this, mutations);
 			}
-			muts.push(localX, localY, localZ, oldPacked, newPacked);
+			mutations.push(localX, localY, localZ, oldPacked, newPacked);
 			return;
 		}
 		const pool = Chunk._lightPool;
@@ -1909,17 +1999,24 @@ export class Chunk {
 	 * this._la32 directly with zero per-call validation.
 	 */
 	private updateLightView(): void {
-		const la = this.light_array;
-		if (
-			la &&
-			la.length >= 4 &&
-			(la.byteOffset & 3) === 0 &&
-			la.byteOffset + la.length <= la.buffer.byteLength
-		) {
-			this._la32 = new Uint32Array(la.buffer, la.byteOffset, la.length >>> 2);
-		} else {
+		const light = this.light_array;
+		const wordLength = light.length >>> 2;
+		if (wordLength === 0 || (light.byteOffset & 3) !== 0) {
 			this._la32 = null;
+			return;
 		}
+
+		const current = this._la32;
+		if (
+			current !== null &&
+			current.buffer === light.buffer &&
+			current.byteOffset === light.byteOffset &&
+			current.length === wordLength
+		) {
+			return;
+		}
+
+		this._la32 = new Uint32Array(light.buffer, light.byteOffset, wordLength);
 	}
 
 	// =========================================================================
@@ -1927,6 +2024,10 @@ export class Chunk {
 	// =========================================================================
 
 	public dispose(): void {
+		Chunk._pendingLightMutates.delete(this);
+		Chunk._blockEditBatchChunks.delete(this);
+		invalidateFastChunkCache(this);
+
 		const refs = this.neighborRefs;
 
 		for (let direction = 0; direction < 6; direction++) {
@@ -1994,10 +2095,12 @@ export class Chunk {
 		if (view !== null && slot !== 0xffff_ffff) {
 			clearHeaderRow(view, slot);
 			Chunk._lightHeaderFreeSlots.push(slot);
-			this.lightHeaderSlot = 0xffff_ffff;
 		}
 
 		Chunk.onLightChunkDisposed?.(this);
+		if (slot !== 0xffff_ffff) {
+			this.lightHeaderSlot = 0xffff_ffff;
+		}
 
 		Chunk.loadedChunks.delete(this);
 		Chunk.loadedChunkIndex.unregister(this);
@@ -2018,7 +2121,7 @@ export class Chunk {
 
 		runChunkDisposeHooks(this);
 
-		if (Chunk._pool.length < 2048) {
+		if (!this.isBoatChunk && Chunk._pool.length < Chunk.MAX_POOL_SIZE) {
 			Chunk._pool.push(this);
 		}
 	}
@@ -2053,6 +2156,22 @@ const _fastChunk: (Chunk | undefined)[] = new Array(_FAST_SLOTS).fill(
 );
 let _fastCursor = 0;
 
+function invalidateFastChunkCache(chunk: Chunk): void {
+	for (let i = 0; i < _FAST_SLOTS; i++) {
+		if (
+			_fastChunk[i] === chunk ||
+			(_fastCx[i] === chunk.chunkX &&
+				_fastCy[i] === chunk.chunkY &&
+				_fastCz[i] === chunk.chunkZ)
+		) {
+			_fastCx[i] = 0x7fffffff;
+			_fastCy[i] = 0x7fffffff;
+			_fastCz[i] = 0x7fffffff;
+			_fastChunk[i] = undefined;
+		}
+	}
+}
+
 export function getChunkFast(
 	cx: number,
 	cy: number,
@@ -2060,19 +2179,34 @@ export function getChunkFast(
 ): Chunk | undefined {
 	for (let i = 0; i < _FAST_SLOTS; i++) {
 		if (_fastCx[i] === cx && _fastCy[i] === cy && _fastCz[i] === cz) {
-			return _fastChunk[i];
+			const cached = _fastChunk[i];
+			if (
+				cached !== undefined &&
+				cached.chunkX === cx &&
+				cached.chunkY === cy &&
+				cached.chunkZ === cz
+			) {
+				return cached;
+			}
+
+			_fastCx[i] = 0x7fffffff;
+			_fastCy[i] = 0x7fffffff;
+			_fastCz[i] = 0x7fffffff;
+			_fastChunk[i] = undefined;
+			break;
 		}
 	}
-	let chunk: Chunk | undefined;
-	if (_inNumericRange(cx, cy, cz)) {
-		chunk = Chunk.chunkByNumericKey.get(_packNumericKey(cx, cy, cz));
-	} else {
-		chunk = Chunk.chunkInstances.get(packCoords(cx, cy, cz));
-	}
-	_fastCx[_fastCursor] = cx;
-	_fastCy[_fastCursor] = cy;
-	_fastCz[_fastCursor] = cz;
-	_fastChunk[_fastCursor] = chunk;
-	_fastCursor = (_fastCursor + 1) % _FAST_SLOTS;
+
+	const chunk = _inNumericRange(cx, cy, cz)
+		? Chunk.chunkByNumericKey.get(_packNumericKey(cx, cy, cz))
+		: Chunk.chunkInstances.get(packCoords(cx, cy, cz));
+
+	const cursor = _fastCursor;
+	_fastCx[cursor] = cx;
+	_fastCy[cursor] = cy;
+	_fastCz[cursor] = cz;
+	_fastChunk[cursor] = chunk;
+	_fastCursor = (cursor + 1) & (_FAST_SLOTS - 1);
+
 	return chunk;
 }

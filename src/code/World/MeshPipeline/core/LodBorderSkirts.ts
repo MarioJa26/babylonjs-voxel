@@ -156,15 +156,6 @@ function invalidateBorderCache(
 	grids.borderTopY!.fill(TOP_UNKNOWN);
 }
 
-/** Packed block at idx if solid (opaque, or any FLAG_SOLID), else 0. */
-function solidPacked(session: MeshBuildSession, idx: number): number {
-	if (session.opaque[idx] === 1) return session.block[idx];
-	const packed = session.block[idx];
-	return packed && (getCachedFlagsAndId(packed) & 0xffff & FLAG_SOLID) !== 0
-		? packed
-		: 0;
-}
-
 function isWaterPacked(packed: number): boolean {
 	return getSourceBlockId(unpackBlockId(packed & 0xffff)) === WATER_BLOCK_ID;
 }

@@ -1,4 +1,3 @@
-import type { Biome } from "@/code/Generation/Biome/BiomeTypes";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { SurfaceGenerator } from "@/code/Generation/SurfaceGenerator";
 import {
@@ -106,17 +105,6 @@ class FaceWriter {
 	}
 }
 
-function topTileFor(biome: Biome): [number, number] {
-	const id = biome.topBlock;
-	if (id < 0 || id * FaceName.Count + FaceName.Top >= BlockFaceTileX.length)
-		return [14, 0];
-	const base = id * FaceName.Count;
-	return [
-		BlockFaceTileX[base + FaceName.Top],
-		BlockFaceTileY[base + FaceName.Top],
-	];
-}
-
 function tilesForBlock(blockId: number): [number, number] | null {
 	if (blockId < 0 || blockId * FaceName.Count >= BlockFaceTileX.length)
 		return null;
@@ -125,14 +113,17 @@ function tilesForBlock(blockId: number): [number, number] | null {
 }
 
 interface HeightLattice {
-	/** Interior samples per axis (cells + 1). */
+	/** Number of unpadded height samples per axis. */
 	n: number;
 	step: number;
-	sample(localX: number, localZ: number): number;
-	/** Max over the two shared corner heights of cell (cx,cz)'s edge. */
-	colPairMax(row: number, col: number): number;
-	rowPairMax(row: number, col: number): number;
+	padded: number;
+	heights: Float64Array;
+	/** Maximum corner height for every terrain cell. */
+	cellMax: Float64Array;
 }
+
+let _latticeHeightBuffer = new Float64Array(1024);
+let _latticeCellMaxBuffer = new Float64Array(1024);
 
 /**
  * Samples heights on a lattice padded by ONE ring (-1..n inclusive) so that
@@ -140,7 +131,8 @@ interface HeightLattice {
  * Same-level neighbors then produce flush edges (no skirt -> no seam fins),
  * while genuine cliffs and level-ring boundaries still get exact skirts.
  */
-let _latticeBuffer = new Float64Array(1024);
+const _latticeBuffer = new Float64Array(1024);
+
 function buildHeightLattice(
 	originX: number,
 	originZ: number,
@@ -149,43 +141,87 @@ function buildHeightLattice(
 ): HeightLattice {
 	const n = sizeBlocks / step + 1;
 	const padded = n + 2;
-	const required = padded * padded;
+	const heightCount = padded * padded;
+	const cellsPerAxis = n - 1;
+	const cellCount = cellsPerAxis * cellsPerAxis;
 
-	if (required > _latticeBuffer.length) {
-		_latticeBuffer = new Float64Array(required * 2);
+	if (heightCount > _latticeHeightBuffer.length) {
+		_latticeHeightBuffer = new Float64Array(
+			Math.max(heightCount, _latticeHeightBuffer.length * 2),
+		);
 	}
-	const heights = _latticeBuffer;
+
+	if (cellCount > _latticeCellMaxBuffer.length) {
+		_latticeCellMaxBuffer = new Float64Array(
+			Math.max(cellCount, _latticeCellMaxBuffer.length * 2),
+		);
+	}
+
+	const heights = _latticeHeightBuffer;
+	const cellMax = _latticeCellMaxBuffer;
+
+	let writeIndex = 0;
 
 	for (let cz = -1; cz <= n; cz++) {
-		const wz = originZ + cz * step;
+		const worldZ = originZ + cz * step;
+		let worldX = originX - step;
+
 		for (let cx = -1; cx <= n; cx++) {
-			heights[(cz + 1) * padded + (cx + 1)] = getFinalTerrainHeight(
-				originX + cx * step,
-				wz,
-			);
+			heights[writeIndex++] = getFinalTerrainHeight(worldX, worldZ);
+			worldX += step;
 		}
 	}
 
-	const at = (cx: number, cz: number): number =>
-		heights[(cz + 1) * padded + (cx + 1)];
+	// Precompute the maximum of each cell's four corners once. The terrain
+	// loop, neighbor skirts, and tree sampling can then use direct reads.
+	let cellIndex = 0;
+
+	for (let cz = 0; cz < cellsPerAxis; cz++) {
+		let topLeftIndex = (cz + 1) * padded + 1;
+
+		for (let cx = 0; cx < cellsPerAxis; cx++, topLeftIndex++) {
+			const h00 = heights[topLeftIndex];
+			const h10 = heights[topLeftIndex + 1];
+			const h01 = heights[topLeftIndex + padded];
+			const h11 = heights[topLeftIndex + padded + 1];
+
+			const topMax = h00 > h10 ? h00 : h10;
+			const bottomMax = h01 > h11 ? h01 : h11;
+
+			cellMax[cellIndex++] = topMax > bottomMax ? topMax : bottomMax;
+		}
+	}
 
 	return {
 		n,
 		step,
-		sample(localX: number, localZ: number): number {
-			const gx = Math.min(n - 1, Math.max(0, Math.round(localX / step)));
-			const gz = Math.min(n - 1, Math.max(0, Math.round(localZ / step)));
-			return at(gx, gz);
-		},
-		colPairMax(row: number, col: number): number {
-			// Two samples along X at fixed z-row: at(col,row), at(col+1,row)
-			return Math.max(at(col, row), at(col + 1, row));
-		},
-		rowPairMax(row: number, col: number): number {
-			// Two samples along Z at fixed x-col: at(col,row), at(col,row+1)
-			return Math.max(at(col, row), at(col, row + 1));
-		},
+		padded,
+		heights,
+		cellMax,
 	};
+}
+
+/**
+ * Returns the nearest interior lattice sample for a local block coordinate.
+ * This preserves the original round-and-clamp behavior used by tree stamping.
+ */
+function sampleLatticeHeight(
+	lattice: HeightLattice,
+	localX: number,
+	localZ: number,
+): number {
+	const maxSample = lattice.n - 1;
+
+	let gx = Math.round(localX / lattice.step);
+	let gz = Math.round(localZ / lattice.step);
+
+	if (gx < 0) gx = 0;
+	else if (gx > maxSample) gx = maxSample;
+
+	if (gz < 0) gz = 0;
+	else if (gz > maxSample) gz = maxSample;
+
+	return lattice.heights[(gz + 1) * lattice.padded + gx + 1];
 }
 
 export function generateFarTile(
@@ -197,7 +233,7 @@ export function generateFarTile(
 	const opaque = new FaceWriter();
 	const water = new FaceWriter();
 
-	if (!level) {
+	if (level === undefined) {
 		return {
 			requestId: request.requestId,
 			levelIndex: request.levelIndex,
@@ -212,147 +248,30 @@ export function generateFarTile(
 	const originX = request.tileX * sizeBlocks;
 	const originZ = request.tileZ * sizeBlocks;
 	const step = level.voxelStep;
+	const halfStep = step * 0.5;
 	const seaLevel = GenerationParams.SEA_LEVEL;
 
 	const lattice = buildHeightLattice(originX, originZ, sizeBlocks, step);
+
 	const cellsPerAxis = lattice.n - 1;
+	const padded = lattice.padded;
+	const heights = lattice.heights;
+	const cellMaxima = lattice.cellMax;
 
-	// --- Terrain surface cells + cliff skirts -----------------------------
-	// The lattice is padded by one sample ring, so edge cells see their REAL
-	// across-border neighbor heights: flush edges shared with same-level
-	// neighbors emit no skirt at all (no seam fins), while genuine cliffs —
-	// including ring boundaries against differently-sampled levels — get
-	// exact skirts sized to the true height delta.
-	const { colPairMax, rowPairMax } = lattice;
+	let cellIndex = 0;
 
-	for (let cz = 0; cz < cellsPerAxis; cz++) {
-		for (let cx = 0; cx < cellsPerAxis; cx++) {
-			const h00 = lattice.sample(cx * step, cz * step);
-			const h10 = lattice.sample((cx + 1) * step, cz * step);
-			const h01 = lattice.sample(cx * step, (cz + 1) * step);
-			const h11 = lattice.sample((cx + 1) * step, (cz + 1) * step);
+	for (let cz = 0, z0 = 0; cz < cellsPerAxis; cz++, z0 += step) {
+		// Index of sample (0, cz) in the one-ring-padded height array.
+		let sampleIndex = (cz + 1) * padded + 1;
 
-			const cellMax = Math.max(h00, h10, h01, h11);
-			const x0 = cx * step;
-			const z0 = cz * step;
+		for (
+			let cx = 0, x0 = 0;
+			cx < cellsPerAxis;
+			cx++, x0 += step, sampleIndex++, cellIndex++
+		) {
+			const cellMax = cellMaxima[cellIndex];
 
-			// Fully submerged cells emit ONLY the water plane: their ground
-			// quad and skirts are invisible behind the water surface + fog at
-			// these distances, so generating them is pure face/VRAM waste.
-			// Land cells keep everything; a land skirt adjacent to a submerged
-			// neighbor still spans down to that neighbor's cellMax (its
-			// above-water portion is what the shoreline shows).
-			const submerged = cellMax < seaLevel;
-
-			if (!submerged) {
-				const biome = getBiome(
-					originX + x0 + step / 2,
-					originZ + z0 + step / 2,
-				);
-				const [tileX, tileY] = topTileFor(biome);
-
-				// Top surface quad at the highest corner so no neighbor pokes
-				// through; skirts cover the exposed sides down to each neighbor.
-				// Facing convention: backFace 0 = positive-axis normal.
-				opaque.emit(
-					x0,
-					cellMax,
-					z0,
-					step,
-					step,
-					1,
-					0,
-					tileX,
-					tileY,
-					LIGHT_FULL,
-					KIND_OPAQUE,
-				);
-
-				// -Z skirt (neighbor toward smaller z)
-				// Skirt sizing — the wall at each boundary plane is viewed from
-				// the LOWER side, so it must span from this cell's top down to
-				// the NEIGHBOR CELL's own top surface: the max of all four of
-				// the neighbor's corners. The original code used only the
-				// neighbor's far pair (undershoots when the neighbor rises
-				// toward its interior -> cracks). Overshoot is harmless: the
-				// extra depth is buried below the neighbor's surface.
-				// -Z neighbor cell (cx, cz-1): corner rows cz-1 and cz.
-				const nzMax = Math.max(colPairMax(cz - 1, cx), colPairMax(cz, cx));
-				if (nzMax < cellMax) {
-					opaque.emit(
-						x0,
-						nzMax,
-						z0,
-						step,
-						cellMax - nzMax,
-						2,
-						1,
-						tileX,
-						tileY,
-						LIGHT_SIDE,
-						KIND_OPAQUE,
-					);
-				}
-
-				// +Z skirt
-				// +Z neighbor cell (cx, cz+1): corner rows cz+1 and cz+2.
-				const pzMax = Math.max(colPairMax(cz + 1, cx), colPairMax(cz + 2, cx));
-				if (pzMax < cellMax) {
-					opaque.emit(
-						x0,
-						pzMax,
-						z0 + step,
-						step,
-						cellMax - pzMax,
-						2,
-						0,
-						tileX,
-						tileY,
-						LIGHT_SIDE,
-						KIND_OPAQUE,
-					);
-				}
-
-				// -X skirt
-				// -X neighbor cell (cx-1, cz): corner cols cx-1 and cx.
-				const nxMax = Math.max(rowPairMax(cz, cx - 1), rowPairMax(cz, cx));
-				if (nxMax < cellMax) {
-					opaque.emit(
-						x0,
-						nxMax,
-						z0,
-						cellMax - nxMax,
-						step,
-						0,
-						1,
-						tileX,
-						tileY,
-						LIGHT_SIDE,
-						KIND_OPAQUE,
-					);
-				}
-
-				// +X skirt
-				// +X neighbor cell (cx+1, cz): corner cols cx+1 and cx+2.
-				const pxMax = Math.max(rowPairMax(cz, cx + 1), rowPairMax(cz, cx + 2));
-				if (pxMax < cellMax) {
-					opaque.emit(
-						x0 + step,
-						pxMax,
-						z0,
-						cellMax - pxMax,
-						step,
-						0,
-						0,
-						tileX,
-						tileY,
-						LIGHT_SIDE,
-						KIND_OPAQUE,
-					);
-				}
-			} else {
-				// Ocean/lake surfaces: flat water plane at sea level above the
-				// (skipped) submerged ground.
+			if (cellMax < seaLevel) {
 				water.emit(
 					x0,
 					seaLevel,
@@ -365,6 +284,158 @@ export function generateFarTile(
 					0,
 					LIGHT_FULL,
 					KIND_WATER,
+				);
+
+				continue;
+			}
+
+			const biome = getBiome(originX + x0 + halfStep, originZ + z0 + halfStep);
+
+			const topBlockId = biome.topBlock;
+			let tileX = 14;
+			let tileY = 0;
+
+			if (
+				topBlockId >= 0 &&
+				topBlockId * FaceName.Count + FaceName.Top < BlockFaceTileX.length
+			) {
+				const textureIndex = topBlockId * FaceName.Count + FaceName.Top;
+
+				tileX = BlockFaceTileX[textureIndex];
+				tileY = BlockFaceTileY[textureIndex];
+			}
+
+			opaque.emit(
+				x0,
+				cellMax,
+				z0,
+				step,
+				step,
+				1,
+				0,
+				tileX,
+				tileY,
+				LIGHT_FULL,
+				KIND_OPAQUE,
+			);
+
+			/*
+			 * Each neighboring cell maximum is read directly from the padded
+			 * height lattice. This preserves the original behavior, including
+			 * real cross-tile terrain values at the outer boundaries.
+			 */
+
+			// -Z neighbor corners:
+			// (cx,cz-1), (cx+1,cz-1), (cx,cz), (cx+1,cz)
+			const nz00 = heights[sampleIndex - padded];
+			const nz10 = heights[sampleIndex - padded + 1];
+			const nz01 = heights[sampleIndex];
+			const nz11 = heights[sampleIndex + 1];
+
+			let nzMax = nz00 > nz10 ? nz00 : nz10;
+			const nzBottomMax = nz01 > nz11 ? nz01 : nz11;
+			if (nzBottomMax > nzMax) nzMax = nzBottomMax;
+
+			if (nzMax < cellMax) {
+				opaque.emit(
+					x0,
+					nzMax,
+					z0,
+					step,
+					cellMax - nzMax,
+					2,
+					1,
+					tileX,
+					tileY,
+					LIGHT_SIDE,
+					KIND_OPAQUE,
+				);
+			}
+
+			// +Z neighbor corners:
+			// (cx,cz+1), (cx+1,cz+1), (cx,cz+2), (cx+1,cz+2)
+			const pzIndex = sampleIndex + padded;
+
+			const pz00 = heights[pzIndex];
+			const pz10 = heights[pzIndex + 1];
+			const pz01 = heights[pzIndex + padded];
+			const pz11 = heights[pzIndex + padded + 1];
+
+			let pzMax = pz00 > pz10 ? pz00 : pz10;
+			const pzBottomMax = pz01 > pz11 ? pz01 : pz11;
+			if (pzBottomMax > pzMax) pzMax = pzBottomMax;
+
+			if (pzMax < cellMax) {
+				opaque.emit(
+					x0,
+					pzMax,
+					z0 + step,
+					step,
+					cellMax - pzMax,
+					2,
+					0,
+					tileX,
+					tileY,
+					LIGHT_SIDE,
+					KIND_OPAQUE,
+				);
+			}
+
+			// -X neighbor corners:
+			// (cx-1,cz), (cx,cz), (cx-1,cz+1), (cx,cz+1)
+			const nxIndex = sampleIndex - 1;
+
+			const nx00 = heights[nxIndex];
+			const nx10 = heights[nxIndex + 1];
+			const nx01 = heights[nxIndex + padded];
+			const nx11 = heights[nxIndex + padded + 1];
+
+			let nxMax = nx00 > nx10 ? nx00 : nx10;
+			const nxBottomMax = nx01 > nx11 ? nx01 : nx11;
+			if (nxBottomMax > nxMax) nxMax = nxBottomMax;
+
+			if (nxMax < cellMax) {
+				opaque.emit(
+					x0,
+					nxMax,
+					z0,
+					cellMax - nxMax,
+					step,
+					0,
+					1,
+					tileX,
+					tileY,
+					LIGHT_SIDE,
+					KIND_OPAQUE,
+				);
+			}
+
+			// +X neighbor corners:
+			// (cx+1,cz), (cx+2,cz), (cx+1,cz+1), (cx+2,cz+1)
+			const pxIndex = sampleIndex + 1;
+
+			const px00 = heights[pxIndex];
+			const px10 = heights[pxIndex + 1];
+			const px01 = heights[pxIndex + padded];
+			const px11 = heights[pxIndex + padded + 1];
+
+			let pxMax = px00 > px10 ? px00 : px10;
+			const pxBottomMax = px01 > px11 ? px01 : px11;
+			if (pxBottomMax > pxMax) pxMax = pxBottomMax;
+
+			if (pxMax < cellMax) {
+				opaque.emit(
+					x0 + step,
+					pxMax,
+					z0,
+					cellMax - pxMax,
+					step,
+					0,
+					0,
+					tileX,
+					tileY,
+					LIGHT_SIDE,
+					KIND_OPAQUE,
 				);
 			}
 		}
@@ -383,8 +454,8 @@ export function generateFarTile(
 }
 
 /**
- * Stamp simplified trees at the SAME world positions real generation uses:
- * per-column flora noise vs biome density (SurfaceGenerator.getTreeNoiseValue).
+ * Stamp simplified trees at the same world positions used by normal terrain
+ * generation.
  */
 function stampTrees(
 	out: FaceWriter,
@@ -395,40 +466,55 @@ function stampTrees(
 	step: number,
 	seaLevel: number,
 ): void {
-	// Scale the scan stride with sampling coarseness so coarse levels stay
-	// cheap; canopies remain visible because they're stamped as boxes.
-	const stride = Math.max(TREE_SCAN_STRIDE, step);
+	const stride = step > TREE_SCAN_STRIDE ? step : TREE_SCAN_STRIDE;
 
-	for (let lz = 0; lz < sizeBlocks; lz += stride) {
-		for (let lx = 0; lx < sizeBlocks; lx += stride) {
-			const wx = originX + lx;
-			const wz = originZ + lz;
-
+	for (let lz = 0, wz = originZ; lz < sizeBlocks; lz += stride, wz += stride) {
+		for (
+			let lx = 0, wx = originX;
+			lx < sizeBlocks;
+			lx += stride, wx += stride
+		) {
 			const noiseValue = SurfaceGenerator.getTreeNoiseValue(wx, wz);
+
 			const biome = getBiome(wx, wz);
 
-			if (!biome.canSpawnTrees || noiseValue >= biome.treeDensity) continue;
+			if (!biome.canSpawnTrees || noiseValue >= biome.treeDensity) {
+				continue;
+			}
 
-			const surfaceY = Math.floor(lattice.sample(lx, lz));
-			if (surfaceY < seaLevel) continue;
+			const surfaceY = Math.floor(sampleLatticeHeight(lattice, lx, lz));
+
+			if (surfaceY < seaLevel) {
+				continue;
+			}
 
 			const tree = biome.getTreeForBlock(biome.topBlock, noiseValue);
-			if (!tree) continue;
 
-			// Deterministic height matching the real generators' hash pattern.
+			if (tree === null || tree === undefined) {
+				continue;
+			}
+
 			const hash = (Math.imul(wx, 374761393) ^ Math.imul(wz, 678446653)) >>> 0;
-			const variance = Math.max(0, tree.heightVariance ?? 0);
+
+			const rawVariance = tree.heightVariance ?? 0;
+			const variance = rawVariance > 0 ? rawVariance : 0;
+
 			const trunkHeight =
 				(tree.baseHeight ?? 5) + (variance > 0 ? hash % (variance + 1) : 0);
 
 			const woodTile = tilesForBlock(tree.woodId);
 			const leafTile = tilesForBlock(tree.leavesId);
-			if (!woodTile && !leafTile) continue;
+
+			if (woodTile === null && leafTile === null) {
+				continue;
+			}
 
 			const baseY = surfaceY + 1;
 
-			// Trunk: a two-quad cross so it reads from every direction.
-			if (woodTile) {
+			if (woodTile !== null) {
+				const woodTileX = woodTile[0];
+				const woodTileY = woodTile[1];
+
 				out.emit(
 					lx,
 					baseY,
@@ -437,11 +523,12 @@ function stampTrees(
 					trunkHeight,
 					2,
 					0,
-					woodTile[0],
-					woodTile[1],
+					woodTileX,
+					woodTileY,
 					LIGHT_SIDE,
 					KIND_OPAQUE,
 				);
+
 				out.emit(
 					lx,
 					baseY,
@@ -450,11 +537,12 @@ function stampTrees(
 					trunkHeight,
 					2,
 					1,
-					woodTile[0],
-					woodTile[1],
+					woodTileX,
+					woodTileY,
 					LIGHT_SIDE,
 					KIND_OPAQUE,
 				);
+
 				out.emit(
 					lx + 1,
 					baseY,
@@ -463,11 +551,12 @@ function stampTrees(
 					1,
 					0,
 					0,
-					woodTile[0],
-					woodTile[1],
+					woodTileX,
+					woodTileY,
 					LIGHT_SIDE,
 					KIND_OPAQUE,
 				);
+
 				out.emit(
 					lx,
 					baseY,
@@ -476,92 +565,112 @@ function stampTrees(
 					1,
 					0,
 					1,
-					woodTile[0],
-					woodTile[1],
+					woodTileX,
+					woodTileY,
 					LIGHT_SIDE,
 					KIND_OPAQUE,
 				);
 			}
 
-			// Canopy: one coarse box around the crown. Radius scales with the
-			// scan stride so canopies stay visible from far away. The anchor
-			// is clamped into the tile: emit() silently rejects out-of-range
-			// coords, and an unclamped anchor (lx - radius < 0 on the first
-			// scan row — guaranteed to hit at stride-scaled radii) would drop
-			// whole canopies, top face included.
-			if (leafTile) {
-				const radius = Math.min(8, Math.max(2, stride >> 2));
-				const canopyBase = baseY + Math.max(1, trunkHeight - 3);
-				const canopySize = radius * 2 + 1;
-				const cx = Math.max(0, Math.min(sizeBlocks - canopySize, lx - radius));
-				const cz = Math.max(0, Math.min(sizeBlocks - canopySize, lz - radius));
-
-				out.emit(
-					cx,
-					canopyBase + 4,
-					cz,
-					canopySize,
-					canopySize,
-					1,
-					0,
-					leafTile[0],
-					leafTile[1],
-					LIGHT_FULL,
-					KIND_OPAQUE,
-				); // top
-				out.emit(
-					cx,
-					canopyBase,
-					cz,
-					canopySize,
-					4,
-					2,
-					1,
-					leafTile[0],
-					leafTile[1],
-					LIGHT_SIDE,
-					KIND_OPAQUE,
-				); // -Z
-				out.emit(
-					cx,
-					canopyBase,
-					cz + canopySize,
-					canopySize,
-					4,
-					2,
-					0,
-					leafTile[0],
-					leafTile[1],
-					LIGHT_SIDE,
-					KIND_OPAQUE,
-				); // +Z
-				out.emit(
-					cx,
-					canopyBase,
-					cz,
-					4,
-					canopySize,
-					0,
-					1,
-					leafTile[0],
-					leafTile[1],
-					LIGHT_SIDE,
-					KIND_OPAQUE,
-				); // -X
-				out.emit(
-					cx + canopySize,
-					canopyBase,
-					cz,
-					4,
-					canopySize,
-					0,
-					0,
-					leafTile[0],
-					leafTile[1],
-					LIGHT_SIDE,
-					KIND_OPAQUE,
-				); // +X
+			if (leafTile === null) {
+				continue;
 			}
+
+			let radius = stride >> 2;
+
+			if (radius < 2) radius = 2;
+			else if (radius > 8) radius = 8;
+
+			const canopyBase = baseY + (trunkHeight > 3 ? trunkHeight - 3 : 1);
+
+			const canopySize = radius * 2 + 1;
+			const maximumAnchor = sizeBlocks - canopySize;
+
+			let canopyX = lx - radius;
+			let canopyZ = lz - radius;
+
+			if (canopyX < 0) canopyX = 0;
+			else if (canopyX > maximumAnchor) {
+				canopyX = maximumAnchor;
+			}
+
+			if (canopyZ < 0) canopyZ = 0;
+			else if (canopyZ > maximumAnchor) {
+				canopyZ = maximumAnchor;
+			}
+
+			const leafTileX = leafTile[0];
+			const leafTileY = leafTile[1];
+
+			out.emit(
+				canopyX,
+				canopyBase + 4,
+				canopyZ,
+				canopySize,
+				canopySize,
+				1,
+				0,
+				leafTileX,
+				leafTileY,
+				LIGHT_FULL,
+				KIND_OPAQUE,
+			);
+
+			out.emit(
+				canopyX,
+				canopyBase,
+				canopyZ,
+				canopySize,
+				4,
+				2,
+				1,
+				leafTileX,
+				leafTileY,
+				LIGHT_SIDE,
+				KIND_OPAQUE,
+			);
+
+			out.emit(
+				canopyX,
+				canopyBase,
+				canopyZ + canopySize,
+				canopySize,
+				4,
+				2,
+				0,
+				leafTileX,
+				leafTileY,
+				LIGHT_SIDE,
+				KIND_OPAQUE,
+			);
+
+			out.emit(
+				canopyX,
+				canopyBase,
+				canopyZ,
+				4,
+				canopySize,
+				0,
+				1,
+				leafTileX,
+				leafTileY,
+				LIGHT_SIDE,
+				KIND_OPAQUE,
+			);
+
+			out.emit(
+				canopyX + canopySize,
+				canopyBase,
+				canopyZ,
+				4,
+				canopySize,
+				0,
+				0,
+				leafTileX,
+				leafTileY,
+				LIGHT_SIDE,
+				KIND_OPAQUE,
+			);
 		}
 	}
 }
