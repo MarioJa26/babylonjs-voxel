@@ -355,7 +355,10 @@ function ensureArenas(): void {
 		offsetCpu = new Float32Array(
 			offsetCapacityGroups * OFFSETS_PER_GROUP * OFFSET_WORDS,
 		);
-		offsetBuffer = createStorageBuffer(engineRef!, offsetCpu, "offset-set");
+		offsetBuffer = createStorageBuffer(engineRef!, offsetCpu, {
+			label: "offset-set",
+			cpuShadow: "source",
+		});
 
 		for (let i = 0; i < registeredMaterials.length; i++) {
 			const material = registeredMaterials[i];
@@ -387,7 +390,7 @@ function createFaceArena(initialCapacity: number): FaceArena {
 	if (capacity < 1) capacity = 1;
 	if (capacity > maxFaces) capacity = maxFaces;
 	const cpu = new Uint32Array(capacity * 3);
-	const buffer = createStorageBuffer(engineRef!, cpu);
+	const buffer = createStorageBuffer(engineRef!, cpu, { cpuShadow: "source" });
 	const arena: FaceArena = {
 		cpu,
 		buffer,
@@ -473,7 +476,7 @@ function growArena(arena: FaceArena, index: number): void {
 	arena.cpu = newCpu;
 	arena.capacity = newCapacity;
 	const old = arena.buffer;
-	arena.buffer = createStorageBuffer(engineRef!, arena.cpu);
+	arena.buffer = createStorageBuffer(engineRef!, arena.cpu, { cpuShadow: "source" });
 	bindArenaToMaterials(arena, index);
 	if (engineRef && old) {
 		const e = engineRef;
@@ -977,7 +980,10 @@ function growOffset(): void {
 	offsetCpu = newCpu;
 	offsetCapacityGroups = newCapacity;
 	const old = offsetBuffer;
-	offsetBuffer = createStorageBuffer(engineRef!, offsetCpu, "offset-set");
+	offsetBuffer = createStorageBuffer(engineRef!, offsetCpu, {
+		label: "offset-set",
+		cpuShadow: "source",
+	});
 	for (const m of registeredMaterials) {
 		setShaderStorageBuffer(m, "chunkOffsets", offsetBuffer);
 		boundMaterials.add(m);

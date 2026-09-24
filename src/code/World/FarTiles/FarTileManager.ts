@@ -170,7 +170,10 @@ class FaceWordArena {
 		this.capacityFaces = capacity;
 
 		const oldBuffer = this.buffer;
-		this.buffer = createStorageBuffer(engineRef!, this.cpu, "farTileFaces");
+		this.buffer = createStorageBuffer(engineRef!, this.cpu, {
+			label: "farTileFaces",
+			cpuShadow: "source",
+		});
 
 		if (oldBuffer) {
 			disposeBufferAfterGpuWork(oldBuffer);
@@ -1499,11 +1502,10 @@ class FarTileManagerImpl {
 		if (this.originsBuffer) {
 			disposeBufferAfterGpuWork(this.originsBuffer);
 		}
-		this.originsBuffer = createStorageBuffer(
-			this.engine!,
-			this.origins,
-			"farTileOrigins",
-		);
+		this.originsBuffer = createStorageBuffer(this.engine!, this.origins, {
+			label: "farTileOrigins",
+			cpuShadow: "source",
+		});
 		// Rebind everywhere; materials may not have meshes yet (harmless).
 		for (const m of this.terrainMaterials) {
 			setShaderStorageBuffer(m, "tileOrigins", this.originsBuffer);
