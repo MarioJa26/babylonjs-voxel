@@ -553,10 +553,6 @@ export class HeldItemView {
 			if (this._activeMesh) setMeshVisible(this._activeMesh, false);
 			this._activeMesh = null;
 			this._activeKey = key;
-			this._swingT = Number.POSITIVE_INFINITY;
-			this._activeLightX = Number.NaN;
-			this._activeLightY = Number.NaN;
-			this._activeLightZ = Number.NaN;
 		}
 		this._showActive();
 	}

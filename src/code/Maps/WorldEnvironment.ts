@@ -140,7 +140,7 @@ export class WorldEnvironment {
 	private lastMoonDirX = NaN;
 	private lastMoonDirY = NaN;
 	private lastMoonDirZ = NaN;
-	private lastMoonPhase = NaN;
+	private lastMoonIllum = NaN;
 
 	// Twinkle clock (seconds) for the sky shader's star field. Independent
 	// of the sun — stars keep twinkling while the sun is held static.
@@ -343,29 +343,28 @@ export class WorldEnvironment {
 		const mx = this.moonDirectionUniform[0];
 		const my = this.moonDirectionUniform[1];
 		const mz = this.moonDirectionUniform[2];
+		// 0 = new moon, 1 = full moon. Precomputed here so the shader
+		// doesn't evaluate cos() per pixel.
+		const moonIllum = 0.5 - 0.5 * Math.cos(this.moonPhase * TWO_PI);
 
 		if (
 			this.skyMaterial &&
 			(mx !== this.lastMoonDirX ||
 				my !== this.lastMoonDirY ||
 				mz !== this.lastMoonDirZ ||
-				this.moonPhase !== this.lastMoonPhase)
+				moonIllum !== this.lastMoonIllum)
 		) {
-			this.moonDirectionUniform[0] = mx;
-			this.moonDirectionUniform[1] = my;
-			this.moonDirectionUniform[2] = mz;
-
 			setShaderUniform(
 				this.skyMaterial,
 				"moonDirection",
 				this.moonDirectionUniform,
 			);
-			setShaderUniform(this.skyMaterial, "moonPhase", this.moonPhase);
+			setShaderUniform(this.skyMaterial, "moonIllum", moonIllum);
 
 			this.lastMoonDirX = mx;
 			this.lastMoonDirY = my;
 			this.lastMoonDirZ = mz;
-			this.lastMoonPhase = this.moonPhase;
+			this.lastMoonIllum = moonIllum;
 		}
 	}
 
