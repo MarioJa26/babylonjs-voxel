@@ -799,6 +799,32 @@ class FarTileManagerImpl {
 		return this.engine != null;
 	}
 
+	public reset(): void {
+		for (const entry of this.tiles.values()) {
+			const levelIndex = entry.levelIndex;
+			const arena = this.terrainArenas[levelIndex];
+			if (arena && entry.opaque) {
+				arena.free(entry.opaque);
+			}
+			if (entry.opaque) {
+				this.terrainStraight[levelIndex].removeSlot(entry.opaque);
+				this.terrainReversed[levelIndex].removeSlot(entry.opaque);
+			}
+			if (entry.water) {
+				this.waterArena.free(entry.water);
+				this.waterReversed.removeSlot(entry.water);
+			}
+			this.releaseOrigin(entry.originSlot);
+		}
+
+		this.tiles.clear();
+		this.pendingByKey.clear();
+		this.keyByRequestId.clear();
+		this.lastPlayerChunkX = Number.NaN;
+		this.lastPlayerChunkZ = Number.NaN;
+		ChunkWorkerPool.getInstance().resetFarTileRequests();
+	}
+
 	// ------------------------------------------------------------------
 	// Streaming
 	// ------------------------------------------------------------------
@@ -1660,6 +1686,10 @@ export const FarTileManager = {
 	handleResult(data: FarTileGeneratedMessage): void {
 		if (!isFarTilesEnabled()) return;
 		FarTileManagerImpl.getInstance().handleResult(data);
+	},
+
+	reset(): void {
+		FarTileManagerImpl.peekInstance()?.reset();
 	},
 
 	isInitialized(): boolean {

@@ -148,11 +148,19 @@ export interface ChunkStreamingControllerAdapter {
 	onQueueSnapshotChanged?(): void;
 }
 
-// Column-top cache for the far-band air skip in processTargetChunkCoordinate.
-// Key packs (x,z) at 16 bits each; collisions only yield a stale approximate
-// height, which at worst delays a chunk by one ring — never corrupts state.
-const COL_TOP_CACHE_MAX = 16384;
-const colTopCache = new Map<number, number>();
+// One cached profile per (x,z) column. Previously this was two independent
+// caches (column top + burial boundary) with copy-pasted lookup/eviction
+// code; they derive from the same heightfield, so one entry serves every
+// consumer (sky guard, burial cull, unload symmetry).
+interface ColumnProfile {
+	// Exclusive top: first chunk fully above the surface (water-aware).
+	topY: number;
+	// Largest chunkY whose entire volume lies below the true surface; a
+	// target chunk is fully buried when chunkY < buriedTopY.
+	buriedTopY: number;
+}
+const COLUMN_PROFILE_CACHE_MAX = 16384;
+const columnProfileCache = new Map<number, ColumnProfile>();
 
 // Collision-free column key for signed 32-bit chunk coordinates: 26 bits per
 // axis (aliases only beyond ±33.5M chunks — far outside any playable range,
@@ -165,51 +173,10 @@ function packColumnKey(x: number, z: number): number {
 	return (x & 0x3ffffff) * COLUMN_KEY_AXIS_STRIDE + (z & 0x3ffffff);
 }
 
-function columnTopChunkY(x: number, z: number): number {
-	const key = packColumnKey(x, z);
-	if (frameCacheActive) {
-		const fc = frameColTopCache.get(key);
-		if (fc !== undefined) return fc;
-	}
-	const cached = colTopCache.get(key);
-	if (cached !== undefined) {
-		if (frameCacheActive) frameColTopCache.set(key, cached);
-		return cached;
-	}
-
-	const h = getFinalTerrainHeight(x * Chunk.SIZE + 16, z * Chunk.SIZE + 16);
-	const topY = effectiveColumnTopChunkY(h);
-	colTopCache.set(key, topY);
-	if (frameCacheActive) frameColTopCache.set(key, topY);
-
-	if (colTopCache.size > COL_TOP_CACHE_MAX) {
-		// FIFO-evict the oldest quarter instead of a wholesale clear(): a full
-		// reset turned steady-state hit-rates into a cold-start spike exactly
-		// while chunks were streaming in (every subsequent column paid a
-		// terrain-height noise evaluation until the cache warmed again).
-		// Heights are deterministic, so evicted entries just recompute.
-		let toEvict = COL_TOP_CACHE_MAX >> 2;
-		for (const k of colTopCache.keys()) {
-			colTopCache.delete(k);
-			if (--toEvict <= 0) break;
-		}
-	}
-
-	return topY;
-}
-
-// Burial cache for the far-band underground cull in undergroundDesired.
-// Value is the largest chunkY whose entire volume lies below the true surface
-// over the column pair's chunk footprint; a target chunk is fully buried when
-// chunkY < value.
-const BURIED_CACHE_MAX = COL_TOP_CACHE_MAX;
-const buriedCache = new Map<number, number>();
-
-// Per-frame memoization for height queries — avoids repeated Map lookups +
+// Per-frame memoization for column profiles — avoids repeated Map lookups +
 // noise evals when many Y-levels share the same (x,z) column in one
 // updateChunksAround tick (e.g. processMovementRings scans a vertical slab).
-const frameBuriedCache = new Map<number, number>();
-const frameColTopCache = new Map<number, number>();
+const frameProfileCache = new Map<number, ColumnProfile>();
 let frameInCaveCache = false;
 let frameCacheActive = false;
 
@@ -221,33 +188,46 @@ let frameCacheActive = false;
 //   their whole interior rendered.
 const BURIED_SAFETY_MARGIN = Chunk.SIZE / 2 + SURFACE_DENSITY_INFLUENCE_RANGE;
 
-function buriedTopChunkY(x: number, z: number): number {
+function columnProfile(x: number, z: number): ColumnProfile {
 	const key = packColumnKey(x, z);
 	if (frameCacheActive) {
-		const fc = frameBuriedCache.get(key);
+		const fc = frameProfileCache.get(key);
 		if (fc !== undefined) return fc;
 	}
-	const cached = buriedCache.get(key);
+	const cached = columnProfileCache.get(key);
 	if (cached !== undefined) {
-		if (frameCacheActive) frameBuriedCache.set(key, cached);
+		if (frameCacheActive) frameProfileCache.set(key, cached);
 		return cached;
 	}
 
+	// The center sample doubles as columnMinHeight's mid sample (fhc-cached),
+	// so this costs one sampling pass per column, not two.
+	const centerH = getFinalTerrainHeight(
+		x * Chunk.SIZE + 16,
+		z * Chunk.SIZE + 16,
+	);
 	const minH = columnMinHeight(x, z);
+	const profile: ColumnProfile = {
+		topY: effectiveColumnTopChunkY(centerH),
+		buriedTopY: Math.floor((minH - BURIED_SAFETY_MARGIN) / Chunk.SIZE),
+	};
+	columnProfileCache.set(key, profile);
+	if (frameCacheActive) frameProfileCache.set(key, profile);
 
-	const topY = Math.floor((minH - BURIED_SAFETY_MARGIN) / Chunk.SIZE);
-	buriedCache.set(key, topY);
-	if (frameCacheActive) frameBuriedCache.set(key, topY);
-
-	if (buriedCache.size > BURIED_CACHE_MAX) {
-		let toEvict = BURIED_CACHE_MAX >> 2;
-		for (const k of buriedCache.keys()) {
-			buriedCache.delete(k);
+	if (columnProfileCache.size > COLUMN_PROFILE_CACHE_MAX) {
+		// FIFO-evict the oldest quarter instead of a wholesale clear(): a full
+		// reset turned steady-state hit-rates into a cold-start spike exactly
+		// while chunks were streaming in (every subsequent column paid a
+		// terrain-height noise evaluation until the cache warmed again).
+		// Heights are deterministic, so evicted entries just recompute.
+		let toEvict = COLUMN_PROFILE_CACHE_MAX >> 2;
+		for (const k of columnProfileCache.keys()) {
+			columnProfileCache.delete(k);
 			if (--toEvict <= 0) break;
 		}
 	}
 
-	return topY;
+	return profile;
 }
 
 /**
@@ -268,7 +248,7 @@ function buriedChunkCulled(
 	} else {
 		if (isInCave()) return false;
 	}
-	return chunkY < buriedTopChunkY(chunkX, chunkZ);
+	return chunkY < columnProfile(chunkX, chunkZ).buriedTopY;
 }
 
 export type StreamingStageTimings = {
@@ -515,8 +495,7 @@ export class ChunkStreamingController {
 		const caveState = isInCave();
 
 		// Activate per-frame memoization for height queries.
-		frameBuriedCache.clear();
-		frameColTopCache.clear();
+		frameProfileCache.clear();
 		frameInCaveCache = caveState;
 		frameCacheActive = true;
 
@@ -935,8 +914,7 @@ export class ChunkStreamingController {
 		// updateChunksAround's frame cache so each phase is self-contained).
 		const wasActive = frameCacheActive;
 		if (!wasActive) {
-			frameBuriedCache.clear();
-			frameColTopCache.clear();
+			frameProfileCache.clear();
 			frameCacheActive = true;
 		}
 		frameInCaveCache = caveState;
@@ -1012,7 +990,7 @@ export class ChunkStreamingController {
 		// ALLOCATION GUARD (profile: 45% of heap churn via `new Chunk` for empty
 		// sky cells): skip columns provably above terrain. Reuses per-frame
 		// columnTop cache so the height probe is free after first Y in column.
-		if (y >= 0 && y > columnTopChunkY(x, z) + 1) {
+		if (y >= 0 && y > columnProfile(x, z).topY + 1) {
 			return;
 		}
 
@@ -1147,6 +1125,7 @@ export class ChunkStreamingController {
 			);
 		}
 	}
+
 	private ensureUndergroundBand(
 		chunkX: number,
 		chunkY: number,
@@ -1156,32 +1135,57 @@ export class ChunkStreamingController {
 		const bandH = lodRuleSet.horizontalRadiusFor(UNDERGROUND_SKIP_LOD - 1);
 		const verticalRange = undergroundVerticalRange(lodRuleSet);
 
+		// The underground band never includes y >= 0.
+		const endY = Math.min(-1, chunkY + verticalRange);
+		if (endY < SETTING_PARAMS.MIN_CHUNK_Y) {
+			return;
+		}
+
 		const startY = Math.max(SETTING_PARAMS.MIN_CHUNK_Y, chunkY - verticalRange);
+
+		if (startY > endY) {
+			return;
+		}
+
 		const startX = chunkX - bandH;
 		const endX = chunkX + bandH;
 		const startZ = chunkZ - bandH;
 		const endZ = chunkZ + bandH;
 
-		// Hoisted: buriedChunkCulled consults the same flag per coordinate.
-		const caveState = isInCave();
+		// Use the frame-cached state while an update is active. This avoids
+		// another runtime-state lookup and keeps the burial decision consistent
+		// throughout the streaming pass.
+		const caveState = frameCacheActive ? frameInCaveCache : isInCave();
+		const cullRadius = UNDERGROUND_CULL_EXEMPT_RADIUS;
 
 		for (let x = startX; x <= endX; x++) {
-			const absX = Math.abs(x - chunkX);
+			const relX = x - chunkX;
+			const absX = relX < 0 ? -relX : relX;
 
 			for (let z = startZ; z <= endZ; z++) {
-				const absZ = Math.abs(z - chunkZ);
+				const relZ = z - chunkZ;
+				const absZ = relZ < 0 ? -relZ : relZ;
 				const hDist = absX > absZ ? absX : absZ;
 
-				// Outdoors beyond the exempt core, every Y below the burial
-				// boundary is guaranteed rejected — skip straight past it
-				// instead of paying a rejection pass per coordinate.
-				let scanStart = startY;
-				if (!caveState && hDist > UNDERGROUND_CULL_EXEMPT_RADIUS) {
-					const boundary = buriedTopChunkY(x, z);
-					if (scanStart < boundary) scanStart = boundary;
+				let columnStartY = startY;
+
+				// Outside caves, coordinates below buriedTopY are guaranteed to
+				// be rejected by buriedChunkCulled(). Jump directly to the first
+				// potentially visible chunk instead of testing every buried Y.
+				if (!caveState && hDist > cullRadius) {
+					const buriedTopY = columnProfile(x, z).buriedTopY;
+
+					if (columnStartY < buriedTopY) {
+						columnStartY = buriedTopY;
+					}
+
+					// The whole scanned part of this column is fully buried.
+					if (columnStartY > endY) {
+						continue;
+					}
 				}
 
-				for (let y = scanStart; y <= -1; y++) {
+				for (let y = columnStartY; y <= endY; y++) {
 					this.processTargetChunkCoordinate(
 						x,
 						y,
@@ -1442,7 +1446,7 @@ export class ChunkStreamingController {
 				const fullyBuriedAndCullable =
 					!caveState &&
 					hDist > UNDERGROUND_CULL_EXEMPT_RADIUS &&
-					chunk.chunkY < buriedTopChunkY(chunk.chunkX, chunk.chunkZ);
+					chunk.chunkY < columnProfile(chunk.chunkX, chunk.chunkZ).buriedTopY;
 
 				if (
 					outsideHorizontalBand ||
@@ -1458,7 +1462,7 @@ export class ChunkStreamingController {
 			const fullyBuriedAndCullable =
 				!caveState &&
 				hDist > UNDERGROUND_CULL_EXEMPT_RADIUS &&
-				chunk.chunkY < buriedTopChunkY(chunk.chunkX, chunk.chunkZ);
+				chunk.chunkY < columnProfile(chunk.chunkX, chunk.chunkZ).buriedTopY;
 
 			if (
 				hDist > removeRadius ||

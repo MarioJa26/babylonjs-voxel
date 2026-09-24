@@ -1,7 +1,9 @@
-import type { Vec3 } from "@babylonjs/lite";
-import { resolveMobFromPick } from "@/code/Entities/Mobs/MobInstancePool";
+import { type Vec3, vec3 } from "@babylonjs/lite";
+import type { Mob } from "@/code/Entities/Mobs/Mob";
+import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
 import { getMeleeDamage, getMeleeRange } from "@/code/Entities/WeaponStats";
 import type { IControls } from "@/code/Interface/IControls";
+import { playMobDamage } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { validateChunksAround } from "@/code/World/Chunk/ChunkLoadingSystem";
@@ -9,7 +11,6 @@ import { isUiOpen, UiFocus } from "../../Lib/GameRuntimeState";
 import type { BlockRaycastHit } from "../Hud/BlockHighlight/BlockRaycaster";
 import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
 import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakingBlockHandler";
-import { Crosshair } from "../Hud/Crosshair/Crosshair";
 import { swingHeldItemView } from "../Inventory/HeldItemView";
 import type { Item } from "../Inventory/Item";
 import { getRegisteredItemById } from "../Inventory/ItemRegistry";
@@ -23,6 +24,36 @@ import type { Player } from "../Player";
 import { Gamemodes } from "../PlayerStats";
 import type { PlayerVehicleMotor } from "../PlayerVehicleMotor";
 import { handleDebugKey } from "./DebugControlHelper";
+
+type MeleeRay = {
+	startX: number;
+	startY: number;
+	startZ: number;
+	dirX: number;
+	dirY: number;
+	dirZ: number;
+	reach: number;
+};
+
+type LocalMeleeHit = {
+	kind: "local";
+	mob: Mob;
+	distance: number;
+	x: number;
+	y: number;
+	z: number;
+};
+
+type RemoteMeleeHit = {
+	kind: "remote";
+	id: number;
+	distance: number;
+	x: number;
+	y: number;
+	z: number;
+};
+
+type MeleeHit = LocalMeleeHit | RemoteMeleeHit;
 
 export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	readonly controlType = "walking";
@@ -122,19 +153,11 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		if (WalkingControls.MOUSE1.includes(mouseEvent.button)) {
 			if (isKeyDown) {
 				this.#firePunch();
-				const target = Crosshair.pickMobTarget(this.#player);
+				const target = this.#resolveMeleeTarget();
 				if (target) {
-					const mob = resolveMobFromPick(target.mesh, target.thinInstanceIndex);
-					if (mob) {
-						// Punch damage comes from the held weapon (WeaponStats);
-						// empty hand keeps the classic 1-hp hit.
-						mob.takeDamage(getMeleeDamage(this.selectedItem?.itemId));
-						return;
-					}
+					this.#applyMeleeHit(target);
+					return;
 				}
-				// Multiplayer: local pools hold no server mobs, so sweep the
-				// remote mobs along the view ray and send a validated hit.
-				if (this.#tryRemoteMelee()) return;
 				this.#blockBreaking.start();
 				this.#miningHeld = true;
 			} else {
@@ -211,46 +234,144 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		);
 	}
 
-	/**
-	 * Melee a server-authoritative (remote) mob in multiplayer. Sweeps the
-	 * view ray against RemoteMobManager and sends MobDamage when it lands.
-	 * True when a swing connected (caller must not start block breaking).
-	 */
-	#tryRemoteMelee(): boolean {
+	#applyMeleeHit(target: MeleeHit): void {
+		this.#miningHeld = false;
+		this.#blockBreaking.stop();
+		const damage = getMeleeDamage(this.selectedItem?.itemId);
+		if (target.kind === "local") {
+			target.mob.takeDamage(damage, vec3(target.x, target.y, target.z));
+			return;
+		}
+
+		playMobDamage(target.x, target.y, target.z, damage);
 		const remote = Map1.remoteMobManager;
 		const netClient = this.#player.networkManager?.netClient;
-		if (!remote || !netClient?.isConnected) return false;
+		if (!remote || !netClient) return;
+		netClient.sendMobDamage(target.id, damage);
+		remote.noteOutgoingDamage(target.id);
+	}
 
+	#getMeleeRay(): MeleeRay {
 		const cam = this.#player.playerCamera.playerCamera;
-		const px = cam.position.x;
-		const py = cam.position.y;
-		const pz = cam.position.z;
-		let dx = cam.target.x - px;
-		let dy = cam.target.y - py;
-		let dz = cam.target.z - pz;
-		const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-		dx /= len;
-		dy /= len;
-		dz /= len;
+		const startX = cam.position.x;
+		const startY = cam.position.y;
+		const startZ = cam.position.z;
+		let dirX = cam.target.x - startX;
+		let dirY = cam.target.y - startY;
+		let dirZ = cam.target.z - startZ;
+		const length = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ) || 1;
+		dirX /= length;
+		dirY /= length;
+		dirZ /= length;
 
-		const reach = Math.max(3.2, getMeleeRange(this.selectedItem?.itemId));
+		return {
+			startX,
+			startY,
+			startZ,
+			dirX,
+			dirY,
+			dirZ,
+			reach: getMeleeRange(this.selectedItem?.itemId),
+		};
+	}
+
+	#findLocalMeleeHit(ray: MeleeRay): LocalMeleeHit | null {
+		const registry = Map1.mobRegistry;
+		if (!registry) return null;
+
+		const endX = ray.startX + ray.dirX * ray.reach;
+		const endY = ray.startY + ray.dirY * ray.reach;
+		const endZ = ray.startZ + ray.dirZ * ray.reach;
+		let bestT = Number.POSITIVE_INFINITY;
+		let bestMob: Mob | null = null;
+
+		for (const mob of registry.getAllMobs()) {
+			if (mob.isDisposed) continue;
+			const halfExtents = mob.hitHalfExtents;
+			const t = segmentMobHit(
+				ray.startX,
+				ray.startY,
+				ray.startZ,
+				endX,
+				endY,
+				endZ,
+				mob.position.x,
+				mob.position.y,
+				mob.position.z,
+				mob.facingYaw,
+				halfExtents.x,
+				halfExtents.y,
+				halfExtents.z,
+			);
+			if (t !== null && t < bestT) {
+				bestT = t;
+				bestMob = mob;
+			}
+		}
+
+		if (bestMob === null) return null;
+		return {
+			kind: "local",
+			mob: bestMob,
+			distance: bestT * ray.reach,
+			x: ray.startX + (endX - ray.startX) * bestT,
+			y: ray.startY + (endY - ray.startY) * bestT,
+			z: ray.startZ + (endZ - ray.startZ) * bestT,
+		};
+	}
+
+	#findRemoteMeleeHit(ray: MeleeRay): RemoteMeleeHit | null {
+		const remote = Map1.remoteMobManager;
+		const netClient = this.#player.networkManager?.netClient;
+		if (!remote || !netClient?.isConnected) return null;
+
 		const hit = remote.findSegmentHit(
-			px,
-			py,
-			pz,
-			px + dx * reach,
-			py + dy * reach,
-			pz + dz * reach,
+			ray.startX,
+			ray.startY,
+			ray.startZ,
+			ray.startX + ray.dirX * ray.reach,
+			ray.startY + ray.dirY * ray.reach,
+			ray.startZ + ray.dirZ * ray.reach,
 		);
-		if (!hit) return false;
-		netClient.sendMobDamage(hit.id, getMeleeDamage(this.selectedItem?.itemId));
-		// Optimistic kill-link: the server echo skips the sender, so record
-		// the hit locally or our own kills show no burst/XP.
-		remote.noteOutgoingDamage(hit.id);
-		return true;
+		if (!hit) return null;
+
+		return {
+			kind: "remote",
+			id: hit.id,
+			distance: Math.sqrt(
+				(hit.x - ray.startX) ** 2 +
+					(hit.y - ray.startY) ** 2 +
+					(hit.z - ray.startZ) ** 2,
+			),
+			x: hit.x,
+			y: hit.y,
+			z: hit.z,
+		};
+	}
+
+	#resolveMeleeTarget(): MeleeHit | null {
+		const ray = this.#getMeleeRay();
+		const localHit = this.#findLocalMeleeHit(ray);
+		const remoteHit = this.#findRemoteMeleeHit(ray);
+		let target: MeleeHit | null = null;
+
+		if (localHit && (!remoteHit || localHit.distance <= remoteHit.distance)) {
+			target = localHit;
+		} else if (remoteHit) {
+			target = remoteHit;
+		}
+
+		if (!target) return null;
+		const blockHit = pickTarget(this.#player);
+		if (blockHit && blockHit.t <= target.distance) return null;
+		return target;
 	}
 
 	public update(hit?: BlockRaycastHit | null): void {
+		if (this.#miningHeld && this.#blockBreaking.isActive) {
+			const target = this.#resolveMeleeTarget();
+			if (target) this.#applyMeleeHit(target);
+		}
 		this.#blockBreaking.update(hit);
 
 		// While the mining button is held, repeat the punch swing so the

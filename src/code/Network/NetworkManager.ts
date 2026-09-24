@@ -31,6 +31,7 @@ import {
 	setBlock,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
+import { FarTileManager } from "@/code/World/FarTiles/FarTileManager";
 import { setSpawnPosition } from "@/code/World/SpawnPoint";
 import { getWorldNameFromUrl, worldSeedFor } from "@/code/World/WorldContext";
 import { WorldStorage } from "@/code/World/WorldStorage";
@@ -212,6 +213,7 @@ export class NetworkManager {
 					config.dayDurationMs,
 					config.dayCycle,
 				);
+				FarTileManager.reset();
 				resetDistantTerrain();
 			},
 			onSpawnPosition: (pos) => {

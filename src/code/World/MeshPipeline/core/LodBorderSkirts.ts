@@ -13,10 +13,11 @@ import type { MeshBuildSession, PaddedGrids } from "./WorkerMeshHelpers";
  * A coarse chunk bordering a finer one can't match it exactly (the coarse
  * mesh samples every lodStep-th voxel), so we drop an outward-facing wall
  * along owned borders, hiding cracks like geo-clipmap skirts. One skirt
- * segment is emitted per contiguous solid run: walls never span air gaps
- * (canopy overhangs, tower floors), each run keeps its own texture, and
- * light is sampled from air — never from inside the solid voxel (~0 light
- * rendered every skirt black in daylight).
+ * segment is emitted per contiguous same-block run: walls never span air
+ * gaps or water (canopy overhangs, tower floors, lakes), and each segment
+ * keeps the texture/tint of the block it goes down from. Light is sampled
+ * from the air side and maxed over the run — never from inside the solid
+ * voxel, whose stored light is ~0 (that rendered every skirt black).
  *
  * Far (+X/+Z) skirts REPLACE the greedy far slice (skipped via
  * skirtOwnsPosX/Z in VoxelMaskExtractor) — emitting both would z-fight.
@@ -164,25 +165,6 @@ function solidPacked(session: MeshBuildSession, idx: number): number {
 		: 0;
 }
 
-/** Skirt light: air above the run top, maxed with outward neighbor air. */
-function skirtLight(
-	session: MeshBuildSession,
-	slot: number,
-	idx: number,
-): number {
-	const light = session.light;
-	const above = light[idx + session.ps];
-	const outward =
-		slot === 0
-			? light[idx - 1]
-			: slot === 1
-				? light[idx + 1]
-				: slot === 2
-					? light[idx - session.ps2]
-					: light[idx + session.ps2];
-	return above > outward ? above : outward;
-}
-
 function isWaterPacked(packed: number): boolean {
 	return getSourceBlockId(unpackBlockId(packed & 0xffff)) === WATER_BLOCK_ID;
 }
@@ -229,9 +211,10 @@ function emitSkirt(
 
 /**
  * One border column, single top-to-bottom pass: finds the top, then emits
- * one skirt segment per contiguous solid run down to stopY. On light-only
- * relights (blocks provably unchanged) the cached top is reused as the
- * start; light is always re-read fresh.
+ * one skirt segment per contiguous same-block run down to stopY. Water
+ * breaks runs (it never emits skirt quads); light is the max air-side
+ * light seen over the run, re-read fresh on every build including
+ * light-only relights (blocks provably unchanged, cached top reused).
  */
 function emitBorderColumn(
 	session: MeshBuildSession,
@@ -251,6 +234,11 @@ function emitBorderColumn(
 	const size = session.size;
 	const ps = session.ps;
 	const ps2 = session.ps2;
+	const light = session.light;
+	// Single-step offset from a column voxel to its outward air neighbor
+	// (slot 0=-X, 1=+X, 2=-Z, 3=+Z). The wall is lit from the air side —
+	// never from inside the solid, whose stored light is ~0.
+	const outwardOff = slot === 0 ? -1 : slot === 1 ? 1 : slot === 2 ? -ps2 : ps2;
 
 	let startY = size - 1;
 	let cacheHit = false;
@@ -276,6 +264,7 @@ function emitBorderColumn(
 	let stopY = 0;
 	let runTop = -1;
 	let runPacked = 0;
+	let runBlockId = 0;
 	let runLight = 0;
 
 	let idx = cx + 1 + (startY + 1) * ps + (cz + 1) * ps2;
@@ -319,16 +308,69 @@ function emitBorderColumn(
 			}
 			continue;
 		}
+		if (isWaterPacked(packed)) {
+			// Water never emits skirt quads (opaque bucket): a lake-surface
+			// column keeps its prior look (no skirt below the waterline),
+			// deeper water just breaks the run like an air gap.
+			if (firstY < 0) break;
+			if (runTop >= 0) {
+				emitSkirt(
+					out,
+					runTop,
+					runPacked,
+					runLight,
+					axis,
+					back,
+					qx,
+					y + 1,
+					qz,
+					span,
+					face,
+				);
+				runTop = -1;
+			}
+			continue;
+		}
+		const blockId = unpackBlockId(packed & 0xffff);
 		if (firstY < 0) {
 			firstY = y;
 			firstPacked = packed;
 			stopY = y + 1 - depth;
-			if (isWaterPacked(packed)) break;
 		}
 		if (runTop < 0) {
 			runTop = y;
 			runPacked = packed;
-			runLight = skirtLight(session, slot, idx);
+			runBlockId = blockId;
+			const above = light[idx + ps];
+			const outward = light[idx + outwardOff];
+			runLight = above > outward ? above : outward;
+		} else if (blockId !== runBlockId) {
+			// Different block = different texture/tint: close and reopen so
+			// the wall matches the block it goes down from.
+			emitSkirt(
+				out,
+				runTop,
+				runPacked,
+				runLight,
+				axis,
+				back,
+				qx,
+				y + 1,
+				qz,
+				span,
+				face,
+			);
+			runTop = y;
+			runPacked = packed;
+			runBlockId = blockId;
+			const above = light[idx + ps];
+			const outward = light[idx + outwardOff];
+			runLight = above > outward ? above : outward;
+		} else {
+			// Same texture: extend the run, keeping the brightest air-side
+			// light seen so a shaded run top can't blacken a lit wall.
+			const outward = light[idx + outwardOff];
+			if (outward > runLight) runLight = outward;
 		}
 	}
 	if (runTop >= 0) {

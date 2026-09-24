@@ -471,6 +471,7 @@ export type DistantTerrainGeneratedMessage = {
 	requestId: number;
 	centerChunkX: number;
 	centerChunkZ: number;
+	failed?: boolean;
 };
 
 export type WorkerResponseData =

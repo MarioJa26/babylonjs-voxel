@@ -24,6 +24,7 @@ let lastGridCenterChunkX = Number.NaN;
 let lastGridCenterChunkZ = Number.NaN;
 let lastCenterChunkX = Number.NaN;
 let lastCenterChunkZ = Number.NaN;
+let lastRenderDistance = Number.NaN;
 
 let currentRenderDistance = 0;
 let farTilesActive = false;
@@ -116,7 +117,9 @@ export function generate(
 	ensureBuffers(r, gStep);
 
 	const firstBuild =
-		Number.isNaN(lastGridCenterChunkX) || Number.isNaN(lastGridCenterChunkZ);
+		Number.isNaN(lastGridCenterChunkX) ||
+		Number.isNaN(lastGridCenterChunkZ) ||
+		currentRenderDistance !== lastRenderDistance;
 
 	if (firstBuild) {
 		fullGenerate(
@@ -211,6 +214,7 @@ export function generate(
 	lastGridCenterChunkZ = gridCenterChunkZ;
 	lastCenterChunkX = centerChunkX;
 	lastCenterChunkZ = centerChunkZ;
+	lastRenderDistance = currentRenderDistance;
 
 	out.centerChunkX = centerChunkX;
 	out.centerChunkZ = centerChunkZ;
@@ -275,6 +279,7 @@ function resetTracking(): void {
 	lastGridCenterChunkZ = Number.NaN;
 	lastCenterChunkX = Number.NaN;
 	lastCenterChunkZ = Number.NaN;
+	lastRenderDistance = Number.NaN;
 }
 
 /**

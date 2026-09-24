@@ -371,6 +371,7 @@ export class ChunkWorkerPool {
 
 	private distantTerrainInFlight = false;
 	private nextDistantTerrainRequestId = 1;
+	private latestDistantTerrainRequestId = 0;
 
 	// ---------------------------------------------------------------------------
 	// LevelDB chunk storage (replaces OPFS)
@@ -625,6 +626,14 @@ export class ChunkWorkerPool {
 	public onDistantTerrainGenerated:
 		| ((data: DistantTerrainGeneratedMessage) => void)
 		| null = null;
+
+	public invalidateDistantTerrain(): void {
+		this.latestDistantTerrainRequestId = 0;
+	}
+
+	private getDistantTerrainWorkerIndex(): number {
+		return Math.min(1, Math.max(0, this.workers.length - 1));
+	}
 
 	// -------------------------------------------------------------------------
 	// Idle-worker management
@@ -2273,6 +2282,7 @@ export class ChunkWorkerPool {
 		gridStep: number,
 	): void {
 		const requestId = this.nextDistantTerrainRequestId++;
+		this.latestDistantTerrainRequestId = requestId;
 		const task = {
 			requestId,
 			centerChunkX,
@@ -2310,6 +2320,11 @@ export class ChunkWorkerPool {
 	/** Callback fired on the main thread when a worker finishes a far tile. */
 	public onFarTileGenerated: ((data: FarTileGeneratedMessage) => void) | null =
 		null;
+
+	public resetFarTileRequests(): void {
+		this.farTileQueue.length = 0;
+		this.farTileQueueReadIdx = 0;
+	}
 
 	public scheduleFarTile(
 		levelIndex: number,
@@ -2529,8 +2544,14 @@ export class ChunkWorkerPool {
 				}
 			}
 		} else if (type === WorkerTaskType.GenerateDistantTerrain_Generated) {
-			this.onDistantTerrainGenerated?.(data as DistantTerrainGeneratedMessage);
+			const generated = data as DistantTerrainGeneratedMessage;
 			this.distantTerrainInFlight = false;
+			if (
+				!generated.failed &&
+				generated.requestId === this.latestDistantTerrainRequestId
+			) {
+				this.onDistantTerrainGenerated?.(generated);
+			}
 		} else if (type === WorkerTaskType.GenerateFarTile) {
 			this.farTilesInFlightCount = Math.max(0, this.farTilesInFlightCount - 1);
 			this.onFarTileGenerated?.(data as FarTileGeneratedMessage);
@@ -3748,7 +3769,10 @@ export class ChunkWorkerPool {
 				this.distantTerrainTaskQueueReadIdx <
 					this.distantTerrainTaskQueue.length &&
 				!this.distantTerrainInFlight &&
-				this.distantTerrainReadyWorkers.size > 0
+				this.distantTerrainReadyWorkers.has(
+					this.getDistantTerrainWorkerIndex(),
+				) &&
+				this.idleWorkerSet.has(this.getDistantTerrainWorkerIndex())
 			) {
 				distantTask =
 					this.distantTerrainTaskQueue[this.distantTerrainTaskQueueReadIdx++];
@@ -3870,34 +3894,14 @@ export class ChunkWorkerPool {
 			}
 
 			if (taskType === TaskType.DistantTerrain) {
-				let readyIdleIndex = -1;
-
-				for (
-					let i = this._idleReadIdx;
-					i < this.idleWorkerIndices.length;
-					i++
+				const distantWorkerIndex = this.getDistantTerrainWorkerIndex();
+				if (
+					!this.distantTerrainReadyWorkers.has(distantWorkerIndex) ||
+					!this.idleWorkerSet.has(distantWorkerIndex) ||
+					!this._swapPreferredIdleWorkerToFront(distantWorkerIndex)
 				) {
-					if (this.distantTerrainReadyWorkers.has(this.idleWorkerIndices[i])) {
-						readyIdleIndex = i;
-						break;
-					}
-				}
-
-				if (readyIdleIndex === -1) {
 					this.distantTerrainTaskQueueReadIdx--;
 					break;
-				}
-
-				if (readyIdleIndex !== this._idleReadIdx) {
-					const frontIdx = this._idleReadIdx;
-					const frontWorker = this.idleWorkerIndices[frontIdx];
-					const readyWorker = this.idleWorkerIndices[readyIdleIndex];
-
-					this.idleWorkerIndices[frontIdx] = readyWorker;
-					this.idleWorkerIndices[readyIdleIndex] = frontWorker;
-
-					this.idleWorkerIndexPositions.set(readyWorker, frontIdx);
-					this.idleWorkerIndexPositions.set(frontWorker, readyIdleIndex);
 				}
 			}
 

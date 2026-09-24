@@ -35,7 +35,9 @@ export function segmentMobHit(
 	const midY = startY + dys * 0.5 - centerY;
 	const midZ = startZ + dzs * 0.5 - centerZ;
 	const segHalf = Math.sqrt(dxs * dxs + dys * dys + dzs * dzs) * 0.5;
-	const reach = segHalf + Math.max(halfX, halfY, halfZ);
+	const reach = segHalf + Math.sqrt(
+		halfX * halfX + halfY * halfY + halfZ * halfZ,
+	);
 	if (midX * midX + midY * midY + midZ * midZ > reach * reach) {
 		return null;
 	}
