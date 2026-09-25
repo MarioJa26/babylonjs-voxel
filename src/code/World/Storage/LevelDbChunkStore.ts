@@ -1066,62 +1066,39 @@ export class LevelDbChunkStore implements ChunkStorage {
 	}
 
 	setMeta(key: string, value: string): Promise<void> {
-		if (!this.db || !this.opened) {
-			return Promise.reject(new Error("LevelDbChunkStore is not open"));
-		}
-
-		if (this.closing) {
-			return Promise.reject(new Error("LevelDbChunkStore is closing"));
-		}
-
 		const storageKey = META_PREFIX + key;
-		const generation = ++this.metaGeneration;
-
-		this.pendingMeta.set(storageKey, { value, generation });
-
-		const promise = this.enqueueSingleWriteUnchecked({
+		return this.enqueueMetaOp(storageKey, value, {
 			kind: WriteOperationKind.Put,
 			key: storageKey,
 			value,
-		});
-
-		return promise.finally(() => {
-			const current = this.pendingMeta.get(storageKey);
-			if (current?.generation === generation) {
-				this.pendingMeta.delete(storageKey);
-			}
 		});
 	}
 
 	setMetaBytes(key: string, value: Uint8Array): Promise<void> {
-		if (!this.db || !this.opened) {
-			return Promise.reject(new Error("LevelDbChunkStore is not open"));
-		}
-
-		if (this.closing) {
-			return Promise.reject(new Error("LevelDbChunkStore is closing"));
-		}
-
 		const storageKey = META_PREFIX + key;
-		const generation = ++this.metaGeneration;
-
-		this.pendingMeta.set(storageKey, { value, generation });
-
-		const promise = this.enqueueSingleWriteUnchecked({
+		return this.enqueueMetaOp(storageKey, value, {
 			kind: WriteOperationKind.Put,
 			key: storageKey,
 			value,
 		});
-
-		return promise.finally(() => {
-			const current = this.pendingMeta.get(storageKey);
-			if (current?.generation === generation) {
-				this.pendingMeta.delete(storageKey);
-			}
-		});
 	}
 
 	deleteMeta(key: string): Promise<void> {
+		const storageKey = META_PREFIX + key;
+		return this.enqueueMetaOp(storageKey, null, {
+			kind: WriteOperationKind.Delete,
+			key: storageKey,
+		});
+	}
+
+	// Engine perf: cold meta path only (player pos, spawn, containers).
+	// Single guard + pendingMeta bookkeeping for set/setBytes/delete.
+	// Behavior identical (same rejection messages, same generation tracking).
+	private enqueueMetaOp(
+		storageKey: string,
+		pendingValue: string | Uint8Array | null,
+		operation: WriteOperation,
+	): Promise<void> {
 		if (!this.db || !this.opened) {
 			return Promise.reject(new Error("LevelDbChunkStore is not open"));
 		}
@@ -1130,18 +1107,14 @@ export class LevelDbChunkStore implements ChunkStorage {
 			return Promise.reject(new Error("LevelDbChunkStore is closing"));
 		}
 
-		const storageKey = META_PREFIX + key;
 		const generation = ++this.metaGeneration;
 
 		this.pendingMeta.set(storageKey, {
-			value: null,
+			value: pendingValue,
 			generation,
 		});
 
-		const promise = this.enqueueSingleWriteUnchecked({
-			kind: WriteOperationKind.Delete,
-			key: storageKey,
-		});
+		const promise = this.enqueueSingleWriteUnchecked(operation);
 
 		return promise.finally(() => {
 			const current = this.pendingMeta.get(storageKey);

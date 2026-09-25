@@ -473,6 +473,41 @@ function pushDirtyRange(
 	}
 }
 
+// Engine perf: rebuild-path helper (chunk-rate, not voxel-rate). Drains one
+// layer's dirty ranges back into the pool and returns a cleared live array,
+// allocating only when the layer never had one. Explicit kind branches keep
+// field access monomorphic.
+function takeDirtyRanges(
+	group: MergedMeshGroup,
+	kind: 0 | 1 | 2,
+): MergedFaceRange[] {
+	let ranges =
+		kind === 0
+			? group.dirtyOpaqueRanges
+			: kind === 1
+				? group.dirtyWaterRanges
+				: group.dirtyCutoutRanges;
+
+	if (ranges) {
+		for (let i = 0; i < ranges.length; i++) {
+			_rangePool.push(ranges[i]);
+		}
+
+		ranges.length = 0;
+	} else {
+		ranges = [];
+		if (kind === 0) {
+			group.dirtyOpaqueRanges = ranges;
+		} else if (kind === 1) {
+			group.dirtyWaterRanges = ranges;
+		} else {
+			group.dirtyCutoutRanges = ranges;
+		}
+	}
+
+	return ranges;
+}
+
 function markGroupDirty(group: MergedMeshGroup): void {
 	group.dirty = true;
 	dirtyGroups.add(group);
@@ -1000,12 +1035,20 @@ export function disposeAll(): void {
 // is harmless — vertex data is exposed as a subarray limited to the slot
 // extent, so the mesh's face count only changes when slots are acquired.
 
-function ensureOpaqueMergedCapacity(
+// Engine perf: single cold-path grow helper (explicit branches keep field
+// access monomorphic; only runs on capacity grow, never in per-frame hot path).
+function ensureLayerMergedCapacity(
 	group: MergedMeshGroup,
+	kind: 0 | 1 | 2,
 	faceCount: number,
 	maximumFaces: number,
 ): void {
-	let capacity = group.opaqueCapacityFaces;
+	let capacity =
+		kind === 0
+			? group.opaqueCapacityFaces
+			: kind === 1
+				? group.waterCapacityFaces
+				: group.cutoutCapacityFaces;
 	if (capacity >= faceCount) return;
 
 	capacity = Math.min(
@@ -1014,65 +1057,28 @@ function ensureOpaqueMergedCapacity(
 	);
 
 	const next = allocPooledU8(capacity * FACE_BYTES);
-	const previous = group.opaqueData;
+	const previous =
+		kind === 0
+			? group.opaqueData
+			: kind === 1
+				? group.waterData
+				: group.cutoutData;
 
 	if (previous) {
 		next.set(previous);
 		releasePooledU8(previous);
 	}
 
-	group.opaqueData = next;
-	group.opaqueCapacityFaces = capacity;
-}
-
-function ensureWaterMergedCapacity(
-	group: MergedMeshGroup,
-	faceCount: number,
-	maximumFaces: number,
-): void {
-	let capacity = group.waterCapacityFaces;
-	if (capacity >= faceCount) return;
-
-	capacity = Math.min(
-		Math.max(faceCount, capacity > 0 ? capacity * 2 : 0, 256),
-		maximumFaces,
-	);
-
-	const next = allocPooledU8(capacity * FACE_BYTES);
-	const previous = group.waterData;
-
-	if (previous) {
-		next.set(previous);
-		releasePooledU8(previous);
+	if (kind === 0) {
+		group.opaqueData = next;
+		group.opaqueCapacityFaces = capacity;
+	} else if (kind === 1) {
+		group.waterData = next;
+		group.waterCapacityFaces = capacity;
+	} else {
+		group.cutoutData = next;
+		group.cutoutCapacityFaces = capacity;
 	}
-
-	group.waterData = next;
-	group.waterCapacityFaces = capacity;
-}
-
-function ensureCutoutMergedCapacity(
-	group: MergedMeshGroup,
-	faceCount: number,
-	maximumFaces: number,
-): void {
-	let capacity = group.cutoutCapacityFaces;
-	if (capacity >= faceCount) return;
-
-	capacity = Math.min(
-		Math.max(faceCount, capacity > 0 ? capacity * 2 : 0, 256),
-		maximumFaces,
-	);
-
-	const next = allocPooledU8(capacity * FACE_BYTES);
-	const previous = group.cutoutData;
-
-	if (previous) {
-		next.set(previous);
-		releasePooledU8(previous);
-	}
-
-	group.cutoutData = next;
-	group.cutoutCapacityFaces = capacity;
 }
 
 // Engine optimization: Inlined Meshkind enum switch to reduce branching in the hot path
@@ -1201,44 +1207,11 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 
 	_statMembersSeen += memberCount;
 
-	let opaqueRanges = group.dirtyOpaqueRanges;
+	let opaqueRanges = takeDirtyRanges(group, 0);
 
-	if (opaqueRanges) {
-		for (let i = 0; i < opaqueRanges.length; i++) {
-			_rangePool.push(opaqueRanges[i]);
-		}
+	let waterRanges = takeDirtyRanges(group, 1);
 
-		opaqueRanges.length = 0;
-	} else {
-		opaqueRanges = [];
-		group.dirtyOpaqueRanges = opaqueRanges;
-	}
-
-	let waterRanges = group.dirtyWaterRanges;
-
-	if (waterRanges) {
-		for (let i = 0; i < waterRanges.length; i++) {
-			_rangePool.push(waterRanges[i]);
-		}
-
-		waterRanges.length = 0;
-	} else {
-		waterRanges = [];
-		group.dirtyWaterRanges = waterRanges;
-	}
-
-	let cutoutRanges = group.dirtyCutoutRanges;
-
-	if (cutoutRanges) {
-		for (let i = 0; i < cutoutRanges.length; i++) {
-			_rangePool.push(cutoutRanges[i]);
-		}
-
-		cutoutRanges.length = 0;
-	} else {
-		cutoutRanges = [];
-		group.dirtyCutoutRanges = cutoutRanges;
-	}
+	let cutoutRanges = takeDirtyRanges(group, 2);
 
 	let totalOpaque = 0;
 	let totalWater = 0;
@@ -1510,7 +1483,12 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	}
 
 	if (opaqueState.appendedFaces > 0) {
-		ensureOpaqueMergedCapacity(group, opaqueState.appendedFaces, maximumFaces);
+		ensureLayerMergedCapacity(
+			group,
+			0,
+			opaqueState.appendedFaces,
+			maximumFaces,
+		);
 	} else {
 		group.cachedOpaque = null;
 	}
@@ -1532,7 +1510,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	}
 
 	if (waterState.appendedFaces > 0) {
-		ensureWaterMergedCapacity(group, waterState.appendedFaces, maximumFaces);
+		ensureLayerMergedCapacity(group, 1, waterState.appendedFaces, maximumFaces);
 	} else {
 		group.cachedWater = null;
 	}
@@ -1554,7 +1532,12 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	}
 
 	if (cutoutState.appendedFaces > 0) {
-		ensureCutoutMergedCapacity(group, cutoutState.appendedFaces, maximumFaces);
+		ensureLayerMergedCapacity(
+			group,
+			2,
+			cutoutState.appendedFaces,
+			maximumFaces,
+		);
 	} else {
 		group.cachedCutout = null;
 	}

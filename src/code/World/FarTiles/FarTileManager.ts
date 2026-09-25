@@ -1426,38 +1426,40 @@ class FarTileManagerImpl {
 		if (!arena || !material || !arena.buffer || !this.originsBuffer) return;
 
 		if (!straight.mesh) {
-			const mesh = createQuadInstanceMesh(
+			attachFarTileMesh(
 				this.engine,
+				this.scene,
+				straight,
 				`farTilesLod${6 + levelIndex}s`,
 				STRAIGHT_INDICES,
+				material,
+				90,
+				arena.buffer,
+				this.originsBuffer,
 			);
-			mesh.material = material;
-			mesh.pickable = false;
-			// Explicit placement AFTER chunk opaque/cutout groups (order 0) —
-			// equal-depth coplanar cases resolve toward the real chunks.
-			mesh.renderOrder = 90;
-			bindFarTileBuffers(material, arena.buffer, this.originsBuffer);
-			addToScene(this.scene, mesh);
-			straight.mesh = mesh;
 		}
 		if (!reversed.mesh) {
-			const mesh = createQuadInstanceMesh(
+			attachFarTileMesh(
 				this.engine,
+				this.scene,
+				reversed,
 				`farTilesLod${6 + levelIndex}r`,
 				REVERSED_INDICES,
+				material,
+				90,
+				arena.buffer,
+				this.originsBuffer,
 			);
-			mesh.material = material;
-			mesh.pickable = false;
-			mesh.renderOrder = 90;
-			bindFarTileBuffers(material, arena.buffer, this.originsBuffer);
-			addToScene(this.scene, mesh);
-			reversed.mesh = mesh;
 		}
 		if (arena.bufferRebound) {
 			bindFarTileBuffers(material, arena.buffer, this.originsBuffer);
 		}
-		syncThinInstanceCount(straight.mesh, straight);
-		syncThinInstanceCount(reversed.mesh, reversed);
+		// Engine perf: mesh is materialized above (early return when
+		// arena/material missing); locals let TS narrow without assertions.
+		const straightMesh = straight.mesh;
+		const reversedMesh = reversed.mesh;
+		if (straightMesh) syncThinInstanceCount(straightMesh, straight);
+		if (reversedMesh) syncThinInstanceCount(reversedMesh, reversed);
 		arena.bufferRebound = false;
 	}
 
@@ -1467,23 +1469,22 @@ class FarTileManagerImpl {
 		if (!arena.buffer || !this.originsBuffer) return;
 
 		if (!this.waterReversed.mesh) {
-			const mesh = createQuadInstanceMesh(
+			attachFarTileMesh(
 				this.engine,
+				this.scene,
+				this.waterReversed,
 				"farTilesWater",
 				REVERSED_INDICES,
+				this.waterMaterial,
+				95,
+				arena.buffer,
+				this.originsBuffer,
 			);
-			mesh.material = this.waterMaterial;
-			mesh.pickable = false;
-			// After far terrain (90); chunk water is a transparent-pass mesh
-			// (order 1) that always draws after the whole opaque bucket.
-			mesh.renderOrder = 95;
-			bindFarTileBuffers(this.waterMaterial, arena.buffer, this.originsBuffer);
-			addToScene(this.scene, mesh);
-			this.waterReversed.mesh = mesh;
 		} else if (arena.bufferRebound) {
 			bindFarTileBuffers(this.waterMaterial, arena.buffer, this.originsBuffer);
 		}
-		syncThinInstanceCount(this.waterReversed.mesh, this.waterReversed);
+		const waterMesh = this.waterReversed.mesh;
+		if (waterMesh) syncThinInstanceCount(waterMesh, this.waterReversed);
 		arena.bufferRebound = false;
 	}
 
@@ -1703,6 +1704,32 @@ function stampOriginSlot(
 		cpu[w] = (cpu[w] & 0xff) | mask;
 		w += FT_FACE_WORDS;
 	}
+}
+
+// Engine perf: cold init path only (once per mesh). Dedupes the
+// create→material→pickable→renderOrder→bind→addToScene sequence shared by
+// terrain straight/reversed (order 90: after chunk opaque/cutout groups so
+// equal-depth coplanar cases resolve toward real chunks) and water (order 95:
+// after far terrain; chunk water is a transparent-pass mesh that always draws
+// after the whole opaque bucket). Behavior identical.
+function attachFarTileMesh(
+	engine: EngineContext,
+	scene: SceneContext,
+	holder: WindingMesh,
+	name: string,
+	indices: Uint32Array,
+	material: ShaderMaterial,
+	renderOrder: number,
+	arenaBuffer: StorageBuffer,
+	originsBuffer: StorageBuffer,
+): void {
+	const mesh = createQuadInstanceMesh(engine, name, indices);
+	mesh.material = material;
+	mesh.pickable = false;
+	mesh.renderOrder = renderOrder;
+	bindFarTileBuffers(material, arenaBuffer, originsBuffer);
+	addToScene(scene, mesh);
+	holder.mesh = mesh;
 }
 
 function createQuadInstanceMesh(

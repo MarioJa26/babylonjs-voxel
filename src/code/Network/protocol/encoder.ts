@@ -127,6 +127,14 @@ export class BinaryEncoder {
 		this.offset += bytes.byteLength;
 	}
 
+	// Engine perf: container/chunk coords are always x/y/z i32 triples.
+	// Single call site keeps encode fns small; V8 inlines (same 3 DataView ops).
+	writeCoords(x: number, y: number, z: number): void {
+		this.writeInt32(x);
+		this.writeInt32(y);
+		this.writeInt32(z);
+	}
+
 	/**
 	 * C→S: no sessionId — the server uses the connection identity.
 	 * yaw: 0-255 maps the full 360° circle; pitch: 0-255 maps -90°..+90°.
@@ -361,6 +369,14 @@ export class BinaryDecoder {
 		const start = this.offset;
 		this.offset += len;
 		return _textDecoder.decode(this.buffer.subarray(start, this.offset));
+	}
+
+	// Engine perf: mirrors writeCoords; fills caller-owned {x,y,z}, no alloc.
+	readCoordsInto<T extends { x: number; y: number; z: number }>(target: T): T {
+		target.x = this.readInt32();
+		target.y = this.readInt32();
+		target.z = this.readInt32();
+		return target;
 	}
 
 	/**
@@ -1872,9 +1888,7 @@ export const MAX_CONTAINER_SLOTS = 64;
 export function encodeContainerOpen(data: ContainerOpenData): Uint8Array {
 	const enc = new BinaryEncoder(13);
 	enc.writeUint8(MessageType.ContainerOpen);
-	enc.writeInt32(data.x);
-	enc.writeInt32(data.y);
-	enc.writeInt32(data.z);
+	enc.writeCoords(data.x, data.y, data.z);
 	return enc.getBytes();
 }
 
@@ -1882,19 +1896,14 @@ export function decodeContainerOpenInto(
 	dec: BinaryDecoder,
 	target: ContainerOpenData,
 ): typeof target {
-	target.x = dec.readInt32();
-	target.y = dec.readInt32();
-	target.z = dec.readInt32();
-	return target;
+	return dec.readCoordsInto(target);
 }
 
 export function encodeContainerState(data: ContainerStateData): Uint8Array {
 	const count = data.width * data.height;
 	const enc = new BinaryEncoder(19 + count * 4);
 	enc.writeUint8(MessageType.ContainerState);
-	enc.writeInt32(data.x);
-	enc.writeInt32(data.y);
-	enc.writeInt32(data.z);
+	enc.writeCoords(data.x, data.y, data.z);
 	enc.writeUint32(data.version);
 	enc.writeUint8(data.width);
 	enc.writeUint8(data.height);
@@ -1913,9 +1922,7 @@ export function decodeContainerStateInto(
 	dec: BinaryDecoder,
 	target: ContainerStateData,
 ): typeof target {
-	target.x = dec.readInt32();
-	target.y = dec.readInt32();
-	target.z = dec.readInt32();
+	dec.readCoordsInto(target);
 	target.version = dec.readUint32();
 	target.width = dec.readUint8();
 	target.height = dec.readUint8();
@@ -1934,9 +1941,7 @@ export function decodeContainerStateInto(
 export function encodeContainerSetSlot(data: ContainerSetSlotData): Uint8Array {
 	const enc = new BinaryEncoder(19);
 	enc.writeUint8(MessageType.ContainerSetSlot);
-	enc.writeInt32(data.x);
-	enc.writeInt32(data.y);
-	enc.writeInt32(data.z);
+	enc.writeCoords(data.x, data.y, data.z);
 	enc.writeUint8(data.row);
 	enc.writeUint8(data.col);
 	enc.writeUint16(data.itemId);
@@ -1948,9 +1953,7 @@ export function decodeContainerSetSlotInto(
 	dec: BinaryDecoder,
 	target: ContainerSetSlotData,
 ): typeof target {
-	target.x = dec.readInt32();
-	target.y = dec.readInt32();
-	target.z = dec.readInt32();
+	dec.readCoordsInto(target);
 	target.row = dec.readUint8();
 	target.col = dec.readUint8();
 	target.itemId = dec.readUint16();
@@ -1964,9 +1967,7 @@ export function encodeContainerSlotUpdate(
 	const enc = _singleEventEncoder;
 	enc.reset();
 	enc.writeUint8(MessageType.ContainerSlotUpdate);
-	enc.writeInt32(data.x);
-	enc.writeInt32(data.y);
-	enc.writeInt32(data.z);
+	enc.writeCoords(data.x, data.y, data.z);
 	enc.writeUint32(data.version);
 	enc.writeUint8(data.row);
 	enc.writeUint8(data.col);
@@ -1979,9 +1980,7 @@ export function decodeContainerSlotUpdateInto(
 	dec: BinaryDecoder,
 	target: ContainerSlotUpdateData,
 ): typeof target {
-	target.x = dec.readInt32();
-	target.y = dec.readInt32();
-	target.z = dec.readInt32();
+	dec.readCoordsInto(target);
 	target.version = dec.readUint32();
 	target.row = dec.readUint8();
 	target.col = dec.readUint8();
@@ -1993,9 +1992,7 @@ export function decodeContainerSlotUpdateInto(
 export function encodeContainerClose(data: ContainerCloseData): Uint8Array {
 	const enc = new BinaryEncoder(13);
 	enc.writeUint8(MessageType.ContainerClose);
-	enc.writeInt32(data.x);
-	enc.writeInt32(data.y);
-	enc.writeInt32(data.z);
+	enc.writeCoords(data.x, data.y, data.z);
 	return enc.getBytes();
 }
 
@@ -2003,10 +2000,7 @@ export function decodeContainerCloseInto(
 	dec: BinaryDecoder,
 	target: ContainerCloseData,
 ): typeof target {
-	target.x = dec.readInt32();
-	target.y = dec.readInt32();
-	target.z = dec.readInt32();
-	return target;
+	return dec.readCoordsInto(target);
 }
 
 export function encodeContainerRejected(
@@ -2015,9 +2009,7 @@ export function encodeContainerRejected(
 	const enc = _singleEventEncoder;
 	enc.reset();
 	enc.writeUint8(MessageType.ContainerRejected);
-	enc.writeInt32(data.x);
-	enc.writeInt32(data.y);
-	enc.writeInt32(data.z);
+	enc.writeCoords(data.x, data.y, data.z);
 	enc.writeUint8(data.reason);
 	return enc.getBytes();
 }
@@ -2026,9 +2018,7 @@ export function decodeContainerRejectedInto(
 	dec: BinaryDecoder,
 	target: ContainerRejectedData,
 ): typeof target {
-	target.x = dec.readInt32();
-	target.y = dec.readInt32();
-	target.z = dec.readInt32();
+	dec.readCoordsInto(target);
 	target.reason = dec.readUint8();
 	return target;
 }

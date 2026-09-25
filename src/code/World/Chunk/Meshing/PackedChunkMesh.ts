@@ -476,7 +476,9 @@ function growArena(arena: FaceArena, index: number): void {
 	arena.cpu = newCpu;
 	arena.capacity = newCapacity;
 	const old = arena.buffer;
-	arena.buffer = createStorageBuffer(engineRef!, arena.cpu, { cpuShadow: "source" });
+	arena.buffer = createStorageBuffer(engineRef!, arena.cpu, {
+		cpuShadow: "source",
+	});
 	bindArenaToMaterials(arena, index);
 	if (engineRef && old) {
 		const e = engineRef;

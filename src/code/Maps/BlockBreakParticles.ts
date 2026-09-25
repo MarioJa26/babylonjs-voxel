@@ -543,46 +543,7 @@ export function playMobDamage(
 	z: number,
 	damage: number,
 ): void {
-	if (!billboard || !Number.isFinite(damage) || damage <= 0) return;
-
-	const frame = getBlockFrame(MOB_BLOOD_BLOCK);
-	const light = computeLight(getLightByWorldCoords(x, y, z));
-	// Use a dedicated red atlas tile for the initial hit burst and reinforce it
-	// with a blood-red tint so it cannot look like the coral drip effect.
-	const bloodR = light.r * 1.0;
-	const bloodG = light.g * 0.3;
-	const bloodB = light.b * 0.24;
-	const count = Math.min(
-		MOB_DAMAGE_PARTICLES_MAX,
-		Math.max(
-			MOB_DAMAGE_PARTICLES_MIN,
-			Math.ceil(damage * MOB_DAMAGE_PARTICLES_PER_POINT),
-		),
-	);
-
-	for (let i = 0; i < count; i++) {
-		const angle = getPRNGUnit2() * Math.PI * 2;
-		const speed = 0.25 + getPRNGUnit2() * 0.65;
-		addParticle(
-			x + (getPRNGUnit2() - 0.5) * 0.18,
-			y + (getPRNGUnit2() - 0.5) * 0.22,
-			z + (getPRNGUnit2() - 0.5) * 0.18,
-			Math.cos(angle) * speed,
-			0.45 + getPRNGUnit2() * 1.1,
-			Math.sin(angle) * speed,
-			0.3 + getPRNGUnit2() * 0.45,
-			0.035 + getPRNGUnit2() * 0.025,
-			getPRNGUnit2() * Math.PI * 2,
-			(getPRNGUnit2() - 0.5) * 3,
-			frame,
-			bloodR,
-			bloodG,
-			bloodB,
-			1,
-			1,
-			1,
-		);
-	}
+	spawnBloodBurst(x, y, z, damage, 0, 0, false);
 }
 
 /**
@@ -601,21 +562,40 @@ export function playMobDamageDirected(
 	dirX: number,
 	dirZ: number,
 ): void {
+	spawnBloodBurst(x, y, z, damage, dirX, dirZ, true);
+}
+
+// Engine perf: per-hit burst (a few/sec max). Single shared loop for
+// omnidirectional and directional sprays; one predictable branch per particle
+// selects the velocity model. Frame/light/tint/count computed once.
+function spawnBloodBurst(
+	x: number,
+	y: number,
+	z: number,
+	damage: number,
+	dirX: number,
+	dirZ: number,
+	directed: boolean,
+): void {
 	if (!billboard || !Number.isFinite(damage) || damage <= 0) return;
 
 	let dx = dirX;
 	let dz = dirZ;
-	const len = Math.sqrt(dx * dx + dz * dz);
-	if (!(len > 0.0001) || !Number.isFinite(len)) {
-		dx = 1;
-		dz = 0;
-	} else {
-		dx /= len;
-		dz /= len;
+	if (directed) {
+		const len = Math.sqrt(dx * dx + dz * dz);
+		if (!(len > 0.0001) || !Number.isFinite(len)) {
+			dx = 1;
+			dz = 0;
+		} else {
+			dx /= len;
+			dz /= len;
+		}
 	}
 
 	const frame = getBlockFrame(MOB_BLOOD_BLOCK);
 	const light = computeLight(getLightByWorldCoords(x, y, z));
+	// Use a dedicated red atlas tile for the initial hit burst and reinforce it
+	// with a blood-red tint so it cannot look like the coral drip effect.
 	const bloodR = light.r * 1.0;
 	const bloodG = light.g * 0.3;
 	const bloodB = light.b * 0.24;
@@ -628,16 +608,27 @@ export function playMobDamageDirected(
 	);
 
 	for (let i = 0; i < count; i++) {
-		// Forward cone along the hit direction plus lateral jitter.
-		const forward = 0.8 + getPRNGUnit2() * 1.2;
-		const lateral = (getPRNGUnit2() - 0.5) * 1.1;
+		let vx: number;
+		let vz: number;
+		if (directed) {
+			// Forward cone along the hit direction plus lateral jitter.
+			const forward = 0.8 + getPRNGUnit2() * 1.2;
+			const lateral = (getPRNGUnit2() - 0.5) * 1.1;
+			vx = dx * forward - dz * lateral;
+			vz = dz * forward + dx * lateral;
+		} else {
+			const angle = getPRNGUnit2() * Math.PI * 2;
+			const speed = 0.25 + getPRNGUnit2() * 0.65;
+			vx = Math.cos(angle) * speed;
+			vz = Math.sin(angle) * speed;
+		}
 		addParticle(
 			x + (getPRNGUnit2() - 0.5) * 0.18,
 			y + (getPRNGUnit2() - 0.5) * 0.22,
 			z + (getPRNGUnit2() - 0.5) * 0.18,
-			dx * forward - dz * lateral,
+			vx,
 			0.45 + getPRNGUnit2() * 1.1,
-			dz * forward + dx * lateral,
+			vz,
 			0.3 + getPRNGUnit2() * 0.45,
 			0.035 + getPRNGUnit2() * 0.025,
 			getPRNGUnit2() * Math.PI * 2,

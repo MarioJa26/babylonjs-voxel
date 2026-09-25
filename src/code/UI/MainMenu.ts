@@ -31,6 +31,7 @@ import {
 	worldPath,
 } from "../World/WorldContext";
 import { loadGameSettings, saveGameSettings } from "./GameSettings";
+import "./MainMenu.css";
 import worldNames from "./worldNames.json";
 
 const OPFS_ROOT = "b102";
@@ -561,9 +562,10 @@ export class MainMenu {
 			next.crosshairVisible = this.optCrosshairVisible.getValue();
 			next.hitmarkerEnabled = this.optHitmarker.getValue();
 			saveGameSettings(next);
-			this.optStatusEl.classList.remove("error");
-			this.optStatusEl.innerText =
-				"Settings saved — they apply the next time a world loads.";
+			setStatus(
+				this.optStatusEl,
+				"Settings saved — they apply the next time a world loads.",
+			);
 		};
 		screen.appendChild(saveBtn);
 
@@ -730,8 +732,7 @@ export class MainMenu {
 		const raw = this.nameInput.value;
 		const name = sanitizeWorldName(raw);
 		if (!isValidWorldName(name)) {
-			this.spStatusEl.innerText = "Please enter a valid world name.";
-			this.spStatusEl.classList.add("error");
+			setStatus(this.spStatusEl, "Please enter a valid world name.", true);
 			return;
 		}
 		const seed = this.seedInput.value.trim();
@@ -744,8 +745,7 @@ export class MainMenu {
 	}
 
 	private async refreshWorlds(): Promise<void> {
-		this.spStatusEl.innerText = "";
-		this.spStatusEl.classList.remove("error");
+		setStatus(this.spStatusEl, "");
 		this.worldListEl.replaceChildren(this.loadingRow("Loading worlds…"));
 
 		let worlds: string[];
@@ -753,8 +753,11 @@ export class MainMenu {
 			worlds = await listWorlds();
 		} catch (err) {
 			this.worldListEl.replaceChildren();
-			this.spStatusEl.innerText = `Could not read saved worlds: ${String(err)}`;
-			this.spStatusEl.classList.add("error");
+			setStatus(
+				this.spStatusEl,
+				`Could not read saved worlds: ${String(err)}`,
+				true,
+			);
 			return;
 		}
 
@@ -765,12 +768,7 @@ export class MainMenu {
 			return;
 		}
 
-		const fragment = document.createDocumentFragment();
-		for (const name of worlds) {
-			fragment.appendChild(this.worldRow(name));
-		}
-
-		this.worldListEl.replaceChildren(fragment);
+		renderRows(this.worldListEl, worlds, (name) => this.worldRow(name));
 	}
 
 	private worldRow(name: string): HTMLElement {
@@ -806,13 +804,15 @@ export class MainMenu {
 		button.innerText = "Deleting…";
 		try {
 			await deleteWorld(name);
-			this.spStatusEl.innerText = `Deleted "${name}".`;
-			this.spStatusEl.classList.remove("error");
+			setStatus(this.spStatusEl, `Deleted "${name}".`);
 			await this.refreshWorlds();
 		} catch (err) {
 			console.error("Failed to delete world", err);
-			this.spStatusEl.innerText = `Failed to delete "${name}": ${String(err)}`;
-			this.spStatusEl.classList.add("error");
+			setStatus(
+				this.spStatusEl,
+				`Failed to delete "${name}": ${String(err)}`,
+				true,
+			);
 			button.disabled = false;
 			button.innerText = "Delete";
 		}
@@ -838,13 +838,11 @@ export class MainMenu {
 		const url = this.normalizeServerUrl(address);
 
 		if (!name) {
-			this.mpStatusEl.innerText = "Please enter a server name.";
-			this.mpStatusEl.classList.add("error");
+			setStatus(this.mpStatusEl, "Please enter a server name.", true);
 			return;
 		}
 		if (!url) {
-			this.mpStatusEl.innerText = "Please enter a server address.";
-			this.mpStatusEl.classList.add("error");
+			setStatus(this.mpStatusEl, "Please enter a server address.", true);
 			return;
 		}
 
@@ -852,16 +850,14 @@ export class MainMenu {
 		localStorage.setItem(MULTIPLAYER_SERVER_KEY, address);
 		this.mpNameInput.value = "";
 		this.mpServerInput.value = "";
-		this.mpStatusEl.classList.remove("error");
-		this.mpStatusEl.innerText = `Added "${name}".`;
+		setStatus(this.mpStatusEl, `Added "${name}".`);
 		void this.refreshServerList();
 	}
 
 	private async connectMultiplayer(name: string, url: string): Promise<void> {
 		const playerName = this.playerNameInput.value.trim();
 		if (!playerName) {
-			this.mpStatusEl.innerText = "Please enter your name.";
-			this.mpStatusEl.classList.add("error");
+			setStatus(this.mpStatusEl, "Please enter your name.", true);
 			return;
 		}
 
@@ -877,8 +873,7 @@ export class MainMenu {
 	}
 
 	private async refreshServerList(): Promise<void> {
-		this.mpStatusEl.innerText = "";
-		this.mpStatusEl.classList.remove("error");
+		setStatus(this.mpStatusEl, "");
 
 		const servers = getSavedServers();
 
@@ -904,8 +899,11 @@ export class MainMenu {
 		try {
 			statuses = await fetchAllStatuses(servers);
 		} catch (err) {
-			this.mpStatusEl.innerText = `Could not refresh server status: ${String(err)}`;
-			this.mpStatusEl.classList.add("error");
+			setStatus(
+				this.mpStatusEl,
+				`Could not refresh server status: ${String(err)}`,
+				true,
+			);
 			return;
 		}
 
@@ -1003,473 +1001,31 @@ export class MainMenu {
 	}
 
 	private addStyles(): void {
-		const style = document.createElement("style");
-		style.innerHTML = `
-			#mainMenuContainer {
-				position: fixed;
-				inset: 0;
-				z-index: 200;
-				display: flex;
-				flex-direction: column;
-				align-items: center;
-				justify-content: center;
-				gap: 8px;
-				padding: 24px;
-				box-sizing: border-box;
-				background:
-					radial-gradient(circle at 50% 22%, rgba(26, 163, 148, 0.07), transparent 55%),
-					radial-gradient(circle at 50% 35%, rgb(18, 26, 34), rgb(7, 11, 15));
-				color: var(--hud-text);
-				font-family: var(--ui-font-family);
-			}
-
-			#mainMenuContainer h1 {
-				font-size: 3.5em;
-				margin: 0 0 2px;
-				text-shadow:
-					var(--hud-text-shadow),
-					0 0 42px var(--hud-accent-faint);
-				letter-spacing: 6px;
-				font-weight: 700;
-			}
-
-			/* Olive signature bar under the title */
-			#mainMenuContainer h1::after {
-				content: "";
-				display: block;
-				width: 64px;
-				height: 3px;
-				margin: 10px auto 0;
-				background: var(--hud-frame-bright);
-				border-radius: var(--hud-radius-sm);
-			}
-
-			.menu-tagline {
-				font-size: 0.85em;
-				letter-spacing: 3px;
-				text-transform: uppercase;
-				color: var(--hud-text-muted);
-				margin-bottom: 18px;
-			}
-
-			/* Player name bar at top of main screen */
-			.player-name-bar {
-				display: flex;
-				flex-direction: column;
-				align-items: center;
-				gap: 4px;
-				margin-bottom: 16px;
-				width: min(480px, 90vw);
-			}
-
-			.player-name-label {
-				font-size: 0.75em;
-				text-transform: uppercase;
-				letter-spacing: 1px;
-				color: var(--hud-text-muted);
-				align-self: flex-start;
-				margin-left: 4px;
-			}
-
-			.player-name-bar input {
-				width: 100%;
-				text-align: center;
-				font-size: 1.1em;
-			}
-
-			#mainMenuContainer h2.screen-title {
-				font-size: 1.5em;
-				margin: 0 0 16px;
-				color: var(--hud-text);
-			}
-
-			#mainMenuContainer h3.screen-subtitle {
-				font-size: 1em;
-				margin: 16px 0 8px;
-				color: var(--hud-text-muted);
-				font-weight: 400;
-			}
-
-			.menu-screen {
-				display: none;
-				flex-direction: column;
-				align-items: center;
-				gap: 8px;
-				width: 100%;
-				max-width: 560px;
-				max-height: 90vh;
-				overflow-y: auto;
-				padding: 16px;
-				scrollbar-width: thin;
-				scrollbar-color: var(--hud-frame-bright) transparent;
-			}
-
-			.menu-screen.active {
-				display: flex;
-				animation: menu-fade-in 0.18s ease-out;
-			}
-
-			@keyframes menu-fade-in {
-				from {
-					opacity: 0;
-					transform: translateY(6px);
-				}
-				to {
-					opacity: 1;
-					transform: translateY(0);
-				}
-			}
-
-			.menu-spacer {
-				height: 16px;
-			}
-
-			/* Minecraft-style button, HUD design language */
-			.mc-btn {
-				box-sizing: border-box;
-				width: min(480px, 90vw);
-				padding: 12px 24px;
-				font-size: 1.05em;
-				font-family: inherit;
-				border: 2px solid var(--hud-frame);
-				border-radius: 0;
-				background-color: var(--hud-bg-inset);
-				background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.09) 0%, transparent 55%);
-				color: var(--hud-text);
-				cursor: pointer;
-				text-shadow: var(--hud-text-shadow);
-				user-select: none;
-				transition:
-					border-color 0.15s,
-					background-color 0.15s,
-					transform 0.1s;
-			}
-
-			.mc-btn:hover {
-				background-image: linear-gradient(180deg, rgba(0, 187, 255, 0.12) 0%, transparent 60%);
-				border-color: var(--hud-accent);
-				color: #fff;
-			}
-
-			.mc-btn:active {
-				background-color: rgba(0, 0, 0, 0.55);
-				transform: translateY(1px);
-			}
-
-			.mc-btn:focus-visible {
-				outline: none;
-				box-shadow: var(--hud-focus-ring);
-			}
-
-			/* Small button variant */
-			.mc-btn-small {
-				padding: 7px 14px;
-				font-size: 0.9em;
-				width: auto;
-				min-width: 74px;
-			}
-
-			/* Primary action buttons — cyan accent (matches --hud-accent) */
-			.mc-btn-green {
-				border-color: rgba(0, 187, 255, 0.45);
-				background-color: var(--hud-accent-faint);
-			}
-
-			.mc-btn-green:hover {
-				border-color: var(--hud-accent);
-				background-color: rgba(0, 187, 255, 0.26);
-			}
-
-			/* Delete / remove buttons — red accent (matches --hud-danger) */
-			.mc-btn-red {
-				border-color: rgba(239, 83, 80, 0.45);
-				background-color: rgba(239, 83, 80, 0.12);
-			}
-
-			.mc-btn-red:hover {
-				border-color: var(--hud-danger);
-				background-color: rgba(239, 83, 80, 0.24);
-			}
-
-			/* Back button — left aligned */
-			.mc-btn-back {
-				width: auto;
-				min-width: 100px;
-				margin-bottom: 16px;
-				align-self: flex-start;
-			}
-
-			.menu-create-row {
-				display: flex;
-				gap: 8px;
-				width: 100%;
-				max-width: min(480px, 90vw);
-				align-items: center;
-			}
-
-			/* Buttons inside rows keep their natural size instead of stealing
-			   the full column (this used to squeeze the seed input + dice). */
-			.menu-create-row .mc-btn {
-				width: auto;
-				flex: 0 0 auto;
-				white-space: nowrap;
-			}
-
-			.menu-input-wrap {
-				position: relative;
-				flex: 1;
-				min-width: 0;
-			}
-
-			.menu-input-wrap input {
-				width: 100%;
-				padding-right: 40px;
-				box-sizing: border-box;
-			}
-
-			.menu-input-wrap button {
-				position: absolute;
-				right: 6px;
-				top: 50%;
-				transform: translateY(-50%);
-				background: none;
-				border: none;
-				color: var(--hud-text-muted);
-				cursor: pointer;
-				padding: 4px;
-				font-size: 1.1em;
-				line-height: 1;
-			}
-
-			.menu-input-wrap button:hover {
-				color: var(--hud-accent);
-			}
-
-			.input-group {
-				display: flex;
-				flex-direction: column;
-				gap: 2px;
-				width: 100%;
-				max-width: min(480px, 90vw);
-			}
-
-			.input-label {
-				font-size: 0.7em;
-				text-transform: uppercase;
-				letter-spacing: 1px;
-				color: var(--hud-text-muted);
-				margin-left: 4px;
-			}
-
-			#mainMenuContainer input {
-				width: 100%;
-				padding: 10px 12px;
-				font-size: 1em;
-				font-family: inherit;
-				border: 2px solid var(--hud-frame-dim);
-				border-radius: 0;
-				background: var(--hud-bg-inset);
-				color: var(--hud-text);
-				outline: none;
-				box-sizing: border-box;
-				transition:
-					border-color 0.15s,
-					box-shadow 0.15s,
-					background-color 0.15s;
-			}
-
-			#mainMenuContainer input::placeholder {
-				color: var(--hud-text-muted);
-				opacity: 0.7;
-			}
-
-			#mainMenuContainer input:focus {
-				border-color: var(--hud-accent);
-				background: rgba(0, 0, 0, 0.6);
-				box-shadow: var(--hud-focus-ring);
-			}
-
-			.menu-world-list,
-			.menu-server-list {
-				display: flex;
-				flex-direction: column;
-				gap: 6px;
-				width: 100%;
-				max-width: min(480px, 90vw);
-				max-height: 55vh;
-				overflow-y: auto;
-				scrollbar-width: thin;
-				scrollbar-color: var(--hud-frame-bright) transparent;
-			}
-
-			.menu-world-list::-webkit-scrollbar,
-			.menu-server-list::-webkit-scrollbar,
-			.menu-screen::-webkit-scrollbar {
-				width: 8px;
-			}
-
-			.menu-world-list::-webkit-scrollbar-thumb,
-			.menu-server-list::-webkit-scrollbar-thumb,
-			.menu-screen::-webkit-scrollbar-thumb {
-				background: var(--hud-frame-bright);
-				border-radius: var(--hud-radius-md);
-			}
-
-			.menu-world-row,
-			.menu-server-row {
-				box-sizing: border-box;
-				display: flex;
-				align-items: center;
-				gap: 8px;
-				padding: 10px 12px;
-				background-color: var(--hud-bg-panel);
-				background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, transparent 60%);
-				border: var(--hud-border-width) solid var(--hud-border-soft);
-				border-radius: var(--hud-radius-sm);
-				transition: border-color 0.15s;
-			}
-
-			.menu-world-row:hover,
-			.menu-server-row:hover {
-				border-color: var(--hud-border-strong);
-			}
-
-			.menu-world-row.empty,
-			.menu-server-row.empty {
-				justify-content: center;
-				color: var(--hud-text-muted);
-				font-style: italic;
-				background-image: none;
-				background-color: transparent;
-				border-style: dashed;
-			}
-
-			.world-name {
-				flex: 1;
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
-				font-size: 0.95em;
-			}
-
-			.server-info {
-				flex: 1;
-				min-width: 0;
-			}
-
-			.server-name {
-				font-weight: 600;
-				font-size: 0.9em;
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
-			}
-
-			.server-url {
-				font-size: 0.75em;
-				color: var(--hud-text-muted);
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
-			}
-
-			/* List header (title + Refresh) */
-			.menu-list-header {
-				display: flex;
-				align-items: center;
-				justify-content: space-between;
-				width: 100%;
-				max-width: min(480px, 90vw);
-				margin-top: 8px;
-			}
-
-			.menu-list-header .screen-subtitle {
-				margin: 16px 0 8px;
-			}
-
-			.mc-btn-refresh {
-				border-color: var(--hud-frame);
-			}
-
-			.mc-btn-refresh:hover {
-				border-color: var(--hud-accent);
-			}
-
-			/* Server row live status */
-			.server-motd {
-				font-size: 0.78em;
-				color: var(--hud-text);
-				opacity: 0.85;
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
-				margin: 2px 0;
-			}
-
-			.server-meta {
-				display: flex;
-				align-items: center;
-				gap: 8px;
-				font-size: 0.75em;
-				color: var(--hud-text-muted);
-			}
-
-			.server-ping {
-				width: 9px;
-				height: 9px;
-				border-radius: 50%;
-				display: inline-block;
-				flex: 0 0 auto;
-			}
-
-			.server-ping.ping-good {
-				background: var(--hud-ok);
-				box-shadow: 0 0 6px var(--hud-ok);
-			}
-			.server-ping.ping-ok {
-				background: var(--hud-warn);
-				box-shadow: 0 0 6px var(--hud-warn);
-			}
-			.server-ping.ping-bad {
-				background: var(--hud-danger);
-				box-shadow: 0 0 6px var(--hud-danger);
-			}
-			.server-ping.ping-offline {
-				background: #5a646e;
-			}
-
-			.server-ping-num {
-				font-variant-numeric: tabular-nums;
-				min-width: 44px;
-			}
-
-			.server-players {
-				font-variant-numeric: tabular-nums;
-			}
-
-			.menu-status {
-				min-height: 1.2em;
-				font-size: 0.85em;
-				color: var(--hud-text-muted);
-				width: 100%;
-				max-width: min(480px, 90vw);
-			}
-
-			.menu-status.error {
-				color: var(--hud-danger);
-			}
-
-			@media (max-width: 480px) {
-				#mainMenuContainer h1 {
-					font-size: 2.5em;
-				}
-			}
-		`;
-		document.head.appendChild(style);
+		// Engine perf: styles are bundled via ./MainMenu.css (static import).
+		// Kept as a no-op so existing constructor call sites stay valid.
 	}
 }
 
 // ─── Helper functions for Minecraft-style buttons ────────────────────────
+
+// Engine perf: cold UI paths only. Single place for status text + error
+// styling (previously ~12 copy-pasted innerText/classList pairs).
+function setStatus(el: HTMLElement, msg: string, isError = false): void {
+	el.innerText = msg;
+	el.classList.toggle("error", isError);
+}
+
+// Engine perf: cold UI paths only. Builds a fragment via rowFn and swaps it
+// in with one replaceChildren (single layout pass).
+function renderRows<T>(
+	listEl: HTMLElement,
+	items: readonly T[],
+	rowFn: (item: T) => HTMLElement,
+): void {
+	const fragment = document.createDocumentFragment();
+	for (const item of items) fragment.appendChild(rowFn(item));
+	listEl.replaceChildren(fragment);
+}
 
 function btnMinecraft(btn: HTMLButtonElement, text: string): void {
 	btn.className = "mc-btn";

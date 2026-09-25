@@ -43,6 +43,20 @@ import { Chat } from "./Chat";
 import { Crosshair } from "./Crosshair/Crosshair";
 import { PlayerPreview } from "./PlayerPreview";
 
+// Engine perf: tiny monomorphic helpers for per-frame HUD bars. V8 inlines
+// these (numbers in, no allocation); DOM write still guarded by pct change.
+function statPct(value: number, max: number): number {
+	if (!(max > 0)) return 0;
+	const pct = Math.round((value / max) * 100);
+	return pct < 0 ? 0 : pct > 100 ? 100 : pct;
+}
+
+function setBar(fill: HTMLDivElement, prev: number, pct: number): number {
+	if (pct === prev) return prev;
+	fill.style.transform = `scaleX(${pct / 100})`;
+	return pct;
+}
+
 export class PlayerHud {
 	#scene: SceneContext;
 	readonly #player: Player;
@@ -1324,6 +1338,18 @@ export class PlayerHud {
 		return sourceBlocks.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
+	// Engine perf: cold crafting-UI path only. Single recipe lookup shared by
+	// availability preview and craft action.
+	private findMasonRecipe() {
+		if (this.#selectedSourceBlockId === null || this.#selectedShape === null)
+			return undefined;
+		return MasonRecipes.find(
+			(r) =>
+				r.sourceBlockId === this.#selectedSourceBlockId &&
+				r.targetShape === this.#selectedShape,
+		);
+	}
+
 	public updateMasonTableAvailability(): void {
 		const resultPreview = document.getElementById("mason-result-preview");
 		const craftButton = document.getElementById("mason-craft-btn");
@@ -1335,11 +1361,7 @@ export class PlayerHud {
 			return;
 		}
 
-		const recipe = MasonRecipes.find(
-			(r) =>
-				r.sourceBlockId === this.#selectedSourceBlockId &&
-				r.targetShape === this.#selectedShape,
-		);
+		const recipe = this.findMasonRecipe();
 
 		if (!recipe) {
 			resultPreview.textContent = "No recipe found";
@@ -1371,14 +1393,7 @@ export class PlayerHud {
 	}
 
 	private craftMasonRecipe(): void {
-		if (this.#selectedSourceBlockId === null || this.#selectedShape === null)
-			return;
-
-		const recipe = MasonRecipes.find(
-			(r) =>
-				r.sourceBlockId === this.#selectedSourceBlockId &&
-				r.targetShape === this.#selectedShape,
-		);
+		const recipe = this.findMasonRecipe();
 
 		if (!recipe) return;
 
@@ -1770,68 +1785,33 @@ export class PlayerHud {
 		const stats = this.#player.stats;
 		if (!stats) return;
 
-		const healthPct =
-			stats.maxHealth > 0
-				? Math.max(
-						0,
-						Math.min(100, Math.round((stats.health / stats.maxHealth) * 100)),
-					)
-				: 0;
-
-		if (healthPct !== this.#prevHealthPct) {
-			this.#prevHealthPct = healthPct;
-			this.#healthBarFill.style.transform = `scaleX(${healthPct / 100})`;
-		}
-
-		const hungerPct =
-			stats.maxHunger > 0
-				? Math.max(
-						0,
-						Math.min(100, Math.round((stats.hunger / stats.maxHunger) * 100)),
-					)
-				: 0;
-
-		if (hungerPct !== this.#prevHungerPct) {
-			this.#prevHungerPct = hungerPct;
-			this.#hungerBarFill.style.transform = `scaleX(${hungerPct / 100})`;
-		}
-
-		const staminaPct =
-			stats.maxStamina > 0
-				? Math.max(
-						0,
-						Math.min(100, Math.round((stats.stamina / stats.maxStamina) * 100)),
-					)
-				: 0;
-
-		if (staminaPct !== this.#prevStaminaPct) {
-			this.#prevStaminaPct = staminaPct;
-			this.#staminaBarFill.style.transform = `scaleX(${staminaPct / 100})`;
-		}
-
-		const manaPct =
-			stats.maxMana > 0
-				? Math.max(
-						0,
-						Math.min(100, Math.round((stats.mana / stats.maxMana) * 100)),
-					)
-				: 0;
-
-		if (manaPct !== this.#prevManaPct) {
-			this.#prevManaPct = manaPct;
-			this.#manaBarFill.style.transform = `scaleX(${manaPct / 100} )`;
-		}
+		this.#prevHealthPct = setBar(
+			this.#healthBarFill,
+			this.#prevHealthPct,
+			statPct(stats.health, stats.maxHealth),
+		);
+		this.#prevHungerPct = setBar(
+			this.#hungerBarFill,
+			this.#prevHungerPct,
+			statPct(stats.hunger, stats.maxHunger),
+		);
+		this.#prevStaminaPct = setBar(
+			this.#staminaBarFill,
+			this.#prevStaminaPct,
+			statPct(stats.stamina, stats.maxStamina),
+		);
+		this.#prevManaPct = setBar(
+			this.#manaBarFill,
+			this.#prevManaPct,
+			statPct(stats.mana, stats.maxMana),
+		);
 
 		const xpNeed = stats.xpForNextLevel();
-		const xpPct =
-			xpNeed > 0
-				? Math.max(0, Math.min(100, Math.round((stats.xp / xpNeed) * 100)))
-				: 0;
-
-		if (xpPct !== this.#prevXpPct) {
-			this.#prevXpPct = xpPct;
-			this.#xpBarFill.style.transform = `scaleX(${xpPct / 100})`;
-		}
+		this.#prevXpPct = setBar(
+			this.#xpBarFill,
+			this.#prevXpPct,
+			statPct(stats.xp, xpNeed),
+		);
 
 		if (stats.xpLevel !== this.#prevXpLevel) {
 			this.#prevXpLevel = stats.xpLevel;

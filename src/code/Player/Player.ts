@@ -447,10 +447,7 @@ export class Player {
 					const y = Math.floor(blockHit.y);
 					const z = Math.floor(blockHit.z);
 
-					const boat = tryCreateBoatFromMarker(this, x, y, z);
-					if (boat) {
-						boat.mount.mount(this);
-					}
+					tryCreateBoatFromMarker(this, x, y, z);
 					return;
 				}
 

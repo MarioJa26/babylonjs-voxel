@@ -430,32 +430,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#controls.reset();
 	}
 
-	public respawn(): void {
-		// Until the world spawn is prepared the player has not been teleported
-		// to it yet; snapping to the default (0,0,0) would park the player
-		// inside terrain at the origin and trigger a pre-teleport chunk load.
-		if (!isSpawnPrepared()) return;
-		const spawn = getSpawnPosition();
-		this.voxelPosition.x = spawn.x;
-		this.voxelPosition.y = spawn.y;
-		this.voxelPosition.z = spawn.z;
-		setVec3(this.voxelVelocity, 0, 0, 0);
-		this.#fallStartY = Number.NaN;
-		this.#isClimbing = false;
-		this.lastJumpPressMs = Number.NEGATIVE_INFINITY;
-		this.prevJumpHeld = this.isJumpHeld;
-		this.#characterController.setPosition(this.voxelPosition);
-		this.#camera.snapToPlayer(this.voxelPosition);
-		this.#displayCapsule?.position.copyFrom(this.voxelPosition);
-		this.#syncDisplayLight(
-			this.voxelPosition.x,
-			this.voxelPosition.y,
-			this.voxelPosition.z,
-		);
-		this.voxelCollider.syncDebugMesh(this.voxelPosition);
-	}
-
-	public teleportTo(x: number, y: number, z: number): void {
+	// Engine perf: cold path only (respawn/teleport). Single place for the
+	// fall/climb/jump reset + visual sync sequence.
+	private resetTo(x: number, y: number, z: number): void {
 		this.voxelPosition.x = x;
 		this.voxelPosition.y = y;
 		this.voxelPosition.z = z;
@@ -469,6 +446,19 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#displayCapsule?.position.copyFrom(this.voxelPosition);
 		this.#syncDisplayLight(x, y, z);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
+	}
+
+	public respawn(): void {
+		// Until the world spawn is prepared the player has not been teleported
+		// to it yet; snapping to the default (0,0,0) would park the player
+		// inside terrain at the origin and trigger a pre-teleport chunk load.
+		if (!isSpawnPrepared()) return;
+		const spawn = getSpawnPosition();
+		this.resetTo(spawn.x, spawn.y, spawn.z);
+	}
+
+	public teleportTo(x: number, y: number, z: number): void {
+		this.resetTo(x, y, z);
 	}
 
 	// ── Boat mode helpers ─────────────────────────────────────────────────────

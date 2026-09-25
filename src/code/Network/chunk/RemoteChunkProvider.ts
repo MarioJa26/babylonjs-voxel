@@ -254,14 +254,7 @@ export class RemoteChunkProvider {
 
 	private handleChunkData(chunk: RemoteChunkData): void {
 		const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-		if (this.isStaleVersion(key, chunk.version)) {
-			if (DEBUG_ENABLED) {
-				debugLog(
-					`[RemoteChunkProvider] ignored stale chunk ${key} version=${chunk.version}`,
-				);
-			}
-			return;
-		}
+		if (!this.acceptFreshVersion(key, chunk.version)) return;
 		// A response is only honored (version recorded, data persisted) when
 		// it resolves a current pending request; anything unmatched is
 		// dropped — it is unsolicited or late-connection data.
@@ -288,16 +281,8 @@ export class RemoteChunkProvider {
 		for (let i = 0; i < len; i++) {
 			const chunk = chunks[i];
 			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-			const currentVersion = versions.get(key);
 
-			if (currentVersion !== undefined && chunk.version < currentVersion) {
-				if (DEBUG_ENABLED) {
-					debugLog(
-						`[RemoteChunkProvider] ignored stale batch chunk ${key} version=${chunk.version}`,
-					);
-				}
-				continue;
-			}
+			if (!this.acceptFreshVersion(key, chunk.version)) continue;
 
 			if (!this.resolvePending(key, chunk)) continue;
 
@@ -365,14 +350,7 @@ export class RemoteChunkProvider {
 	 */
 	private async handleChunkDataDeflated(entry: DeflatedChunk): Promise<void> {
 		const key = packCoords(entry.chunkX, entry.chunkY, entry.chunkZ);
-		if (this.isStaleVersion(key, entry.version)) {
-			if (DEBUG_ENABLED) {
-				debugLog(
-					`[RemoteChunkProvider] ignored stale chunk ${key} version=${entry.version}`,
-				);
-			}
-			return;
-		}
+		if (!this.acceptFreshVersion(key, entry.version)) return;
 
 		let blob: Uint8Array;
 		try {
@@ -439,17 +417,8 @@ export class RemoteChunkProvider {
 		for (let i = 0; i < entryCount; i++) {
 			const entry = entries[i];
 			const key = packCoords(entry.chunkX, entry.chunkY, entry.chunkZ);
-			const currentVersion = versions.get(key);
 
-			if (currentVersion !== undefined && entry.version < currentVersion) {
-				if (DEBUG_ENABLED) {
-					debugLog(
-						`[RemoteChunkProvider] ignored stale batch chunk ` +
-							`${key} version=${entry.version}`,
-					);
-				}
-				continue;
-			}
+			if (!this.acceptFreshVersion(key, entry.version)) continue;
 
 			inflatableIndices[inflatableCount] = i;
 			inflatableKeys[inflatableCount] = key;
@@ -749,6 +718,19 @@ export class RemoteChunkProvider {
 	private isStaleVersion(key: bigint, incomingVersion: number): boolean {
 		const current = this.chunkVersions.get(key);
 		return current !== undefined && incomingVersion < current;
+	}
+
+	// Engine perf: chunk-response path (network-rate, not per-voxel). Single
+	// stale-version gate shared by single/batch/deflated handlers; the debug
+	// string allocates only on the stale+debug path.
+	private acceptFreshVersion(key: bigint, version: number): boolean {
+		if (!this.isStaleVersion(key, version)) return true;
+		if (DEBUG_ENABLED) {
+			debugLog(
+				`[RemoteChunkProvider] ignored stale chunk ${key} version=${version}`,
+			);
+		}
+		return false;
 	}
 
 	private persistChunk(

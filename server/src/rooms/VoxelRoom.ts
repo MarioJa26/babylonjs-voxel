@@ -270,6 +270,48 @@ const HELD_ITEM_EMPTY = 0;
 const HELD_ITEM_BLOCK_STATE_MAX = 63;
 
 const validHeldItemIds = new Set(heldItemDefinitions.map((entry) => entry.id));
+
+// Engine perf: join-path fan-out helper. Cold path (per join only); merges
+// pre-encoded frames with a single alloc, same as the inlined loops did.
+function sendMergedFrames(
+	client: Client,
+	parts: Uint8Array[],
+	totalLen: number,
+): void {
+	if (parts.length === 0) return;
+	const merged = new Uint8Array(totalLen);
+	let offset = 0;
+	for (const part of parts) {
+		merged.set(part, offset);
+		offset += part.length;
+	}
+	client.sendBytes("binary", merged);
+}
+
+// Engine perf: tiny integer/boundary checks for per-message validation.
+// Monomorphic number ops; V8 inlines, no allocation.
+function withinWorldBoundary(x: number, y: number, z: number): boolean {
+	return (
+		Math.abs(x) <= WORLD_BOUNDARY &&
+		Math.abs(y) <= WORLD_BOUNDARY &&
+		Math.abs(z) <= WORLD_BOUNDARY
+	);
+}
+
+function withinReach(
+	ax: number,
+	ay: number,
+	az: number,
+	bx: number,
+	by: number,
+	bz: number,
+	maxReachSq: number,
+): boolean {
+	const dx = ax - bx;
+	const dy = ay - by;
+	const dz = az - bz;
+	return dx * dx + dy * dy + dz * dz <= maxReachSq;
+}
 for (const material of TOOL_MATERIALS) {
 	for (let i = 0; i < TOOL_KINDS.length; i++) {
 		validHeldItemIds.add(material.baseToolItemId + i);
@@ -657,15 +699,7 @@ export class VoxelRoom extends Room {
 					parts.push(msg);
 					totalLen += msg.length;
 				}
-				if (parts.length > 0) {
-					const merged = new Uint8Array(totalLen);
-					let offset = 0;
-					for (const part of parts) {
-						merged.set(part, offset);
-						offset += part.length;
-					}
-					client.sendBytes("binary", merged);
-				}
+				sendMergedFrames(client, parts, totalLen);
 			}
 
 			this.sendFullPlayerSnapshot(client);
@@ -707,34 +741,7 @@ export class VoxelRoom extends Room {
 				);
 			}
 
-			/*
-			if (this.mobSim.size > 0) {
-				const mobs = this.mobSim.snapshotInto(this.mobSnapshotScratch);
-				const parts: Uint8Array[] = [];
-				let totalLen = 0;
-				for (const mob of mobs) {
-					const msg = encodeMobSpawn(
-						mob.id,
-						mob.typeId,
-						mob.x,
-						mob.y,
-						mob.z,
-						mob.yaw,
-					);
-					parts.push(msg);
-					totalLen += msg.length;
-				}
-				if (parts.length > 0) {
-					const merged = new Uint8Array(totalLen);
-					let offset = 0;
-					for (const part of parts) {
-						merged.set(part, offset);
-						offset += part.length;
-					}
-					client.sendBytes("binary", merged);
-				}
-			}
-*/
+			// sendFullMobSnapshot above already covers existing mobs.
 			if (this.itemSim.size > 0) {
 				const items = this.itemSim.snapshotInto(this.itemSnapshotScratch);
 				const parts: Uint8Array[] = [];
@@ -754,15 +761,7 @@ export class VoxelRoom extends Room {
 					parts.push(msg);
 					totalLen += msg.length;
 				}
-				if (parts.length > 0) {
-					const merged = new Uint8Array(totalLen);
-					let offset = 0;
-					for (const part of parts) {
-						merged.set(part, offset);
-						offset += part.length;
-					}
-					client.sendBytes("binary", merged);
-				}
+				sendMergedFrames(client, parts, totalLen);
 			}
 
 			client.sendBytes(
@@ -1631,9 +1630,7 @@ export class VoxelRoom extends Room {
 			Number.isInteger(state.animation) &&
 			state.animation >= 0 &&
 			state.animation <= 255 &&
-			Math.abs(state.x) <= WORLD_BOUNDARY &&
-			Math.abs(state.y) <= WORLD_BOUNDARY &&
-			Math.abs(state.z) <= WORLD_BOUNDARY
+			withinWorldBoundary(state.x, state.y, state.z)
 		);
 	}
 
@@ -1649,9 +1646,7 @@ export class VoxelRoom extends Room {
 			Number.isSafeInteger(edit.x) &&
 			Number.isSafeInteger(edit.y) &&
 			Number.isSafeInteger(edit.z) &&
-			Math.abs(edit.x) <= WORLD_BOUNDARY &&
-			Math.abs(edit.y) <= WORLD_BOUNDARY &&
-			Math.abs(edit.z) <= WORLD_BOUNDARY &&
+			withinWorldBoundary(edit.x, edit.y, edit.z) &&
 			Number.isInteger(edit.blockId) &&
 			edit.blockId >= 0 &&
 			edit.blockId <= MAX_BLOCK_ID &&
@@ -1677,9 +1672,7 @@ export class VoxelRoom extends Room {
 			Number.isFinite(drop.vx) &&
 			Number.isFinite(drop.vy) &&
 			Number.isFinite(drop.vz) &&
-			Math.abs(drop.x) <= WORLD_BOUNDARY &&
-			Math.abs(drop.y) <= WORLD_BOUNDARY &&
-			Math.abs(drop.z) <= WORLD_BOUNDARY &&
+			withinWorldBoundary(drop.x, drop.y, drop.z) &&
 			Math.abs(drop.vx) <= MAX_ITEM_VELOCITY &&
 			Math.abs(drop.vy) <= MAX_ITEM_VELOCITY &&
 			Math.abs(drop.vz) <= MAX_ITEM_VELOCITY
@@ -3198,11 +3191,8 @@ export class VoxelRoom extends Room {
 		y: number,
 		z: number,
 	): boolean {
-		const dx = x - player.x;
-		const dy = y - player.y;
-		const dz = z - player.z;
 		const maxReachSq = this.config.maxReach * this.config.maxReach;
-		return dx * dx + dy * dy + dz * dz <= maxReachSq;
+		return withinReach(x, y, z, player.x, player.y, player.z, maxReachSq);
 	}
 
 	private sendContainerRejected(

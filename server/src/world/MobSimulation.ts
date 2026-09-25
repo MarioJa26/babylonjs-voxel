@@ -358,6 +358,45 @@ class TickBlockSampler {
 	}
 }
 
+// Engine perf: cold spawn-path factory. Single object literal shape keeps
+// mob allocation monomorphic; same fields as before, no extra alloc.
+function makeMob(
+	id: number,
+	typeId: number,
+	x: number,
+	y: number,
+	z: number,
+	yaw: number,
+	hp: number,
+	egg: boolean,
+): ServerMob {
+	return {
+		id,
+		typeId,
+		x,
+		y,
+		z,
+		yaw,
+		hp,
+		fallStartY: Number.NaN,
+		headingTimer:
+			WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
+		stuckTimer: 0,
+		fleeing: false,
+		fleeTimer: 0,
+		path: [],
+		pathIndex: 0,
+		pathTimer: 0,
+		egg,
+		tx: 0,
+		ty: 0,
+		tz: 0,
+		hasTarget: false,
+		perchTarget: false,
+		perchTimer: 0,
+	};
+}
+
 export class ServerMobSimulation {
 	private readonly mobs = new Map<number, ServerMob>();
 	private nextId = 1;
@@ -1008,38 +1047,7 @@ export class ServerMobSimulation {
 	 * songbird. Returns the perch center or null.
 	 */
 	private findLeafPerch(mob: ServerMob): { x: number; y: number; z: number } | null {
-		const stats = MOB_STATS[mob.typeId];
-		const baseY = Math.floor(mob.y);
-
-		for (let attempt = 0; attempt < 8; attempt++) {
-			const angle = Math.random() * Math.PI * 2;
-			const dist = 6 + Math.random() * 14;
-			const cx = Math.floor(mob.x + Math.sin(angle) * dist);
-			const cz = Math.floor(mob.z + Math.cos(angle) * dist);
-
-			for (let y = baseY + 12; y >= baseY - 10; y--) {
-				const below = this.sampler.sample(cx, y, cz);
-				if (below === null) break;
-				const head = this.sampler.sample(cx, y + 1, cz);
-				if (head === null) break;
-				const head2 = this.sampler.sample(cx, y + 2, cz);
-				if (head2 === null) break;
-
-				if (
-					LEAF_BLOCK_IDS.has(below) &&
-					head === BlockType.Air &&
-					head2 === BlockType.Air
-				) {
-					return {
-						x: cx + 0.5,
-						y: y + 1 + stats.feetHeight,
-						z: cz + 0.5,
-					};
-				}
-			}
-		}
-
-		return null;
+		return this.findSpot(mob, 6, 20, 12, 10, true);
 	}
 
 	/**
@@ -1051,6 +1059,21 @@ export class ServerMobSimulation {
 		minDist: number,
 		maxDist: number,
 	): { x: number; y: number; z: number } | null {
+		return this.findSpot(mob, minDist, maxDist, 2, 8, false);
+	}
+
+	// Engine perf: decision-time scan (a few calls per mob AI decision, not
+	// per voxel). Single loop for leaf-perch and ground-spot; `leaf` selects
+	// the footing test with one predictable branch — no predicate closure
+	// allocation on this warm path.
+	private findSpot(
+		mob: ServerMob,
+		minDist: number,
+		maxDist: number,
+		upScan: number,
+		downScan: number,
+		leaf: boolean,
+	): { x: number; y: number; z: number } | null {
 		const stats = MOB_STATS[mob.typeId];
 		const baseY = Math.floor(mob.y);
 
@@ -1060,7 +1083,7 @@ export class ServerMobSimulation {
 			const cx = Math.floor(mob.x + Math.sin(angle) * dist);
 			const cz = Math.floor(mob.z + Math.cos(angle) * dist);
 
-			for (let y = baseY + 2; y >= baseY - 8; y--) {
+			for (let y = baseY + upScan; y >= baseY - downScan; y--) {
 				const below = this.sampler.sample(cx, y, cz);
 				if (below === null) break;
 				const head = this.sampler.sample(cx, y + 1, cz);
@@ -1068,8 +1091,11 @@ export class ServerMobSimulation {
 				const head2 = this.sampler.sample(cx, y + 2, cz);
 				if (head2 === null) break;
 
+				const footing = leaf
+					? LEAF_BLOCK_IDS.has(below)
+					: this.isSolidId(below);
 				if (
-					this.isSolidId(below) &&
+					footing &&
 					head === BlockType.Air &&
 					head2 === BlockType.Air
 				) {
@@ -1978,31 +2004,16 @@ export class ServerMobSimulation {
 			const pos = this.findSpawnPosition(player, typeId);
 			if (!pos) continue;
 
-			const mob: ServerMob = {
-				id: this.nextId++,
+			const mob = makeMob(
+				this.nextId++,
 				typeId,
-				x: pos.x,
-				y: pos.y,
-				z: pos.z,
-				yaw: Math.floor(Math.random() * 256),
-				hp: stats.hp,
-				fallStartY: Number.NaN,
-				headingTimer:
-					WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
-				stuckTimer: 0,
-				fleeing: false,
-				fleeTimer: 0,
-				path: [],
-				pathIndex: 0,
-				pathTimer: 0,
-				egg: false,
-				tx: 0,
-				ty: 0,
-				tz: 0,
-				hasTarget: false,
-				perchTarget: false,
-				perchTimer: 0,
-			};
+				pos.x,
+				pos.y,
+				pos.z,
+				Math.floor(Math.random() * 256),
+				stats.hp,
+				false,
+			);
 
 			this.addActiveMob(mob);
 			events.push({ kind: ServerMobEventKind.Spawn, mob });
@@ -2032,31 +2043,16 @@ export class ServerMobSimulation {
 			}
 			if (this.naturalTotal >= HARD_MOB_CAP) return;
 
-			const mob: ServerMob = {
-				id: this.nextId++,
+			const mob = makeMob(
+				this.nextId++,
 				typeId,
-				x: pos.x + (Math.random() * 4 - 2),
-				y: pos.y + (Math.random() * 2 - 1),
-				z: pos.z + (Math.random() * 4 - 2),
+				pos.x + (Math.random() * 4 - 2),
+				pos.y + (Math.random() * 2 - 1),
+				pos.z + (Math.random() * 4 - 2),
 				yaw,
-				hp: stats.hp,
-				fallStartY: Number.NaN,
-				headingTimer:
-					WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
-				stuckTimer: 0,
-				fleeing: false,
-				fleeTimer: 0,
-				path: [],
-				pathIndex: 0,
-				pathTimer: 0,
-				egg: false,
-				tx: 0,
-				ty: 0,
-				tz: 0,
-				hasTarget: false,
-				perchTarget: false,
-				perchTimer: 0,
-			};
+				stats.hp,
+				false,
+			);
 
 			this.addActiveMob(mob);
 			events.push({ kind: ServerMobEventKind.Spawn, mob });
@@ -2098,31 +2094,16 @@ export class ServerMobSimulation {
 			if (this.isSolid(x, y, z) || this.isSolid(x, y + 1, z)) return null;
 		}
 
-		const mob: ServerMob = {
-			id: this.nextId++,
+		const mob = makeMob(
+			this.nextId++,
 			typeId,
 			x,
 			y,
 			z,
-			yaw: Math.floor(Math.random() * 256),
-			hp: stats.hp,
-			fallStartY: Number.NaN,
-			headingTimer:
-				WANDER_MIN_MS + Math.random() * (WANDER_MAX_MS - WANDER_MIN_MS),
-			stuckTimer: 0,
-			fleeing: false,
-			fleeTimer: 0,
-			path: [],
-			pathIndex: 0,
-			pathTimer: 0,
-			egg: true,
-			tx: 0,
-			ty: 0,
-			tz: 0,
-			hasTarget: false,
-			perchTarget: false,
-			perchTimer: 0,
-		};
+			Math.floor(Math.random() * 256),
+			stats.hp,
+			true,
+		);
 
 		this.addActiveMob(mob);
 		return mob;

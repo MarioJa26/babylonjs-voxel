@@ -991,21 +991,6 @@ export class SurfaceGenerator {
 		return generationResult;
 	}
 
-	private resolveSolidBlockId(
-		currentBiome: Biome,
-		worldY: number,
-		depthBelowSurface: number,
-		isBeach: boolean,
-	): number {
-		return resolveSolidBlockId(
-			currentBiome,
-			worldY,
-			depthBelowSurface,
-			isBeach,
-			this.params.SEA_LEVEL,
-		);
-	}
-
 	private generateTerrain(
 		chunkX: number,
 		chunkY: number,
@@ -1221,11 +1206,12 @@ export class SurfaceGenerator {
 								? depthAnchorY - worldY
 								: Number.POSITIVE_INFINITY;
 
-						const blockId = this.resolveSolidBlockId(
+						const blockId = resolveSolidBlockId(
 							currentBiome,
 							worldY,
 							depthBelowSurface,
 							isBeachMap[columnIndex] === 1,
+							this.params.SEA_LEVEL,
 						);
 						placeColumnLocal(columnBase, localY, blockId, true);
 						airGapSinceLastSolid = 0;
@@ -1331,11 +1317,12 @@ export class SurfaceGenerator {
 								? depthAnchorY - worldY
 								: Number.POSITIVE_INFINITY;
 
-						const blockId = this.resolveSolidBlockId(
+						const blockId = resolveSolidBlockId(
 							currentBiome,
 							worldY,
 							depthBelowSurface,
 							isBeachMap[columnIndex] === 1,
+							this.params.SEA_LEVEL,
 						);
 						placeColumnLocal(columnBase, localY, blockId, true);
 						airGapSinceLastSolid = 0;

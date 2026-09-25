@@ -17,13 +17,6 @@ import { shapeInitPromise } from "../Shape/BlockShapes";
 import { getWorldNameFromUrl, worldSeedFor } from "../WorldContext";
 import { WorldStorage } from "../WorldStorage";
 import { addChunkDisposeHook, Chunk, getChunk } from "./Chunk";
-import { precomputeClosedFaceMasks } from "./Meshing/ChunkFaceMasks";
-import { createMeshFromData } from "./Meshing/ChunkMesher";
-import {
-	ChunkWorker,
-	NEIGHBOR_OFFSETS_26,
-	neighborMaskCache,
-} from "./Worker/chunkWorker";
 import { packCoords } from "./DataStructures/ChunkCoords";
 import type { MeshData } from "./DataStructures/MeshData";
 import { RingBuffer } from "./DataStructures/RingBuffer";
@@ -32,6 +25,7 @@ import {
 	type DistantTerrainTask,
 	type FarTileGeneratedMessage,
 	type FullMeshMessage,
+	type GenerateFarTileRequest,
 	type LightDirtyMessage,
 	type LightRegisterChunkBatchRequest,
 	type MeshWorkerResponse,
@@ -41,6 +35,8 @@ import {
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
+import { precomputeClosedFaceMasks } from "./Meshing/ChunkFaceMasks";
+import { createMeshFromData } from "./Meshing/ChunkMesher";
 import {
 	flushDirtyMergedGroups,
 	setRequestFlush,
@@ -50,8 +46,15 @@ import {
 	maybeRemeshNeighborsNowStable,
 	scheduleChunkAndNeighborsRemesh,
 } from "./Runtime/NeighborHelpers";
+import {
+	ChunkWorker,
+	NEIGHBOR_OFFSETS_26,
+	neighborMaskCache,
+} from "./Worker/chunkWorker";
 
 export type WorkerMessageData = WorkerResponseData;
+
+type FarTileTask = Omit<GenerateFarTileRequest, "type">;
 
 function compareLodCandidateScores(a: number, b: number): number {
 	return (
@@ -635,6 +638,13 @@ export class ChunkWorkerPool {
 		this.latestDistantTerrainRequestId = 0;
 	}
 
+	private isDistantTerrainWorkerReadyAndIdle(): boolean {
+		return (
+			this.distantTerrainReadyWorkers.has(this.distantTerrainWorkerIndex) &&
+			this.idleWorkerSet.has(this.distantTerrainWorkerIndex)
+		);
+	}
+
 	// -------------------------------------------------------------------------
 	// Idle-worker management
 	//
@@ -795,8 +805,7 @@ export class ChunkWorkerPool {
 			(context?.taskType === TaskType.Remesh ||
 				context?.taskType === TaskType.LodPrecompute ||
 				context?.taskType === TaskType.Relight) &&
-			context.chunk &&
-			typeof context.lod === "number"
+			context.chunk
 		) {
 			this.inFlightRemeshKeys.delete(
 				packInflightKey(context.chunk.numericId, context.lod),
@@ -817,17 +826,12 @@ export class ChunkWorkerPool {
 			this.scheduleRemesh(context.chunk, true);
 		} else if (
 			context?.taskType === TaskType.Relight &&
-			context.chunk?.isLoaded &&
-			typeof context.lod === "number"
+			context.chunk?.isLoaded
 		) {
 			// Relight's worker-side block grid was lost with the worker —
 			// re-queue as a full remesh so it is rebuilt.
 			this.scheduleRemesh(context.chunk, true);
-		} else if (
-			context?.taskType === TaskType.LodPrecompute &&
-			context.chunk &&
-			typeof context.lod === "number"
-		) {
+		} else if (context?.taskType === TaskType.LodPrecompute && context.chunk) {
 			const key = packInflightKey(context.chunk.numericId, context.lod);
 			if (!this.pendingLodPrecomputeKeys.has(key)) {
 				this.pendingLodPrecomputeKeys.add(key);
@@ -1078,8 +1082,7 @@ export class ChunkWorkerPool {
 			blockSAB: snap.blockSAB,
 			lightSAB: snap.lightSAB,
 			paletteSAB: snap.paletteSAB,
-			blockStorageBytesPerElement:
-				chunk.block_array instanceof Uint16Array ? 2 : 1,
+			blockStorageBytesPerElement: snap.blockStorageBytesPerElement,
 		});
 	}
 
@@ -1198,8 +1201,7 @@ export class ChunkWorkerPool {
 				chunkZ: chunk.chunkZ,
 				isUniform: chunk.isUniform,
 				uniformBlockId: chunk.uniformBlockId,
-				blockStorageBytesPerElement:
-					chunk.block_array instanceof Uint16Array ? 2 : 1,
+				blockStorageBytesPerElement: snap.blockStorageBytesPerElement,
 				direct: true,
 				blockSAB: snap.blockSAB,
 				paletteSAB: snap.paletteSAB,
@@ -1417,12 +1419,13 @@ export class ChunkWorkerPool {
 		// timers to ~4ms, which fragmented heavy streaming into hundreds of
 		// clamped timer callbacks. A posted message is a true macrotask
 		// with no clamp and fires before the next frame's timers.
-		if (!this._centralChannel) {
-			this._centralChannel = new MessageChannel();
+		let channel = this._centralChannel;
+		if (!channel) {
+			channel = new MessageChannel();
+			channel.port1.onmessage = this._centralFlush;
+			this._centralChannel = channel;
 		}
-		const ch = this._centralChannel;
-		ch.port1.onmessage = this._centralFlush;
-		ch.port2.postMessage(0);
+		channel.port2.postMessage(0);
 	}
 
 	private _centralFlush = (): void => {
@@ -1920,15 +1923,16 @@ export class ChunkWorkerPool {
 				const cutoutData = cutout ?? null;
 				const canCacheMesh =
 					lod === 0 || hasStableVoxelNeighborsForCachedMesh(chunk);
+				const isCurrentLod = (chunk.lodLevel ?? 0) === lod;
 
-				if (canCacheMesh) {
+				if (canCacheMesh || !isCurrentLod) {
 					_meshApplyScratch.opaque = opaqueData;
 					_meshApplyScratch.water = waterData;
 					_meshApplyScratch.cutout = cutoutData;
 					chunk.setCachedLODMesh(lod, _meshApplyScratch);
 				}
 
-				if ((chunk.lodLevel ?? 0) === lod) {
+				if (isCurrentLod) {
 					createMeshFromData(chunk, opaqueData, waterData, cutoutData);
 					chunk.isDirty = false;
 					chunk.remeshQueued = false;
@@ -1936,13 +1940,6 @@ export class ChunkWorkerPool {
 					this.debugStats.meshAppliedTotal++;
 					this._summaryApplied++;
 				} else {
-					if (!canCacheMesh) {
-						_meshApplyScratch.opaque = opaqueData;
-						_meshApplyScratch.water = waterData;
-						_meshApplyScratch.cutout = cutoutData;
-						chunk.setCachedLODMesh(lod, _meshApplyScratch);
-					}
-
 					chunk.isDirty = true;
 					chunk.remeshQueued = false;
 					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
@@ -2292,14 +2289,12 @@ export class ChunkWorkerPool {
 			renderDistance,
 			gridStep,
 		};
-		if (this.distantTerrainInFlight) {
-			this.distantTerrainTaskQueue.length = this.distantTerrainTaskQueueReadIdx;
-			this.distantTerrainTaskQueue.push(task);
-		} else {
-			this.distantTerrainTaskQueue.length = 1;
-			this.distantTerrainTaskQueueReadIdx = 0;
-			this.distantTerrainTaskQueue[0] = task;
-		}
+		const readIndex = this.distantTerrainInFlight
+			? this.distantTerrainTaskQueueReadIdx
+			: 0;
+		this.distantTerrainTaskQueue.length = readIndex;
+		this.distantTerrainTaskQueueReadIdx = readIndex;
+		this.distantTerrainTaskQueue.push(task);
 		this.processQueue();
 	}
 
@@ -2307,12 +2302,7 @@ export class ChunkWorkerPool {
 	// Far tiles (LOD6+)
 	// -------------------------------------------------------------------------
 
-	private farTileQueue: {
-		requestId: number;
-		levelIndex: number;
-		tileX: number;
-		tileZ: number;
-	}[] = [];
+	private farTileQueue: FarTileTask[] = [];
 	private farTileQueueReadIdx = 0;
 	private farTilesInFlightCount = 0;
 	private nextFarTileRequestId = 1;
@@ -2595,19 +2585,19 @@ export class ChunkWorkerPool {
 		data: MeshWorkerResponse & { type?: string },
 	): boolean {
 		const failed = false;
-		const type = data.type as string | undefined;
+		const type = data.type as WorkerTaskType | "HEARTBEAT" | undefined;
 
-		if (type === (WorkerTaskType.WorkerReady as unknown as string)) {
+		if (type === WorkerTaskType.WorkerReady) {
 			return failed;
 		}
 
-		if (type === ("HEARTBEAT" as string)) {
+		if (type === "HEARTBEAT") {
 			const seq = (data as unknown as { seq?: number }).seq ?? 0;
 			this._lastHeartbeatSeq[workerIndex] = seq;
 			return failed;
 		}
 
-		if (type === (WorkerTaskType.RelightMesh as unknown as string)) {
+		if (type === WorkerTaskType.RelightMesh) {
 			// Relight cache miss in the worker: fall back to a full remesh.
 			const miss = data as unknown as RelightMeshMissMessage;
 			const missChunk = this.resolveChunkByMessageId(miss.chunkId);
@@ -2622,7 +2612,7 @@ export class ChunkWorkerPool {
 			return failed;
 		}
 
-		if (type !== (WorkerTaskType.GenerateFullMesh as unknown as string)) {
+		if (type !== WorkerTaskType.GenerateFullMesh) {
 			console.warn(
 				`Ignoring unexpected mesh worker message from ${workerIndex}:`,
 				data,
@@ -2985,6 +2975,14 @@ export class ChunkWorkerPool {
 		return key;
 	}
 
+	private isLiveRemoteRequestChunk(chunk: Chunk | undefined): chunk is Chunk {
+		return (
+			chunk !== undefined &&
+			!chunk.isBoatChunk &&
+			getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ) === chunk
+		);
+	}
+
 	private selectColumnBatch(maxCount: number): Chunk[] {
 		const queue = this.remoteTaskQueue;
 		const queueSet = this.remoteTaskQueueSet;
@@ -3146,15 +3144,11 @@ export class ChunkWorkerPool {
 		if (len === 1) {
 			const chunk = toRequest[0];
 
-			if (
-				!chunk ||
-				chunk.isBoatChunk ||
-				getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ) !== chunk
-			) {
+			if (!this.isLiveRemoteRequestChunk(chunk)) {
 				return;
 			}
 
-			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+			const key = this.remoteKeyFor(chunk);
 			pending.set(key, chunk);
 
 			void provider
@@ -3172,18 +3166,14 @@ export class ChunkWorkerPool {
 		for (let i = 0; i < len; i++) {
 			const chunk = toRequest[i];
 
-			if (
-				!chunk ||
-				chunk.isBoatChunk ||
-				getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ) !== chunk
-			) {
+			if (!this.isLiveRemoteRequestChunk(chunk)) {
 				continue;
 			}
 
 			const cx = chunk.chunkX;
 			const cy = chunk.chunkY;
 			const cz = chunk.chunkZ;
-			const key = packCoords(cx, cy, cz);
+			const key = this.remoteKeyFor(chunk);
 
 			pending.set(key, chunk);
 			chunks.push(chunk);
@@ -3735,6 +3725,72 @@ export class ChunkWorkerPool {
 	// Core dispatch loop
 	// -------------------------------------------------------------------------
 
+	// Engine perf: dispatch-rate helper (a few calls per tick, not per voxel).
+	// Stale-entry gates for dequeued Remesh/LodPrecompute/Relight tasks,
+	// verbatim from processQueue. Returns false when the entry must be
+	// skipped (caller `continue`s to the next queue entry).
+	private validateDequeuedChunkTask(
+		taskType: TaskType,
+		taskChunk: Chunk | undefined,
+		precomputeLod: number | undefined,
+	): boolean {
+		if (taskType === TaskType.Remesh) {
+			if (!taskChunk!.isLoaded) {
+				this.taskQueuePriority.delete(taskChunk!);
+				return false;
+			}
+
+			if (
+				this.isCompletelyEmptyChunk(taskChunk!) ||
+				this.isUniformSolidMeshSkippable(taskChunk!)
+			) {
+				this.clearChunkMeshIfPresent(taskChunk!);
+				this.pendingRemeshMap.delete(taskChunk!);
+				this.taskQueuePriority.delete(taskChunk!);
+				return false;
+			}
+		}
+
+		if (taskType === TaskType.LodPrecompute && taskChunk) {
+			if (
+				!taskChunk.isLoaded ||
+				!taskChunk.hasVoxelData ||
+				precomputeLod === undefined ||
+				taskChunk.hasCachedLODMesh(precomputeLod)
+			) {
+				return false;
+			}
+		}
+
+		if (taskType === TaskType.Relight && taskChunk) {
+			const lod = taskChunk.lodLevel ?? 0;
+
+			if (!taskChunk.isLoaded) {
+				return false;
+			}
+
+			if (this.pendingRemeshMap.has(taskChunk)) {
+				return false;
+			}
+
+			const baseline = this.blockRevisionAtMesh.get(taskChunk.id);
+
+			if (
+				baseline === undefined ||
+				baseline !==
+					ChunkWorkerPool.packBlockRevisionBaseline(
+						taskChunk.blockRevision,
+						lod,
+					)
+			) {
+				this.scheduleRemesh(taskChunk, lod === 0, false);
+				return false;
+			}
+		}
+
+		return true;
+	}
+
 	private processQueue(): void {
 		this.updateQueueDebugStats();
 
@@ -3747,14 +3803,7 @@ export class ChunkWorkerPool {
 		) {
 			let taskChunk: Chunk | undefined;
 			let distantTask: DistantTerrainTask | undefined;
-			let farTask:
-				| {
-						requestId: number;
-						levelIndex: number;
-						tileX: number;
-						tileZ: number;
-				  }
-				| undefined;
+			let farTask: FarTileTask | undefined;
 			let precomputeLod: number | undefined;
 			let taskType: TaskType;
 
@@ -3770,8 +3819,7 @@ export class ChunkWorkerPool {
 				this.distantTerrainTaskQueueReadIdx <
 					this.distantTerrainTaskQueue.length &&
 				!this.distantTerrainInFlight &&
-				this.distantTerrainReadyWorkers.has(this.distantTerrainWorkerIndex) &&
-				this.idleWorkerSet.has(this.distantTerrainWorkerIndex)
+				this.isDistantTerrainWorkerReadyAndIdle()
 			) {
 				distantTask =
 					this.distantTerrainTaskQueue[this.distantTerrainTaskQueueReadIdx++];
@@ -3838,66 +3886,13 @@ export class ChunkWorkerPool {
 
 			if (!taskChunk && !distantTask && !farTask) break;
 
-			if (taskType === TaskType.Remesh) {
-				if (!taskChunk!.isLoaded) {
-					this.taskQueuePriority.delete(taskChunk!);
-					continue;
-				}
-
-				if (
-					this.isCompletelyEmptyChunk(taskChunk!) ||
-					this.isUniformSolidMeshSkippable(taskChunk!)
-				) {
-					this.clearChunkMeshIfPresent(taskChunk!);
-					this.pendingRemeshMap.delete(taskChunk!);
-					this.taskQueuePriority.delete(taskChunk!);
-					continue;
-				}
-			}
-
-			if (taskType === TaskType.LodPrecompute && taskChunk) {
-				if (
-					!taskChunk.isLoaded ||
-					!taskChunk.hasVoxelData ||
-					precomputeLod === undefined ||
-					taskChunk.hasCachedLODMesh(precomputeLod)
-				) {
-					continue;
-				}
-			}
-
-			if (taskType === TaskType.Relight && taskChunk) {
-				const lod = taskChunk.lodLevel ?? 0;
-
-				if (!taskChunk.isLoaded) {
-					continue;
-				}
-
-				if (this.pendingRemeshMap.has(taskChunk)) {
-					continue;
-				}
-
-				const baseline = this.blockRevisionAtMesh.get(taskChunk.id);
-
-				if (
-					baseline === undefined ||
-					baseline !==
-						ChunkWorkerPool.packBlockRevisionBaseline(
-							taskChunk.blockRevision,
-							lod,
-						)
-				) {
-					this.scheduleRemesh(taskChunk, lod === 0, false);
-					continue;
-				}
+			if (!this.validateDequeuedChunkTask(taskType, taskChunk, precomputeLod)) {
+				continue;
 			}
 
 			if (taskType === TaskType.DistantTerrain) {
 				if (
-					!this.distantTerrainReadyWorkers.has(
-						this.distantTerrainWorkerIndex,
-					) ||
-					!this.idleWorkerSet.has(this.distantTerrainWorkerIndex) ||
+					!this.isDistantTerrainWorkerReadyAndIdle() ||
 					!this._swapPreferredIdleWorkerToFront(this.distantTerrainWorkerIndex)
 				) {
 					this.distantTerrainTaskQueueReadIdx--;
@@ -4127,8 +4122,7 @@ export class ChunkWorkerPool {
 				(ctx.taskType === TaskType.Remesh ||
 					ctx.taskType === TaskType.LodPrecompute ||
 					ctx.taskType === TaskType.Relight) &&
-				ctx.chunk === chunk &&
-				typeof ctx.lod === "number"
+				ctx.chunk === chunk
 			) {
 				this.inFlightRemeshKeys.delete(
 					packInflightKey(chunk.numericId, ctx.lod),
