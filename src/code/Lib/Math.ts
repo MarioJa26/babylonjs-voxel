@@ -4,8 +4,8 @@ import { addVec3InPlace, type Vec3, type Vec4, vec3 } from "@babylonjs/lite";
  * Pure-TypeScript math + utility library used by the Lite port.
  *
  * `@babylonjs/core` is not a dependency of this project. The handful of
- * math/utility types the gameplay code relied on (Vector2, Color3/4,
- * Quaternion, Matrix, Observable, Tools, Scalar) are re-implemented here.
+ * math/utility types the gameplay code relied on (Color3/4,
+ * Quaternion, Matrix, Observable) are re-implemented here.
  *
  * `Vec3` (from `@babylonjs/lite`) is a plain `{ x, y, z }` data interface
  * with NO methods — there is no `Vector3` class. All vector math here is
@@ -16,126 +16,6 @@ import { addVec3InPlace, type Vec3, type Vec4, vec3 } from "@babylonjs/lite";
  * Runtime-only: no rendering, no engine dependency.
  */
 
-export class Vector2 {
-	constructor(
-		public x: number = 0,
-		public y: number = 0,
-	) {}
-
-	static Zero(): Vector2 {
-		return new Vector2(0, 0);
-	}
-	static One(): Vector2 {
-		return new Vector2(1, 1);
-	}
-	static FromArray(arr: ArrayLike<number>, offset = 0): Vector2 {
-		return new Vector2(arr[offset], arr[offset + 1]);
-	}
-	static Lerp(start: Vector2, end: Vector2, amount: number): Vector2 {
-		return new Vector2(
-			start.x + (end.x - start.x) * amount,
-			start.y + (end.y - start.y) * amount,
-		);
-	}
-	static Dot(left: Vector2, right: Vector2): number {
-		return left.x * right.x + left.y * right.y;
-	}
-	static DistanceSquared(a: Vector2, b: Vector2): number {
-		const dx = a.x - b.x;
-		const dy = a.y - b.y;
-		return dx * dx + dy * dy;
-	}
-	static Distance(a: Vector2, b: Vector2): number {
-		return Math.sqrt(Vector2.DistanceSquared(a, b));
-	}
-
-	clone(): Vector2 {
-		return new Vector2(this.x, this.y);
-	}
-	copyFrom(src: Vector2): Vector2 {
-		this.x = src.x;
-		this.y = src.y;
-		return this;
-	}
-	copyFromFloats(x: number, y: number): Vector2 {
-		this.x = x;
-		this.y = y;
-		return this;
-	}
-	set(x: number, y: number): Vector2 {
-		this.x = x;
-		this.y = y;
-		return this;
-	}
-	add(other: Vector2): Vector2 {
-		return new Vector2(this.x + other.x, this.y + other.y);
-	}
-	addToRef(other: Vector2, result: Vector2): Vector2 {
-		result.x = this.x + other.x;
-		result.y = this.y + other.y;
-		return result;
-	}
-	addInPlace(other: Vector2): Vector2 {
-		this.x += other.x;
-		this.y += other.y;
-		return this;
-	}
-	subtract(other: Vector2): Vector2 {
-		return new Vector2(this.x - other.x, this.y - other.y);
-	}
-	subtractToRef(other: Vector2, result: Vector2): Vector2 {
-		result.x = this.x - other.x;
-		result.y = this.y - other.y;
-		return result;
-	}
-	subtractInPlace(other: Vector2): Vector2 {
-		this.x -= other.x;
-		this.y -= other.y;
-		return this;
-	}
-	scale(scale: number): Vector2 {
-		return new Vector2(this.x * scale, this.y * scale);
-	}
-	scaleToRef(scale: number, result: Vector2): Vector2 {
-		result.x = this.x * scale;
-		result.y = this.y * scale;
-		return result;
-	}
-	scaleInPlace(scale: number): Vector2 {
-		this.x *= scale;
-		this.y *= scale;
-		return this;
-	}
-	length(): number {
-		return Math.sqrt(this.x * this.x + this.y * this.y);
-	}
-	lengthSquared(): number {
-		return this.x * this.x + this.y * this.y;
-	}
-	normalize(): Vector2 {
-		const len = this.length();
-		if (len > 1e-8) {
-			this.x /= len;
-			this.y /= len;
-		}
-		return this;
-	}
-	dot(other: Vector2): number {
-		return Vector2.Dot(this, other);
-	}
-	equals(other: Vector2): boolean {
-		return this.x === other.x && this.y === other.y;
-	}
-	toArray(arr: number[] | Float32Array, offset = 0): number[] | Float32Array {
-		arr[offset] = this.x;
-		arr[offset + 1] = this.y;
-		return arr;
-	}
-	asArray(): [number, number] {
-		return [this.x, this.y];
-	}
-}
-
 // ── Vec3 free functions ──────────────────────────────────────────────────
 // Plain-data operations on lite's `Vec3` ({ x, y, z }, no methods). ToRef
 // variants write into `result` (zero-alloc); InPlace variants mutate
@@ -143,39 +23,6 @@ export class Vector2 {
 
 export function vec3Zero(): Vec3 {
 	return vec3(0, 0, 0);
-}
-export function vec3One(): Vec3 {
-	return vec3(1, 1, 1);
-}
-export function vec3Up(): Vec3 {
-	return vec3(0, 1, 0);
-}
-export function vec3Down(): Vec3 {
-	return vec3(0, -1, 0);
-}
-export function vec3Forward(): Vec3 {
-	return vec3(0, 0, 1);
-}
-export function vec3Backward(): Vec3 {
-	return vec3(0, 0, -1);
-}
-export function vec3Right(): Vec3 {
-	return vec3(1, 0, 0);
-}
-export function vec3Left(): Vec3 {
-	return vec3(-1, 0, 0);
-}
-export function vec3Center(): Vec3 {
-	return vec3(0.5, 0.5, 0.5);
-}
-export function vec3AxisX(): Vec3 {
-	return vec3(1, 0, 0);
-}
-export function vec3AxisY(): Vec3 {
-	return vec3(0, 1, 0);
-}
-export function vec3AxisZ(): Vec3 {
-	return vec3(0, 0, 1);
 }
 
 export function copyVec3(out: Vec3, src: Vec3): Vec3 {
@@ -380,12 +227,6 @@ export function transformCoordinatesVec3ToRef(
 		(x * m[2] + y * m[6] + z * m[10] + m[14]) / w,
 	);
 }
-export function transformNormalVec3(
-	vector: Vec3,
-	transformation: Matrix,
-): Vec3 {
-	return transformNormalVec3ToRef(vector, transformation, vec3(0, 0, 0));
-}
 export function transformNormalVec3ToRef(
 	vector: Vec3,
 	transformation: Matrix,
@@ -400,61 +241,6 @@ export function transformNormalVec3ToRef(
 		x * m[0] + y * m[4] + z * m[8],
 		x * m[1] + y * m[5] + z * m[9],
 		x * m[2] + y * m[6] + z * m[10],
-	);
-}
-
-export function rotationFromAxisVec3(
-	axis1: Vec3,
-	axis2: Vec3,
-	axis3: Vec3,
-): Quaternion {
-	return Quaternion.RotationQuaternionFromAxis(axis1, axis2, axis3);
-}
-
-export function catmullRomVec3(
-	value1: Vec3,
-	value2: Vec3,
-	value3: Vec3,
-	value4: Vec3,
-	amount: number,
-): Vec3 {
-	const squared = amount * amount;
-	const cubed = squared * amount;
-	return vec3(
-		0.5 *
-			(2 * value2.x +
-				(-value1.x + value3.x) * amount +
-				(2 * value1.x - 5 * value2.x + 4 * value3.x - value4.x) * squared +
-				(-value1.x + 3 * value2.x - 3 * value3.x + value4.x) * cubed),
-		0.5 *
-			(2 * value2.y +
-				(-value1.y + value3.y) * amount +
-				(2 * value1.y - 5 * value2.y + 4 * value3.y - value4.y) * squared +
-				(-value1.y + 3 * value2.y - 3 * value3.y + value4.y) * cubed),
-		0.5 *
-			(2 * value2.z +
-				(-value1.z + value3.z) * amount +
-				(2 * value1.z - 5 * value2.z + 4 * value3.z - value4.z) * squared +
-				(-value1.z + 3 * value2.z - 3 * value3.z + value4.z) * cubed),
-	);
-}
-export function hermiteVec3(
-	value1: Vec3,
-	tangent1: Vec3,
-	value2: Vec3,
-	tangent2: Vec3,
-	amount: number,
-): Vec3 {
-	const squared = amount * amount;
-	const cubed = squared * amount;
-	const a = 2 * cubed - 3 * squared + 1;
-	const b = -2 * cubed + 3 * squared;
-	const c = cubed - 2 * squared + amount;
-	const d = cubed - squared;
-	return vec3(
-		a * value1.x + b * value2.x + c * tangent1.x + d * tangent2.x,
-		a * value1.y + b * value2.y + c * tangent1.y + d * tangent2.y,
-		a * value1.z + b * value2.z + c * tangent1.z + d * tangent2.z,
 	);
 }
 
@@ -734,15 +520,6 @@ export class Quaternion {
 	): Quaternion {
 		return Quaternion.FromEulerAngles(pitch, yaw, roll);
 	}
-	static RotationQuaternionFromAxis(
-		axis1: Vec3,
-		axis2: Vec3,
-		axis3: Vec3,
-	): Quaternion {
-		const rot = Matrix.Identity();
-		Matrix.FromXYZAxesToRef(axis1, axis2, axis3, rot);
-		return Quaternion.FromRotationMatrix(rot);
-	}
 	static FromRotationMatrix(matrix: Matrix): Quaternion {
 		return Quaternion.FromRotationMatrixToRef(matrix, new Quaternion());
 	}
@@ -778,42 +555,6 @@ export class Quaternion {
 			result.z = 0.25 * s;
 		}
 		return result;
-	}
-	static Slerp(
-		left: Quaternion,
-		right: Quaternion,
-		amount: number,
-	): Quaternion {
-		let dot = Quaternion.Dot(left, right);
-		const r = right.clone();
-		if (dot < 0) {
-			dot = -dot;
-			r.x = -r.x;
-			r.y = -r.y;
-			r.z = -r.z;
-			r.w = -r.w;
-		}
-		if (dot > 0.9995) {
-			const result = new Quaternion(
-				left.x + (r.x - left.x) * amount,
-				left.y + (r.y - left.y) * amount,
-				left.z + (r.z - left.z) * amount,
-				left.w + (r.w - left.w) * amount,
-			);
-			return result.normalize();
-		}
-		const theta0 = Math.acos(dot);
-		const theta = theta0 * amount;
-		const sinTheta = Math.sin(theta);
-		const sinTheta0 = Math.sin(theta0);
-		const s0 = Math.cos(theta) - (dot * sinTheta) / sinTheta0;
-		const s1 = sinTheta / sinTheta0;
-		return new Quaternion(
-			left.x * s0 + r.x * s1,
-			left.y * s0 + r.y * s1,
-			left.z * s0 + r.z * s1,
-			left.w * s0 + r.w * s1,
-		);
 	}
 	static Dot(left: Quaternion, right: Quaternion): number {
 		return (
@@ -1381,39 +1122,3 @@ export class Observable<T> {
 		return this.#observers.length > 0;
 	}
 }
-
-export const Tools = {
-	ToRadians: (value: number): number => (value * Math.PI) / 180,
-	ToDegrees: (value: number): number => (value * 180) / Math.PI,
-	Clamp: (value: number, min = 0, max = 1): number =>
-		Math.min(max, Math.max(min, value)),
-	Mix: (a: number, b: number, alpha: number): number => a + (b - a) * alpha,
-	RandomFloat: (min: number, max: number): number =>
-		min + Math.random() * (max - min),
-	IsExponentOfTwo: (value: number): boolean =>
-		(value & (value - 1)) === 0 && value !== 0,
-	Now: (): number => Date.now(),
-};
-
-export const Scalar = {
-	Clamp: (value: number, min = 0, max = 1): number =>
-		Math.min(max, Math.max(min, value)),
-	Lerp: (a: number, b: number, t: number): number => a + (b - a) * t,
-	ToRadians: (v: number): number => (v * Math.PI) / 180,
-	ToDegrees: (v: number): number => (v * 180) / Math.PI,
-	Sign: (v: number): number => (v > 0 ? 1 : v < 0 ? -1 : 0),
-	WithinEpsilon: (a: number, b: number, eps = 1.401e-45): boolean =>
-		Math.abs(a - b) <= eps,
-};
-
-export const Space = {
-	LOCAL: 0,
-	WORLD: 1,
-	BOUNDING_BOX: 2,
-};
-
-export const Axis = {
-	X: vec3(1, 0, 0),
-	Y: vec3(0, 1, 0),
-	Z: vec3(0, 0, 1),
-};

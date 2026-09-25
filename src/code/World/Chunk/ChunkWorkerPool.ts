@@ -2382,6 +2382,35 @@ export class ChunkWorkerPool {
 		};
 	}
 
+	// Engine perf: cold worker-message path (mesh-rate, not per-voxel).
+	// Shared GenerateFullMesh ingest tail for terrain + mesh handlers:
+	// resolve once, clear in-flight key, record baseline, enqueue, rerun.
+	private ingestFullMeshResult(
+		meshData: FullMeshMessage,
+		workerIndex: number,
+	): void {
+		// PERF: resolve the chunk ONCE — the in-flight key clear, baseline
+		// record and rerun check all need the same object, and each
+		// BigInt-keyed map lookup hashes the full 3×21-bit id.
+		const resolvedChunk = this.resolveChunkByMessageId(meshData.chunkId);
+		if (resolvedChunk) {
+			this.inFlightRemeshKeys.delete(
+				packInflightKey(resolvedChunk.numericId, meshData.lod),
+			);
+			this.recordBlockRevisionAtMesh(resolvedChunk, meshData.lod);
+		}
+		this.enqueueMeshResult(meshData, workerIndex);
+
+		if (resolvedChunk?.rerunRemeshAfterInflight) {
+			resolvedChunk.rerunRemeshAfterInflight = false;
+			this.scheduleRemesh(
+				resolvedChunk,
+				(resolvedChunk.lodLevel ?? 0) === 0,
+				false,
+			);
+		}
+	}
+
 	private handleTerrainMessageBody(
 		workerIndex: number,
 		data: WorkerMessageData,
@@ -2411,26 +2440,7 @@ export class ChunkWorkerPool {
 
 		if (type === WorkerTaskType.GenerateFullMesh) {
 			const meshData = data as FullMeshMessage;
-			// PERF: resolve the chunk ONCE — the in-flight key clear, baseline
-			// record and rerun check all need the same object, and each
-			// BigInt-keyed map lookup hashes the full 3×21-bit id.
-			const resolvedChunk = this.resolveChunkByMessageId(meshData.chunkId);
-			if (resolvedChunk) {
-				this.inFlightRemeshKeys.delete(
-					packInflightKey(resolvedChunk.numericId, meshData.lod),
-				);
-				this.recordBlockRevisionAtMesh(resolvedChunk, meshData.lod);
-			}
-			this.enqueueMeshResult(meshData, workerIndex);
-
-			if (resolvedChunk?.rerunRemeshAfterInflight) {
-				resolvedChunk.rerunRemeshAfterInflight = false;
-				this.scheduleRemesh(
-					resolvedChunk,
-					(resolvedChunk.lodLevel ?? 0) === 0,
-					false,
-				);
-			}
+			this.ingestFullMeshResult(meshData, workerIndex);
 		} else if (type === WorkerTaskType.GenerateTerrain) {
 			const terrainData = data as TerrainGeneratedMessage;
 			const {
@@ -2621,23 +2631,7 @@ export class ChunkWorkerPool {
 		}
 
 		const fullMeshMessage = data as unknown as FullMeshMessage;
-		const resolvedChunk = this.resolveChunkByMessageId(data.chunkId);
-		if (resolvedChunk) {
-			this.inFlightRemeshKeys.delete(
-				packInflightKey(resolvedChunk.numericId, data.lod),
-			);
-			this.recordBlockRevisionAtMesh(resolvedChunk, data.lod);
-		}
-		this.enqueueMeshResult(fullMeshMessage, workerIndex);
-
-		if (resolvedChunk?.rerunRemeshAfterInflight) {
-			resolvedChunk.rerunRemeshAfterInflight = false;
-			this.scheduleRemesh(
-				resolvedChunk,
-				(resolvedChunk.lodLevel ?? 0) === 0,
-				false,
-			);
-		}
+		this.ingestFullMeshResult(fullMeshMessage, workerIndex);
 
 		return failed;
 	}
@@ -3627,28 +3621,17 @@ export class ChunkWorkerPool {
 				continue;
 			}
 
-			let lod = 2;
-			let key = packInflightKey(chunk.numericId, lod);
+			for (let lod = 2; lod <= 3; lod++) {
+				const key = packInflightKey(chunk.numericId, lod);
 
-			if (
-				!chunk.hasCachedLODMesh(lod) &&
-				!this.pendingLodPrecomputeKeys.has(key)
-			) {
-				candidateChunks.push(chunk);
-				candidateLods.push(lod);
-				candidateScores.push(hDist * 100 + vDist * 10 + lod);
-			}
-
-			lod = 3;
-			key = packInflightKey(chunk.numericId, lod);
-
-			if (
-				!chunk.hasCachedLODMesh(lod) &&
-				!this.pendingLodPrecomputeKeys.has(key)
-			) {
-				candidateChunks.push(chunk);
-				candidateLods.push(lod);
-				candidateScores.push(hDist * 100 + vDist * 10 + lod);
+				if (
+					!chunk.hasCachedLODMesh(lod) &&
+					!this.pendingLodPrecomputeKeys.has(key)
+				) {
+					candidateChunks.push(chunk);
+					candidateLods.push(lod);
+					candidateScores.push(hDist * 100 + vDist * 10 + lod);
+				}
 			}
 		}
 
@@ -3789,6 +3772,43 @@ export class ChunkWorkerPool {
 		}
 
 		return true;
+	}
+
+	// Engine perf: dispatch-rate helper (a few calls per tick, not per voxel).
+	// Shared body for the Remesh / LodPrecompute / Relight dispatch arms:
+	// context + in-flight key + post + record + stats, in the same order.
+	// `kind` selects the post method (0 = full remesh, 1 = LOD remesh,
+	// 2 = relight) with explicit branches — no per-dispatch closure alloc,
+	// no megamorphic call. Callers still bump `dispatchedThisTick`.
+	private dispatchRemeshLikeTask(
+		workerIndex: number,
+		taskType: TaskType,
+		taskChunk: Chunk,
+		lod: number,
+		kind: 0 | 1 | 2,
+	): void {
+		const worker = this.workers[workerIndex];
+		this.setWorkerTaskContext(workerIndex, taskType, taskChunk, lod);
+		if (kind === 0) {
+			this.pendingRemeshMap.delete(taskChunk);
+			this.taskQueuePriority.delete(taskChunk);
+		}
+		this.inFlightRemeshKeys.add(packInflightKey(taskChunk.numericId, lod));
+		if (kind === 0) {
+			worker.postFullRemesh(taskChunk);
+		} else if (kind === 1) {
+			worker.postFullRemesh(taskChunk, lod);
+		} else {
+			worker.postRelightMesh(taskChunk);
+		}
+		this.recordWorkerDispatch(workerIndex);
+		if (kind === 0) {
+			this.debugStats.totalRemeshDispatches++;
+		} else if (kind === 1) {
+			this.debugStats.totalLodPrecomputeDispatches++;
+		} else {
+			this.debugStats.totalRelightDispatches++;
+		}
 	}
 
 	private processQueue(): void {
@@ -3937,56 +3957,15 @@ export class ChunkWorkerPool {
 				dispatchedThisTick++;
 			} else if (taskType === TaskType.Remesh) {
 				const lod = taskChunk!.lodLevel ?? 0;
-
-				this.setWorkerTaskContext(
-					workerIndex,
-					taskType,
-					taskChunk ?? null,
-					lod,
-				);
-
-				this.pendingRemeshMap.delete(taskChunk!);
-				this.taskQueuePriority.delete(taskChunk!);
-				this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.numericId, lod));
-
-				worker.postFullRemesh(taskChunk!);
-
-				this.recordWorkerDispatch(workerIndex);
-				this.debugStats.totalRemeshDispatches++;
+				this.dispatchRemeshLikeTask(workerIndex, taskType, taskChunk!, lod, 0);
 				dispatchedThisTick++;
 			} else if (taskType === TaskType.LodPrecompute) {
 				const lod = precomputeLod!;
-
-				this.setWorkerTaskContext(
-					workerIndex,
-					taskType,
-					taskChunk ?? null,
-					lod,
-				);
-
-				this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.numericId, lod));
-
-				worker.postFullRemesh(taskChunk!, lod);
-
-				this.recordWorkerDispatch(workerIndex);
-				this.debugStats.totalLodPrecomputeDispatches++;
+				this.dispatchRemeshLikeTask(workerIndex, taskType, taskChunk!, lod, 1);
 				dispatchedThisTick++;
 			} else if (taskType === TaskType.Relight) {
 				const lod = taskChunk!.lodLevel ?? 0;
-
-				this.setWorkerTaskContext(
-					workerIndex,
-					taskType,
-					taskChunk ?? null,
-					lod,
-				);
-
-				this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.numericId, lod));
-
-				worker.postRelightMesh(taskChunk!);
-
-				this.recordWorkerDispatch(workerIndex);
-				this.debugStats.totalRelightDispatches++;
+				this.dispatchRemeshLikeTask(workerIndex, taskType, taskChunk!, lod, 2);
 				dispatchedThisTick++;
 			} else if (taskType === TaskType.FarTile && farTask) {
 				this.setWorkerTaskContext(workerIndex, taskType);

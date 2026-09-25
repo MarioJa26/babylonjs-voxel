@@ -397,6 +397,40 @@ function makeMob(
 	};
 }
 
+// Engine perf: 10Hz per-mob tick path. Shared nearest-player scan for
+// threat/panic/proximity queries — squared distances only (no sqrt),
+// strict inside-radius comparison, no allocation. Single element shape
+// (PlayerPosition) keeps property loads monomorphic.
+function nearestPlayerInRadius(
+	mob: ServerMob,
+	players: ReadonlyArray<PlayerPosition>,
+	radiusSq: number,
+): PlayerPosition | null {
+	let nearest: PlayerPosition | null = null;
+	let nearestDistanceSq = radiusSq;
+
+	const mobX = mob.x;
+	const mobY = mob.y;
+	const mobZ = mob.z;
+
+	for (let index = 0; index < players.length; index++) {
+		const player = players[index];
+
+		const dx = mobX - player.x;
+		const dy = mobY - player.y;
+		const dz = mobZ - player.z;
+
+		const distanceSq = dx * dx + dy * dy + dz * dz;
+
+		if (distanceSq < nearestDistanceSq) {
+			nearestDistanceSq = distanceSq;
+			nearest = player;
+		}
+	}
+
+	return nearest;
+}
+
 export class ServerMobSimulation {
 	private readonly mobs = new Map<number, ServerMob>();
 	private nextId = 1;
@@ -839,22 +873,7 @@ export class ServerMobSimulation {
 		players: ReadonlyArray<PlayerPosition>,
 		radiusSq: number,
 	): PlayerPosition | null {
-		let nearest: PlayerPosition | null = null;
-		let nearestDistanceSq = radiusSq;
-
-		for (let index = 0; index < players.length; index++) {
-			const player = players[index];
-			const dx = mob.x - player.x;
-			const dy = mob.y - player.y;
-			const dz = mob.z - player.z;
-			const distanceSq = dx * dx + dy * dy + dz * dz;
-			if (distanceSq < nearestDistanceSq) {
-				nearestDistanceSq = distanceSq;
-				nearest = player;
-			}
-		}
-
-		return nearest;
+		return nearestPlayerInRadius(mob, players, radiusSq);
 	}
 
 	/**
@@ -1462,20 +1481,10 @@ export class ServerMobSimulation {
 		startY: number,
 		halfHeight: number,
 	): { groundY: number } | null {
-		const headroom = Math.max(1, Math.ceil(halfHeight * 2));
-		for (let dy = 1; dy >= -2; dy--) {
-			const groundY = startY + dy;
-			if (!this.isSolid(x, groundY, z)) continue;
-			let clear = true;
-			for (let y = 1; y <= headroom; y++) {
-				if (this.isSolid(x, groundY + y, z)) {
-					clear = false;
-					break;
-				}
-			}
-			if (clear) return { groundY };
-		}
-		return null;
+		// Same scan as findLandSurfaceY; object wrapper kept for the
+		// buildWanderPath call sites.
+		const groundY = this.findLandSurfaceY(x, z, startY, halfHeight);
+		return groundY === null ? null : { groundY };
 	}
 
 	private findLandPath(
@@ -1664,29 +1673,7 @@ export class ServerMobSimulation {
 			return null;
 		}
 
-		let nearest: PlayerPosition | null = null;
-		let nearestDistanceSq = fleeRadiusSq;
-
-		const mobX = mob.x;
-		const mobY = mob.y;
-		const mobZ = mob.z;
-
-		for (let index = 0; index < players.length; index++) {
-			const player = players[index];
-
-			const dx = mobX - player.x;
-			const dy = mobY - player.y;
-			const dz = mobZ - player.z;
-
-			const distanceSq = dx * dx + dy * dy + dz * dz;
-
-			if (distanceSq < nearestDistanceSq) {
-				nearestDistanceSq = distanceSq;
-				nearest = player;
-			}
-		}
-
-		return nearest;
+		return nearestPlayerInRadius(mob, players, fleeRadiusSq);
 	}
 
 	/** Find the nearest player regardless of distance (for damage-triggered panic). */
@@ -1694,29 +1681,11 @@ export class ServerMobSimulation {
 		mob: ServerMob,
 		players: ReadonlyArray<PlayerPosition>,
 	): PlayerPosition | null {
-		let nearest: PlayerPosition | null = null;
-		let nearestDistanceSq = Number.POSITIVE_INFINITY;
-
-		const mobX = mob.x;
-		const mobY = mob.y;
-		const mobZ = mob.z;
-
-		for (let index = 0; index < players.length; index++) {
-			const player = players[index];
-
-			const dx = mobX - player.x;
-			const dy = mobY - player.y;
-			const dz = mobZ - player.z;
-
-			const distanceSq = dx * dx + dy * dy + dz * dz;
-
-			if (distanceSq < nearestDistanceSq) {
-				nearestDistanceSq = distanceSq;
-				nearest = player;
-			}
-		}
-
-		return nearest;
+		return nearestPlayerInRadius(
+			mob,
+			players,
+			Number.POSITIVE_INFINITY,
+		);
 	}
 	private vectorToYaw(x: number, z: number): number {
 		/*
@@ -1727,29 +1696,11 @@ export class ServerMobSimulation {
 	}
 
 	private getAquaticBias(typeId: number): number {
-		switch (typeId) {
-			case 4: // Squid
-				return 0.7;
-			case 6: // Kraken
-				return 0.8;
-			case 5: // Fish
-				return 0.3;
-			default:
-				return 0.5;
-		}
+		return MOB_STATS[typeId]?.aquaticBias ?? 0.5;
 	}
 
 	private getAquaticIdleChance(typeId: number): number {
-		switch (typeId) {
-			case 5: // Fish — more active
-				return 0.2;
-			case 4: // Squid
-				return 0.3;
-			case 6: // Kraken — boss, drifts more
-				return 0.25;
-			default:
-				return 0.3;
-		}
+		return MOB_STATS[typeId]?.aquaticIdleChance ?? 0.3;
 	}
 
 	private findRandomAquaticTarget(

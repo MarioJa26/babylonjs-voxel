@@ -32,6 +32,7 @@ import {
 	unregisterChunk,
 } from "./Runtime/ChunkRegistry";
 import { copySunlightSeeds, seedSunlight } from "./Runtime/ChunkSunlight";
+import { type ChunkCensus, getChunkCensus } from "./Runtime/ChunkCensus";
 import {
 	clearHeaderRow,
 	LIGHT_HEADER_ROW_SIZE,
@@ -117,23 +118,20 @@ export class Chunk {
 	private static allocPooledChunk(x: number, y: number, z: number): Chunk {
 		const c = takePooledChunk();
 		if (c !== undefined) {
-			// Rehydrate minimal fields – mirrors constructor without extra allocations
-			(c as any).chunkX = x;
-			(c as any).chunkY = y;
-			(c as any).chunkZ = z;
-			(c as any).id = packCoords(x, y, z);
+			// Rehydrate minimal fields – mirrors constructor without extra allocations.
+			// Private access from a static of the same class is legal TS, no casts needed.
+			// neighborRefs already nulled in dispose – keep the same 6-length array
+			// (fixed 6-null literal = PACKED_ELEMENTS, no holey-array penalties).
+			c.chunkX = x;
+			c.chunkY = y;
+			c.chunkZ = z;
+			c.id = packCoords(x, y, z);
+			// readonly: assigned at construction + pool rehydrate only
 			(c as any).numericId = Chunk._nextNumericId++;
-			c.light_array = Chunk.EMPTY_LIGHT_ARRAY;
-			(c as any)._la32 = null;
-			(c as any).lightHeaderSlot = Chunk.allocLightHeaderSlot();
-			(c as any)._isDarkCached = false;
-			(c as any)._block_array = null;
-			(c as any)._isUniform = true;
-			(c as any)._uniformBlockId = 0;
-			(c as any)._palette = null;
-			(c as any)._paletteOpacity = null;
-			(c as any)._hasVoxelData = false;
-			(c as any)._cachedLODMeshes = null;
+			c.resetLightState();
+			c.lightHeaderSlot = Chunk.allocLightHeaderSlot();
+			c.resetVoxelState();
+			c._cachedLODMeshes = null;
 			c.isLoaded = false;
 			c.isBoatChunk = false;
 			c.isModified = false;
@@ -153,7 +151,6 @@ export class Chunk {
 			c.bfsSteps0 = 0;
 			c.bfsSteps1 = 0;
 			c.bfsQueuedForConnectivity = false;
-			// neighborRefs already nulled in dispose – keep the same 6-length array
 			if (!c.neighborRefs || c.neighborRefs.length !== 6) {
 				(c as any).neighborRefs = [null, null, null, null, null, null];
 			}
@@ -456,6 +453,25 @@ export class Chunk {
 		this.linkNeighbors();
 	}
 
+	// Engine perf: cold paths only (pool rehydrate, LOD-only load, dispose).
+	// Shared voxel-state reset so the three sites can't drift apart.
+	// Small private methods — V8 inlines, no allocation.
+	private resetVoxelState(): void {
+		this._block_array = null;
+		this._isUniform = true;
+		this._uniformBlockId = 0;
+		this._palette = null;
+		this._paletteOpacity = null;
+		this._hasVoxelData = false;
+	}
+
+	// Engine perf: cold paths only. Shared light-state reset.
+	private resetLightState(): void {
+		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
+		this._la32 = null;
+		this._isDarkCached = false;
+	}
+
 	// =========================================================================
 	// Block storage – accessors & nibble helpers
 	// =========================================================================
@@ -635,15 +651,9 @@ export class Chunk {
 	}
 
 	public loadLodOnlyFromStorage(scheduleRemesh = false): void {
-		this._hasVoxelData = false;
-		this._isUniform = true;
-		this._uniformBlockId = 0;
-		this._block_array = null;
-		this._palette = null;
-		this._paletteOpacity = null;
-		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
+		this.resetVoxelState();
+		this.resetLightState();
 		this.updateLightView();
-		this._isDarkCached = false;
 		this.blockRevision++;
 		this.generation = ++Chunk._generationCounter;
 		this.isLoaded = true;
@@ -727,81 +737,10 @@ export class Chunk {
 		this._cachedLODMeshes = null;
 	}
 
-	// Diagnostics: live-chunk census for the memory HUD. A heap snapshot
-	// showed ~73k Chunk shells retaining ~2.9 GB; this breakdown identifies
-	// which LOD band / voxel state owns them without needing a snapshot.
-	public static getCensus(): {
-		total: number;
-		withVoxels: number;
-		lodLow: number;
-		lodMid: number;
-		lodHigh: number;
-		cachedMeshEntries: number;
-		cachedMeshBytes: number;
-	} {
-		let total = 0;
-		let withVoxels = 0;
-		let lodLow = 0;
-		let lodMid = 0;
-		let lodHigh = 0;
-		let cachedMeshEntries = 0;
-		let cachedMeshBytes = 0;
-
-		for (const chunk of Chunk.loadedChunks) {
-			total++;
-
-			if (chunk._hasVoxelData) {
-				withVoxels++;
-			}
-
-			const lod = chunk.lodLevel;
-
-			if (lod <= 1) {
-				lodLow++;
-			} else if (lod <= 3) {
-				lodMid++;
-			} else {
-				lodHigh++;
-			}
-
-			const cache = chunk._cachedLODMeshes;
-
-			if (cache === null) {
-				continue;
-			}
-
-			for (let lod = 0; lod < cache.length; lod++) {
-				const entry = cache[lod];
-				if (entry === null) continue;
-				cachedMeshEntries++;
-				// The previous [opaque, water, cutout] expression allocated
-				// one temporary JavaScript array for every cached LOD entry.
-				const opaque = entry.opaque;
-				if (opaque !== null) {
-					cachedMeshBytes += opaque.faceData.byteLength;
-				}
-
-				const water = entry.water;
-				if (water !== null) {
-					cachedMeshBytes += water.faceData.byteLength;
-				}
-
-				const cutout = entry.cutout;
-				if (cutout !== null) {
-					cachedMeshBytes += cutout.faceData.byteLength;
-				}
-			}
-		}
-
-		return {
-			total,
-			withVoxels,
-			lodLow,
-			lodMid,
-			lodHigh,
-			cachedMeshEntries,
-			cachedMeshBytes,
-		};
+	// Diagnostics: live-chunk census for the memory HUD. Implementation lives
+	// in Runtime/ChunkCensus (structural interface — no private access needed).
+	public static getCensus(): ChunkCensus {
+		return getChunkCensus(Chunk.loadedChunks, Chunk.LOD_CACHE_SIZE);
 	}
 
 	public getSerializableLODMeshCache(): SerializedLODMeshCache | undefined {
@@ -1445,17 +1384,8 @@ export class Chunk {
 		this.waterMeshData = null;
 		this.cutoutMeshData = null;
 
-		this._block_array = null;
-		this._palette = null;
-		this._paletteOpacity = null;
-
-		this._isUniform = true;
-		this._uniformBlockId = 0;
-		this._hasVoxelData = false;
-
-		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
-		this._la32 = null;
-		this._isDarkCached = false;
+		this.resetVoxelState();
+		this.resetLightState();
 
 		this._cachedLODMeshes = null;
 

@@ -52,6 +52,16 @@ export interface MobStats {
 	 * deep-water mobs dwell near the bottom. Land mobs ignore this.
 	 */
 	depthRange?: { min: number; max: number };
+	/**
+	 * Downward bias when picking random swim targets (0..1). Higher sinks
+	 * deeper. Aquatic mobs only; defaults to 0.5 when unset.
+	 */
+	aquaticBias?: number;
+	/**
+	 * Chance per decision to idle instead of picking a swim target.
+	 * Aquatic mobs only; defaults to 0.3 when unset.
+	 */
+	aquaticIdleChance?: number;
 }
 
 /** Natural spawn configuration. */
@@ -106,6 +116,8 @@ export const MOB_STATS: Record<number, MobStats> = {
 		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
 		aquatic: true,
 		depthRange: { min: 2, max: 6 }, // Medium depth swimmer
+		aquaticBias: 0.7,
+		aquaticIdleChance: 0.3,
 	},
 	[MobTypeId.Fish]: {
 		hp: 3,
@@ -116,6 +128,8 @@ export const MOB_STATS: Record<number, MobStats> = {
 		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
 		aquatic: true,
 		depthRange: { min: 1, max: 4 }, // Shallow to mid-depth
+		aquaticBias: 0.3,
+		aquaticIdleChance: 0.2, // More active
 	},
 	[MobTypeId.Kraken]: {
 		hp: 80,
@@ -126,6 +140,8 @@ export const MOB_STATS: Record<number, MobStats> = {
 		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
 		aquatic: true,
 		depthRange: { min: 5, max: 12 }, // Deep water dweller
+		aquaticBias: 0.8,
+		aquaticIdleChance: 0.25, // Boss drifts more
 	},
 	[MobTypeId.Zombie]: {
 		hp: 20,

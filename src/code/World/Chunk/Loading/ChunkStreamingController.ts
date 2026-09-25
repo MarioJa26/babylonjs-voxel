@@ -38,6 +38,74 @@ function clampLodForY(chunkY: number, lod: number): number {
 }
 
 /**
+ * Engine perf: streaming path only (per candidate chunk, not per voxel).
+ * Shared LOD decision for processTarget / initial-shell / loaded-refresh.
+ * Returns -1 when the coordinate must be skipped (matches the
+ * getCachedDecisionLod miss sentinel). `enforceCreation` gates on
+ * `allowsChunkCreation` — true for load paths, false for loaded-refresh
+ * (the chunk already exists, creation is moot). The clamp is identity for
+ * y >= 0 (maxLodForChunkY), so all three call sites share one shape.
+ */
+function resolveDesiredLod(
+	chunkX: number,
+	chunkY: number,
+	chunkZ: number,
+	hDist: number,
+	vDist: number,
+	previousLod: number,
+	lodRuleSet: ChunkLodRuleSet,
+	enforceCreation: boolean,
+): number {
+	if (chunkY < 0) {
+		if (!undergroundDesired(chunkX, chunkY, chunkZ, hDist, vDist, lodRuleSet)) {
+			return -1;
+		}
+		return clampLodForY(chunkY, lodRuleSet.horizontalLodForDistance(hDist));
+	}
+	const decision = lodRuleSet.resolveWithHysteresisFromDistance(
+		hDist,
+		vDist,
+		previousLod,
+	);
+	if (enforceCreation && !decision.allowsChunkCreation) return -1;
+	return clampLodForY(chunkY, decision.lodLevel);
+}
+
+/**
+ * Engine perf: streaming loops only. Branchless-abs + Chebyshev helpers for
+ * the relX/relY/relZ distance boilerplate (7 sites). Trivially inlineable,
+ * zero allocation — same ops as the inline ternaries.
+ */
+function absI(n: number): number {
+	return n < 0 ? -n : n;
+}
+
+function chebyH(x: number, z: number): number {
+	const ax = absI(x);
+	const az = absI(z);
+	return ax > az ? ax : az;
+}
+
+/**
+ * Engine perf: unload hot loop only. Shared burial predicate for the two
+ * unload branches. `caveState` is threaded in so `isInCave()` is not called
+ * per chunk. Zero allocation, same ops as the inline version.
+ */
+function isBuriedCullable(
+	chunkX: number,
+	chunkY: number,
+	chunkZ: number,
+	hDist: number,
+	caveState: boolean,
+): boolean {
+	return (
+		!caveState &&
+		hDist > UNDERGROUND_CULL_EXEMPT_RADIUS &&
+		chunkY < columnProfile(chunkX, chunkZ).buriedTopY
+	);
+}
+
+/**
 Whether an underground coordinate should currently have a chunk. Horizontal
 bands decide (vertical distance must not gate caves); depth is bounded by the
 rule set's underground vertical cap (CAVE_VERTICAL_RENDER_DISTANCE outdoors,
@@ -552,12 +620,8 @@ export class ChunkStreamingController {
 				const relY = chunk.chunkY - chunkY;
 				const relZ = chunk.chunkZ - chunkZ;
 
-				const absX = relX < 0 ? -relX : relX;
-				const absY = relY < 0 ? -relY : relY;
-				const absZ = relZ < 0 ? -relZ : relZ;
-
-				const hDist = absX > absZ ? absX : absZ;
-				const vDist = absY;
+				const hDist = chebyH(relX, relZ);
+				const vDist = absI(relY);
 
 				if (
 					hDist > operationalRadius ||
@@ -650,12 +714,8 @@ export class ChunkStreamingController {
 				const relY = chunk.chunkY - chunkY;
 				const relZ = chunk.chunkZ - chunkZ;
 
-				const absX = relX < 0 ? -relX : relX;
-				const absY = relY < 0 ? -relY : relY;
-				const absZ = relZ < 0 ? -relZ : relZ;
-
-				const hDist = absX > absZ ? absX : absZ;
-				const vDist = absY;
+				const hDist = chebyH(relX, relZ);
+				const vDist = absI(relY);
 
 				const keep =
 					chunk.chunkY < 0
@@ -825,12 +885,8 @@ export class ChunkStreamingController {
 			const relY = chunk.chunkY - chunkY;
 			const relZ = chunk.chunkZ - chunkZ;
 
-			const absX = relX < 0 ? -relX : relX;
-			const absY = relY < 0 ? -relY : relY;
-			const absZ = relZ < 0 ? -relZ : relZ;
-
-			const hDist = absX > absZ ? absX : absZ;
-			const vDist = absY;
+			const hDist = chebyH(relX, relZ);
+			const vDist = absI(relY);
 
 			if (hDist > maxH || vDist > maxV) continue;
 			if (!includeOuterBands && (hDist > nearH || vDist > nearV)) {
@@ -850,31 +906,17 @@ export class ChunkStreamingController {
 			let decisionLod = this.getCachedDecisionLod(key, chunk.isDirty);
 
 			if (decisionLod < 0) {
-				if (chunk.chunkY < 0) {
-					if (
-						!undergroundDesired(
-							chunk.chunkX,
-							chunk.chunkY,
-							chunk.chunkZ,
-							hDist,
-							vDist,
-							lodRuleSet,
-						)
-					) {
-						continue;
-					}
-
-					decisionLod = clampLodForY(
-						chunk.chunkY,
-						lodRuleSet.horizontalLodForDistance(hDist),
-					);
-				} else {
-					decisionLod = lodRuleSet.resolveWithHysteresisFromDistance(
-						hDist,
-						vDist,
-						chunkLod,
-					).lodLevel;
-				}
+				decisionLod = resolveDesiredLod(
+					chunk.chunkX,
+					chunk.chunkY,
+					chunk.chunkZ,
+					hDist,
+					vDist,
+					chunkLod,
+					lodRuleSet,
+					false,
+				);
+				if (decisionLod < 0) continue;
 				this.setCachedDecisionLod(key, decisionLod, chunk.isDirty);
 			}
 
@@ -982,10 +1024,8 @@ export class ChunkStreamingController {
 		const relX = x - playerChunkX;
 		const relY = y - playerChunkY;
 		const relZ = z - playerChunkZ;
-		const absX = relX < 0 ? -relX : relX;
-		const absZ = relZ < 0 ? -relZ : relZ;
-		const hDist = absX > absZ ? absX : absZ;
-		const vDist = relY < 0 ? -relY : relY;
+		const hDist = chebyH(relX, relZ);
+		const vDist = absI(relY);
 
 		// ALLOCATION GUARD (profile: 45% of heap churn via `new Chunk` for empty
 		// sky cells): skip columns provably above terrain. Reuses per-frame
@@ -1008,26 +1048,17 @@ export class ChunkStreamingController {
 		let desiredLod = this.getCachedDecisionLod(cacheKey, isDirty);
 
 		if (desiredLod < 0) {
-			if (y < 0) {
-				if (!undergroundDesired(x, y, z, hDist, vDist, lodRuleSet)) {
-					return;
-				}
-
-				desiredLod = clampLodForY(
-					y,
-					lodRuleSet.horizontalLodForDistance(hDist),
-				);
-			} else {
-				const decision = lodRuleSet.resolveWithHysteresisFromDistance(
-					hDist,
-					vDist,
-					previousLod,
-				);
-
-				if (!decision.allowsChunkCreation) return;
-
-				desiredLod = clampLodForY(y, decision.lodLevel);
-			}
+			desiredLod = resolveDesiredLod(
+				x,
+				y,
+				z,
+				hDist,
+				vDist,
+				previousLod,
+				lodRuleSet,
+				true,
+			);
+			if (desiredLod < 0) return;
 
 			this.setCachedDecisionLod(cacheKey, desiredLod, isDirty);
 		}
@@ -1160,12 +1191,10 @@ export class ChunkStreamingController {
 
 		for (let x = startX; x <= endX; x++) {
 			const relX = x - chunkX;
-			const absX = relX < 0 ? -relX : relX;
 
 			for (let z = startZ; z <= endZ; z++) {
 				const relZ = z - chunkZ;
-				const absZ = relZ < 0 ? -relZ : relZ;
-				const hDist = absX > absZ ? absX : absZ;
+				const hDist = chebyH(relX, relZ);
 
 				let columnStartY = startY;
 
@@ -1314,18 +1343,16 @@ export class ChunkStreamingController {
 
 		for (let x = startX; x <= endX; x++) {
 			const relX = x - chunkX;
-			const absX = relX < 0 ? -relX : relX;
 
 			for (let y = startY; y <= endY; y++) {
 				if (y < minY || y >= maxY) continue;
 
 				const relY = y - chunkY;
-				const vDist = relY < 0 ? -relY : relY;
+				const vDist = absI(relY);
 
 				for (let z = startZ; z <= endZ; z++) {
 					const relZ = z - chunkZ;
-					const absZ = relZ < 0 ? -relZ : relZ;
-					const hDist = absX > absZ ? absX : absZ;
+					const hDist = chebyH(relX, relZ);
 
 					// Spawn-time surface-only cull. This shell resolves LODs
 					// inline instead of via processTargetChunkCoordinate, so
@@ -1345,28 +1372,17 @@ export class ChunkStreamingController {
 					let desiredLod = this.getCachedDecisionLod(cacheKey, isDirty);
 
 					if (desiredLod < 0) {
-						if (y < 0) {
-							if (!undergroundDesired(x, y, z, hDist, vDist, lodRuleSet)) {
-								continue;
-							}
-
-							desiredLod = clampLodForY(
-								y,
-								lodRuleSet.horizontalLodForDistance(hDist),
-							);
-						} else {
-							const decision = lodRuleSet.resolveWithHysteresisFromDistance(
-								hDist,
-								vDist,
-								previousLod,
-							);
-
-							if (!decision.allowsChunkCreation) {
-								continue;
-							}
-
-							desiredLod = clampLodForY(y, decision.lodLevel);
-						}
+						desiredLod = resolveDesiredLod(
+							x,
+							y,
+							z,
+							hDist,
+							vDist,
+							previousLod,
+							lodRuleSet,
+							true,
+						);
+						if (desiredLod < 0) continue;
 
 						this.setCachedDecisionLod(cacheKey, desiredLod, isDirty);
 					}
@@ -1425,11 +1441,9 @@ export class ChunkStreamingController {
 			const dy = chunk.chunkY - chunkY;
 			const dz = chunk.chunkZ - chunkZ;
 
-			const absX = dx < 0 ? -dx : dx;
-			const absY = dy < 0 ? -dy : dy;
-			const absZ = dz < 0 ? -dz : dz;
+			const absY = absI(dy);
 
-			const hDist = absX > absZ ? absX : absZ;
+			const hDist = chebyH(dx, dz);
 
 			if (chunk.chunkY < 0) {
 				// Keep unloading behavior symmetrical with undergroundDesired().
@@ -1443,10 +1457,13 @@ export class ChunkStreamingController {
 
 				// Inline the burial predicate so isInCave() is not called for
 				// every chunk in this hot loop.
-				const fullyBuriedAndCullable =
-					!caveState &&
-					hDist > UNDERGROUND_CULL_EXEMPT_RADIUS &&
-					chunk.chunkY < columnProfile(chunk.chunkX, chunk.chunkZ).buriedTopY;
+				const fullyBuriedAndCullable = isBuriedCullable(
+					chunk.chunkX,
+					chunk.chunkY,
+					chunk.chunkZ,
+					hDist,
+					caveState,
+				);
 
 				if (
 					outsideHorizontalBand ||
@@ -1459,10 +1476,13 @@ export class ChunkStreamingController {
 				continue;
 			}
 
-			const fullyBuriedAndCullable =
-				!caveState &&
-				hDist > UNDERGROUND_CULL_EXEMPT_RADIUS &&
-				chunk.chunkY < columnProfile(chunk.chunkX, chunk.chunkZ).buriedTopY;
+			const fullyBuriedAndCullable = isBuriedCullable(
+				chunk.chunkX,
+				chunk.chunkY,
+				chunk.chunkZ,
+				hDist,
+				caveState,
+			);
 
 			if (
 				hDist > removeRadius ||

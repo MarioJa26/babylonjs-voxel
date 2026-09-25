@@ -312,6 +312,19 @@ function withinReach(
 	const dz = az - bz;
 	return dx * dx + dy * dy + dz * dz <= maxReachSq;
 }
+
+// Engine perf: cold container path only. Shared "delete member, drop empty
+// set" bookkeeping for the containerViewers/viewerContainers dual maps.
+function dropFromViewerSet(
+	map: Map<string, Set<string>>,
+	key: string,
+	member: string,
+): void {
+	const set = map.get(key);
+	if (!set) return;
+	set.delete(member);
+	if (set.size === 0) map.delete(key);
+}
 for (const material of TOOL_MATERIALS) {
 	for (let i = 0; i < TOOL_KINDS.length; i++) {
 		validHeldItemIds.add(material.baseToolItemId + i);
@@ -2161,12 +2174,7 @@ export class VoxelRoom extends Room {
 				const distSq = dx * dx + dy * dy + dz * dz;
 				const maxReachSq = this.config.maxReach * this.config.maxReach;
 				if (distSq > maxReachSq) {
-					if (!this.reachRejectWarned.has(client.sessionId)) {
-						this.reachRejectWarned.add(client.sessionId);
-						console.warn(
-							`[VoxelRoom] Block edit rejected: too far (${Math.sqrt(distSq).toFixed(1)} blocks)`,
-						);
-					}
+					this.warnReachRejected(client.sessionId, "Block edit", distSq);
 					this.sendBlockEditRejected(
 						client,
 						edit,
@@ -2240,12 +2248,7 @@ export class VoxelRoom extends Room {
 				const distSq = dx * dx + dy * dy + dz * dz;
 				const maxDist = this.config.maxReach + EXPLOSION_REACH_SLACK;
 				if (distSq > maxDist * maxDist) {
-					if (!this.reachRejectWarned.has(client.sessionId)) {
-						this.reachRejectWarned.add(client.sessionId);
-						console.warn(
-							`[VoxelRoom] Explosion rejected: too far (${Math.sqrt(distSq).toFixed(1)} blocks)`,
-						);
-					}
+					this.warnReachRejected(client.sessionId, "Explosion", distSq);
 					break;
 				}
 
@@ -2355,12 +2358,19 @@ export class VoxelRoom extends Room {
 				// igniter's own Break is processed first and would race it.
 				// Receivers spawn a cosmetic entity (bounce/flash/fuse + FX);
 				// only the lighting client's Explosion message edits the world.
-				const dx = ignite.x - player.x;
-				const dy = ignite.y - player.y;
-				const dz = ignite.z - player.z;
-				const distSq = dx * dx + dy * dy + dz * dz;
 				const maxDist = this.config.maxReach + TNT_IGNITE_REACH_SLACK;
-				if (distSq > maxDist * maxDist) break;
+				if (
+					!withinReach(
+						ignite.x,
+						ignite.y,
+						ignite.z,
+						player.x,
+						player.y,
+						player.z,
+						maxDist * maxDist,
+					)
+				)
+					break;
 
 				this.broadcastBytes("binary", encodeTntIgnite(ignite), {
 					except: client,
@@ -2473,10 +2483,17 @@ export class VoxelRoom extends Room {
 					return;
 				}
 
-				const dx = item.x - player.x;
-				const dy = item.y - player.y;
-				const dz = item.z - player.z;
-				if (dx * dx + dy * dy + dz * dz > ITEM_PICKUP_RADIUS_SQ) {
+				if (
+					!withinReach(
+						item.x,
+						item.y,
+						item.z,
+						player.x,
+						player.y,
+						player.z,
+						ITEM_PICKUP_RADIUS_SQ,
+					)
+				) {
 					client.sendBytes(
 						"binary",
 						encodeItemPickupRejected({
@@ -2546,15 +2563,20 @@ export class VoxelRoom extends Room {
 					Number.isFinite(request.x) &&
 					Number.isFinite(request.y) &&
 					Number.isFinite(request.z) &&
-					Math.abs(request.x) <= WORLD_BOUNDARY &&
-					Math.abs(request.y) <= WORLD_BOUNDARY &&
-					Math.abs(request.z) <= WORLD_BOUNDARY;
+					withinWorldBoundary(request.x, request.y, request.z);
 				if (!validRequest) return;
 
-				const dx = request.x - player.x;
-				const dy = request.y - player.y;
-				const dz = request.z - player.z;
-				if (dx * dx + dy * dy + dz * dz > MAX_MOB_SPAWN_REQUEST_DIST_SQ) {
+				if (
+					!withinReach(
+						request.x,
+						request.y,
+						request.z,
+						player.x,
+						player.y,
+						player.z,
+						MAX_MOB_SPAWN_REQUEST_DIST_SQ,
+					)
+				) {
 					return;
 				}
 
@@ -2589,10 +2611,17 @@ export class VoxelRoom extends Room {
 				const mob = this.mobSim.findMob(damage.mobId);
 				if (!mob) return;
 
-				const dx = mob.x - player.x;
-				const dy = mob.y - player.y;
-				const dz = mob.z - player.z;
-				if (dx * dx + dy * dy + dz * dz > MAX_MOB_SPAWN_REQUEST_DIST_SQ) {
+				if (
+					!withinReach(
+						mob.x,
+						mob.y,
+						mob.z,
+						player.x,
+						player.y,
+						player.z,
+						MAX_MOB_SPAWN_REQUEST_DIST_SQ,
+					)
+				) {
 					return;
 				}
 
@@ -3195,6 +3224,20 @@ export class VoxelRoom extends Room {
 		return withinReach(x, y, z, player.x, player.y, player.z, maxReachSq);
 	}
 
+	// Engine perf: per-message validation path. Once-per-session reach warning
+	// (avoids warn spam when a stale client keeps missing).
+	private warnReachRejected(
+		sessionId: string,
+		label: string,
+		distSq: number,
+	): void {
+		if (this.reachRejectWarned.has(sessionId)) return;
+		this.reachRejectWarned.add(sessionId);
+		console.warn(
+			`[VoxelRoom] ${label} rejected: too far (${Math.sqrt(distSq).toFixed(1)} blocks)`,
+		);
+	}
+
 	private sendContainerRejected(
 		client: Client,
 		x: number,
@@ -3231,27 +3274,15 @@ export class VoxelRoom extends Room {
 	}
 
 	private removeContainerViewer(key: string, sessionId: string): void {
-		const viewers = this.containerViewers.get(key);
-		if (viewers) {
-			viewers.delete(sessionId);
-			if (viewers.size === 0) this.containerViewers.delete(key);
-		}
-		const owned = this.viewerContainers.get(sessionId);
-		if (owned) {
-			owned.delete(key);
-			if (owned.size === 0) this.viewerContainers.delete(sessionId);
-		}
+		dropFromViewerSet(this.containerViewers, key, sessionId);
+		dropFromViewerSet(this.viewerContainers, sessionId, key);
 	}
 
 	private removeClientFromContainers(sessionId: string): void {
 		const owned = this.viewerContainers.get(sessionId);
 		if (!owned) return;
 		for (const key of owned) {
-			const viewers = this.containerViewers.get(key);
-			if (viewers) {
-				viewers.delete(sessionId);
-				if (viewers.size === 0) this.containerViewers.delete(key);
-			}
+			dropFromViewerSet(this.containerViewers, key, sessionId);
 		}
 		this.viewerContainers.delete(sessionId);
 	}

@@ -597,26 +597,19 @@ function getSkyLight(view: ChunkView, idx: number): number {
 	return (view.light_array[idx] >> LIGHT_SKY_SHIFT) & LIGHT_BLOCK_MASK;
 }
 
-const enum WriteResult {
-	Wrote,
-	Skipped,
-	Aborted,
-}
-
 /**
  * Update a light byte if `next` strictly improves it.
  * `mask` is the bits of the other channel to preserve.
  * `shift` is the bit position of the channel we're writing.
- * Returns "wrote" on success, "skipped" if no improvement needed, or
- * "aborted" if the chunk is no longer loaded.
+ * Returns true when the byte was written.
  */
-function casLightByte(
+function tryRaiseLightByte(
 	view: ChunkView,
 	idx: number,
 	isSky: boolean,
 	nextLevel: number,
-): WriteResult {
-	if (!view.isLoaded) return WriteResult.Aborted;
+): boolean {
+	if (!view.isLoaded) return false;
 	const light = view.light_array;
 	const mask = isSky ? LIGHT_BLOCK_MASK : LIGHT_BLOCK_MASK << LIGHT_SKY_SHIFT;
 	const shift = isSky ? LIGHT_SKY_SHIFT : 0;
@@ -626,9 +619,9 @@ function casLightByte(
 
 	const cur = light[idx];
 	const curLevel = (cur & currentMask) >> shift;
-	if (curLevel >= nextLevel) return WriteResult.Skipped;
+	if (curLevel >= nextLevel) return false;
 	light[idx] = (cur & mask) | (nextLevel << shift);
-	return WriteResult.Wrote;
+	return true;
 }
 
 function clearLightByte(view: ChunkView, idx: number, isSky: boolean): boolean {
@@ -1370,8 +1363,7 @@ function updateLightFromNeighborsAt(
 		const nextLevel = preservesFullSun ? 15 : level - 1;
 		if (nextLevel <= 0 || nextLevel <= currentTargetLevel) continue;
 
-		const result3 = casLightByte(view, selfIdx, isSkyLight, nextLevel);
-		if (result3 === WriteResult.Wrote) {
+		if (tryRaiseLightByte(view, selfIdx, isSkyLight, nextLevel)) {
 			currentTargetLevel = nextLevel;
 			dirtySlots.add(view.headerSlot);
 			addAdjacentBorderSlots(dirtySlots, view, x, y, z);
@@ -1402,7 +1394,7 @@ export function addLightAt(
 	const idx = x + (y << 5) + (z << 10);
 	if (getBlockLight(view, idx) >= level) return;
 
-	if (casLightByte(view, idx, false, level) === WriteResult.Wrote) {
+	if (tryRaiseLightByte(view, idx, false, level)) {
 		dirtySlots.add(view.headerSlot);
 		addAdjacentBorderSlots(dirtySlots, view, x, y, z);
 	}
@@ -1482,6 +1474,49 @@ function cutSkyLightBelowAt(
 	}
 }
 
+// Engine perf: border-reconcile path only (per chunk load/edit, never in the
+// BFS inner loop). Single shared body for the 3 axis cases: identical seed
+// logic, only the index formula and edge-coord slot differ. Count in/out as
+// a primitive (no allocation); module seed arrays used directly. Axis is
+// face-constant so the ternaries predict perfectly.
+function seedSkyEdgePair(
+	view: ChunkView,
+	neighbor: ChunkView,
+	axis: 0 | 1 | 2,
+	selfEdge: number,
+	nbrEdge: number,
+	size: number,
+	size2: number,
+	u: number,
+	v: number,
+	count: number,
+): number {
+	const sidx =
+		axis === 0
+			? selfEdge + u * size + v * size2
+			: axis === 1
+				? u + selfEdge * size + v * size2
+				: u + v * size + selfEdge * size2;
+	const nidx =
+		axis === 0
+			? nbrEdge + u * size + v * size2
+			: axis === 1
+				? u + nbrEdge * size + v * size2
+				: u + v * size + nbrEdge * size2;
+	const selfSky = (view.light_array[sidx] >> LIGHT_SKY_SHIFT) & 0xf;
+	const neighborSky = (neighbor.light_array[nidx] >> LIGHT_SKY_SHIFT) & 0xf;
+	if (selfSky === neighborSky) return count;
+	ensureSeedCapacity(count + 1);
+	const selfHigher = selfSky > neighborSky;
+	const edge = selfHigher ? selfEdge : nbrEdge;
+	seedSlots[count] = selfHigher ? view.headerSlot : neighbor.headerSlot;
+	seedCoords[count * 3] = axis === 0 ? edge : u;
+	seedCoords[count * 3 + 1] = axis === 0 ? u : axis === 1 ? edge : v;
+	seedCoords[count * 3 + 2] = axis === 2 ? edge : v;
+	seedLevels[count] = selfHigher ? selfSky : neighborSky;
+	return count + 1;
+}
+
 export function lightSkyReconcile(
 	registry: ChunkViewRegistry,
 	headerSlot: number,
@@ -1498,10 +1533,6 @@ export function lightSkyReconcile(
 
 	const size = LIGHT_CHUNK_SIZE;
 	const size2 = size * size;
-	const last = size - 1;
-
-	const selfEdges = [0, last, 0, last, 0, last];
-	const neighborEdges = [last, 0, last, 0, last, 0];
 
 	let seedCount = 0;
 
@@ -1556,83 +1587,26 @@ export function lightSkyReconcile(
 	}
 
 	for (let f = 0; f < 6; f++) {
+		const face = RECONCILE_FACES[f];
 		const neighbor = view.neighborViews[f ^ 1];
 		if (!neighbor) continue;
 		refreshLayout(registry, neighbor);
 		if (!neighbor.isLoaded) continue;
 
-		const selfEdge = selfEdges[f];
-		const neighborEdge = neighborEdges[f];
-		const axis = f < 2 ? 0 : f < 4 ? 1 : 2;
-
-		if (axis === 0) {
-			const selfX = selfEdge;
-			const nbrX = neighborEdge;
-			for (let u = 0; u < size; u++) {
-				for (let v = 0; v < size; v++) {
-					const sidx = selfX + u * size + v * size2;
-					const nidx = nbrX + u * size + v * size2;
-					const selfSky = (view.light_array[sidx] >> LIGHT_SKY_SHIFT) & 0xf;
-					const neighborSky =
-						(neighbor.light_array[nidx] >> LIGHT_SKY_SHIFT) & 0xf;
-					if (selfSky === neighborSky) continue;
-					ensureSeedCapacity(seedCount + 1);
-					const selfHigher = selfSky > neighborSky;
-					seedSlots[seedCount] = selfHigher
-						? view.headerSlot
-						: neighbor.headerSlot;
-					seedCoords[seedCount * 3] = selfHigher ? selfX : nbrX;
-					seedCoords[seedCount * 3 + 1] = u;
-					seedCoords[seedCount * 3 + 2] = v;
-					seedLevels[seedCount] = selfHigher ? selfSky : neighborSky;
-					seedCount++;
-				}
-			}
-		} else if (axis === 1) {
-			const selfY = selfEdge;
-			const nbrY = neighborEdge;
-			for (let u = 0; u < size; u++) {
-				for (let v = 0; v < size; v++) {
-					const sidx = u + selfY * size + v * size2;
-					const nidx = u + nbrY * size + v * size2;
-					const selfSky = (view.light_array[sidx] >> LIGHT_SKY_SHIFT) & 0xf;
-					const neighborSky =
-						(neighbor.light_array[nidx] >> LIGHT_SKY_SHIFT) & 0xf;
-					if (selfSky === neighborSky) continue;
-					ensureSeedCapacity(seedCount + 1);
-					const selfHigher = selfSky > neighborSky;
-					seedSlots[seedCount] = selfHigher
-						? view.headerSlot
-						: neighbor.headerSlot;
-					seedCoords[seedCount * 3] = u;
-					seedCoords[seedCount * 3 + 1] = selfHigher ? selfY : nbrY;
-					seedCoords[seedCount * 3 + 2] = v;
-					seedLevels[seedCount] = selfHigher ? selfSky : neighborSky;
-					seedCount++;
-				}
-			}
-		} else {
-			const selfZ = selfEdge;
-			const nbrZ = neighborEdge;
-			for (let u = 0; u < size; u++) {
-				for (let v = 0; v < size; v++) {
-					const sidx = u + v * size + selfZ * size2;
-					const nidx = u + v * size + nbrZ * size2;
-					const selfSky = (view.light_array[sidx] >> LIGHT_SKY_SHIFT) & 0xf;
-					const neighborSky =
-						(neighbor.light_array[nidx] >> LIGHT_SKY_SHIFT) & 0xf;
-					if (selfSky === neighborSky) continue;
-					ensureSeedCapacity(seedCount + 1);
-					const selfHigher = selfSky > neighborSky;
-					seedSlots[seedCount] = selfHigher
-						? view.headerSlot
-						: neighbor.headerSlot;
-					seedCoords[seedCount * 3] = u;
-					seedCoords[seedCount * 3 + 1] = v;
-					seedCoords[seedCount * 3 + 2] = selfHigher ? selfZ : nbrZ;
-					seedLevels[seedCount] = selfHigher ? selfSky : neighborSky;
-					seedCount++;
-				}
+		for (let u = 0; u < size; u++) {
+			for (let v = 0; v < size; v++) {
+				seedCount = seedSkyEdgePair(
+					view,
+					neighbor,
+					face.axis,
+					face.selfEdge,
+					face.neighborEdge,
+					size,
+					size2,
+					u,
+					v,
+					seedCount,
+				);
 			}
 		}
 	}
@@ -1675,6 +1649,45 @@ export function lightSkyReconcile(
 	}
 }
 
+// Engine perf: border-reconcile path only (per chunk load/edit, never in the
+// BFS inner loop). Shared body for one directed half of a block-light edge
+// pair (self->neighbor and neighbor->self differ only in direction sign).
+// Levels are read once per pair by the caller and passed in; Q_A push
+// coordinates place the edge value in the axis slot. No allocation.
+function tryReconcileOneDir(
+	srcView: ChunkView,
+	srcIdx: number,
+	srcSlot: number,
+	srcLevel: number,
+	tgtView: ChunkView,
+	tgtIdx: number,
+	tgtLevel: number,
+	axis: 0 | 1 | 2,
+	outDir: number,
+	u: number,
+	v: number,
+	edge: number,
+): void {
+	if (!(srcLevel > 1 && tgtLevel < srcLevel - 1)) return;
+	const sourcePacked = getViewBlockPackedAt(srcView, srcIdx);
+	const targetPacked = getViewBlockPackedAt(tgtView, tgtIdx);
+	const sourceBlockId = unpackBlockId(sourcePacked);
+	const sourceEmits =
+		sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
+	if (
+		(sourceEmits || isTransparent(sourcePacked, axis, outDir)) &&
+		isTransparent(targetPacked, axis, -outDir)
+	) {
+		Q_A.push(
+			srcSlot,
+			axis === 0 ? edge : u,
+			axis === 0 ? u : axis === 1 ? edge : v,
+			axis === 2 ? edge : v,
+			srcLevel,
+		);
+	}
+}
+
 export function lightBlockReconcile(
 	registry: ChunkViewRegistry,
 	headerSlot: number,
@@ -1706,122 +1719,50 @@ export function lightBlockReconcile(
 		const fSelfEdge = f.selfEdge;
 		const fNbrEdge = f.neighborEdge;
 
-		if (fAxis === 0) {
-			const selfX = fSelfEdge;
-			const nbrX = fNbrEdge;
-			for (let u = 0; u < size; u++) {
-				for (let v = 0; v < size; v++) {
-					const sidx = selfX + u * size + v * size2;
-					const nidx = nbrX + u * size + v * size2;
-					const selfLevel = getBlockLight(view, sidx);
-					const neighborLevel = getBlockLight(neighbor, nidx);
-
-					if (selfLevel > 1 && neighborLevel < selfLevel - 1) {
-						const sourcePacked = getViewBlockPackedAt(view, sidx);
-						const targetPacked = getViewBlockPackedAt(neighbor, nidx);
-						const sourceBlockId = unpackBlockId(sourcePacked);
-						const sourceEmits =
-							sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
-						if (
-							(sourceEmits || isTransparent(sourcePacked, fAxis, fDir)) &&
-							isTransparent(targetPacked, fAxis, -fDir)
-						) {
-							Q_A.push(view.headerSlot, selfX, u, v, selfLevel);
-						}
-					}
-
-					if (neighborLevel > 1 && selfLevel < neighborLevel - 1) {
-						const sourcePacked = getViewBlockPackedAt(neighbor, nidx);
-						const targetPacked = getViewBlockPackedAt(view, sidx);
-						const sourceBlockId = unpackBlockId(sourcePacked);
-						const sourceEmits =
-							sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
-						if (
-							(sourceEmits || isTransparent(sourcePacked, fAxis, -fDir)) &&
-							isTransparent(targetPacked, fAxis, fDir)
-						) {
-							Q_A.push(neighbor.headerSlot, nbrX, u, v, neighborLevel);
-						}
-					}
-				}
-			}
-		} else if (fAxis === 1) {
-			const selfY = fSelfEdge;
-			const nbrY = fNbrEdge;
-			for (let u = 0; u < size; u++) {
-				for (let v = 0; v < size; v++) {
-					const sidx = u + selfY * size + v * size2;
-					const nidx = u + nbrY * size + v * size2;
-					const selfLevel = getBlockLight(view, sidx);
-					const neighborLevel = getBlockLight(neighbor, nidx);
-
-					if (selfLevel > 1 && neighborLevel < selfLevel - 1) {
-						const sourcePacked = getViewBlockPackedAt(view, sidx);
-						const targetPacked = getViewBlockPackedAt(neighbor, nidx);
-						const sourceBlockId = unpackBlockId(sourcePacked);
-						const sourceEmits =
-							sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
-						if (
-							(sourceEmits || isTransparent(sourcePacked, fAxis, fDir)) &&
-							isTransparent(targetPacked, fAxis, -fDir)
-						) {
-							Q_A.push(view.headerSlot, u, selfY, v, selfLevel);
-						}
-					}
-
-					if (neighborLevel > 1 && selfLevel < neighborLevel - 1) {
-						const sourcePacked = getViewBlockPackedAt(neighbor, nidx);
-						const targetPacked = getViewBlockPackedAt(view, sidx);
-						const sourceBlockId = unpackBlockId(sourcePacked);
-						const sourceEmits =
-							sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
-						if (
-							(sourceEmits || isTransparent(sourcePacked, fAxis, -fDir)) &&
-							isTransparent(targetPacked, fAxis, fDir)
-						) {
-							Q_A.push(neighbor.headerSlot, u, nbrY, v, neighborLevel);
-						}
-					}
-				}
-			}
-		} else {
-			const selfZ = fSelfEdge;
-			const nbrZ = fNbrEdge;
-			for (let u = 0; u < size; u++) {
-				for (let v = 0; v < size; v++) {
-					const sidx = u + v * size + selfZ * size2;
-					const nidx = u + v * size + nbrZ * size2;
-					const selfLevel = getBlockLight(view, sidx);
-					const neighborLevel = getBlockLight(neighbor, nidx);
-
-					if (selfLevel > 1 && neighborLevel < selfLevel - 1) {
-						const sourcePacked = getViewBlockPackedAt(view, sidx);
-						const targetPacked = getViewBlockPackedAt(neighbor, nidx);
-						const sourceBlockId = unpackBlockId(sourcePacked);
-						const sourceEmits =
-							sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
-						if (
-							(sourceEmits || isTransparent(sourcePacked, fAxis, fDir)) &&
-							isTransparent(targetPacked, fAxis, -fDir)
-						) {
-							Q_A.push(view.headerSlot, u, v, selfZ, selfLevel);
-						}
-					}
-
-					if (neighborLevel > 1 && selfLevel < neighborLevel - 1) {
-						const sourcePacked = getViewBlockPackedAt(neighbor, nidx);
-						const targetPacked = getViewBlockPackedAt(view, sidx);
-						const sourceBlockId = unpackBlockId(sourcePacked);
-						const sourceEmits =
-							sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
-						if (
-							(sourceEmits || isTransparent(sourcePacked, fAxis, -fDir)) &&
-							isTransparent(targetPacked, fAxis, fDir)
-						) {
-							Q_A.push(neighbor.headerSlot, u, v, nbrZ, neighborLevel);
-						}
-					}
-				}
+		for (let u = 0; u < size; u++) {
+			for (let v = 0; v < size; v++) {
+				const sidx =
+					fAxis === 0
+						? fSelfEdge + u * size + v * size2
+						: fAxis === 1
+							? u + fSelfEdge * size + v * size2
+							: u + v * size + fSelfEdge * size2;
+				const nidx =
+					fAxis === 0
+						? fNbrEdge + u * size + v * size2
+						: fAxis === 1
+							? u + fNbrEdge * size + v * size2
+							: u + v * size + fNbrEdge * size2;
+				const selfLevel = getBlockLight(view, sidx);
+				const neighborLevel = getBlockLight(neighbor, nidx);
+				tryReconcileOneDir(
+					view,
+					sidx,
+					view.headerSlot,
+					selfLevel,
+					neighbor,
+					nidx,
+					neighborLevel,
+					fAxis,
+					fDir,
+					u,
+					v,
+					fSelfEdge,
+				);
+				tryReconcileOneDir(
+					neighbor,
+					nidx,
+					neighbor.headerSlot,
+					neighborLevel,
+					view,
+					sidx,
+					selfLevel,
+					fAxis,
+					-fDir,
+					u,
+					v,
+					fNbrEdge,
+				);
 			}
 		}
 	}
