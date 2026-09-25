@@ -1,5 +1,6 @@
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 import { getPRNGBySeed } from "./NoiseAndParameters/Squirrel13";
+import { BIOME_ID, type Biome } from "./Biome/BiomeTypes";
 
 type OreDefinition = {
 	id: number;
@@ -9,7 +10,56 @@ type OreDefinition = {
 	blocksPerVein: number;
 	spawnChance: number; // out of 100 per attempt
 	attempts: number; // vein attempts per chunk (Minecraft-like density)
+	biomeIds?: ReadonlySet<BIOME_ID>;
 };
+
+const HOT_BIOMES = new Set<BIOME_ID>([
+	BIOME_ID.DESERT,
+	BIOME_ID.SAVANNAH,
+	BIOME_ID.VOLCANIC_WASTELAND,
+	BIOME_ID.BASALT_DELTAS,
+	BIOME_ID.BADLANDS,
+	BIOME_ID.RED_ROCK_CANYON,
+	BIOME_ID.OASIS,
+	BIOME_ID.SALT_FLATS,
+	BIOME_ID.DUNE_SEA,
+	BIOME_ID.SCORCHED_SAVANNAH,
+	BIOME_ID.CRACKED_EARTH,
+	BIOME_ID.DUST_BOWL,
+	BIOME_ID.MESA_PLATEAU,
+	BIOME_ID.VOLCANIC_CALDERA,
+	BIOME_ID.GEOTHERMAL_FIELD,
+	BIOME_ID.ASHEN_WASTELAND,
+]);
+
+const WATER_BIOMES = new Set<BIOME_ID>([
+	BIOME_ID.OCEAN,
+	BIOME_ID.RIVER,
+	BIOME_ID.SANDY_SHORE,
+	BIOME_ID.ROCKY_SHORE,
+	BIOME_ID.FROZEN_OCEAN,
+	BIOME_ID.SWAMP,
+	BIOME_ID.GLACIER,
+	BIOME_ID.CORAL_REEF,
+	BIOME_ID.KELP_FOREST,
+	BIOME_ID.TIDAL_FLATS,
+	BIOME_ID.ARCHIPELAGO,
+	BIOME_ID.DEEP_OCEAN_TRENCH,
+	BIOME_ID.BIOLUMINESCENT_BAY,
+	BIOME_ID.WETLANDS,
+	BIOME_ID.FERN_GULLY,
+	BIOME_ID.MANGROVE,
+]);
+
+const JUNGLE_BIOMES = new Set<BIOME_ID>([
+	BIOME_ID.JUNGLE,
+	BIOME_ID.MANGROVE,
+	BIOME_ID.BAMBOO_FOREST,
+	BIOME_ID.TROPICAL_ISLAND,
+	BIOME_ID.CLOUD_FOREST,
+	BIOME_ID.GROVE,
+	BIOME_ID.TEMPERATE_RAINFOREST,
+]);
 
 const ORE_TYPES: OreDefinition[] = [
 	{
@@ -47,6 +97,36 @@ const ORE_TYPES: OreDefinition[] = [
 		blocksPerVein: 16,
 		spawnChance: 55,
 		attempts: 4,
+	},
+	{
+		id: 101,
+		name: "Ruby",
+		maxY: 48,
+		veinRadius: 2,
+		blocksPerVein: 10,
+		spawnChance: 40,
+		attempts: 3,
+		biomeIds: HOT_BIOMES,
+	},
+	{
+		id: 102,
+		name: "Sapphire",
+		maxY: 40,
+		veinRadius: 2,
+		blocksPerVein: 10,
+		spawnChance: 40,
+		attempts: 3,
+		biomeIds: WATER_BIOMES,
+	},
+	{
+		id: 103,
+		name: "Emerald",
+		maxY: 32,
+		veinRadius: 2,
+		blocksPerVein: 10,
+		spawnChance: 40,
+		attempts: 3,
+		biomeIds: JUNGLE_BIOMES,
 	},
 	{
 		id: 16,
@@ -87,7 +167,8 @@ const ORE_TYPES: OreDefinition[] = [
 ];
 
 // PERF (#5): direct id comparison instead of Set.has() in the per-voxel vein loop.
-const isStoneBlock = (id: number): boolean => id === 1 || id === 29;
+const isStoneBlock = (id: number, hostBlockId: number): boolean =>
+	id === 1 || id === 29 || id === hostBlockId;
 
 export class OreGenerator {
 	private params: GenerationParamsType;
@@ -109,8 +190,10 @@ export class OreGenerator {
 		chunkY: number,
 		chunkZ: number,
 		blocks: Uint8Array,
+		biome: Biome,
 	) {
 		const { CHUNK_SIZE } = this.params;
+		const hostBlockId = biome.stoneBlock;
 		const chunkWorldX = chunkX * CHUNK_SIZE;
 		const chunkWorldY = chunkY * CHUNK_SIZE;
 		const chunkWorldZ = chunkZ * CHUNK_SIZE;
@@ -121,7 +204,7 @@ export class OreGenerator {
 		// attempts × sphere loops × scalar noise FFI each.
 		let hasStone = false;
 		for (let i = 0; i < blocks.length; i++) {
-			if (isStoneBlock(blocks[i]!)) {
+			if (isStoneBlock(blocks[i]!, hostBlockId)) {
 				hasStone = true;
 				break;
 			}
@@ -129,6 +212,10 @@ export class OreGenerator {
 		if (!hasStone) return;
 
 		for (const ore of ORE_TYPES) {
+			if (ore.biomeIds !== undefined && !ore.biomeIds.has(biome.id)) {
+				continue;
+			}
+
 			const chunkCenterY = chunkWorldY + CHUNK_SIZE / 2;
 			if (chunkCenterY > ore.maxY) continue;
 
@@ -201,7 +288,7 @@ export class OreGenerator {
 								continue;
 
 							const idx = lx + ly * CHUNK_SIZE + lz * chunkSizeSq;
-							if (!isStoneBlock(blocks[idx]!)) continue;
+							if (!isStoneBlock(blocks[idx]!, hostBlockId)) continue;
 
 							// Shape the vein with 3D noise
 							const density = this.oreNoise(sx, sy, (veinCenterZ + dz) * 0.1);

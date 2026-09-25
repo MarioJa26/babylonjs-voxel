@@ -661,5 +661,26 @@
 		"path": "/texture/other/tnt_1k",
 		"hardness": 0.1,
 		"preferredTool": "pickaxe"
+	},
+	{
+		"id": "RubyOre",
+		"name": "Ruby Ore",
+		"path": "/texture/ore/ruby_ore_1k",
+		"hardness": 1.8,
+		"preferredTool": "pickaxe"
+	},
+	{
+		"id": "SapphireOre",
+		"name": "Sapphire Ore",
+		"path": "/texture/ore/sapphire_ore_1k",
+		"hardness": 1.8,
+		"preferredTool": "pickaxe"
+	},
+	{
+		"id": "EmeraldOre",
+		"name": "Emerald Ore",
+		"path": "/texture/ore/emerald_ore_1k",
+		"hardness": 1.8,
+		"preferredTool": "pickaxe"
 	}
 ]

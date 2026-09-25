@@ -150,7 +150,22 @@ export const Recipes: Recipe[] = [
 			{ itemId: 100, count: 1 },
 			{ itemId: 1023, count: 1 },
 		],
-	}, // TNT Arrow
+	},
+	{
+		resultId: 1049,
+		resultCount: 1,
+		ingredients: [{ itemId: 1046, count: 1 }],
+	},
+	{
+		resultId: 1050,
+		resultCount: 1,
+		ingredients: [{ itemId: 1047, count: 1 }],
+	},
+	{
+		resultId: 1051,
+		resultCount: 1,
+		ingredients: [{ itemId: 1048, count: 1 }],
+	},
 ];
 
 export interface MasonRecipe {

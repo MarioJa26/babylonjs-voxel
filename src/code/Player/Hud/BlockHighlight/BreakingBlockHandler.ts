@@ -121,6 +121,18 @@ function getDroppedBlockId(blockId: number): number {
 		return 1110;
 	}
 
+	if (blockId === BlockType.RubyOre) {
+		return 1046;
+	}
+
+	if (blockId === BlockType.SapphireOre) {
+		return 1047;
+	}
+
+	if (blockId === BlockType.EmeraldOre) {
+		return 1048;
+	}
+
 	return blockId;
 }
 

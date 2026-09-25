@@ -196,6 +196,48 @@
 		"maxStack": 64
 	},
 	{
+		"id": 1046,
+		"name": "Raw Ruby",
+		"description": "A raw, uncut ruby from a hot biome.\nCut it at a crafting table.",
+		"icon": "/texture/items/item/ruby/raw_ruby.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1047,
+		"name": "Raw Sapphire",
+		"description": "A raw, uncut sapphire from a watery biome.\nCut it at a crafting table.",
+		"icon": "/texture/items/item/sapphire/raw_sapphire.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1048,
+		"name": "Raw Emerald",
+		"description": "A raw, uncut emerald from a jungly biome.\nCut it at a crafting table.",
+		"icon": "/texture/items/item/emerald/raw_emerald.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1049,
+		"name": "Ruby",
+		"description": "A polished ruby gem.",
+		"icon": "/texture/items/item/ruby/ruby.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1050,
+		"name": "Sapphire",
+		"description": "A polished sapphire gem.",
+		"icon": "/texture/items/item/sapphire/sapphire.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1051,
+		"name": "Emerald",
+		"description": "A polished emerald gem.",
+		"icon": "/texture/items/item/emerald/emerald.png",
+		"maxStack": 64
+	},
+	{
 		"id": 1022,
 		"name": "Bow",
 		"description": "A ranged weapon.\nRight-click to shoot an arrow.",

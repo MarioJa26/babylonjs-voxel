@@ -100,6 +100,9 @@ export enum BlockType {
 	Cobblegold = 98,
 	Cobbleiron = 99,
 	Tnt = 100,
+	RubyOre = 101,
+	SapphireOre = 102,
+	EmeraldOre = 103,
 }
 
 export const Hardness = {
