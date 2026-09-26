@@ -99,6 +99,10 @@ const SHARED_QUAD_INDICES = new Uint32Array([0, 2, 1, 0, 3, 2]);
 // written by buildInstanceData and read by the shader as `instData`:
 //   x = faceBase · y = arena index · z = chunkOffsets base · w = unused
 const INSTANCE_FLOATS = 4;
+// Compact thin-instance stride in bytes (one vec4<f32> per face). Mirrors
+// lite's `thin-instance-gpu.js` so the diagnostic byte counts match what the
+// driver actually receives.
+const INSTANCE_STRIDE_BYTES = INSTANCE_FLOATS * 4;
 const FACE_BASE_INSTANCE_INDEX = 0;
 const ARENA_INSTANCE_INDEX = 1;
 const OFFSET_BASE_INSTANCE_INDEX = 2;
@@ -263,6 +267,50 @@ const offsetFree: number[] = []; // free block indices
 // WebGPU writeBuffer size cap (bytes). Cached from the device at init; falls
 // back to a conservative value if the device isn't reachable yet.
 let maxWriteBytes = 64 * 1024 * 1024;
+
+// PERF DIAGNOSTIC: storage-upload accounting for the two buffer paths this
+// module drives. `writeBuffer` shows up as a single opaque native entry in
+// DevTools, so these counters are the only way to tell a byte-bound upload
+// (few calls, large ranges) from a call-bound one (many small ranges).
+//
+// Totals are CUMULATIVE and reads are non-destructive: the debug HUD is both
+// visibility-gated and throttled, so a reset-on-read counter would aggregate
+// across the throttle window (and grow unbounded while the panel is closed),
+// which could step straight over the very spike being investigated. The peak
+// field cannot be missed. resetPackedUploadStats() starts a fresh window.
+let _faceUploadBytes = 0;
+let _faceUploadCalls = 0;
+let _faceRangeCalls = 0;
+let _offsetUploadBytes = 0;
+let _offsetUploadCalls = 0;
+let _peakFaceUploadBytes = 0;
+
+// PERF DIAGNOSTIC: compact thin-instance (winding-record) upload accounting.
+// This is the sibling of the far-tile counter, and it is the one that matches
+// the DevTools `writeBuffer` entry: face words are uploaded inline by
+// updateStorageBuffer (visible as `updateStorageBuffer`), but the 16 B/face
+// instance records are only marked dirty HERE and then drained later by Lite's
+// syncThinInstanceGpuData during _record() — surfacing as the opaque native
+// `writeBuffer` charged to engine._renderFn. Counting only face bytes therefore
+// misses the single largest upload source.
+let _instanceUploadBytes = 0;
+let _instanceUploadCalls = 0;
+let _instanceFullUploads = 0;
+let _instanceRangedUploads = 0;
+let _peakInstanceUploadBytes = 0;
+
+// Monotonic, never-reset face-upload total. The merged-group flush loop
+// samples this to apply a per-flush GPU byte budget: a CPU-time budget alone
+// cannot bound GPU work, because a cheap rebuild can still enqueue hundreds
+// of megabytes of uploads.
+let _totalFaceUploadBytes = 0;
+
+// Rare, expensive transitions. These are the events that produce the large
+// full-range rewrites; counting them makes a spike attributable without
+// reading the console.
+let _arenaGrowCount = 0;
+let _arenaCompactionCount = 0;
+let _offsetGrowCount = 0;
 
 // Maximum size (bytes) a single storage-buffer BINDING may have. WebGPU's
 // default `maxStorageBufferBindingSize` is 128 MiB, and a storage buffer
@@ -475,6 +523,7 @@ function growArena(arena: FaceArena, index: number): void {
 	newCpu.set(arena.cpu.subarray(0, arena.used * 3));
 	arena.cpu = newCpu;
 	arena.capacity = newCapacity;
+	_arenaGrowCount++;
 	const old = arena.buffer;
 	arena.buffer = createStorageBuffer(engineRef!, arena.cpu, {
 		cpuShadow: "source",
@@ -845,6 +894,7 @@ function compactArena(index: number): boolean {
 
 		uploadFaceRange(index, 0, writeFace);
 
+		_arenaCompactionCount++;
 		arena.used = writeFace;
 
 		for (let i = 0; i < arena.free.length; i++) {
@@ -981,6 +1031,7 @@ function growOffset(): void {
 	newCpu.set(offsetCpu.subarray(0, offsetUsedGroups * OFFSETS_PER_GROUP * 4));
 	offsetCpu = newCpu;
 	offsetCapacityGroups = newCapacity;
+	_offsetGrowCount++;
 	const old = offsetBuffer;
 	offsetBuffer = createStorageBuffer(engineRef!, offsetCpu, {
 		label: "offset-set",
@@ -998,6 +1049,12 @@ function growOffset(): void {
 function uploadFaceRange(arena: number, base: number, count: number): void {
 	const a = faceArenas[arena];
 	if (!a || count <= 0) return;
+
+	const bytes = count * FACE_BYTES;
+	_faceUploadBytes += bytes;
+	_totalFaceUploadBytes += bytes;
+	_faceUploadCalls++;
+	if (bytes > _peakFaceUploadBytes) _peakFaceUploadBytes = bytes;
 
 	writeBufferChunked(
 		a.buffer,
@@ -1019,6 +1076,11 @@ function uploadFaceRanges(
 	ranges: readonly MergedFaceRange[],
 ): void {
 	if (faceCount <= 0 || ranges.length === 0) return;
+
+	// Count the call shape up front: a flush that touches N scattered ranges
+	// costs N native writeBuffer calls, and that call count — not the byte
+	// total — is what stalls the queue when it saturates.
+	_faceRangeCalls += ranges.length;
 
 	for (let r = 0, len = ranges.length; r < len; r++) {
 		const range = ranges[r];
@@ -1045,6 +1107,9 @@ function uploadFaceRanges(
 
 function uploadOffsetRange(base: number): void {
 	if (!offsetBuffer) return;
+
+	_offsetUploadBytes += OFFSETS_PER_GROUP * OFFSET_ENTRY_BYTES;
+	_offsetUploadCalls++;
 
 	writeBufferChunked(
 		offsetBuffer,
@@ -1447,6 +1512,16 @@ function setThinInstancesRange(
 			ti._dirtyMin = 0;
 			ti._dirtyMax = count;
 		}
+
+		// Growth reallocates, so the whole live range re-uploads. This is the
+		// most expensive instance path and fires on every mesh creation plus
+		// every power-of-two capacity doubling.
+		const bytes = count * INSTANCE_STRIDE_BYTES;
+		_instanceUploadBytes += bytes;
+		_instanceUploadCalls++;
+		_instanceFullUploads++;
+		if (bytes > _peakInstanceUploadBytes) _peakInstanceUploadBytes = bytes;
+
 		return;
 	} else if (ti && !ti.compact) {
 		// Buffer created before compact mode (or by another path): mark and
@@ -1470,6 +1545,18 @@ function setThinInstancesRange(
 	ti!._dirtyMin = inSync ? lo : Math.min(ti!._dirtyMin, lo);
 	ti!._dirtyMax = inSync ? hi : Math.max(ti!._dirtyMax, hi);
 	ti!._version++;
+
+	// A union with a still-pending range can widen this well past [lo, hi);
+	// report what Lite will actually upload, not what this call touched.
+	const uploadLo = ti!._dirtyMin;
+	const uploadHi = Math.min(capacity, ti!._dirtyMax);
+	const uploadInstances = Math.max(0, uploadHi - uploadLo);
+	const bytes = uploadInstances * INSTANCE_STRIDE_BYTES;
+
+	_instanceUploadBytes += bytes;
+	_instanceUploadCalls++;
+	_instanceRangedUploads++;
+	if (bytes > _peakInstanceUploadBytes) _peakInstanceUploadBytes = bytes;
 }
 
 export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
@@ -1636,6 +1723,63 @@ export function updatePackedChunkMesh(
 	const oldCount = state.faceCount;
 	const oldMatrices = state.instanceMatrices;
 	const oldValid = state.instanceLanesValid ?? oldCount;
+
+	/*
+	 * SHRINK fast path — keep the existing block, release only its tail.
+	 *
+	 * Shrinkage is routine (LOD changes, occlusion, block edits) and the
+	 * generic path below reallocates the block, which changes `faceBase` and
+	 * therefore forces a full [0, faceCount) thin-instance rewrite. That
+	 * rewrite is the single largest `writeBuffer` cost in the frame: DevTools
+	 * showed 51 ms of a 56 ms frame inside it.
+	 *
+	 * Every lane of a packed mesh holds the SAME (faceBase, arena,
+	 * offsetBase) — see buildInstanceData — so the instance buffer only needs
+	 * rewriting when one of those three changes. Keeping the block head in
+	 * place leaves all three untouched: the existing lanes are already
+	 * correct, so only the DRAW COUNT has to move and the instance upload
+	 * disappears entirely.
+	 *
+	 * The freed tail becomes an ordinary hole, so a later regrow finds it via
+	 * tryExtendFaces and stays in place too.
+	 */
+	if (faceCount < oldCount) {
+		const tailBase = oldBase + faceCount;
+		const tailCount = oldCount - faceCount;
+
+		// Only safe when the block is a contiguous allocation inside the arena.
+		if (
+			faceCount > 0 &&
+			tailBase + tailCount <= (faceArenas[oldArenaIndex]?.used ?? 0)
+		) {
+			freeFaces(oldArenaIndex, tailBase, tailCount);
+			state.faceCount = faceCount;
+			state.instanceLanesValid = faceCount;
+
+			if (dirtyRanges && dirtyRanges.length > 0) {
+				packFaceRanges(state, input, dirtyRanges);
+				uploadFaceRanges(oldArenaIndex, oldBase, faceCount, dirtyRanges);
+			} else {
+				packFaces(state, input);
+				uploadFaceRange(oldArenaIndex, oldBase, faceCount);
+			}
+
+			/*
+			 * Count-only: bump _version so Lite's sync notices the new draw
+			 * count, but deliberately leave _dirtyMin/_dirtyMax untouched so
+			 * syncThinInstanceGpuData computes an EMPTY upload range. A
+			 * previously pending range is preserved rather than clobbered.
+			 */
+			const ti = (mesh as PackedMesh).thinInstances;
+			if (ti) {
+				ti.count = faceCount;
+				ti._version++;
+			}
+
+			applyMeshMeta(mesh, state, input);
+			return mesh;
+		}
+	}
 
 	/*
 	 * Fast path for tail growth or growth into an adjacent free interval.
@@ -2003,4 +2147,77 @@ export function getPackedMeshMemoryStats(): {
 		// CPU mirror plus GPU storage buffer.
 		offsetBytes: offsetCpu.byteLength * 2,
 	};
+}
+
+/**
+ * Cumulative storage-upload accounting. Non-destructive — see the counter
+ * block for why.
+ *
+ * `faceCalls` counts whole-range writes; `faceRangeCalls` counts the ranged
+ * path where one flush issues one call per dirty range. A large
+ * `faceRangeCalls` alongside modest `faceBytes` is the call-bound signature
+ * (merging nearby dirty ranges would help). A large `peakFaceUploadBytes`
+ * with few calls is the byte-bound signature (only uploading less helps).
+ */
+export function getPackedUploadStats(): {
+	faceBytes: number;
+	faceCalls: number;
+	faceRangeCalls: number;
+	peakFaceUploadBytes: number;
+	instanceBytes: number;
+	instanceCalls: number;
+	instanceFullUploads: number;
+	instanceRangedUploads: number;
+	peakInstanceUploadBytes: number;
+	offsetBytes: number;
+	offsetCalls: number;
+	arenaGrows: number;
+	arenaCompactions: number;
+	offsetGrows: number;
+} {
+	return {
+		faceBytes: _faceUploadBytes,
+		faceCalls: _faceUploadCalls,
+		faceRangeCalls: _faceRangeCalls,
+		peakFaceUploadBytes: _peakFaceUploadBytes,
+		instanceBytes: _instanceUploadBytes,
+		instanceCalls: _instanceUploadCalls,
+		instanceFullUploads: _instanceFullUploads,
+		instanceRangedUploads: _instanceRangedUploads,
+		peakInstanceUploadBytes: _peakInstanceUploadBytes,
+		offsetBytes: _offsetUploadBytes,
+		offsetCalls: _offsetUploadCalls,
+		arenaGrows: _arenaGrowCount,
+		arenaCompactions: _arenaCompactionCount,
+		offsetGrows: _offsetGrowCount,
+	};
+}
+
+/**
+ * Monotonic count of every face byte ever uploaded. Never reset.
+ *
+ * The merged-group flush loop samples this to bound how much GPU upload work a
+ * single flush may enqueue. It is monotonic on purpose: a reset-per-flush
+ * counter would make the budget depend on read order.
+ */
+export function getTotalFaceUploadBytes(): number {
+	return _totalFaceUploadBytes;
+}
+
+/** Begin a fresh measurement window (used by the F5 profiler dump). */
+export function resetPackedUploadStats(): void {
+	_faceUploadBytes = 0;
+	_faceUploadCalls = 0;
+	_faceRangeCalls = 0;
+	_offsetUploadBytes = 0;
+	_offsetUploadCalls = 0;
+	_peakFaceUploadBytes = 0;
+	_instanceUploadBytes = 0;
+	_instanceUploadCalls = 0;
+	_instanceFullUploads = 0;
+	_instanceRangedUploads = 0;
+	_peakInstanceUploadBytes = 0;
+	_arenaGrowCount = 0;
+	_arenaCompactionCount = 0;
+	_offsetGrowCount = 0;
 }

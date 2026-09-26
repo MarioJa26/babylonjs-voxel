@@ -142,6 +142,24 @@ index a2feb59..6621a74 100644
 +	const sourceShadow = usage === BU.STORAGE && cpuShadow === "source" && !isByteLength && source.byteLength === byteLength ? new Uint8Array(source.buffer, source.byteOffset, byteLength) : null;
 +	const bytes = usage === BU.STORAGE ? sourceShadow ?? new Uint8Array(byteLength) : null;
 +	if (bytes && !sourceShadow && !isByteLength) bytes.set(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
- 	const initialData = bytes ?? (isByteLength ? null : source);
- 	const buffer = initialData ? createMappedBuffer(engine, initialData, usage, label) : engine._device.createBuffer({
- 		label,
+  	const initialData = bytes ?? (isByteLength ? null : source);
+  	const buffer = initialData ? createMappedBuffer(engine, initialData, usage, label) : engine._device.createBuffer({
+  		label,
+@@ -70,8 +70,16 @@ function updateStorageBuffer(engine, buffer, data, byteOffset = 0) {
+ 	if (byteOffset + data.byteLength > buffer.byteLength) ThrowLiteError(593, buffer.byteLength);
+ 	if (data.byteLength === 0) return;
+ 	engine._device.queue.writeBuffer(buffer._buffer, byteOffset, data.buffer, data.byteOffset, data.byteLength);
+ 	const shadow = buffer._data;
+-	if (shadow) {
++	/*
++	 * With `cpuShadow: "source"` the shadow is a VIEW aliasing the caller's own
++	 * CPU array rather than a private copy. Callers that upload a subarray of
++	 * that same array at the matching offset — which is exactly what a ranged
++	 * arena upload is — would make the copy below a self-copy no-op, so skip it
++	 * instead of paying a full-range memcpy plus a Uint8Array view allocation on
++	 * every single call.
++	 */
++	if (shadow && !(shadow.buffer === data.buffer && data.byteOffset === shadow.byteOffset + byteOffset)) {
+ 		const bytes = data instanceof Uint8Array ? data : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+ 		shadow.set(bytes, byteOffset);
+ 	}

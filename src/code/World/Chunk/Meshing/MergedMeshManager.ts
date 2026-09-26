@@ -7,7 +7,11 @@ import {
 } from "../../Occlusion/GroupOctree";
 import type { Chunk } from "../Chunk";
 import type { MeshData } from "../DataStructures/MeshData";
-import { disposePackedMesh, maxFacesPerArena } from "./PackedChunkMesh.js";
+import {
+	disposePackedMesh,
+	getTotalFaceUploadBytes,
+	maxFacesPerArena,
+} from "./PackedChunkMesh.js";
 
 // Lite `Mesh` has no `.dispose()` — free its packed-arena slices, unregister
 // from the scene, then free GPU resources.
@@ -458,6 +462,22 @@ function acquireRange(start: number, count: number): MergedFaceRange {
 	return { start, count };
 }
 
+/**
+ * How many unchanged faces may sit between two dirty ranges and still be
+ * merged into one upload.
+ *
+ * Merged groups allocate each member a power-of-two slot, so a group's dirty
+ * members are routinely separated by slack faces that were never touched.
+ * Uploading that slack costs 12 B/face once; issuing an extra
+ * `queue.writeBuffer` costs a native call plus validation, and measurement
+ * showed 4728 of 6529 upload calls were small scattered ranges. Trading a
+ * little redundant bytes for far fewer calls is the right side of that deal.
+ *
+ * 64 faces = 768 B of slack, which stays far below the per-call overhead it
+ * avoids. Set to 0 to restore strict-adjacency merging.
+ */
+const DIRTY_RANGE_MERGE_GAP_FACES = 64;
+
 function pushDirtyRange(
 	ranges: MergedFaceRange[],
 	start: number,
@@ -466,11 +486,49 @@ function pushDirtyRange(
 	if (count <= 0) return;
 	_statDirtyFacesFlush += count;
 	const prev = ranges[ranges.length - 1];
-	if (prev && prev.start + prev.count === start) {
-		prev.count += count;
-	} else {
-		ranges.push(acquireRange(start, count));
+
+	/*
+	 * Merge only into a range that starts at or before this one, so an
+	 * out-of-order member cannot silently extend a range backwards. Slotted
+	 * members are not guaranteed ascending, and a wrong merge here would
+	 * upload (or skip) the wrong arena block.
+	 */
+	if (prev && start >= prev.start) {
+		const prevEnd = prev.start + prev.count;
+
+		if (start <= prevEnd + DIRTY_RANGE_MERGE_GAP_FACES) {
+			const end = Math.max(prevEnd, start + count);
+			prev.count = end - prev.start;
+			return;
+		}
 	}
+
+	ranges.push(acquireRange(start, count));
+}
+
+/**
+ * Replace every pending range with one full-extent range.
+ *
+ * Used when a layer undergoes a structural change (slot reallocation, extent
+ * growth, release), which makes ALL of its faces dirty. Appending that range
+ * to the per-member ranges that preceded it would leave those smaller ranges
+ * in the list, and `uploadFaceRanges` would then upload the full extent plus
+ * every redundant sub-range. Clearing first turns N+1 calls into 1.
+ */
+function pushFullDirtyRange(
+	ranges: MergedFaceRange[],
+	start: number,
+	count: number,
+): void {
+	if (count <= 0) return;
+
+	for (let i = 0; i < ranges.length; i++) {
+		_rangePool.push(ranges[i]);
+	}
+	ranges.length = 0;
+
+	_statDirtyFacesFlush += count;
+	ranges.push(acquireRange(start, count));
 }
 
 // Engine perf: rebuild-path helper (chunk-rate, not voxel-rate). Drains one
@@ -837,6 +895,10 @@ function validateSettledSlotExtents(
 let _lastMergedFlushMs = 0;
 let _mergedFlushTotalMs = 0;
 let _mergedFlushCount = 0;
+// Face bytes the most recent flush handed to the GPU, and whether it stopped
+// on a budget (CPU time or GPU bytes) with work still queued.
+let _lastMergedFlushGpuBytes = 0;
+let _lastMergedFlushExhausted = false;
 
 // PERF instrumentation for the stable-slot layout: how many member copies the
 // skip-check avoided vs performed, and how many face bytes were marked dirty
@@ -861,10 +923,17 @@ export function getMergedSlotStats(): {
 	};
 }
 
-export function getMergedMeshFlushStats(): { lastMs: number; avgMs: number } {
+export function getMergedMeshFlushStats(): {
+	lastMs: number;
+	avgMs: number;
+	lastGpuBytes: number;
+	budgetExhausted: boolean;
+} {
 	return {
 		lastMs: _lastMergedFlushMs,
 		avgMs: _mergedFlushCount > 0 ? _mergedFlushTotalMs / _mergedFlushCount : 0,
+		lastGpuBytes: _lastMergedFlushGpuBytes,
+		budgetExhausted: _lastMergedFlushExhausted,
 	};
 }
 
@@ -889,12 +958,44 @@ export function getMergedLayerMemoryStats(): {
 let _mergedFlushRafScheduled = false;
 const _flushSnapshot: MergedMeshGroup[] = [];
 
-export function flushDirtyMergedGroups(maxBudgetMs = 5): void {
+/**
+ * Burst ceiling on face bytes a single flush may hand to `queue.writeBuffer`.
+ *
+ * The existing budget is CPU TIME, which cannot bound GPU work: rebuilding a
+ * merged group is cheap (measured ~0.3 ms for a whole flush) but each group
+ * also enqueues face + instance uploads. When a deep streaming backlog drains
+ * in one macrotask the flush can queue a very large amount of bytes at once,
+ * and the next frame then stalls inside `writeBuffer` while Dawn's staging ring
+ * drains — observed as a ~386 ms `writeBuffer` under engine._renderFn with the
+ * main thread reading only 0.8 ms, because the stall happens in _record() after
+ * tick() has already returned.
+ *
+ * Budgeting bytes bounds queue DEPTH. It does not reduce total throughput, and
+ * at measured steady-state rates (hundreds of KB per flush) this ceiling rarely
+ * binds — it is a rail against bursts (first load, teleport, cache warm-up),
+ * not the primary fix. The primary reduction for the observed call-bound
+ * profile is the dirty-range coalescing in pushDirtyRange().
+ *
+ * Deferred groups stay in dirtyGroups and are processed on later flushes, so
+ * no geometry is lost, and at least one group always runs so an oversized
+ * group can never stall the pipeline.
+ */
+const DEFAULT_GPU_UPLOAD_BUDGET_BYTES = 2 * 1024 * 1024;
+
+export function flushDirtyMergedGroups(
+	maxBudgetMs = 5,
+	maxGpuBytes = DEFAULT_GPU_UPLOAD_BUDGET_BYTES,
+): void {
 	if (dirtyGroups.size === 0) return;
 
 	const startedAt = performance.now();
 	const deadline =
 		maxBudgetMs > 0 ? startedAt + maxBudgetMs : Number.POSITIVE_INFINITY;
+
+	// Monotonic face-upload total sampled at entry; the loop stops once this
+	// flush has itself enqueued maxGpuBytes. Always process at least one group
+	// so a single oversized group can never stall the pipeline forever.
+	const gpuBytesAtEntry = getTotalFaceUploadBytes();
 
 	_statMembersSeen = 0;
 	_statCopiesPerformed = 0;
@@ -903,6 +1004,7 @@ export function flushDirtyMergedGroups(maxBudgetMs = 5): void {
 
 	let processedCount = 0;
 	let budgetExhausted = false;
+	let gpuBudgetExhausted = false;
 
 	/*
 	 * Delete each group immediately before processing it rather than copying
@@ -916,6 +1018,19 @@ export function flushDirtyMergedGroups(maxBudgetMs = 5): void {
 	for (const group of dirtyGroups) {
 		if (processedCount !== 0 && performance.now() >= deadline) {
 			budgetExhausted = true;
+			break;
+		}
+
+		// Checked BEFORE processing so the group stays queued. Note this
+		// measures the PREVIOUS groups' uploads — the group about to be
+		// processed is intentionally allowed to overshoot once, which is what
+		// keeps progress guaranteed for oversized single groups.
+		if (
+			processedCount !== 0 &&
+			maxGpuBytes > 0 &&
+			getTotalFaceUploadBytes() - gpuBytesAtEntry >= maxGpuBytes
+		) {
+			gpuBudgetExhausted = true;
 			break;
 		}
 
@@ -957,18 +1072,23 @@ export function flushDirtyMergedGroups(maxBudgetMs = 5): void {
 	if (dirtyGroups.size > 0) {
 		if (_requestFlush) {
 			_requestFlush();
-		} else if (budgetExhausted && !_mergedFlushRafScheduled) {
+		} else if (
+			(budgetExhausted || gpuBudgetExhausted) &&
+			!_mergedFlushRafScheduled
+		) {
 			_mergedFlushRafScheduled = true;
 
 			setTimeout(() => {
 				_mergedFlushRafScheduled = false;
-				flushDirtyMergedGroups(maxBudgetMs);
+				flushDirtyMergedGroups(maxBudgetMs, maxGpuBytes);
 			}, 0);
 		}
 	}
 
 	const elapsed = performance.now() - startedAt;
 	_lastMergedFlushMs = elapsed;
+	_lastMergedFlushGpuBytes = getTotalFaceUploadBytes() - gpuBytesAtEntry;
+	_lastMergedFlushExhausted = budgetExhausted || gpuBudgetExhausted;
 	_mergedFlushTotalMs += elapsed;
 	_mergedFlushCount++;
 }
@@ -1702,15 +1822,15 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	}
 
 	if (opaqueStructuralChange && opaqueState.appendedFaces > 0) {
-		pushDirtyRange(opaqueRanges, 0, opaqueState.appendedFaces);
+		pushFullDirtyRange(opaqueRanges, 0, opaqueState.appendedFaces);
 	}
 
 	if (waterStructuralChange && waterState.appendedFaces > 0) {
-		pushDirtyRange(waterRanges, 0, waterState.appendedFaces);
+		pushFullDirtyRange(waterRanges, 0, waterState.appendedFaces);
 	}
 
 	if (cutoutStructuralChange && cutoutState.appendedFaces > 0) {
-		pushDirtyRange(cutoutRanges, 0, cutoutState.appendedFaces);
+		pushFullDirtyRange(cutoutRanges, 0, cutoutState.appendedFaces);
 	}
 
 	maybeShrinkGroupLayers(group);

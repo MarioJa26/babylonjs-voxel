@@ -31,15 +31,25 @@ import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
 import {
 	getMergedLayerMemoryStats,
 	getMergedMeshFlushStats,
+	getMergedSlotStats,
 } from "../World/Chunk/Meshing/MergedMeshManager";
-import { getPackedMeshMemoryStats } from "../World/Chunk/Meshing/PackedChunkMesh";
+import {
+	getPackedMeshMemoryStats,
+	getPackedUploadStats,
+	resetPackedUploadStats,
+} from "../World/Chunk/Meshing/PackedChunkMesh";
 import { BlockTickScheduler } from "../World/Chunk/Simulation/BlockTickScheduler";
 import {
 	ensureDefaultInstance,
 	processWaterUpdate,
 } from "../World/Chunk/Simulation/WaterSimulation";
 import { FarTileManager } from "../World/FarTiles/FarTileManager";
-import { onGpuWorkDone } from "../World/Light/liteGpuBuffer";
+import {
+	getGpuPressureFactor,
+	onGpuWorkDone,
+	publishGpuPressure,
+	resetGpuPressure,
+} from "../World/Light/liteGpuBuffer";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
 import { onSpawnPrepared } from "../World/SpawnPoint";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
@@ -100,6 +110,17 @@ export class PlayerLoopController {
 	#lastDebugHudUpdateMs = 0;
 	#mainThreadMs = 0;
 	static readonly DEBUG_HUD_INTERVAL_MS = 1250;
+
+	// A frame longer than this is flagged as a spike in the HUD and forces the
+	// GPU-lag probe to sample EVERY frame. ~6x a 16.7 ms frame.
+	static readonly SPIKE_FRAME_MS = 100;
+
+	// Below roughly 42 FPS, sample the queue every frame instead of 1-in-30.
+	// This is separate from SPIKE_FRAME_MS because the probe also drives
+	// streaming back-pressure: at 10 FPS a 1-in-30 probe would only fire every
+	// 3 seconds, far too slowly for the controller to react. The promise is
+	// cheap (no synchronous wait), so sampling on every slow frame is fine.
+	static readonly SLOW_FRAME_SAMPLE_MS = 24;
 
 	// ---- captured static callback for restore-on-dispose ----
 	#previousOnChunkLoaded: typeof Chunk.onChunkLoaded | null = null;
@@ -164,8 +185,10 @@ export class PlayerLoopController {
 			this.#strideDistance = 0;
 		};
 
-		// Profiling keys: F5 dumps a frame-section report, F6 toggles far-tile
-		// visibility for GPU-side A/B comparison (CPU sections vs rAF delta).
+		// Profiling keys: F5 dumps a frame-section report plus the GPU-upload
+		// counters, F6 toggles far-tile visibility for GPU-side A/B comparison
+		// (CPU sections vs rAF delta). F6 now also STOPS far-tile uploads, so
+		// it is a valid A/B for attributing a `writeBuffer` spike.
 		window.addEventListener("keydown", this.#profilerKeyDown);
 	}
 
@@ -179,16 +202,30 @@ export class PlayerLoopController {
 				frameProfiler.summaryLine(),
 				"profiler",
 			);
+			console.info(
+				`[Profiler] gpuLag peak in window: ${this.#gpuLagPeakMs.toFixed(1)}ms`,
+			);
+			// Start a fresh upload-measurement window so the next F5 reports
+			// only what happened after this one.
+			resetPackedUploadStats();
+			this.#gpuLagPeakMs = 0;
 		} else if (key === "f6") {
 			e.preventDefault();
 			const next = !FarTileManager.isFarTilesVisible();
 			FarTileManager.setFarTilesVisible(next);
-			console.info(`[Profiler] far tiles visible: ${next}`);
+			console.info(
+				`[Profiler] far tiles visible: ${next} ` +
+					"(uploads suspended while hidden; re-enabling drains the backlog)",
+			);
 		}
 	};
 
 	#gpuLagFrameCounter = 0;
 	#pendingGpuLagMs = 0;
+	// Worst queue-drain observed in the current F5 measurement window. The
+	// 1-in-30 sampling below cannot reliably correlate with a single 400 ms
+	// spike, so spikes get sampled every frame and recorded here separately.
+	#gpuLagPeakMs = 0;
 
 	public tick(deltaMs: number): void {
 		const frameStart = performance.now();
@@ -285,14 +322,29 @@ export class PlayerLoopController {
 		frameProfiler.end("occlusion");
 
 		// Best-effort GPU-lag probe: how long the queue takes to drain all
-		// work submitted so far. Sampled every 30th frame — the promise itself
-		// is cheap but not free. The async result is buffered and injected
-		// into the frame right before endFrame (noteSectionValue drops
-		// samples that land inside an open section).
-		if (++this.#gpuLagFrameCounter % 30 === 0 && Map1.engine) {
+		// work submitted so far. Sampled every 30th frame in steady state —
+		// the promise itself is cheap but not free. Once a frame is already
+		// over the spike threshold we sample EVERY frame instead, because a
+		// 1-in-30 probe is very unlikely to land on the one frame being
+		// investigated. The async result is buffered and injected into the
+		// frame right before endFrame (noteSectionValue drops samples that
+		// land inside an open section).
+		const isSpike = deltaMs > PlayerLoopController.SPIKE_FRAME_MS;
+		const isSlow = deltaMs > PlayerLoopController.SLOW_FRAME_SAMPLE_MS;
+		const sampleGpuLag =
+			Map1.engine !== null && (isSlow || ++this.#gpuLagFrameCounter % 30 === 0);
+
+		if (sampleGpuLag) {
 			const submittedAt = performance.now();
 			void onGpuWorkDone(Map1.engine).then(() => {
-				this.#pendingGpuLagMs = performance.now() - submittedAt;
+				const lag = performance.now() - submittedAt;
+				this.#pendingGpuLagMs = lag;
+				if (lag > this.#gpuLagPeakMs) this.#gpuLagPeakMs = lag;
+				// Publish as flow control: the streaming pipeline throttles mesh
+				// ingestion while the device is this far behind, so results are
+				// not applied (and their group rebuilds uploaded) faster than
+				// the GPU can retire them.
+				publishGpuPressure(lag);
 			});
 		}
 
@@ -300,21 +352,41 @@ export class PlayerLoopController {
 		this.#mainThreadMs = this.#mainThreadMs * 0.9 + frameMs * 0.1;
 
 		frameProfiler.begin("hud");
-		this.updateDebugHud(deltaMs, cx, cy, cz);
+		this.updateDebugHud(deltaMs, cx, cy, cz, isSpike);
 		frameProfiler.end("hud");
 
 		this.#freezeActiveMeshes();
 
-		if (this.#pendingGpuLagMs > 0) {
-			frameProfiler.noteSectionValue("gpuLag", this.#pendingGpuLagMs);
-			this.#pendingGpuLagMs = 0;
-		}
+		/*
+		 * Commit the frame from a microtask, not inline.
+		 *
+		 * Lite's `onBeforeRender` UNSHIFTS, so the most recently registered
+		 * hook runs FIRST. That makes this callback (registered last, in
+		 * TestScene.registerFrameUpdate) run before the `streaming` hook
+		 * (PlayerLoopController.#installStreaming) and the `farTiles` hook
+		 * (FarTileManager.init). Committing inline therefore recorded those
+		 * two sections one frame late AND folded their time into
+		 * (unaccounted) — the sections that matter most when diagnosing an
+		 * upload spike were the two the profiler mis-attributed.
+		 *
+		 * `_update()` runs every hook synchronously and a microtask only drains
+		 * once that stack empties, so this lands after all of them regardless
+		 * of registration order. It also runs after `_record()`/submit, which
+		 * is harmless: endFrame only timestamps and commits.
+		 */
+		queueMicrotask(() => {
+			if (this.#pendingGpuLagMs > 0) {
+				frameProfiler.noteSectionValue("gpuLag", this.#pendingGpuLagMs);
+				this.#pendingGpuLagMs = 0;
+			}
 
-		frameProfiler.endFrame(deltaMs);
+			frameProfiler.endFrame(deltaMs);
+		});
 	}
 
 	public dispose(): void {
 		window.removeEventListener("keydown", this.#profilerKeyDown);
+		resetGpuPressure();
 		if (this.#offSpawnPrepared) {
 			this.#offSpawnPrepared();
 			this.#offSpawnPrepared = null;
@@ -620,6 +692,7 @@ export class PlayerLoopController {
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
+		spike = false,
 	): void {
 		this.playerHud.updateStats();
 
@@ -629,8 +702,9 @@ export class PlayerLoopController {
 
 		const now = performance.now();
 		if (
+			!spike &&
 			now - this.#lastDebugHudUpdateMs <
-			PlayerLoopController.DEBUG_HUD_INTERVAL_MS
+				PlayerLoopController.DEBUG_HUD_INTERVAL_MS
 		) {
 			return;
 		}
@@ -654,6 +728,17 @@ export class PlayerLoopController {
 		PlayerHud.updateDebugInfo(
 			"Main Thread Ms",
 			this.#mainThreadMs.toFixed(1),
+			"performance",
+		);
+		// PERF DIAGNOSTIC: peak queue-drain time in the current window, plus the
+		// live back-pressure factor. A high peak alongside a low main-thread
+		// time means the frame is GPU/queue-bound (the `writeBuffer`
+		// back-pressure case) rather than CPU-bound in a measured section.
+		// `factor` near 0 means mesh ingestion is being throttled hard.
+		PlayerHud.updateDebugInfo(
+			"GPU Lag Peak",
+			`${this.#gpuLagPeakMs.toFixed(1)}ms${spike ? " SPIKE" : ""} ` +
+				`throttle:${(getGpuPressureFactor() * 100).toFixed(0)}%`,
 			"performance",
 		);
 
@@ -776,13 +861,35 @@ export class PlayerLoopController {
 		const meshStats = getMergedMeshFlushStats();
 		PlayerHud.updateDebugInfo(
 			"Mesh Build",
-			`${meshStats.lastMs.toFixed(1)}ms (avg ${meshStats.avgMs.toFixed(1)}ms)`,
+			`${meshStats.lastMs.toFixed(1)}ms (avg ${meshStats.avgMs.toFixed(1)}ms) ` +
+				`gpu:${(meshStats.lastGpuBytes / 1024).toFixed(0)}KiB` +
+				`${meshStats.budgetExhausted ? " [budget]" : ""}`,
+			"workers",
+		);
+
+		const mib = (b: number) => `${(b / 1048576).toFixed(1)}`;
+
+		// PERF DIAGNOSTIC: separates call-bound uploads (many small ranges) from
+		// byte-bound ones (few huge ranges). `inst` is the thin-instance
+		// (winding-record) traffic that Lite drains inside _record() and which
+		// therefore shows up only as the native `writeBuffer` in DevTools.
+		const slotStats = getMergedSlotStats();
+		const uploadStats = getPackedUploadStats();
+		PlayerHud.updateDebugInfo(
+			"GPU Uploads",
+			`face:${mib(uploadStats.faceBytes)}M/${uploadStats.faceCalls}c ` +
+				`rng:${uploadStats.faceRangeCalls} peak:${mib(uploadStats.peakFaceUploadBytes)}M ` +
+				`inst:${mib(uploadStats.instanceBytes)}M/${uploadStats.instanceCalls}c ` +
+				`ifull:${uploadStats.instanceFullUploads} ` +
+				`irng:${uploadStats.instanceRangedUploads} ` +
+				`ipeak:${mib(uploadStats.peakInstanceUploadBytes)}M ` +
+				`dirty:${slotStats.dirtyFaces}f grow:${uploadStats.arenaGrows}` +
+				`/${uploadStats.arenaCompactions}`,
 			"workers",
 		);
 
 		const mem = getPackedMeshMemoryStats();
 		const layers = getMergedLayerMemoryStats();
-		const mib = (b: number) => `${(b / 1048576).toFixed(1)}`;
 		PlayerHud.updateDebugInfo(
 			"Mesh Memory",
 			`inst:${mib(mem.instanceBytes)} arenas:${mib(mem.arenaBytes)} ` +
@@ -818,6 +925,25 @@ export class PlayerLoopController {
 			"workers",
 		);
 
+		/*
+		 * PERF DIAGNOSTIC: mesh-ingestion outcome mix. A rising `stale` count is
+		 * the signature of a remesh livelock — every discarded result re-queues
+		 * itself via scheduleRemesh(), so the queue grows without the world
+		 * actually changing, workers saturate, and each round still enqueues
+		 * group-rebuild uploads. `applied` far exceeding chunks touched means
+		 * redundant remesh volume for the same geometry.
+		 */
+		PlayerHud.updateDebugInfo(
+			"Mesh Results",
+			`applied:${workerStats.meshAppliedTotal} ` +
+				`cached:${workerStats.meshCachedForOtherLodTotal} ` +
+				`stale:${workerStats.meshStaleDroppedTotal} ` +
+				`lost:${workerStats.meshUnknownChunkDroppedTotal} ` +
+				`rmsh:${workerStats.totalRemeshDispatches} ` +
+				`lod:${workerStats.totalLodPrecomputeDispatches}`,
+			"workers",
+		);
+
 		const farStats = FarTileManager.getDebugStats();
 		if (farStats) {
 			const kib = (b: number) => `${(b / 1024).toFixed(0)}KiB`;
@@ -835,6 +961,17 @@ export class PlayerLoopController {
 			PlayerHud.updateDebugInfo(
 				"Far Detail",
 				`${levelSummary} up:${kib(farStats.uploadBytes)}/f`,
+				"far",
+			);
+			// PERF DIAGNOSTIC: winding-record (thin-instance) uploads are
+			// flushed by Lite during _record(), not by flushDirty, so the
+			// "up:.../f" line above never sees them. This is the counter that
+			// covers the far-tile share of the opaque native `writeBuffer`.
+			PlayerHud.updateDebugInfo(
+				"Far Inst Up",
+				`${kib(farStats.instanceUploadBytes)}/f ` +
+					`full:${farStats.instanceUploadFull} rng:${farStats.instanceUploadRanged} ` +
+					`calls:${farStats.instanceUploadCalls}`,
 				"far",
 			);
 		}

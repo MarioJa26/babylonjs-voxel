@@ -4,6 +4,7 @@ import type {
 	RemoteChunkResult,
 } from "../../Network/chunk/RemoteChunkProvider";
 import { ChunkResultKind } from "../../Network/protocol/messages";
+import { getGpuPressureFactor } from "../Light/liteGpuBuffer";
 import {
 	FLAG_GREEDY,
 	FLAG_PARTIAL,
@@ -359,6 +360,9 @@ export class ChunkWorkerPool {
 	// exactly when the CPU was busiest. Cap ingestion below the total so the
 	// flush always keeps a guaranteed slice.
 	private static readonly MESH_INGEST_BUDGET_MS = 3.5;
+	// Floor applied when the GPU queue is saturated. Never zero, so at least
+	// one result keeps flowing per drain and the pipeline cannot deadlock.
+	private static readonly MESH_INGEST_MIN_BUDGET_MS = 0.25;
 	private static readonly MESH_FLUSH_MIN_BUDGET_MS = 2.0;
 	private static readonly WORK_PROCESS_QUEUE = 1 << 0;
 	private static readonly WORK_MESH = 1 << 1;
@@ -1886,10 +1890,39 @@ export class ChunkWorkerPool {
 			let iterCount = 0;
 			let processed = 0;
 
+			/*
+			 * GPU back-pressure.
+			 *
+			 * Applying a mesh result dirties its merged group, and rebuilding
+			 * that group enqueues storage-buffer and thin-instance uploads.
+			 * Workers produce results at CPU speed, so ingesting them at full
+			 * rate hands the device more work than it can retire: measured
+			 * with a deep load queue, this loop applied 255 results per tick
+			 * and the device fell 3.4 s behind, stalling frames inside
+			 * `writeBuffer` in _record() (main thread only 0.6 ms, because the
+			 * stall is after tick() returns).
+			 *
+			 * Scaling the ingest budget by queue-drain time makes the
+			 * consumption rate self-pacing: when the device is behind, fewer
+			 * results are applied per tick and they simply stay in
+			 * meshResultQueue (already-produced work is buffered, nothing is
+			 * lost or recomputed) until it catches up.
+			 *
+			 * The floor keeps one result moving per drain so the pipeline can
+			 * never fully deadlock while the GPU is merely slow.
+			 */
+			const pressure = getGpuPressureFactor();
+			const ingestBudgetMs =
+				pressure >= 1
+					? ChunkWorkerPool.MESH_INGEST_BUDGET_MS
+					: Math.max(
+							ChunkWorkerPool.MESH_INGEST_MIN_BUDGET_MS,
+							ChunkWorkerPool.MESH_INGEST_BUDGET_MS * pressure,
+						);
+
 			while (
 				this.meshResultQueueReadIdx < this.meshResultQueue.length &&
-				((iterCount++ & 15) !== 0 ||
-					performance.now() - start < ChunkWorkerPool.MESH_INGEST_BUDGET_MS)
+				((iterCount++ & 15) !== 0 || performance.now() - start < ingestBudgetMs)
 			) {
 				const data = this.meshResultQueue[this.meshResultQueueReadIdx];
 				const workerIdx =

@@ -79,6 +79,12 @@ function packTileKey(levelIndex: number, tx: number, tz: number): bigint {
 const FT_FACE_BYTES = 16;
 const FT_FACE_WORDS = 4;
 
+// Compact thin-instance record: one vec4<f32> per winding entry (see the
+// compact-instance patch in @babylonjs/lite). Mirrors lite's
+// `thin-instance-gpu.js` stride so the byte counters below match what the
+// driver actually receives.
+const FAR_INSTANCE_STRIDE = 16;
+
 // Shared unit quad — same constants PackedChunkMesh uses. Vertex shader
 // derives real positions from the face words; this buffer only feeds the
 // mandatory position attribute.
@@ -87,6 +93,19 @@ const QUAD_NORMALS = new Float32Array(12);
 
 // GPU upload bytes flushed during the current frame (reset in frame()).
 let _farUploadBytesThisFrame = 0;
+
+// PERF DIAGNOSTIC: winding-record (thin-instance) upload accounting, tracked
+// separately from the face-word bytes above. These two are uploaded by
+// DIFFERENT code paths at different times — face words go through
+// updateStorageBuffer in flushDirty/flushOrigins (visible in DevTools as
+// `updateStorageBuffer`), while the compact 16 B/face instance records are
+// drained later by Lite's thin-instance sync during _record() and surface only
+// as the opaque native `writeBuffer`. Without this counter the HUD's
+// "up:KiB/f" line cannot see the most likely large upload at all.
+let _farInstanceBytesThisFrame = 0;
+let _farInstanceFullUploads = 0;
+let _farInstanceRangedUploads = 0;
+let _farInstanceCalls = 0;
 
 interface FarSlot {
 	base: number; // first face index in the arena
@@ -749,6 +768,12 @@ class FarTileManagerImpl {
 	private originsDirtyMin = Number.POSITIVE_INFINITY;
 	private originsDirtyMax = 0;
 
+	// F6 A/B state. Hiding far tiles must also STOP their uploads, otherwise
+	// the toggle only removes draw work and cannot attribute a `writeBuffer`
+	// spike to this subsystem. Gating frame() on this makes the toggle a real
+	// A/B: dirty ranges are left intact and drain when visibility returns.
+	private farTilesVisible = true;
+
 	private readonly tiles = new Map<bigint, TileEntry>();
 	private readonly pendingByKey = new Set<bigint>();
 	private readonly keyByRequestId = new Map<number, bigint>();
@@ -1236,6 +1261,10 @@ class FarTileManagerImpl {
 		tiles: number;
 		pending: number;
 		uploadBytes: number;
+		instanceUploadBytes: number;
+		instanceUploadFull: number;
+		instanceUploadRanged: number;
+		instanceUploadCalls: number;
 		levels: {
 			faces: number;
 			capacity: number;
@@ -1255,6 +1284,10 @@ class FarTileManagerImpl {
 			tiles: this.tiles.size,
 			pending: this.pendingByKey.size,
 			uploadBytes: _farUploadBytesThisFrame,
+			instanceUploadBytes: _farInstanceBytesThisFrame,
+			instanceUploadFull: _farInstanceFullUploads,
+			instanceUploadRanged: _farInstanceRangedUploads,
+			instanceUploadCalls: _farInstanceCalls,
 			levels,
 			water: {
 				faces: this.waterArena.appendedFaces,
@@ -1270,6 +1303,8 @@ class FarTileManagerImpl {
 	}
 
 	public setFarTilesVisible(visible: boolean): void {
+		this.farTilesVisible = visible;
+
 		for (const wm of this.terrainStraight) {
 			if (wm.mesh) (wm.mesh as FarMeshLike).isVisible = visible;
 		}
@@ -1282,15 +1317,7 @@ class FarTileManagerImpl {
 	}
 
 	public isFarTilesVisible(): boolean {
-		for (let i = 0; i < this.terrainReversed.length; i++) {
-			const mesh = this.terrainReversed[i].mesh;
-
-			if (mesh) {
-				return mesh.isVisible !== false;
-			}
-		}
-
-		return true;
+		return this.farTilesVisible;
 	}
 
 	private pendingIsStillWanted(
@@ -1327,8 +1354,23 @@ class FarTileManagerImpl {
 
 		frameProfiler.begin("farTiles");
 		_farUploadBytesThisFrame = 0;
+		_farInstanceBytesThisFrame = 0;
+		_farInstanceFullUploads = 0;
+		_farInstanceRangedUploads = 0;
+		_farInstanceCalls = 0;
 
 		this.updateUniforms();
+
+		// PERF: F6 A/B gate. When far tiles are hidden there is nothing to
+		// draw, so skip their uploads too. Crucially this does NOT clear any
+		// dirty state: the arena ranges, origin range, and winding dirty
+		// ranges all survive, so re-enabling visibility drains the full
+		// backlog in one frame. That is what makes the toggle a valid A/B for
+		// "is the writeBuffer spike coming from far tiles?".
+		if (!this.farTilesVisible) {
+			frameProfiler.end("farTiles");
+			return;
+		}
 
 		// PERF: idle early-out — sync/flush/ensure loops run even when no
 		// tile arrived, no arena dirtied, and no mesh pending. Uniforms
@@ -1798,6 +1840,13 @@ function syncThinInstanceCount(mesh: FarMeshLike, wm: WindingMesh): void {
 			thinInstances._dirtyMax = count;
 		}
 
+		// Growth reallocates the instance buffer, so the whole live range is
+		// re-uploaded (16 B/face). Nine such meshes (4 levels x 2 winding
+		// lists + water) can fire on one streaming burst.
+		_farInstanceBytesThisFrame += count * FAR_INSTANCE_STRIDE;
+		_farInstanceFullUploads++;
+		_farInstanceCalls++;
+
 		wm.clearSyncState();
 		return;
 	}
@@ -1831,6 +1880,16 @@ function syncThinInstanceCount(mesh: FarMeshLike, wm: WindingMesh): void {
 				: Math.max(thinInstances._dirtyMax, high);
 
 			thinInstances._version++;
+
+			// A union with a still-pending range can widen this well beyond
+			// [low, high); report what Lite will actually upload.
+			const uploadLow = thinInstances._dirtyMin;
+			const uploadHigh = Math.min(count, thinInstances._dirtyMax);
+			const uploadCount = Math.max(0, uploadHigh - uploadLow);
+
+			_farInstanceBytesThisFrame += uploadCount * FAR_INSTANCE_STRIDE;
+			_farInstanceRangedUploads++;
+			_farInstanceCalls++;
 		}
 	}
 
@@ -1880,6 +1939,10 @@ export const FarTileManager = {
 		tiles: number;
 		pending: number;
 		uploadBytes: number;
+		instanceUploadBytes: number;
+		instanceUploadFull: number;
+		instanceUploadRanged: number;
+		instanceUploadCalls: number;
 		levels: {
 			faces: number;
 			capacity: number;
