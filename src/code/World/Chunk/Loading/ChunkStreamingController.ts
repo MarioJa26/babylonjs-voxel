@@ -14,7 +14,6 @@ import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
 import { FarTileManager } from "../../FarTiles/FarTileManager";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import { Chunk, getChunk } from "../Chunk";
-import { createMeshFromData } from "../Meshing/ChunkMesher";
 import { ChunkWorkerPool } from "../ChunkWorkerPool";
 import {
 	ChunkLodRuleSet,
@@ -26,6 +25,7 @@ import {
 	UNDERGROUND_CULL_EXEMPT_RADIUS,
 	UNDERGROUND_SKIP_LOD,
 } from "../LOD/LODUtilities";
+import { createMeshFromData } from "../Meshing/ChunkMesher";
 import {
 	buildInitialColumnList,
 	sortColumnsAheadFirst,

@@ -5,7 +5,7 @@ import type { WorkerInternalMeshData } from "../../Chunk/DataStructures/WorkerIn
 import { POS_SCALE } from "../../Chunk/Worker/ChunkMesherConstants";
 import { BlockFaceTileX, BlockFaceTileY } from "../../Texture/BlockTextures";
 import { FaceName } from "../../Texture/FaceName";
-import { getBlockTint } from "./BlockInfoCache";
+import { BlockTint } from "./BlockInfoCache";
 
 const WATER_FRAC_SCALE = [8, 7, 6, 5, 4, 3, 2, 1];
 const WATER_TOP_OFFSET_SCALE = [0, -1, -2, -3, -4, -5, -6, -7];
@@ -180,7 +180,7 @@ export class QuadBuffer {
 			BlockFaceTileY[tileIdx],
 			ao,
 			light,
-			getBlockTint(blockId),
+			blockId >= 0 && blockId < BlockTint.length ? BlockTint[blockId] : 1,
 			meta,
 		);
 	}
@@ -233,7 +233,7 @@ export class QuadBuffer {
 			BlockFaceTileY[tileIdx],
 			ao,
 			light,
-			getBlockTint(blockId),
+			blockId >= 0 && blockId < BlockTint.length ? BlockTint[blockId] : 1,
 			meta,
 		);
 	}
@@ -273,7 +273,7 @@ export class QuadBuffer {
 			BlockFaceTileY[tileIdx],
 			ao,
 			light,
-			getBlockTint(blockId),
+			blockId >= 0 && blockId < BlockTint.length ? BlockTint[blockId] : 1,
 			0,
 		);
 	}
@@ -335,7 +335,7 @@ export class QuadBuffer {
 			BlockFaceTileY[tileIdx],
 			ao,
 			light,
-			getBlockTint(blockId),
+			blockId >= 0 && blockId < BlockTint.length ? BlockTint[blockId] : 1,
 			meta,
 		);
 	}
@@ -421,7 +421,7 @@ export class QuadBuffer {
 			BlockFaceTileY[tileIdx],
 			ao,
 			light,
-			getBlockTint(blockId),
+			blockId >= 0 && blockId < BlockTint.length ? BlockTint[blockId] : 1,
 			meta,
 		);
 	}

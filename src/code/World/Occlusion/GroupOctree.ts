@@ -35,7 +35,7 @@ import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 // Constants
 // ---------------------------------------------------------------------------
 
-export const OCTREE_GROUP_SIZE = 4; // chunks per group side (mirrors MergedMeshManager GROUP_SIZE)
+export const OCTREE_GROUP_SIZE = 8; // chunks per group side (mirrors MergedMeshManager GROUP_SIZE)
 export const OCTREE_GROUP_EXTENT = OCTREE_GROUP_SIZE * CHUNK_SIZE; // 128 world units
 export const OCTREE_LEAF_SIZE = OCTREE_GROUP_EXTENT; // leaf == exactly one group cell
 export const OCTREE_ROOT_CELL_SIZE = 1024; // 8 groups per side per root
@@ -74,7 +74,7 @@ interface OctreeNode {
 // Module state
 // ---------------------------------------------------------------------------
 
-const _roots = new Map<string, OctreeNode>();
+const _roots = new Map<number, OctreeNode>();
 let _groupCount = 0;
 
 export function getOctreeGroupCount(): number {
@@ -101,8 +101,8 @@ export function groupMinZ(gridZ: number): number {
 	return gridZ * OCTREE_GROUP_EXTENT;
 }
 
-function rootKeyFor(rx: number, ry: number, rz: number): string {
-	return `${rx},${ry},${rz}`;
+function rootKeyFor(rx: number, ry: number, rz: number): number {
+	return (rx & 0xffff) * 0x1000000 + (ry & 0xffff) * 0x10000 + (rz & 0xffff);
 }
 
 function makeNode(

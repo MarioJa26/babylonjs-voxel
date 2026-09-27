@@ -861,8 +861,7 @@ export class PlayerLoopController {
 		const meshStats = getMergedMeshFlushStats();
 		PlayerHud.updateDebugInfo(
 			"Mesh Build",
-			`${meshStats.lastMs.toFixed(1)}ms (avg ${meshStats.avgMs.toFixed(1)}ms) ` +
-				`gpu:${(meshStats.lastGpuBytes / 1024).toFixed(0)}KiB` +
+			`${meshStats.lastMs.toFixed(1)}ms (avg ${meshStats.avgMs.toFixed(1)}ms)` +
 				`${meshStats.budgetExhausted ? " [budget]" : ""}`,
 			"workers",
 		);

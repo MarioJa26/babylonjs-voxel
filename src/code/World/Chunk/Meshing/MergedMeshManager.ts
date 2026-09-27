@@ -7,11 +7,7 @@ import {
 } from "../../Occlusion/GroupOctree";
 import type { Chunk } from "../Chunk";
 import type { MeshData } from "../DataStructures/MeshData";
-import {
-	disposePackedMesh,
-	getTotalFaceUploadBytes,
-	maxFacesPerArena,
-} from "./PackedChunkMesh.js";
+import { disposePackedMesh, maxFacesPerArena } from "./PackedChunkMesh.js";
 
 // Lite `Mesh` has no `.dispose()` — free its packed-arena slices, unregister
 // from the scene, then free GPU resources.
@@ -133,7 +129,7 @@ export class MergedMeshMeta {
 // Constants & Module State
 // ---------------------------------------------------------------------------
 
-const GROUP_SIZE = 4;
+const GROUP_SIZE = 8;
 const MAX_GROUP_MEMBERS = GROUP_SIZE * GROUP_SIZE * GROUP_SIZE;
 
 const groups = new Map<number, MergedMeshGroup>();
@@ -895,9 +891,6 @@ function validateSettledSlotExtents(
 let _lastMergedFlushMs = 0;
 let _mergedFlushTotalMs = 0;
 let _mergedFlushCount = 0;
-// Face bytes the most recent flush handed to the GPU, and whether it stopped
-// on a budget (CPU time or GPU bytes) with work still queued.
-let _lastMergedFlushGpuBytes = 0;
 let _lastMergedFlushExhausted = false;
 
 // PERF instrumentation for the stable-slot layout: how many member copies the
@@ -926,13 +919,11 @@ export function getMergedSlotStats(): {
 export function getMergedMeshFlushStats(): {
 	lastMs: number;
 	avgMs: number;
-	lastGpuBytes: number;
 	budgetExhausted: boolean;
 } {
 	return {
 		lastMs: _lastMergedFlushMs,
 		avgMs: _mergedFlushCount > 0 ? _mergedFlushTotalMs / _mergedFlushCount : 0,
-		lastGpuBytes: _lastMergedFlushGpuBytes,
 		budgetExhausted: _lastMergedFlushExhausted,
 	};
 }
@@ -958,44 +949,12 @@ export function getMergedLayerMemoryStats(): {
 let _mergedFlushRafScheduled = false;
 const _flushSnapshot: MergedMeshGroup[] = [];
 
-/**
- * Burst ceiling on face bytes a single flush may hand to `queue.writeBuffer`.
- *
- * The existing budget is CPU TIME, which cannot bound GPU work: rebuilding a
- * merged group is cheap (measured ~0.3 ms for a whole flush) but each group
- * also enqueues face + instance uploads. When a deep streaming backlog drains
- * in one macrotask the flush can queue a very large amount of bytes at once,
- * and the next frame then stalls inside `writeBuffer` while Dawn's staging ring
- * drains — observed as a ~386 ms `writeBuffer` under engine._renderFn with the
- * main thread reading only 0.8 ms, because the stall happens in _record() after
- * tick() has already returned.
- *
- * Budgeting bytes bounds queue DEPTH. It does not reduce total throughput, and
- * at measured steady-state rates (hundreds of KB per flush) this ceiling rarely
- * binds — it is a rail against bursts (first load, teleport, cache warm-up),
- * not the primary fix. The primary reduction for the observed call-bound
- * profile is the dirty-range coalescing in pushDirtyRange().
- *
- * Deferred groups stay in dirtyGroups and are processed on later flushes, so
- * no geometry is lost, and at least one group always runs so an oversized
- * group can never stall the pipeline.
- */
-const DEFAULT_GPU_UPLOAD_BUDGET_BYTES = 2 * 1024 * 1024;
-
-export function flushDirtyMergedGroups(
-	maxBudgetMs = 5,
-	maxGpuBytes = DEFAULT_GPU_UPLOAD_BUDGET_BYTES,
-): void {
+export function flushDirtyMergedGroups(maxBudgetMs = 5): void {
 	if (dirtyGroups.size === 0) return;
 
 	const startedAt = performance.now();
 	const deadline =
 		maxBudgetMs > 0 ? startedAt + maxBudgetMs : Number.POSITIVE_INFINITY;
-
-	// Monotonic face-upload total sampled at entry; the loop stops once this
-	// flush has itself enqueued maxGpuBytes. Always process at least one group
-	// so a single oversized group can never stall the pipeline forever.
-	const gpuBytesAtEntry = getTotalFaceUploadBytes();
 
 	_statMembersSeen = 0;
 	_statCopiesPerformed = 0;
@@ -1004,33 +963,10 @@ export function flushDirtyMergedGroups(
 
 	let processedCount = 0;
 	let budgetExhausted = false;
-	let gpuBudgetExhausted = false;
 
-	/*
-	 * Delete each group immediately before processing it rather than copying
-	 * the entire Set into _flushSnapshot and clearing it.
-	 *
-	 * This has two useful properties:
-	 * 1. No O(n) snapshot copy is required.
-	 * 2. If rebuildGroupData() or the callback dirties the group again,
-	 *    markGroupDirty() can safely add it back to dirtyGroups.
-	 */
 	for (const group of dirtyGroups) {
 		if (processedCount !== 0 && performance.now() >= deadline) {
 			budgetExhausted = true;
-			break;
-		}
-
-		// Checked BEFORE processing so the group stays queued. Note this
-		// measures the PREVIOUS groups' uploads — the group about to be
-		// processed is intentionally allowed to overshoot once, which is what
-		// keeps progress guaranteed for oversized single groups.
-		if (
-			processedCount !== 0 &&
-			maxGpuBytes > 0 &&
-			getTotalFaceUploadBytes() - gpuBytesAtEntry >= maxGpuBytes
-		) {
-			gpuBudgetExhausted = true;
 			break;
 		}
 
@@ -1072,23 +1008,19 @@ export function flushDirtyMergedGroups(
 	if (dirtyGroups.size > 0) {
 		if (_requestFlush) {
 			_requestFlush();
-		} else if (
-			(budgetExhausted || gpuBudgetExhausted) &&
-			!_mergedFlushRafScheduled
-		) {
+		} else if (budgetExhausted && !_mergedFlushRafScheduled) {
 			_mergedFlushRafScheduled = true;
 
 			setTimeout(() => {
 				_mergedFlushRafScheduled = false;
-				flushDirtyMergedGroups(maxBudgetMs, maxGpuBytes);
+				flushDirtyMergedGroups(maxBudgetMs);
 			}, 0);
 		}
 	}
 
 	const elapsed = performance.now() - startedAt;
 	_lastMergedFlushMs = elapsed;
-	_lastMergedFlushGpuBytes = getTotalFaceUploadBytes() - gpuBytesAtEntry;
-	_lastMergedFlushExhausted = budgetExhausted || gpuBudgetExhausted;
+	_lastMergedFlushExhausted = budgetExhausted;
 	_mergedFlushTotalMs += elapsed;
 	_mergedFlushCount++;
 }
