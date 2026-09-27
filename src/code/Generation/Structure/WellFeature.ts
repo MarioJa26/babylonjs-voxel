@@ -2,7 +2,7 @@ import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
 
 const TEMPERATE_BIOMES = new Set([
@@ -19,6 +19,19 @@ const TEMPERATE_BIOMES = new Set([
 	BIOME_ID.AUTUMN_FOREST,
 	BIOME_ID.PINE_FOREST,
 ]);
+
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ */
+export const WELL_REGION: RegionConfig = {
+	regionSize: 12,
+	magicA: 1323456789,
+	magicB: 990011223,
+	spawnChance: 90,
+	earlyReturn: false,
+};
 
 export class WellFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -20, maxWorldY: 200 };
@@ -38,13 +51,13 @@ export class WellFeature implements IWorldFeature {
 	) {
 		if (!TEMPERATE_BIOMES.has(biome.id)) return;
 
-		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 12,
-			magicA: 1323456789,
-			magicB: 990011223,
-			spawnChance: 90,
-			earlyReturn: false,
-		});
+		const region = computeRegion(
+			chunkX,
+			chunkZ,
+			chunkSize,
+			seed,
+			WELL_REGION,
+		);
 		if (!region) return;
 
 		const { centerX: wx, centerZ: wz } = region;

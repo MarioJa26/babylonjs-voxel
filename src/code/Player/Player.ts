@@ -8,6 +8,8 @@ import type {
 import { addToScene } from "@babylonjs/lite";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { type IMountableUser, Mount } from "@/code/Entities/Mount";
+import { interactWithGlyph } from "@/code/Entities/MayaTempleGlyphs";
+import { activeWorldSeedAsInt } from "@/code/Entities/TempleLootTable";
 import { igniteTnt } from "@/code/Entities/PrimedTnt";
 import { Map1 } from "@/code/Maps/Map1";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
@@ -471,6 +473,39 @@ export class Player {
 					const z = Math.floor(blockHit.z);
 
 					igniteTnt(x, y, z);
+					return;
+				}
+
+				case BlockType.TempleGlyph: {
+					const x = Math.floor(blockHit.x);
+					const y = Math.floor(blockHit.y);
+					const z = Math.floor(blockHit.z);
+
+					const result = interactWithGlyph(
+						x,
+						y,
+						z,
+						activeWorldSeedAsInt(),
+						this.networkManager?.isConnected === true
+							? this.networkManager.onBlockPlaced
+							: undefined,
+					);
+
+					if (result.kind === "toggled") {
+						this.#playerHud.showTempleMessage(
+							result.charged
+								? "The seal takes the light."
+								: "The seal dims.",
+						);
+					} else if (result.kind === "gate-locked") {
+						this.#playerHud.showTempleMessage(
+							`The gate is sealed. ${result.chargedCount} of ${result.requiredCount} seals answer.`,
+						);
+					} else if (result.kind === "gate-open") {
+						this.#playerHud.showTempleMessage(
+							"The gate grinds open. Something stirs below.",
+						);
+					}
 					return;
 				}
 

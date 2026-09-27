@@ -6,7 +6,7 @@ import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { SUBSURFACE_LAYER_DEPTH } from "../Terrain/SurfaceBlockResolver";
 import { getBiome } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
 
 // Biomes where open water ponds would look out of place (oceans, deserts,
@@ -46,6 +46,19 @@ const POND_UNSUITABLE = new Set<number>([
 	BIOME_ID.ICE_SPIKES,
 ]);
 
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ */
+export const POND_REGION: RegionConfig = {
+	regionSize: 9,
+	magicA: 778899331,
+	magicB: 445566227,
+	spawnChance: 22,
+	earlyReturn: false,
+};
+
 export class PondFeature implements IWorldFeature {
 	// Depressions are dug just a few blocks below the surface (2..5 deep), so
 	// the absolute Y bounds can be tight around the terrain height range.
@@ -64,13 +77,13 @@ export class PondFeature implements IWorldFeature {
 		generatingChunkZ: number,
 		columnPrepassResolver?: ColumnPrepassResolver,
 	) {
-		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 9,
-			magicA: 778899331,
-			magicB: 445566227,
-			spawnChance: 22,
-			earlyReturn: false,
-		});
+		const region = computeRegion(
+			chunkX,
+			chunkZ,
+			chunkSize,
+			seed,
+			POND_REGION,
+		);
 		if (!region) return;
 
 		const { centerX: cx, centerZ: cz, regionHash } = region;

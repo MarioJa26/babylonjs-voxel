@@ -19,6 +19,10 @@ import {
 	KRAKEN_HIT_HALF,
 } from "@/code/Entities/Mobs/Kraken";
 import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
+import {
+	getGuardianInstancePool,
+	GUARDIAN_HIT_HALF,
+} from "@/code/Entities/Mobs/MayaGuardian";
 import type {
 	InstanceSlotHandle,
 	MobInstancePool,
@@ -476,6 +480,9 @@ export class RemoteMobManager {
 			case MobTypeId.Skeleton:
 				return getSkeletonInstancePool();
 
+			case MobTypeId.Guardian:
+				return getGuardianInstancePool();
+
 			case MobTypeId.Bird:
 				return getBirdInstancePool();
 
@@ -512,6 +519,9 @@ export class RemoteMobManager {
 
 			case MobTypeId.Skeleton:
 				return SKELETON_HIT_HALF;
+
+			case MobTypeId.Guardian:
+				return GUARDIAN_HIT_HALF;
 
 			case MobTypeId.Bird:
 				return BIRD_HIT_HALF;

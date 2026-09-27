@@ -3,7 +3,48 @@ import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import {
+	aabbOverlaps,
+	chunkWorldBounds,
+	computeRegion,
+	type RegionConfig,
+} from "./RegionFeature";
+
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ *
+ * `spawnChance` is deliberately absent: this feature raises it to 100 in
+ * volcanic biomes, so the value is layered on at the call site.
+ */
+export const LAVA_POOL_REGION: Omit<RegionConfig, "spawnChance"> = {
+	regionSize: 9,
+	magicA: 873461393,
+	magicB: 178246653,
+	earlyReturn: false,
+};
+
+/**
+ * LavaPool derives its centre from an intermediate hash rather than from
+ * computeRegion's offsets, so /locate has to ask for it explicitly instead of
+ * reading `region.centerX`. Exported so both sides agree.
+ */
+export function resolveLavaPoolCentre(
+	regionX: number,
+	regionZ: number,
+	regionHash: number,
+	chunkSize: number,
+	seed: number,
+): { x: number; z: number } {
+	const baseHash = getPRNGBySeed(regionHash, seed);
+	const offsetX = Math.abs(getPRNGBySeed(baseHash, seed)) % (9 * chunkSize);
+	const offsetZ = Math.abs(getPRNGBySeed(baseHash + 1, seed)) % (9 * chunkSize);
+	return {
+		x: regionX * 9 * chunkSize + offsetX,
+		z: regionZ * 9 * chunkSize + offsetZ,
+	};
+}
 
 export class LavaPoolFeature implements IWorldFeature {
 	// Underground pools: -64..-1087. Surface pools: surface-17..surface-1 (max ~400).
@@ -36,23 +77,23 @@ export class LavaPoolFeature implements IWorldFeature {
 		}
 
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 9,
-			magicA: 873461393,
-			magicB: 178246653,
+			...LAVA_POOL_REGION,
 			spawnChance,
-			earlyReturn: false,
 		});
 		if (!region) return;
 
 		const { regionHash } = region;
 
 		// LavaPool uses a different offset derivation via intermediate baseHash
-		const baseHash = getPRNGBySeed(regionHash, seed);
-		const offsetX = Math.abs(getPRNGBySeed(baseHash, seed)) % (9 * chunkSize);
-		const offsetZ =
-			Math.abs(getPRNGBySeed(baseHash + 1, seed)) % (9 * chunkSize);
-		const poolCenterX = region.regionX * 9 * chunkSize + offsetX;
-		const poolCenterZ = region.regionZ * 9 * chunkSize + offsetZ;
+		const pool = resolveLavaPoolCentre(
+			region.regionX,
+			region.regionZ,
+			regionHash,
+			chunkSize,
+			seed,
+		);
+		const poolCenterX = pool.x;
+		const poolCenterZ = pool.z;
 
 		const MAX_POOL_RADIUS = 30;
 		const bounds = chunkWorldBounds(
@@ -91,6 +132,9 @@ export class LavaPoolFeature implements IWorldFeature {
 				poolSurfaceY = getFinalTerrainHeight(poolCenterX, poolCenterZ) - 1;
 			}
 		} else {
+			// Same intermediate hash the centre offset is derived from, so the
+			// pool's depth is keyed to the same value.
+			const baseHash = getPRNGBySeed(regionHash, seed);
 			poolSurfaceY =
 				-64 - (Math.abs(getPRNGBySeed(baseHash + 2, seed)) % (1024 - 64));
 		}

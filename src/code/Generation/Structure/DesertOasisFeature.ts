@@ -3,7 +3,7 @@ import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
 
 const HOT_BIOMES = new Set([
@@ -12,6 +12,19 @@ const HOT_BIOMES = new Set([
 	BIOME_ID.SAVANNAH,
 	BIOME_ID.CRACKED_EARTH,
 ]);
+
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ */
+export const DESERT_OASIS_REGION: RegionConfig = {
+	regionSize: 16,
+	magicA: 393939001,
+	magicB: 606060845,
+	spawnChance: 90,
+	earlyReturn: false,
+};
 
 export class DesertOasisFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -20, maxWorldY: 200 };
@@ -31,13 +44,13 @@ export class DesertOasisFeature implements IWorldFeature {
 	) {
 		if (!HOT_BIOMES.has(biome.id)) return;
 
-		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 16,
-			magicA: 393939001,
-			magicB: 606060845,
-			spawnChance: 90,
-			earlyReturn: false,
-		});
+		const region = computeRegion(
+			chunkX,
+			chunkZ,
+			chunkSize,
+			seed,
+			DESERT_OASIS_REGION,
+		);
 		if (!region) return;
 
 		const { centerX: cx, centerZ: cz, regionHash } = region;

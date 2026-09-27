@@ -3,7 +3,7 @@ import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
 import { type DoorSide, StructureBuilder } from "./StructureBuilder";
 
 const TROPICAL_BIOMES = new Set([
@@ -15,6 +15,19 @@ const TROPICAL_BIOMES = new Set([
 ]);
 
 const DOORS: DoorSide[] = ["x+", "x-", "z+", "z-"];
+
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ */
+export const BAMBOO_SHRINE_REGION: RegionConfig = {
+	regionSize: 15,
+	magicA: 424242001,
+	magicB: 838383845,
+	spawnChance: 90,
+	earlyReturn: false,
+};
 
 export class BambooShrineFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
@@ -34,13 +47,13 @@ export class BambooShrineFeature implements IWorldFeature {
 	) {
 		if (!TROPICAL_BIOMES.has(biome.id)) return;
 
-		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 15,
-			magicA: 424242001,
-			magicB: 838383845,
-			spawnChance: 90,
-			earlyReturn: false,
-		});
+		const region = computeRegion(
+			chunkX,
+			chunkZ,
+			chunkSize,
+			seed,
+			BAMBOO_SHRINE_REGION,
+		);
 		if (!region) return;
 
 		const { centerX: sx, centerZ: sz, regionHash } = region;

@@ -39,6 +39,13 @@ export const MOB_ITEM_DROPS: Readonly<Record<number, MobFoodDrop[]>> = {
 	],
 	[MobTypeId.Bird]: [{ itemId: 1114, min: 1, max: 2 }],
 	[MobTypeId.Songbird]: [{ itemId: 1114, min: 1, max: 1 }],
+	[MobTypeId.Guardian]: [
+		{ itemId: 1020, min: 1, max: 2 }, // Diamond
+		{ itemId: 1051, min: 1, max: 3 }, // Emerald
+		{ itemId: 1025, min: 3, max: 8 }, // Gold Ingot
+		{ itemId: 1021, min: 4, max: 10 }, // Iron Ingot
+		{ itemId: 1115, min: 4, max: 10 }, // Bone
+	],
 };
 
 export interface RolledFoodDrop {

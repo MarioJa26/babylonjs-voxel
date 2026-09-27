@@ -7,6 +7,7 @@ import { Chicken } from "./Chicken";
 import { Cow } from "./Cow";
 import { Fish } from "./Fish";
 import { Kraken } from "./Kraken";
+import { MayaGuardian } from "./MayaGuardian";
 import type { Mob } from "./Mob";
 import { MobRegistry, type MobSpawnConfig } from "./Mob";
 import { Sheep } from "./Sheep";
@@ -80,6 +81,13 @@ const MOB_FACTORIES: Readonly<Partial<Record<number, MobFactoryEntry>>> = {
 		mobType: "songbird",
 		factory: (x, y, z, scene) => new Songbird(x, y, z, scene),
 		daySpawn: true,
+	},
+	[MobTypeId.Guardian]: {
+		mobType: "maya_guardian",
+		factory: (x, y, z, scene) => new MayaGuardian(x, y, z, scene),
+		// No nightSpawn/daySpawn: the boss is placed by MayaDungeonEncounter,
+		// never rolled by SpawnCoordinator. MOB_SPAWN_CONFIGS still needs an
+		// entry because buildClientSpawnConfigs throws without one.
 	},
 };
 

@@ -1,6 +1,7 @@
 import { ChatHistory } from "@/code/Lib/ChatHistory";
 import { closeUi, openUi, UiFocus } from "@/code/Lib/GameRuntimeState";
 import { Map1 } from "@/code/Maps/Map1";
+import { currentWorldSeed, runLocateCommand } from "@/code/Player/LocateCommand";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { getWorldNameFromUrl, worldSeedFor } from "@/code/World/WorldContext";
 import type { Player } from "../Player";
@@ -150,6 +151,10 @@ export class Chat {
 			case "time":
 				this.#handleTime(parts.slice(1));
 				break;
+			case "locate":
+			case "find":
+				this.#handleLocate(parts.slice(1));
+				break;
 			case "h":
 			case "help":
 				this.#addSystem("Commands:");
@@ -167,6 +172,13 @@ export class Chat {
 				this.#addSystem("  !time +<amt> - Advance the time of day");
 				this.#addSystem("  !time day    - Set to day");
 				this.#addSystem("  !seed       - Show the current world's seed");
+				this.#addSystem("  !locate <name> - Find the nearest structure");
+				this.#addSystem(
+					"  !locate <name> tp - ...and teleport there (keeps current y)",
+				);
+				this.#addSystem(
+					"  !locate all  - List the nearest of every structure",
+				);
 				this.#addSystem("  !h / !help   - Show this help");
 				break;
 			default:
@@ -274,8 +286,29 @@ export class Chat {
 		}
 	}
 
-	#timeLabel(fraction: number): string {
-		if (fraction < 0.25) return "morning";
+	/**
+	 * `!locate <name> [tp]` � nearest instance of a worldgen structure.
+	 *
+	 * Delegates to the shared command so the multiplayer front-end in
+	 * NetworkManager runs identical code; see Player/LocateCommand.
+	 */
+	#handleLocate(args: string[]): void {
+		const pos = this.#player.position;
+
+		runLocateCommand(args, {
+			originX: Math.floor(pos.x),
+			originZ: Math.floor(pos.z),
+			seed: currentWorldSeed(),
+			// Keep the player's Y: the structure's own height is biome and
+			// terrain dependent, and the chunk resolves it on arrival.
+			onTeleport: (x, z) => {
+				pos.x = x;
+				pos.z = z;
+			},
+			reply: (text) => this.#addSystem(text),
+		});
+	}
+	#timeLabel(fraction: number): string {		if (fraction < 0.25) return "morning";
 		if (fraction < 0.5) return "day";
 		if (fraction < 0.75) return "evening";
 		return "night";

@@ -9,6 +9,7 @@ import {
 import { CaveNoiseGrid } from "./CaveNoiseGrid";
 import type { NoiseInstance } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
+import { fillSealColumnMask } from "./Structure/StructureSeal";
 
 const MIN_SOLID_NEIGHBORS = 5;
 const SMOOTHING_PASSES = 2;
@@ -17,6 +18,14 @@ const MAX_CHUNK_VOLUME = 32 * 32 * 32;
 const _carve = new Uint8Array(MAX_CHUNK_VOLUME);
 const _caveSample = new Float32Array(3);
 const _carvedIndices = new Uint32Array(MAX_CHUNK_VOLUME);
+
+/**
+ * Per-column "inside a structure seal" flag, indexed `localX + localZ * size`.
+ * See Structure/StructureSeal — a Maya temple's dungeon is written before this
+ * pass runs, so without the seal the cave carve would chew holes straight
+ * through it.
+ */
+const _sealColumns = new Uint8Array(MAX_CHUNK_VOLUME);
 
 export class UndergroundGenerator {
 	private readonly params: GenerationParamsType;
@@ -74,7 +83,8 @@ export class UndergroundGenerator {
 			ow?: boolean,
 		) => void,
 		blocks?: Uint8Array,
-	): void {
+		seedAsInt?: number,
+	): boolean {
 		const LAVA_LEVEL = this.LAVA_LEVEL;
 		const params = this.params;
 
@@ -86,7 +96,7 @@ export class UndergroundGenerator {
 		// Preserve existing behavior: without a block buffer, the old code found no
 		// solid voxels and returned before doing cave work.
 		if (!blocks) {
-			return;
+			return false;
 		}
 
 		// PERF: Caves only matter if the chunk contains at least one non-air,
@@ -101,8 +111,26 @@ export class UndergroundGenerator {
 		}
 
 		if (!hasSolid) {
-			return;
+			return false;
 		}
+
+		// Structure seal. A Maya temple writes its multi-level dungeon before
+		// this pass, so cave carving has to step around the protected columns.
+		// The mask is derived purely from world coordinates + seed, so the seal
+		// agrees with the structure pass without the two talking to each other.
+		const seal =
+			seedAsInt === undefined
+				? { hasSeal: false, minY: 0, maxY: -1 }
+				: fillSealColumnMask(
+						chunkX,
+						chunkZ,
+						cs,
+						seedAsInt,
+						_sealColumns,
+					);
+		const sealActive = seal.hasSeal;
+		const sealMinY = seal.minY;
+		const sealMaxY = seal.maxY;
 
 		// PERF: Reuse pre-sampled cave noise grid instead of allocating per chunk.
 		this.caveGrid.reset(chunkX, chunkY, chunkZ, cs);
@@ -119,6 +147,11 @@ export class UndergroundGenerator {
 		for (let localY = 0; localY < cs; localY++) {
 			const worldY = chunkWorldY + localY;
 			const yBase = localY * cs;
+
+			// Hoisted out of the inner loop: the whole Y slice is either inside
+			// the sealed band or entirely outside it.
+			const ySealed =
+				sealActive && worldY >= sealMinY && worldY <= sealMaxY;
 
 			const depthT = clamp01(
 				(worldY - params.CAVE_FULL_DENSITY_DEPTH) / fullDepthDenom,
@@ -137,6 +170,10 @@ export class UndergroundGenerator {
 
 					// PERF: Skip voxels already carved to air by terrain generation.
 					if (blocks[idx] === 0) {
+						continue;
+					}
+
+					if (ySealed && _sealColumns[localX + surfaceMapBase] === 1) {
 						continue;
 					}
 
@@ -166,7 +203,7 @@ export class UndergroundGenerator {
 		}
 
 		if (carvedCount === 0) {
-			return;
+			return sealActive;
 		}
 
 		const inner = cs - 1;
@@ -250,5 +287,7 @@ export class UndergroundGenerator {
 
 			placeBlockLocal(localX, localY, localZ, blockId, true);
 		}
+
+		return sealActive;
 	}
 }

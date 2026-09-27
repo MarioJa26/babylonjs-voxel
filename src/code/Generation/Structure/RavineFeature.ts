@@ -2,7 +2,20 @@ import type { Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
+
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ */
+export const RAVINE_REGION: RegionConfig = {
+	regionSize: 8,
+	magicA: 571384937,
+	magicB: 314159267,
+	spawnChance: 12,
+	earlyReturn: true,
+};
 
 export class RavineFeature implements IWorldFeature {
 	// depth = 30 + random % 50 (30..79) carved downward from neighbor surface.
@@ -23,13 +36,13 @@ export class RavineFeature implements IWorldFeature {
 		generatingChunkX: number,
 		generatingChunkZ: number,
 	) {
-		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 8,
-			magicA: 571384937,
-			magicB: 314159267,
-			spawnChance: 12,
-			earlyReturn: true,
-		});
+		const region = computeRegion(
+			chunkX,
+			chunkZ,
+			chunkSize,
+			seed,
+			RAVINE_REGION,
+		);
 		if (!region) return;
 
 		const {

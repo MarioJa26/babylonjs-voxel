@@ -2,7 +2,20 @@ import type { Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
+
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ */
+export const GEODE_REGION: RegionConfig = {
+	regionSize: 6,
+	magicA: 784129637,
+	magicB: 562348931,
+	spawnChance: 8,
+	earlyReturn: true,
+};
 
 export class GeodeFeature implements IWorldFeature {
 	// cy = -32 - random % 256 (-32..-288), plus outerRadius (6..10) + shell 2.
@@ -22,13 +35,13 @@ export class GeodeFeature implements IWorldFeature {
 		generatingChunkX: number,
 		generatingChunkZ: number,
 	) {
-		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 6,
-			magicA: 784129637,
-			magicB: 562348931,
-			spawnChance: 8,
-			earlyReturn: true,
-		});
+		const region = computeRegion(
+			chunkX,
+			chunkZ,
+			chunkSize,
+			seed,
+			GEODE_REGION,
+		);
 		if (!region) return;
 
 		const { regionHash, centerX: cx, centerZ: cz } = region;

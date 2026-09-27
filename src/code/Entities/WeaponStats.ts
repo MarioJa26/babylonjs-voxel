@@ -23,11 +23,13 @@ export const FISTS_DAMAGE = 1;
  */
 export const MOB_WEAPON_ZOMBIE_CLAWS = -1001;
 export const MOB_WEAPON_SKELETON_CLUB = -1002;
+export const MOB_WEAPON_GUARDIAN_MAUL = -1003;
 
 /** Mob type name -> equipped weapon item id (virtual ids allowed). */
 export const MOB_WEAPONS: Readonly<Record<string, number>> = {
 	zombie: MOB_WEAPON_ZOMBIE_CLAWS,
 	skeleton: MOB_WEAPON_SKELETON_CLUB,
+	maya_guardian: MOB_WEAPON_GUARDIAN_MAUL,
 };
 
 /** Sword damage by material tier (matches ProceduralTools ids). */
@@ -71,6 +73,7 @@ export function getMeleeDamage(itemId?: number | null): number {
 	if (itemId === undefined || itemId === null) return FISTS_DAMAGE;
 	if (itemId === MOB_WEAPON_ZOMBIE_CLAWS) return 3;
 	if (itemId === MOB_WEAPON_SKELETON_CLUB) return 2;
+	if (itemId === MOB_WEAPON_GUARDIAN_MAUL) return 5;
 	const sword = SWORD_DAMAGE[itemId];
 	if (sword !== undefined) return sword;
 	const tool = TOOL_DAMAGE[itemId];
@@ -90,6 +93,8 @@ export function getMeleeRange(itemId?: number | null): number {
 	// The skeleton's club visibly out-reaches zombie claws: reach lives
 	// on the weapon, so both mobs share one attack routine.
 	if (itemId === MOB_WEAPON_SKELETON_CLUB) return 3.4;
+	// The boss maul out-reaches both trash mobs, so kiting it is not viable.
+	if (itemId === MOB_WEAPON_GUARDIAN_MAUL) return 3.9;
 	const sword = SWORD_RANGE[itemId];
 	if (sword !== undefined) return sword;
 	if (TOOL_DAMAGE[itemId] !== undefined) return 2.7;
@@ -108,5 +113,6 @@ export function getMobWeaponIdByTypeId(typeId: number): number | undefined {
 	// only carries type ids over the wire — no string round-trip needed.
 	if (typeId === MobTypeId.Zombie) return MOB_WEAPON_ZOMBIE_CLAWS;
 	if (typeId === MobTypeId.Skeleton) return MOB_WEAPON_SKELETON_CLUB;
+	if (typeId === MobTypeId.Guardian) return MOB_WEAPON_GUARDIAN_MAUL;
 	return undefined;
 }

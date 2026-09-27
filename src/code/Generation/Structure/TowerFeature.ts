@@ -3,7 +3,25 @@ import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import {
+	aabbOverlaps,
+	chunkWorldBounds,
+	computeRegion,
+	type RegionConfig,
+} from "./RegionFeature";
+
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ */
+export const TOWER_REGION: RegionConfig = {
+	regionSize: 16,
+	magicA: 374761393,
+	magicB: 678446653,
+	spawnChance: 100,
+	earlyReturn: false,
+};
 
 export class TowerFeature implements IWorldFeature {
 	// Above-surface tower is 76-83 tall; underground reaches MIN_WORLD_Y = -1600.
@@ -53,13 +71,13 @@ export class TowerFeature implements IWorldFeature {
 			TowerFeature.decisionCache.clear();
 		}
 		if (decision === undefined || decision.seed !== seed) {
-			const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-				regionSize: 16,
-				magicA: 374761393,
-				magicB: 678446653,
-				spawnChance: 100,
-				earlyReturn: false,
-			});
+			const region = computeRegion(
+				chunkX,
+				chunkZ,
+				chunkSize,
+				seed,
+				TOWER_REGION,
+			);
 			if (!region) {
 				TowerFeature.decisionCache.set(cacheKey, {
 					seed,

@@ -15,6 +15,7 @@ import { SurfaceGenerator } from "./SurfaceGenerator";
 import { getBiome } from "./TerrainHeightMap";
 import { UndergroundBiomeSelector } from "./UndergroundBiomes";
 import { UndergroundGenerator } from "./UndergroundGenerator";
+import { computeSeedAsInt } from "./WorldSeed";
 
 type GenerateChunkOptions = {
 	deferLighting?: boolean;
@@ -64,7 +65,7 @@ export class WorldGenerator {
 	constructor(params: GenerationParamsType) {
 		this.params = params;
 		this.prng = Alea(this.params.SEED);
-		this.seedAsInt = getPRNGBySeed(0, (this.prng() * 0xffffffff) | 0);
+		this.seedAsInt = computeSeedAsInt(this.params.SEED);
 
 		this.chunk_size = this.params.CHUNK_SIZE;
 		this.chunkSizeSq = this.chunk_size * this.chunk_size;
@@ -433,17 +434,24 @@ export class WorldGenerator {
 
 		this.oreGenerator.generate(chunkX, chunkY, chunkZ, blocks, biome);
 
-		this.undergroundGenerator.generate(
+		const hadStructureSeal = this.undergroundGenerator.generate(
 			chunkX,
 			chunkY,
 			chunkZ,
 			surfaceGeneration.topSurfaceYMap,
 			placeBlockLocal,
 			blocks,
+			this.seedAsInt,
 		);
 		if (!skipDecorations) {
 			this.refineBlocks(blocks, chunkX, chunkY, chunkZ);
 		}
+
+		// A chunk containing a sealed structure has a hand-placed lit interior
+		// below the normal emission floor, so drop the floor for this chunk.
+		const emissionMinWorldY = hadStructureSeal
+			? LightGenerator.SEALED_EMISSION_MIN_WORLD_Y
+			: LightGenerator.EMISSION_MIN_WORLD_Y;
 
 		const light = this.createBuffer(chunkVolume);
 
@@ -462,6 +470,7 @@ export class WorldGenerator {
 				blocks,
 				light,
 				surfaceGeneration.topSunlightMask,
+				emissionMinWorldY,
 			);
 			return { blocks, light };
 		}
@@ -474,6 +483,7 @@ export class WorldGenerator {
 			blocks,
 			light,
 			surfaceGeneration.topSunlightMask,
+			emissionMinWorldY,
 		);
 		return { blocks, light, lightSeedState };
 	}

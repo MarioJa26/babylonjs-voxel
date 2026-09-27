@@ -16,6 +16,8 @@ export const MobTypeId = {
 	Skeleton: 8,
 	Bird: 9,
 	Songbird: 10,
+	/** Maya temple dungeon boss. Spawned by MayaDungeonEncounter, never naturally. */
+	Guardian: 11,
 } as const;
 
 /** Squared radius (meters) within which a nearby player triggers panic. */
@@ -179,6 +181,19 @@ export const MOB_STATS: Record<number, MobStats> = {
 		fleeRadiusSq: DEFAULT_FLEE_RADIUS_SQ,
 		aquatic: false,
 	},
+	[MobTypeId.Guardian]: {
+		// Boss profile, scaled off the Kraken (the only other boss-ish mob in
+		// the game). Tall enough to be visually distinct, but note that
+		// HostileMob's pathfinder needs ceil(halfHeight * 2) blocks of headroom
+		// to move at all — the boss arena is sized for that.
+		hp: 120,
+		speed: 2.6,
+		halfHeight: 1.6,
+		feetHeight: 1.6,
+		halfExtents: { x: 0.5, y: 1.6, z: 0.5 },
+		fleeRadiusSq: 0,
+		aquatic: false,
+	},
 };
 
 /** Natural spawn configurations, keyed by MobTypeId. */
@@ -253,6 +268,17 @@ export const MOB_SPAWN_CONFIGS: Record<number, MobSpawnConfig> = {
 		despawnable: true,
 		spawnYOffset: 0.3,
 	},
+	[MobTypeId.Guardian]: {
+		// Never rolled by SpawnCoordinator (spawnWeight is irrelevant to
+		// MayaDungeonEncounter, which instantiates the boss directly), but the
+		// config must exist because MobSetup throws for a type with no entry and
+		// SpawnCoordinator reads `despawnable` off it.
+		maxCount: 1,
+		spawnWeight: 0,
+		spawnBlockId: 67, // BlockType.Obsidian — the boss arena dais
+		despawnable: false,
+		spawnYOffset: 0,
+	},
 };
 
 /** Get stats for a mob type, throwing if unknown. */
@@ -279,7 +305,11 @@ export function getMobSpawnConfig(typeId: number): MobSpawnConfig {
  * this. Keyed by MobTypeId so client and server agree.
  */
 export function isHostileTypeId(typeId: number): boolean {
-	return typeId === MobTypeId.Zombie || typeId === MobTypeId.Skeleton;
+	return (
+		typeId === MobTypeId.Zombie ||
+		typeId === MobTypeId.Skeleton ||
+		typeId === MobTypeId.Guardian
+	);
 }
 
 /**

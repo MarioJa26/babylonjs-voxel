@@ -1,6 +1,8 @@
 import type { SceneContext } from "@babylonjs/lite";
 import { onSceneDispose } from "@babylonjs/lite";
 import { getArrowTooltipStats } from "@/code/Entities/Arrow/ArrowTypes";
+import { getMayaDungeonEncounter } from "@/code/Entities/MayaDungeonEncounter";
+import { activeWorldSeedAsInt } from "@/code/Entities/TempleLootTable";
 import {
 	closeUi,
 	isUiOpen,
@@ -19,7 +21,7 @@ import { loadGameSettings } from "@/code/UI/GameSettings";
 import {
 	buildBlockInventorySlots,
 	createEmptyInventory,
-	getBlockInventory,
+	ensureSeededLoot,
 	type SavedBlockInventory,
 	saveBlockInventory,
 	serializeBlockSlots,
@@ -57,6 +59,20 @@ function setBar(fill: HTMLDivElement, prev: number, pct: number): number {
 	return pct;
 }
 
+/** Squared distance at which the Maya Guardian's health bar is shown. */
+const BOSS_BAR_RANGE = 40;
+const BOSS_BAR_RANGE_SQ = BOSS_BAR_RANGE * BOSS_BAR_RANGE;
+
+function bossDistanceSq(
+	pos: { x: number; y: number; z: number },
+	player: { x: number; y: number; z: number },
+): number {
+	const dx = pos.x - player.x;
+	const dy = pos.y - player.y;
+	const dz = pos.z - player.z;
+	return dx * dx + dy * dy + dz * dz;
+}
+
 export class PlayerHud {
 	#scene: SceneContext;
 	readonly #player: Player;
@@ -69,6 +85,15 @@ export class PlayerHud {
 
 	public get chat(): Chat {
 		return this.#chat;
+	}
+
+	/**
+	 * Short transient narration for world interactions that have no UI of their
+	 * own — currently the Maya temple glyph puzzle. Routed through the chat log
+	 * because there is no generic HUD widget API to hang a toast on.
+	 */
+	public showTempleMessage(text: string): void {
+		this.#chat.addSystemMessage(text);
 	}
 
 	static #inventory: PlayerInventory;
@@ -154,6 +179,11 @@ export class PlayerHud {
 	#xpBarFill!: HTMLDivElement;
 	#xpLevelLabel!: HTMLDivElement;
 
+	// Maya Guardian boss health bar
+	#bossBarContainer: HTMLDivElement | null = null;
+	#bossBarFill: HTMLDivElement | null = null;
+	#prevBossPct = -1;
+
 	// Bow draw progress indicator
 	#drawIndicator: HTMLDivElement | null = null;
 	#drawFill: HTMLDivElement | null = null;
@@ -170,6 +200,7 @@ export class PlayerHud {
 		this.#overlayDiv = this.initializeHUD();
 		this.createHotbarUI();
 		this.createStatsUI();
+		this.initializeBossBar();
 		this.initializeDebugPanel();
 		this.initializeTooltip();
 		this.initializeDrawIndicator();
@@ -355,6 +386,76 @@ export class PlayerHud {
 		onSceneDispose(this.#scene, () => {
 			container.remove();
 		});
+	}
+
+	/**
+	 * Boss health bar, centred above the hotbar. Hidden until a Maya Guardian is
+	 * instantiated and nearby.
+	 *
+	 * There is no generic HUD widget API in this codebase — every panel is a
+	 * hand-rolled `document.createElement` tree appended to `document.body` — so
+	 * this follows the same shape as `createStatsUI` and reuses the
+	 * `statPct` / `setBar` change-guarded helpers.
+	 */
+	private initializeBossBar(): void {
+		const container = document.createElement("div");
+		container.classList.add("boss-bar-container");
+		container.style.display = "none";
+
+		const label = document.createElement("div");
+		label.classList.add("boss-bar-label");
+		label.textContent = "Maya Guardian";
+
+		const wrapper = document.createElement("div");
+		wrapper.classList.add("stat-bar-wrapper", "boss-bar-wrapper");
+
+		const fill = document.createElement("div");
+		fill.classList.add("stat-bar-fill", "boss");
+
+		wrapper.appendChild(fill);
+		container.appendChild(label);
+		container.appendChild(wrapper);
+		document.body.appendChild(container);
+
+		this.#bossBarContainer = container;
+		this.#bossBarFill = fill;
+
+		onSceneDispose(this.#scene, () => {
+			container.remove();
+		});
+	}
+
+	/**
+	 * Drive the boss bar from the encounter system. Only shown while the boss is
+	 * close enough to matter, so walking away from a half-finished fight does
+	 * not leave it pinned on screen.
+	 */
+	private updateBossBar(): void {
+		const container = this.#bossBarContainer;
+		const fill = this.#bossBarFill;
+		if (!container || !fill) return;
+
+		const boss = getMayaDungeonEncounter()?.getLiveBoss() ?? null;
+		const visible =
+			boss !== null &&
+			this.#player.stats?.gamemode !== Gamemodes.Creative &&
+			bossDistanceSq(boss.position, this.#player.position) <=
+				BOSS_BAR_RANGE_SQ;
+
+		if (!visible) {
+			if (this.#prevBossPct >= 0) {
+				container.style.display = "none";
+				this.#prevBossPct = -1;
+			}
+			return;
+		}
+
+		container.style.display = "flex";
+		this.#prevBossPct = setBar(
+			fill,
+			this.#prevBossPct,
+			statPct(boss.hp, boss.maxHp),
+		);
 	}
 
 	/**
@@ -557,8 +658,9 @@ export class PlayerHud {
 			this.#attachCrateSlotListeners();
 			this.#woodCrateLastSent = PlayerHud.emptyCrateSnapshot();
 		} else {
-			// Load saved state and build live slots
-			const saved = getBlockInventory(x, y, z);
+			// Load saved state and build live slots. ensureSeededLoot fills the
+			// crate first if it turns out to be a worldgen loot cache.
+			const saved = ensureSeededLoot(x, y, z, activeWorldSeedAsInt());
 			this.#woodCrateSavedState = saved;
 			this.#woodCrateSlots = buildBlockInventorySlots(saved);
 			this.#attachCrateSlotListeners();
@@ -1817,5 +1919,7 @@ export class PlayerHud {
 			this.#prevXpLevel = stats.xpLevel;
 			this.#xpLevelLabel.textContent = `Lv ${stats.xpLevel}`;
 		}
+
+		this.updateBossBar();
 	}
 }

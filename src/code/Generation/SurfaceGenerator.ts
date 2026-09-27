@@ -30,6 +30,7 @@ import { IglooFeature } from "./Structure/IglooFeature";
 import { InfernalPitFeature } from "./Structure/InfernalPitFeature";
 import type { IWorldFeature } from "./Structure/IWorldFeature";
 import { LavaPoolFeature } from "./Structure/LavaPoolFeature";
+import { MayaTempleFeature } from "./Structure/MayaTempleFeature";
 import { LighthouseFeature } from "./Structure/LighthouseFeature";
 import { MineshaftFeature } from "./Structure/MineshaftFeature";
 import { MountainCabinFeature } from "./Structure/MountainCabinFeature";
@@ -226,7 +227,14 @@ export class SurfaceGenerator {
 	private static readonly MAX_TREE_HEIGHT = GenerationParams.CHUNK_SIZE;
 	private static readonly MAX_STRUCTURE_ABOVE_SURFACE =
 		GenerationParams.CHUNK_SIZE * 2;
-	private static readonly MAX_STRUCTURE_BELOW_SURFACE = 24;
+
+	/**
+	 * Structures that reach deep underground (MayaTempleFeature) need a band
+	 * wide enough to cover a multi-level dungeon. 56 keeps the deepest
+	 * generated dungeon floor around Y = -38 against the typical Y = 10..30
+	 * surface band, and costs at most one extra eligible chunk-Y slice.
+	 */
+	private static readonly MAX_STRUCTURE_BELOW_SURFACE = 56;
 
 	// How far outside the chunk the flora scan looks for trees that overflow
 	// the border. Drives both the scan window and the width of the neighbor
@@ -418,6 +426,8 @@ export class SurfaceGenerator {
 			new TropicalTempleFeature(),
 			new TreehouseFeature(),
 			new BambooShrineFeature(),
+			// Maya — large surface temple with a multi-level dungeon beneath
+			new MayaTempleFeature(),
 			// Mountain
 			new MountainCabinFeature(),
 			new CliffDwellingFeature(),

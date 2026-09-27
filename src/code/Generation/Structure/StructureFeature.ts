@@ -2,8 +2,21 @@ import type { Biome } from "../Biome/BiomeTypes";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
 import { Structure, type StructureData } from "./Structure";
+
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ */
+export const STRUCTURE_REGION: RegionConfig = {
+	regionSize: 16,
+	magicA: 584661329,
+	magicB: 957346603,
+	spawnChance: 10,
+	earlyReturn: false,
+};
 
 export class StructureSpawnerFeature implements IWorldFeature {
 	// Opulent House is 4 tall, placed at surface. Keep margin for neighbor surface range.
@@ -65,13 +78,13 @@ export class StructureSpawnerFeature implements IWorldFeature {
 	) {
 		if (StructureSpawnerFeature.structures.size === 0) return;
 
-		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 16,
-			magicA: 584661329,
-			magicB: 957346603,
-			spawnChance: 10,
-			earlyReturn: false,
-		});
+		const region = computeRegion(
+			chunkX,
+			chunkZ,
+			chunkSize,
+			seed,
+			STRUCTURE_REGION,
+		);
 		if (!region) return;
 
 		const { regionHash } = region;

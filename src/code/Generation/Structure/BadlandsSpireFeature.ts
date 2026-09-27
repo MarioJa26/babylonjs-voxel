@@ -6,7 +6,7 @@ import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
 
 const MIN_SPIRE_HEIGHT = 120;
 const MAX_SPIRE_HEIGHT = 600;
@@ -69,6 +69,19 @@ const LAYERS: readonly number[] = [
 	BlockType.Cobble,
 ];
 
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ */
+export const BADLANDS_SPIRE_REGION: RegionConfig = {
+	regionSize: 4,
+	magicA: 1457932807,
+	magicB: 892467153,
+	spawnChance: 90,
+	earlyReturn: false,
+};
+
 export class BadlandsSpireFeature implements IWorldFeature {
 	public readonly verticalBounds = {
 		minWorldY: -200,
@@ -90,13 +103,13 @@ export class BadlandsSpireFeature implements IWorldFeature {
 	) {
 		if (biome.id !== BIOME_ID.BADLANDS) return;
 
-		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 4,
-			magicA: 1457932807,
-			magicB: 892467153,
-			spawnChance: 90,
-			earlyReturn: false,
-		});
+		const region = computeRegion(
+			chunkX,
+			chunkZ,
+			chunkSize,
+			seed,
+			BADLANDS_SPIRE_REGION,
+		);
 		if (!region) return;
 
 		const { centerX: spireX, centerZ: spireZ } = region;

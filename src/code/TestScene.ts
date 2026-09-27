@@ -12,9 +12,11 @@ import {
 } from "@babylonjs/lite";
 import { applyAudioSettings } from "./Audio/AudioManager";
 import { Arrow } from "./Entities/Arrow/Arrow";
+import { createMayaDungeonEncounter } from "./Entities/MayaDungeonEncounter";
 import { preloadMobSkins } from "./Entities/Mobs/MobInstancePool";
 import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
 import { setTerrainSeed } from "./Generation/TerrainHeightMap";
+import { computeSeedAsInt } from "./Generation/WorldSeed";
 import { initBlockBreakParticles } from "./Maps/BlockBreakParticles";
 import { Map1 } from "./Maps/Map1";
 import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
@@ -299,6 +301,24 @@ export class TestScene {
 
 			return coordinatorPosition;
 		});
+
+		// Maya temple dungeons are populated on the main thread from the shared
+		// layout, not by worldgen — the chunk worker has no way to create mobs.
+		// Runs singleplayer only; in multiplayer the server owns the spawns and
+		// RemoteMobManager renders them.
+		createMayaDungeonEncounter(
+			scene,
+			() => {
+				const position = player.position;
+
+				coordinatorPosition.x = position.x;
+				coordinatorPosition.y = position.y;
+				coordinatorPosition.z = position.z;
+
+				return coordinatorPosition;
+			},
+			computeSeedAsInt(worldSeedFor(this.worldName)),
+		);
 
 		this.registerFrameUpdate(scene, playerCamera, (): void => {
 			persistence.update();

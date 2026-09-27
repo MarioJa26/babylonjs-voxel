@@ -2,7 +2,7 @@ import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
 
 const COASTAL_BIOMES = new Set([
@@ -13,6 +13,19 @@ const COASTAL_BIOMES = new Set([
 	BIOME_ID.ARCHIPELAGO,
 	BIOME_ID.KELP_FOREST,
 ]);
+
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ */
+export const LIGHTHOUSE_REGION: RegionConfig = {
+	regionSize: 16,
+	magicA: 929292001,
+	magicB: 454545845,
+	spawnChance: 90,
+	earlyReturn: false,
+};
 
 export class LighthouseFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
@@ -32,13 +45,13 @@ export class LighthouseFeature implements IWorldFeature {
 	) {
 		if (!COASTAL_BIOMES.has(biome.id)) return;
 
-		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 16,
-			magicA: 929292001,
-			magicB: 454545845,
-			spawnChance: 90,
-			earlyReturn: false,
-		});
+		const region = computeRegion(
+			chunkX,
+			chunkZ,
+			chunkSize,
+			seed,
+			LIGHTHOUSE_REGION,
+		);
 		if (!region) return;
 
 		const { centerX: cx, centerZ: cz } = region;

@@ -119,6 +119,8 @@ import {
 } from "@/code/World/Storage/ChunkKey.ts";
 import { serializeVoxelData } from "@/code/World/Storage/VoxelSerializer.ts";
 import { BlockType } from "@/code/World/Texture/BlockType.ts";
+import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap.ts";
+import { computeSeedAsInt } from "@/code/Generation/WorldSeed.ts";
 import heldItemDefinitions from "../../../public/data/items.json";
 import { getServerConfig } from "../config/ServerConfig.ts";
 import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
@@ -357,6 +359,8 @@ type PendingBlockEdit = {
 export class VoxelRoom extends Room {
 	private players = new Map<string, ServerPlayerState>();
 	private tickInterval: ReturnType<typeof setInterval> | null = null;
+	/** Terrain seed folded to the int32 worldgen features hash against. */
+	private seedAsInt = 0;
 	private mobSim!: ServerMobSimulation;
 	private mobDebugAccum = 0;
 	private mobTickAccum = 0;
@@ -605,6 +609,15 @@ export class VoxelRoom extends Room {
 			`[VoxelRoom] terrain seed: ${this.seed} (from server.properties), wasm: ${this.config.wasmEnabled}`,
 		);
 
+		// Seed the shared terrain functions in THIS process too. The chunk
+		// workers seed their own copies, but main-thread code that needs to
+		// reproduce a worldgen decision — currently Maya temple loot caches,
+		// which resolve a crate's position through getFinalTerrainHeight —
+		// would otherwise read unseeded noise and disagree with the workers.
+		setTerrainSeed(this.seed);
+
+		this.seedAsInt = computeSeedAsInt(this.seed);
+
 		this.worldStorage = new ServerWorldStorage(
 			this.worldName,
 			this.seed,
@@ -617,7 +630,7 @@ export class VoxelRoom extends Room {
 
 		this.mobSim = new ServerMobSimulation(this.worldStorage);
 		this.itemSim = new ServerItemSimulation(this.worldStorage);
-		this.containerStore = new ServerContainerStore(this.worldStorage);
+		this.containerStore = new ServerContainerStore(this.worldStorage, this.seedAsInt);
 
 		// Authoritative water simulation. Shares the client's WaterSimulation
 		// class (single definition) — only the block access and scheduler are

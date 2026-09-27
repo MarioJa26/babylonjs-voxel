@@ -134,6 +134,27 @@ export class LightGenerator {
 	}
 
 	/**
+	 * Lowest Y that may contain a light source in a generated chunk.
+	 *
+	 * Chunks entirely below this get an all-zero light array, which keeps the
+	 * skylight column pass off the (vast majority of) solid deep chunks. The
+	 * side effect is that a torch or lava placed at generation time down there
+	 * emits nothing. Structures that build lit interiors below this line
+	 * (MayaTempleFeature's dungeon) pass a lower floor so their emission seeds
+	 * are still collected. Player-placed torches are unaffected: the block-edit
+	 * path adds emission at any depth.
+	 */
+	public static readonly EMISSION_MIN_WORLD_Y = LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y;
+
+	/**
+	 * Emission floor used for chunks that contain a sealed structure. Deep
+	 * enough to cover the lowest dungeon level (MAYA_MIN_DUNGEON_Y = -48) with
+	 * room for the surrounding rock, but still far above the -128 floor below
+	 * which `relightChunk` and friends bail out entirely.
+	 */
+	public static readonly SEALED_EMISSION_MIN_WORLD_Y = -96;
+
+	/**
 	 * Performs initial top-down seeding and returns an independently owned
 	 * compact queue snapshot for deferred propagation.
 	 */
@@ -145,6 +166,7 @@ export class LightGenerator {
 		blocks: Uint8Array | Uint16Array,
 		light: Uint8Array,
 		topSunlightMask?: Uint8Array,
+		emissionMinWorldY: number = LightGenerator.EMISSION_MIN_WORLD_Y,
 	): LightSeedState {
 		const length = this.seedInitialLightIntoSharedQueue(
 			chunkX,
@@ -153,6 +175,7 @@ export class LightGenerator {
 			blocks,
 			light,
 			topSunlightMask,
+			emissionMinWorldY,
 		);
 
 		// This allocation is required because lightQueue is reused by later
@@ -198,6 +221,7 @@ export class LightGenerator {
 		blocks: Uint8Array | Uint16Array,
 		light: Uint8Array,
 		topSunlightMask?: Uint8Array,
+		emissionMinWorldY: number = LightGenerator.EMISSION_MIN_WORLD_Y,
 	): void {
 		const tail = this.seedInitialLightIntoSharedQueue(
 			chunkX,
@@ -206,6 +230,7 @@ export class LightGenerator {
 			blocks,
 			light,
 			topSunlightMask,
+			emissionMinWorldY,
 		);
 
 		if (tail > 0) {
@@ -221,6 +246,7 @@ export class LightGenerator {
 		light: Uint8Array,
 		topSunlightMask: Uint8Array | undefined,
 		neighborLight: ReadonlyArray<Uint8Array | null>,
+		emissionMinWorldY: number = LightGenerator.EMISSION_MIN_WORLD_Y,
 	): void {
 		let tail = this.seedInitialLightIntoSharedQueue(
 			chunkX,
@@ -229,6 +255,7 @@ export class LightGenerator {
 			blocks,
 			light,
 			topSunlightMask,
+			emissionMinWorldY,
 		);
 
 		tail = this.seedFromNeighborBorders(blocks, light, neighborLight, tail);
@@ -351,12 +378,13 @@ export class LightGenerator {
 	}
 
 	private seedInitialLightIntoSharedQueue(
-		_chunkX: number,
+		chunkX: number,
 		chunkY: number,
-		_chunkZ: number,
+		chunkZ: number,
 		blocks: Uint8Array | Uint16Array,
 		light: Uint8Array,
-		topSunlightMask?: Uint8Array,
+		topSunlightMask: Uint8Array | undefined,
+		emissionMinWorldY: number = LightGenerator.EMISSION_MIN_WORLD_Y,
 	): number {
 		const queue = this.lightQueue;
 		const chunkSize = this.chunkSize;
@@ -365,7 +393,7 @@ export class LightGenerator {
 		const filtersFullSunLUT = LightGenerator._filtersFullSunLUT;
 		const emissionLUT = LightGenerator._emissionLUT;
 		const closedFaceMaskLUT = LightGenerator.closedFaceMaskLUT;
-		const minimumWorldY = LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y;
+		const minimumWorldY = emissionMinWorldY;
 
 		const chunkWorldY = chunkY * chunkSize;
 		let tail = 0;

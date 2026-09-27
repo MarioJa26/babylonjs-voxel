@@ -3,7 +3,20 @@ import type { Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
+
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ */
+export const ABYSSAL_TEMPLE_REGION: RegionConfig = {
+	regionSize: 16,
+	magicA: 7878901234,
+	magicB: 555657585,
+	spawnChance: 90,
+	earlyReturn: false,
+};
 
 export class AbyssalTempleFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -400, maxWorldY: -50 };
@@ -19,13 +32,13 @@ export class AbyssalTempleFeature implements IWorldFeature {
 		generatingChunkX: number,
 		generatingChunkZ: number,
 	) {
-		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 16,
-			magicA: 7878901234,
-			magicB: 555657585,
-			spawnChance: 90,
-			earlyReturn: false,
-		});
+		const region = computeRegion(
+			chunkX,
+			chunkZ,
+			chunkSize,
+			seed,
+			ABYSSAL_TEMPLE_REGION,
+		);
 		if (!region) return;
 
 		const { centerX: tx, centerZ: tz } = region;

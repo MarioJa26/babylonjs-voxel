@@ -2,7 +2,22 @@ import type { Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { IWorldFeature } from "./IWorldFeature";
-import { chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
+
+/**
+ * Region grid for this feature's placement, hoisted so /locate can resolve
+ * it without duplicating these constants. A structure exists in region
+ * `floor(chunk / regionSize)` when the hash passes the spawn chance.
+ */
+export const MINESHAFT_REGION: RegionConfig = {
+	regionSize: 6,
+	magicA: 472348763,
+	magicB: 891234567,
+	spawnChance: 6,
+	earlyReturn: true,
+	offsetSeedX: 1,
+	offsetSeedZ: 2,
+};
 
 export class MineshaftFeature implements IWorldFeature {
 	// baseY = -16 - random % 128 (-16..-143), plus a few cells of vertical carving.
@@ -22,15 +37,13 @@ export class MineshaftFeature implements IWorldFeature {
 		generatingChunkX: number,
 		generatingChunkZ: number,
 	) {
-		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 6,
-			magicA: 472348763,
-			magicB: 891234567,
-			spawnChance: 6,
-			earlyReturn: true,
-			offsetSeedX: 1,
-			offsetSeedZ: 2,
-		});
+		const region = computeRegion(
+			chunkX,
+			chunkZ,
+			chunkSize,
+			seed,
+			MINESHAFT_REGION,
+		);
 		if (!region) return;
 
 		const { regionHash, centerX: mx, centerZ: mz } = region;

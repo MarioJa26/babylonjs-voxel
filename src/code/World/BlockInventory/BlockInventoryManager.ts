@@ -1,3 +1,8 @@
+import {
+	activeWorldSeedAsInt,
+	findTempleCacheAt,
+	rollTempleCrate,
+} from "@/code/Entities/TempleLootTable";
 import { Item } from "@/code/Player/Inventory/Item";
 import { ItemSlot } from "@/code/Player/Inventory/ItemSlot";
 
@@ -14,6 +19,12 @@ export interface SavedBlockInventory {
 	width: number;
 	height: number;
 	slots: (SavedBlockInventoryItem | null)[][];
+	/**
+	 * True once the inventory has been populated by a worldgen loot table.
+	 * Prevents a temple cache from re-rolling every time it is opened, and
+	 * leaves player-placed crates (which are never seeded) untouched.
+	 */
+	seeded?: boolean;
 }
 
 function posKey(x: number, y: number, z: number): string {
@@ -92,6 +103,49 @@ export function createEmptyInventory(
 		slots.push(row);
 	}
 	return { width, height, slots };
+}
+
+/**
+ * Populate a crate from the worldgen loot table if it belongs to a Maya temple
+ * and has not been rolled yet.
+ *
+ * Ordinary player-placed crates are left empty, which is the pre-existing
+ * behaviour. The `seeded` flag is what stops a temple cache from re-rolling its
+ * treasure on every open, and what stops a player from getting a fresh dungeon
+ * haul by walking away and coming back.
+ */
+export function ensureSeededLoot(
+	x: number,
+	y: number,
+	z: number,
+	seedAsInt: number,
+): SavedBlockInventory {
+	const map = loadAll();
+	const key = posKey(x, y, z);
+	const inv = map.get(key);
+	if (!inv || inv.seeded) return inv ?? createEmptyInventory(DEFAULT_COLS, DEFAULT_ROWS);
+
+	const cache = findTempleCacheAt(x, y, z, seedAsInt);
+	if (!cache) return inv;
+
+	const rolled = rollTempleCrate(
+		cache.templeId,
+		seedAsInt,
+		cache.tier,
+		x,
+		y,
+		z,
+	);
+
+	const seeded: SavedBlockInventory = {
+		width: rolled.width,
+		height: rolled.height,
+		slots: rolled.slots,
+		seeded: true,
+	};
+	map.set(key, seeded);
+	saveAll();
+	return seeded;
 }
 
 /**

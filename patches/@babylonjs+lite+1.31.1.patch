@@ -69,7 +69,27 @@ diff --git a/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js b/node_m
 index b10f925..7b2c833 100644
 --- a/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
 +++ b/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
-@@ -11,17 +11,19 @@ import { writeMeshIndexedIndirectArgs } from "./mesh-indexed-indirect.js";
+@@ -11,20 +11,39 @@ import { writeMeshIndexedIndirectArgs } from "./mesh-indexed-indirect.js";
+ /** Thin instance GPU buffer sync — dynamically loaded only by scenes with thin instances.
+ *  Keeps the standard renderable chunk unchanged for scenes without thin instances. */
+ /** @internal Sync CPU thin-instance data to GPU buffers, optionally with STORAGE usage for compute culling. */
++// Keep individual queue.writeBuffer submissions small enough that Dawn does not
++// block the render thread while reserving a large staging allocation. The
++// caller's dirty range is still preserved; this only changes submission shape.
++const MAX_THIN_INSTANCE_WRITE_BYTES = 256 * 1024;
++function writeThinInstanceBuffer(device, buffer, dstByteOffset, source, sourceByteOffset, byteLength) {
++	const chunkBytes = MAX_THIN_INSTANCE_WRITE_BYTES - (MAX_THIN_INSTANCE_WRITE_BYTES % 16);
++	let dst = dstByteOffset;
++	let src = sourceByteOffset;
++	let remaining = byteLength;
++	while (remaining > 0) {
++		const bytes = Math.min(remaining, chunkBytes);
++		device.queue.writeBuffer(buffer, dst, source, src, bytes);
++		dst += bytes;
++		src += bytes;
++		remaining -= bytes;
++	}
++}
  function syncThinInstanceGpuData(engine, ti, hasColor) {
  	const device = engine._device;
  	const needsStorage = ti._gpuCullingEnabled;
@@ -101,7 +121,8 @@ index b10f925..7b2c833 100644
 -			const maxByte = dirtyMax * 64;
 +			const minByte = dirtyMin * stride;
 +			const maxByte = dirtyMax * stride;
- 			if (ti.matrices instanceof F32) device.queue.writeBuffer(ti._gpuBuffer, minByte, ti.matrices.buffer, ti.matrices.byteOffset + minByte, maxByte - minByte);
+-			if (ti.matrices instanceof F32) device.queue.writeBuffer(ti._gpuBuffer, minByte, ti.matrices.buffer, ti.matrices.byteOffset + minByte, maxByte - minByte);
++			if (ti.matrices instanceof F32) writeThinInstanceBuffer(device, ti._gpuBuffer, minByte, ti.matrices.buffer, ti.matrices.byteOffset + minByte, maxByte - minByte);
  			else {
 -				const neededFloats = ti._capacity * 16;
 +				const neededFloats = ti._capacity * floatsPerInstance;
@@ -117,11 +138,15 @@ index b10f925..7b2c833 100644
 +						upload[d + 3] = ti.matrices[s + 3];
 +					}
 +				} else for (let i = dirtyMin; i < dirtyMax; i++) packMat4IntoF32(upload, ti.matrices, i * 16, i * 16);
- 				device.queue.writeBuffer(ti._gpuBuffer, minByte, upload.buffer, upload.byteOffset + minByte, maxByte - minByte);
+-				device.queue.writeBuffer(ti._gpuBuffer, minByte, upload.buffer, upload.byteOffset + minByte, maxByte - minByte);
++				writeThinInstanceBuffer(device, ti._gpuBuffer, minByte, upload.buffer, upload.byteOffset + minByte, maxByte - minByte);
  			}
  		}
+@@ -75,1 +75,1 @@ function syncThinInstanceGpuData(engine, ti, hasColor) {
+-		if (cMax > cMin) device.queue.writeBuffer(ti._colorGpuBuffer, cMin * 16, ti.colors.buffer, ti.colors.byteOffset + cMin * 16, (cMax - cMin) * 16);
++		if (cMax > cMin) writeThinInstanceBuffer(device, ti._colorGpuBuffer, cMin * 16, ti.colors.buffer, ti.colors.byteOffset + cMin * 16, (cMax - cMin) * 16);
 diff --git a/node_modules/@babylonjs/lite/lib/resource/storage-buffer.js b/node_modules/@babylonjs/lite/lib/resource/storage-buffer.js
-index a2feb59..6621a74 100644
+index a2feb59..2012966 100644
 --- a/node_modules/@babylonjs/lite/lib/resource/storage-buffer.js
 +++ b/node_modules/@babylonjs/lite/lib/resource/storage-buffer.js
 @@ -11,7 +11,7 @@ import { createMappedBuffer } from "./mapped-buffer.js";
@@ -142,11 +167,10 @@ index a2feb59..6621a74 100644
 +	const sourceShadow = usage === BU.STORAGE && cpuShadow === "source" && !isByteLength && source.byteLength === byteLength ? new Uint8Array(source.buffer, source.byteOffset, byteLength) : null;
 +	const bytes = usage === BU.STORAGE ? sourceShadow ?? new Uint8Array(byteLength) : null;
 +	if (bytes && !sourceShadow && !isByteLength) bytes.set(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
-  	const initialData = bytes ?? (isByteLength ? null : source);
-  	const buffer = initialData ? createMappedBuffer(engine, initialData, usage, label) : engine._device.createBuffer({
-  		label,
-@@ -70,8 +70,16 @@ function updateStorageBuffer(engine, buffer, data, byteOffset = 0) {
- 	if (byteOffset + data.byteLength > buffer.byteLength) ThrowLiteError(593, buffer.byteLength);
+ 	const initialData = bytes ?? (isByteLength ? null : source);
+ 	const buffer = initialData ? createMappedBuffer(engine, initialData, usage, label) : engine._device.createBuffer({
+ 		label,
+@@ -69,7 +70,15 @@ function updateStorageBuffer(engine, buffer, data, byteOffset = 0) {
  	if (data.byteLength === 0) return;
  	engine._device.queue.writeBuffer(buffer._buffer, byteOffset, data.buffer, data.byteOffset, data.byteLength);
  	const shadow = buffer._data;

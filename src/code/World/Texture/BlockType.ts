@@ -103,6 +103,12 @@ export enum BlockType {
 	RubyOre = 101,
 	SapphireOre = 102,
 	EmeraldOre = 103,
+	/**
+	 * Interactable Maya temple glyph. Right-clicking toggles the crystal ring
+	 * around it; see Entities/MayaTempleGlyphs. Reuses the red sandstone
+	 * texture, so it needs no new art.
+	 */
+	TempleGlyph = 104,
 }
 
 export const Hardness = {

@@ -102,6 +102,16 @@ export const MOB_ITEM_DROPS: Readonly<
 	],
 	bird: [{ itemId: ITEM_FEATHER, min: 1, max: 2 }],
 	songbird: [{ itemId: ITEM_FEATHER, min: 1, max: 1 }],
+	// Boss payload. Diamond (1020) has no other producer in the game, so this
+	// is the only way to obtain it; the guardian is the reward for clearing a
+	// full temple.
+	maya_guardian: [
+		{ itemId: 1020, min: 1, max: 2 }, // Diamond
+		{ itemId: 1051, min: 1, max: 3 }, // Emerald
+		{ itemId: 1025, min: 3, max: 8 }, // Gold Ingot
+		{ itemId: 1021, min: 4, max: 10 }, // Iron Ingot
+		{ itemId: 1115, min: 4, max: 10 }, // Bone
+	],
 };
 
 /** Drop every configured item stack for a hostile mobType. No-op for unknown types. */

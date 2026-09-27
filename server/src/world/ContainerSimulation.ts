@@ -10,6 +10,10 @@
  * Babylon-free: pure data + persistence, driven by VoxelRoom handlers.
  */
 
+import {
+	findTempleCacheAt,
+	rollTempleCrate,
+} from "@/code/Entities/TempleLootTable.ts";
 import type {
 	PersistedContainer,
 	ServerWorldStorage,
@@ -67,12 +71,23 @@ function normalizeSlot(itemId: number, stackSize: number): ContainerSlot {
 export class ServerContainerStore {
 	private readonly containers = new Map<string, ServerContainer>();
 
-	constructor(private readonly storage: ServerWorldStorage) {}
+	/**
+	 * @param seedAsInt Terrain seed folded the same way the chunk workers fold
+	 *   it, used to resolve Maya temple loot caches on first open.
+	 */
+	constructor(
+		private readonly storage: ServerWorldStorage,
+		private readonly seedAsInt: number = 0,
+	) {}
 
 	/**
 	 * Load-through open: memory first, then durable storage, else a fresh
 	 * empty crate. The returned object is live server state — callers must
 	 * not retain it beyond synchronous snapshot/encode.
+	 *
+	 * A crate that turns out to be a Maya temple cache is rolled from the
+	 * shared loot table on first open, then persisted, so every client sees the
+	 * same treasure and it does not re-roll on the next visit.
 	 */
 	async open(x: number, y: number, z: number): Promise<ServerContainer> {
 		const key = containerKey(x, y, z);
@@ -98,8 +113,34 @@ export class ServerContainerStore {
 					? restored.slots.map((s) => normalizeSlot(s.itemId, s.stackSize))
 					: emptySlots(),
 		};
+
+		if (!restored && this.seedAsInt !== 0) {
+			this.seedTempleCache(container);
+		}
+
 		this.containers.set(key, container);
 		return container;
+	}
+
+	/**
+	 * Populate a first-open crate from the worldgen loot table if it is a Maya
+	 * temple cache. A no-op for player-placed crates, which stay empty.
+	 */
+	private seedTempleCache(container: ServerContainer): void {
+		const { x, y, z } = container;
+		const cache = findTempleCacheAt(x, y, z, this.seedAsInt);
+		if (!cache) return;
+
+		const rolled = rollTempleCrate(cache.templeId, this.seedAsInt, cache.tier, x, y, z);
+		for (let i = 0; i < container.slots.length; i++) {
+			const row = Math.floor(i / container.width);
+			const col = i % container.width;
+			const item = rolled.slots[row]?.[col];
+			if (!item) continue;
+			container.slots[i] = normalizeSlot(item.itemId, item.stackSize);
+		}
+		container.version = (container.version + 1) >>> 0;
+		this.persist(container);
 	}
 
 	get(x: number, y: number, z: number): ServerContainer | undefined {
