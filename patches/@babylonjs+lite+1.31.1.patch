@@ -19,7 +19,7 @@ index bfaa7ec..e9169f7 100644
  //#region src/material/shader/shader-thin-instance.ts
  /** Append matching GPU layouts and WGSL inputs from the same matrix-row locations. */
 -function appendInstanceInputs(layouts, baseLocation, hasColor) {
-+function appendInstanceInputs(layouts, baseLocation, hasColor, compact) {
++function appendInstanceInputs(layouts, baseLocation, hasColor, compact, compactConstant) {
  	const attributes = [];
  	let source = ``;
 -	for (let row = 0; row < 4; row++) {
@@ -48,20 +48,22 @@ index bfaa7ec..e9169f7 100644
  	layouts.push({
 -		arrayStride: 64,
 +		arrayStride: compact ? 16 : 64,
- 		stepMode: "instance",
+-		stepMode: "instance",
++		stepMode: compactConstant ? "vertex" : "instance",
  		attributes
  	});
-@@ -38,10 +47,11 @@ function createShaderInstancedRenderable(scene, material, packet, bindings, isOv
+@@ -38,10 +47,12 @@ function createShaderInstancedRenderable(scene, material, packet, bindings, isOv
  	const mesh = packet.mesh;
  	const ti = mesh.thinInstances;
  	const hasColor = !!ti.colors && material._tic != 0;
 +	const compact = !!ti.compact;
++	const compactConstant = !!ti.compactConstant || (compact && ti._capacity === 4);
  	const baseLocation = material.attributes.length;
 -	const variantKey = `${+hasColor}${vertexLayout?._key ?? mesh._gpu._vbKey ?? ""}`;
-+	const variantKey = `${+hasColor}:${+compact}${vertexLayout?._key ?? mesh._gpu._vbKey ?? ""}`;
++	const variantKey = `${+hasColor}:${+compact}:${+compactConstant}${vertexLayout?._key ?? mesh._gpu._vbKey ?? ""}`;
  	const vertexBuffers = [...vertexLayout?._vbs ?? bindings.vertexBuffers];
 -	const instanceAttrs = appendInstanceInputs(vertexBuffers, baseLocation, hasColor);
-+	const instanceAttrs = appendInstanceInputs(vertexBuffers, baseLocation, hasColor, compact);
++	const instanceAttrs = appendInstanceInputs(vertexBuffers, baseLocation, hasColor, compact, compactConstant);
  	if (!vertexLayout && mesh._gpu._vbLayout) for (let index = 0; index < material.attributes.length; index++) {
  		const packing = mesh._gpu._vbLayout[material.attributes[index]];
  		if (packing) {
@@ -69,7 +71,7 @@ diff --git a/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js b/node_m
 index b10f925..7b2c833 100644
 --- a/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
 +++ b/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
-@@ -11,20 +11,39 @@ import { writeMeshIndexedIndirectArgs } from "./mesh-indexed-indirect.js";
+@@ -11,20 +11,42 @@ import { writeMeshIndexedIndirectArgs } from "./mesh-indexed-indirect.js";
  /** Thin instance GPU buffer sync — dynamically loaded only by scenes with thin instances.
  *  Keeps the standard renderable chunk unchanged for scenes without thin instances. */
  /** @internal Sync CPU thin-instance data to GPU buffers, optionally with STORAGE usage for compute culling. */
@@ -94,6 +96,9 @@ index b10f925..7b2c833 100644
  	const device = engine._device;
  	const needsStorage = ti._gpuCullingEnabled;
 +	const stride = ti.compact ? 16 : 64;
++	const constantCompact = !!ti.compactConstant || (ti.compact && ti._capacity === 4);
++	const gpuStride = constantCompact ? 16 : stride;
++	const constantRecords = 4;
 +	const floatsPerInstance = ti.compact ? 4 : 16;
  	let retiredMatrix = null;
  	let retiredColor = null;
@@ -101,7 +106,7 @@ index b10f925..7b2c833 100644
 -	if (ti._version !== ti._gpuVersion) {
 -		const byteSize = ti.count * 64;
 +	if (ti._version !== ti._gpuVersion || ti._gpuBufferStorage !== needsStorage) {
-+		const byteSize = ti.count * stride;
++		const byteSize = (constantCompact ? constantRecords : ti.count) * gpuStride;
  		let bufferRecreated = false;
 -		if (!ti._gpuBuffer || ti._gpuBuffer.size < byteSize) {
 +		if (!ti._gpuBuffer || ti._gpuBuffer.size < byteSize || ti._gpuBufferStorage !== needsStorage) {
@@ -109,18 +114,19 @@ index b10f925..7b2c833 100644
  			ti._gpuBuffer = device.createBuffer({
  				label: "thin-instance-matrices",
 -				size: Math.max(ti._capacity * 64, 4),
-+				size: Math.max(ti._capacity * stride, 4),
++				size: Math.max((constantCompact ? constantRecords : ti._capacity) * gpuStride, 4),
  				usage: BU.VERTEX | BU.COPY_DST | BU.STORAGE
  			});
  			bufferRecreated = true;
 @@ -30,14 +32,22 @@ function syncThinInstanceGpuData(engine, ti, hasColor) {
  		const dirtyMin = bufferRecreated ? 0 : ti._dirtyMin;
- 		const dirtyMax = bufferRecreated ? ti.count : Math.min(ti._dirtyMax, ti.count);
+-		const dirtyMax = bufferRecreated ? ti.count : Math.min(ti._dirtyMax, ti.count);
++		const dirtyMax = bufferRecreated ? (constantCompact ? constantRecords : ti.count) : Math.min(ti._dirtyMax, constantCompact ? constantRecords : ti.count);
  		if (dirtyMax > dirtyMin) {
 -			const minByte = dirtyMin * 64;
 -			const maxByte = dirtyMax * 64;
-+			const minByte = dirtyMin * stride;
-+			const maxByte = dirtyMax * stride;
++			const minByte = dirtyMin * gpuStride;
++			const maxByte = dirtyMax * gpuStride;
 -			if (ti.matrices instanceof F32) device.queue.writeBuffer(ti._gpuBuffer, minByte, ti.matrices.buffer, ti.matrices.byteOffset + minByte, maxByte - minByte);
 +			if (ti.matrices instanceof F32) writeThinInstanceBuffer(device, ti._gpuBuffer, minByte, ti.matrices.buffer, ti.matrices.byteOffset + minByte, maxByte - minByte);
  			else {

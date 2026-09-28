@@ -21,7 +21,9 @@
  * patch to lite ("compact instance mode", ti.compact), each instance carries
  * only ONE vec4<f32> instead of a full 4x4 matrix:
  *   instData.x = faceBase · instData.y = arena index · instData.z = offsetBase
- * Each mesh gets `ti.count = faceCount` and the shader reads
+ * Each mesh gets `ti.count = faceCount`. The patched Lite layout binds compact
+ * metadata records as a per-vertex buffer. The four records are
+ * identical, so every face reuses the same metadata while the shader reads
  * `faceData[faceBase + instanceIndex]`.
  *
  * Because `setShaderStorageBuffer` is material-wide, all meshes share ONE arena;
@@ -63,6 +65,8 @@ interface PackedMesh extends Mesh {
 		/** Compact instance mode (patch-package patch to lite): each instance
 		 *  is a single vec4<f32> (16 B) instead of a full mat4 (64 B). */
 		compact?: boolean;
+		/** Reuse the first compact record for every face instance. */
+		compactConstant?: boolean;
 		_capacity: number;
 		_version: number;
 		_gpuBuffer: GPUBuffer | null;
@@ -103,6 +107,7 @@ const INSTANCE_FLOATS = 4;
 // lite's `thin-instance-gpu.js` so the diagnostic byte counts match what the
 // driver actually receives.
 const INSTANCE_STRIDE_BYTES = INSTANCE_FLOATS * 4;
+const CONSTANT_INSTANCE_VERTEX_COUNT = 4;
 const FACE_BASE_INSTANCE_INDEX = 0;
 const ARENA_INSTANCE_INDEX = 1;
 const OFFSET_BASE_INSTANCE_INDEX = 2;
@@ -1352,8 +1357,8 @@ function packOffsets(state: PackedMeshState, input: PackedMeshInput): void {
 	}
 }
 
-// Build / reuse the compact thin-instance buffer for a mesh: `count` records
-// of 4 floats each (INSTANCE_FLOATS), where record i carries
+// Build / reuse the CPU metadata shadow for a mesh: `count` records of 4
+// floats each (INSTANCE_FLOATS), where record i carries
 //   [i*4 + FACE_BASE_INSTANCE_INDEX]    = faceBase
 //   [i*4 + ARENA_INSTANCE_INDEX]        = arena
 //   [i*4 + OFFSET_BASE_INSTANCE_INDEX]  = the group's chunkOffsets base
@@ -1361,11 +1366,9 @@ function packOffsets(state: PackedMeshState, input: PackedMeshInput): void {
 // patch to lite gives these meshes a stride-16 vec4 vertex attribute instead
 // of a full 64-byte mat4).
 //
-// PERF: the buffer is RETAINED per-mesh on PackedMeshState and reused across
-// updates — only the faceBase/arena/offsetBase lanes per instance are
-// rewritten, and only when the instance count changes do we reallocate. This
-// removes the previous per-remesh Float32Array allocation (a major GC source
-// in the updatePackedChunkMesh hot path).
+// PERF: the CPU shadow is RETAINED per-mesh on PackedMeshState and reused
+// across updates. Only its first record is uploaded to the GPU; the remaining
+// records keep the existing allocator/compaction code simple.
 //
 // Capacity GROWS monotonically, so a mesh whose face count fluctuates around
 // a level reuses its buffer instead of zero-filling a fresh array on every
@@ -1462,20 +1465,9 @@ function buildInstanceData(
 	return data;
 }
 // ── Thin-instance range updates ─────────────────────────────────────────────
-// Low-level replacement for the public setThinInstances() that avoids paying
-// for a full buffer recreation + full re-upload on every face-count change.
-//
-// Two paths:
-//  1. GROWTH (rare): capacity actually increased, or there's no GPU buffer
-//     yet. We delegate to the real setThinInstances(), but size it to the
-//     mesh's full retained capacity rather than the current logical count —
-//     this is what lets subsequent count increases, up to that capacity,
-//     avoid path 1 entirely. Full dirty range here is fine; it only happens
-//     on mesh creation and on the (power-of-two) doublings.
-//  2. IN-PLACE (common): same GPU buffer, only `count` and a sub-range of
-//     lanes changed. We mutate `matrices`/`count` directly and widen the
-//     dirty range instead of resetting it to [0, count), so Lite's sync step
-//     uploads only the changed lanes on the next frame.
+// Low-level replacement for the public setThinInstances(). Packed terrain
+// uses one constant compact record per mesh, so count changes only update the
+// draw count; metadata changes upload one 16-byte record.
 function setThinInstancesRange(
 	mesh: Mesh,
 	matrices: Float32Array,
@@ -1495,68 +1487,74 @@ function setThinInstancesRange(
 	}
 
 	let ti = anyMesh.thinInstances;
-	const needsGrowth = !ti?._gpuBuffer || capacity > (ti._capacity ?? 0);
 
-	if (needsGrowth) {
-		// Size the underlying buffer to the full capacity, not just `count`,
-		// so future in-place updates (path 2) have headroom to grow into
-		// without ever hitting this branch again.
-		setThinInstances(mesh, matrices, capacity);
+	/*
+	 * Every face in a packed mesh shares the same three metadata values:
+	 * faceBase, arena, and offsetBase. The old implementation repeated that
+	 * vec4 once per face, so creating 2,000 meshes caused 2,000 face-sized
+	 * writeBuffer uploads. Compact-constant mode binds four identical records
+	 * for the shared quad's vertices; instance_index still selects the face.
+	 */
+	if (!ti || ti.compactConstant !== true) {
+		setThinInstances(mesh, matrices, CONSTANT_INSTANCE_VERTEX_COUNT);
 		ti = anyMesh.thinInstances;
-		if (ti) {
-			ti.compact = true; // stride-16 vec4 records, NOT mat4s
-			ti._capacity = capacity;
-			ti.count = count; // fix the draw count back down; buffer stays capacity-sized
-			// setThinInstances() reset the dirty range to [0, capacity);
-			// clamp it to what's actually valid so sync uploads only real data.
-			ti._dirtyMin = 0;
-			ti._dirtyMax = count;
-		}
+		if (!ti) return;
 
-		// Growth reallocates, so the whole live range re-uploads. This is the
-		// most expensive instance path and fires on every mesh creation plus
-		// every power-of-two capacity doubling.
-		const bytes = count * INSTANCE_STRIDE_BYTES;
-		_instanceUploadBytes += bytes;
+		ti.compact = true;
+		ti.compactConstant = true;
+		ti._capacity = CONSTANT_INSTANCE_VERTEX_COUNT;
+		ti.count = count;
+		ti._dirtyMin = 0;
+		ti._dirtyMax = CONSTANT_INSTANCE_VERTEX_COUNT;
+
+		_instanceUploadBytes +=
+			INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT;
 		_instanceUploadCalls++;
 		_instanceFullUploads++;
-		if (bytes > _peakInstanceUploadBytes) _peakInstanceUploadBytes = bytes;
-
+		if (
+			INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT >
+			_peakInstanceUploadBytes
+		) {
+			_peakInstanceUploadBytes =
+				INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT;
+		}
 		return;
-	} else if (ti && !ti.compact) {
-		// Buffer created before compact mode (or by another path): mark and
-		// force a full re-upload + pipeline rebuild via a fresh version.
-		ti.compact = true;
-		ti._gpuVersion = -1;
 	}
 
-	// Fast path — same GPU buffer, just update what changed.
-	ti!.matrices = matrices;
-	ti!.count = count;
+	ti.matrices = matrices;
+	const previousCount = ti.count;
+	ti.count = count;
+	// The GPU capacity is four constant vertex records. `matrices` remains face-sized
+	// on the CPU because the mesh allocator and compaction code reuse it.
+	ti._capacity = CONSTANT_INSTANCE_VERTEX_COUNT;
 
-	const lo = Math.max(0, Math.min(dirtyStart, dirtyEnd));
-	const hi = Math.min(capacity, Math.max(dirtyStart, dirtyEnd));
-	if (hi <= lo) return;
+	const metadataDirty = dirtyStart <= 0 && dirtyEnd > 0;
+	const pendingMetadataUpload =
+		ti._dirtyMin <= 0 && ti._dirtyMax >= CONSTANT_INSTANCE_VERTEX_COUNT;
 
-	// If the previous dirty range was already consumed (version caught up),
-	// it's safe to overwrite with just this update's range. If not, a prior
-	// update is still pending an upload — union with it instead of clobbering it.
-	const inSync = ti!._version === ti!._gpuVersion;
-	ti!._dirtyMin = inSync ? lo : Math.min(ti!._dirtyMin, lo);
-	ti!._dirtyMax = inSync ? hi : Math.max(ti!._dirtyMax, hi);
-	ti!._version++;
+	if ((metadataDirty || !ti._gpuBuffer) && !pendingMetadataUpload) {
+		ti._dirtyMin = 0;
+		ti._dirtyMax = CONSTANT_INSTANCE_VERTEX_COUNT;
+		ti._version++;
 
-	// A union with a still-pending range can widen this well past [lo, hi);
-	// report what Lite will actually upload, not what this call touched.
-	const uploadLo = ti!._dirtyMin;
-	const uploadHi = Math.min(capacity, ti!._dirtyMax);
-	const uploadInstances = Math.max(0, uploadHi - uploadLo);
-	const bytes = uploadInstances * INSTANCE_STRIDE_BYTES;
-
-	_instanceUploadBytes += bytes;
-	_instanceUploadCalls++;
-	_instanceRangedUploads++;
-	if (bytes > _peakInstanceUploadBytes) _peakInstanceUploadBytes = bytes;
+		_instanceUploadBytes +=
+			INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT;
+		_instanceUploadCalls++;
+		_instanceRangedUploads++;
+		if (
+			INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT >
+			_peakInstanceUploadBytes
+		) {
+			_peakInstanceUploadBytes =
+				INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT;
+		}
+	} else if (previousCount !== count && ti._version === ti._gpuVersion) {
+		// A draw-count change needs version tracking for indirect arguments, but
+		// it does not change the constant metadata record.
+		ti._dirtyMin = CONSTANT_INSTANCE_VERTEX_COUNT;
+		ti._dirtyMax = 0;
+		ti._version++;
+	}
 }
 
 export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {

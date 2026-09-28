@@ -1,5 +1,5 @@
 /**
- * GroupOctree — dynamic loose octree over merged 4×4×4 chunk groups (128³ blocks)
+ * GroupOctree — dynamic loose octree over merged 4×4×4 chunk groups (64³ blocks)
  * for hierarchical frustum culling.
  *
  * Babylon-free on purpose (like Lib/VoxelMath): the culler runs on the main
@@ -35,11 +35,14 @@ import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 // Constants
 // ---------------------------------------------------------------------------
 
-export const OCTREE_GROUP_SIZE = 8; // chunks per group side (mirrors MergedMeshManager GROUP_SIZE)
-export const OCTREE_GROUP_EXTENT = OCTREE_GROUP_SIZE * CHUNK_SIZE; // 128 world units
+// Merged terrain groups are keyed by chunk coordinates >> 2, so each group is
+// 4x4x4 chunks (64 world units per side). Keeping this aligned is critical:
+// an INSIDE octree hint skips the per-group frustum test.
+export const OCTREE_GROUP_SIZE = 4;
+export const OCTREE_GROUP_EXTENT = OCTREE_GROUP_SIZE * CHUNK_SIZE; // 64 world units
 export const OCTREE_LEAF_SIZE = OCTREE_GROUP_EXTENT; // leaf == exactly one group cell
-export const OCTREE_ROOT_CELL_SIZE = 1024; // 8 groups per side per root
-export const OCTREE_MAX_DEPTH = 3; // 1024 -> 512 -> 256 -> 128
+export const OCTREE_ROOT_CELL_SIZE = 1024; // 16 groups per side per root
+export const OCTREE_MAX_DEPTH = 4; // 1024 -> 512 -> 256 -> 128 -> 64
 
 /** Minimal shape the octree needs. MergedMeshGroup satisfies this structurally. */
 export interface OctreeGroupLike {

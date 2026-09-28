@@ -129,7 +129,9 @@ export class MergedMeshMeta {
 // Constants & Module State
 // ---------------------------------------------------------------------------
 
-const GROUP_SIZE = 8;
+// Merged groups are keyed by chunkX/Y/Z >> 2 and rendered as 4x4x4 chunks.
+// Keep this in sync with ChunkMesher and GroupOctree.
+const GROUP_SIZE = 4;
 const MAX_GROUP_MEMBERS = GROUP_SIZE * GROUP_SIZE * GROUP_SIZE;
 
 const groups = new Map<number, MergedMeshGroup>();
@@ -469,10 +471,13 @@ function acquireRange(start: number, count: number): MergedFaceRange {
  * showed 4728 of 6529 upload calls were small scattered ranges. Trading a
  * little redundant bytes for far fewer calls is the right side of that deal.
  *
- * 64 faces = 768 B of slack, which stays far below the per-call overhead it
- * avoids. Set to 0 to restore strict-adjacency merging.
+ * 256 faces = 3 KiB of slack, which is still small beside the native call and
+ * queue-validation overhead it avoids. The larger gap matters because the
+ * current workload produces thousands of updates spread across neighboring
+ * slots; 64 faces was still leaving most of those as separate writes. Set to
+ * 0 to restore strict-adjacency merging.
  */
-const DIRTY_RANGE_MERGE_GAP_FACES = 64;
+const DIRTY_RANGE_MERGE_GAP_FACES = 256;
 
 function pushDirtyRange(
 	ranges: MergedFaceRange[],
