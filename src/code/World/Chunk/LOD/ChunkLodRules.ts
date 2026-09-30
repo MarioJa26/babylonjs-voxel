@@ -48,20 +48,9 @@ export interface ChunkLodCreationRule {
 
 // PERF: reused across resolveWithDistance calls (single-threaded) so we never
 // allocate a ChunkLodDistance object for rule matching.
-const _scratchDistance: ChunkLodDistance = {
-	horizontalDist: 0,
-	verticalDist: 0,
-};
-
 // PERF: single reused decision object returned by resolveWithDistance /
 // resolveWithHysteresis. Callers consume it synchronously (never retain the
 // reference), so a shared scratch removes the per-call object allocation.
-const _scratchDecision: ChunkLodDecision = {
-	horizontalDist: 0,
-	verticalDist: 0,
-	lodLevel: 0,
-	allowsChunkCreation: false,
-};
 
 export class Lod0ChunkCreationRule implements ChunkLodCreationRule {
 	public readonly lodLevel = 0;
@@ -206,7 +195,18 @@ export class ChunkLodRuleSet {
 		 * consumers fall back to deriving a window from the vertical radii.
 		 */
 		public readonly undergroundVerticalCap?: number,
-	) {}
+	) {
+		this._scratchDistance = {
+			horizontalDist: 0,
+			verticalDist: 0,
+		};
+		this._scratchDecision = {
+			horizontalDist: 0,
+			verticalDist: 0,
+			lodLevel: 0,
+			allowsChunkCreation: false,
+		};
+	}
 
 	/** Widest chunk-creating horizontal band of this rule set. */
 	public maxHorizontalRadius(): number {
@@ -248,31 +248,37 @@ export class ChunkLodRuleSet {
 		return DISTANT_LOD_LEVEL;
 	}
 
+	private readonly _scratchDistance: ChunkLodDistance;
+	private readonly _scratchDecision: ChunkLodDecision;
+
 	// PERF: reused across resolveWithDistance calls (single-threaded) so we
 	// never allocate a ChunkLodDistance object for rule matching.
 	private resolveWithDistance(
 		horizontalDist: number,
 		verticalDist: number,
 	): ChunkLodDecision {
-		_scratchDistance.horizontalDist = horizontalDist;
-		_scratchDistance.verticalDist = verticalDist;
+		const scratchDistance = this._scratchDistance;
+		scratchDistance.horizontalDist = horizontalDist;
+		scratchDistance.verticalDist = verticalDist;
 		for (const rule of this.rules) {
-			if (rule.matches(_scratchDistance)) {
-				_scratchDecision.horizontalDist = horizontalDist;
-				_scratchDecision.verticalDist = verticalDist;
-				_scratchDecision.lodLevel = rule.lodLevel;
-				_scratchDecision.allowsChunkCreation = rule.allowsChunkCreation;
-				return _scratchDecision;
+			if (rule.matches(scratchDistance)) {
+				const scratchDecision = this._scratchDecision;
+				scratchDecision.horizontalDist = horizontalDist;
+				scratchDecision.verticalDist = verticalDist;
+				scratchDecision.lodLevel = rule.lodLevel;
+				scratchDecision.allowsChunkCreation = rule.allowsChunkCreation;
+				return scratchDecision;
 			}
 		}
 
 		const fallback = this.rules[this.rules.length - 1];
-		_scratchDecision.horizontalDist = horizontalDist;
-		_scratchDecision.verticalDist = verticalDist;
-		_scratchDecision.lodLevel = fallback?.lodLevel ?? DISTANT_LOD_LEVEL;
-		_scratchDecision.allowsChunkCreation =
+		const scratchDecision = this._scratchDecision;
+		scratchDecision.horizontalDist = horizontalDist;
+		scratchDecision.verticalDist = verticalDist;
+		scratchDecision.lodLevel = fallback?.lodLevel ?? DISTANT_LOD_LEVEL;
+		scratchDecision.allowsChunkCreation =
 			fallback?.allowsChunkCreation ?? false;
-		return _scratchDecision;
+		return scratchDecision;
 	}
 
 	public resolve(

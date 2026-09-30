@@ -30,8 +30,8 @@ import { Player } from "./Player/Player";
 import { PlayerCamera } from "./Player/PlayerCamera";
 import { PlayerStatePersistence } from "./Player/PlayerStatePersistence";
 import { applyGameSettingsToEngine, loadGameSettings } from "./UI/GameSettings";
-import { updateGlobalUniforms } from "./World/Chunk/Meshing/ChunkMesher";
 import { installLightDebugTool } from "./World/Chunk/LightDebugTool";
+import { updateGlobalUniforms } from "./World/Chunk/Meshing/ChunkMesher";
 import { ensureDefaultInstance } from "./World/Chunk/Simulation/WaterSimulation";
 import { createFallbackSpawn } from "./World/SpawnPoint";
 import { getServerNameFromUrl, worldSeedFor } from "./World/WorldContext";
@@ -39,7 +39,6 @@ import { WorldStorage } from "./World/WorldStorage";
 
 const ENABLE_LITE_EXPLORER = false;
 const MULTIPLAYER_ROOM_NAME = "__mp__";
-const MAX_FPS_CAP = 240;
 const MSAA_SAMPLE_COUNT = 4;
 const MIN_DEVICE_PIXEL_RATIO = 0.5;
 
@@ -137,8 +136,6 @@ export class TestScene {
 		await startEngine(engine);
 		await initBlockBreakParticles(scene);
 
-		this.#installFpsCap(engine, savedSettings.fpsCap);
-
 		if (ENABLE_LITE_EXPLORER) {
 			await this.showLiteExplorer(engine, scene);
 		}
@@ -149,49 +146,6 @@ export class TestScene {
 	 * installing the light debug tool.
 	 */
 	readonly #getPlayerPosition = () => this.#player?.position;
-
-	/**
-	 * Cap the engine's rAF loop without patching lite.
-	 *
-	 * startEngine() schedules an uncapped requestAnimationFrame chain. The
-	 * wrapper calls the original render function when a frame is due and
-	 * schedules itself directly when a frame is skipped.
-	 */
-	#installFpsCap(engine: EngineContext, fpsCap: number = 0): void {
-		if (fpsCap <= 0) {
-			return;
-		}
-
-		const internalEngine = engine as unknown as {
-			_renderFn: ((now: number) => void) | null;
-			_animFrameId: number;
-		};
-
-		const originalRender = internalEngine._renderFn;
-
-		if (originalRender === null) {
-			return;
-		}
-
-		const minInterval = 1000 / Math.min(fpsCap, MAX_FPS_CAP) - 1;
-
-		let lastRender = -Infinity;
-
-		const wrappedRender = (now: number): void => {
-			if (now - lastRender >= minInterval || now < lastRender) {
-				lastRender = now;
-				originalRender(now);
-				return;
-			}
-
-			internalEngine._animFrameId = requestAnimationFrame(wrappedRender);
-		};
-
-		cancelAnimationFrame(internalEngine._animFrameId);
-
-		internalEngine._renderFn = wrappedRender;
-		internalEngine._animFrameId = requestAnimationFrame(wrappedRender);
-	}
 
 	private async initMultiplayer(
 		engine: EngineContext,

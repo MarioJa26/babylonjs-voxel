@@ -1,5 +1,4 @@
 import {
-	activeWorldSeedAsInt,
 	findTempleCacheAt,
 	rollTempleCrate,
 } from "@/code/Entities/TempleLootTable";
@@ -123,7 +122,8 @@ export function ensureSeededLoot(
 	const map = loadAll();
 	const key = posKey(x, y, z);
 	const inv = map.get(key);
-	if (!inv || inv.seeded) return inv ?? createEmptyInventory(DEFAULT_COLS, DEFAULT_ROWS);
+	if (!inv || inv.seeded)
+		return inv ?? createEmptyInventory(DEFAULT_COLS, DEFAULT_ROWS);
 
 	const cache = findTempleCacheAt(x, y, z, seedAsInt);
 	if (!cache) return inv;

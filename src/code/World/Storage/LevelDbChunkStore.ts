@@ -8,7 +8,7 @@ const META_PREFIX_CODE = 0x01;
 const META_PREFIX = "\x01";
 
 export function chunkKey(cx: number, cy: number, cz: number): string {
-	return `${cx},${cy},${cz}`;
+	return cx + "," + cy + "," + cz;
 }
 
 export function packChunkKeyNumeric(

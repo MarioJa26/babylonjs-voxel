@@ -96,6 +96,10 @@ class WorldStorageImpl {
 
 		const blob = packChunkBlob(chunk);
 
+		// No voxel data to serialize. Leave isModified/isLightDirty set so the
+		// chunk is retried (and correctly saved) once it is re-hydrated.
+		if (blob === null) return;
+
 		try {
 			await store.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob);
 			chunk.isModified = false;
@@ -121,11 +125,14 @@ class WorldStorageImpl {
 			if (chunk.isBoatChunk) continue;
 			if (!chunk.isModified && !chunk.isLightDirty) continue;
 
+			const blob = packChunkBlob(chunk);
+			if (blob === null) continue;
+
 			writes.push({
 				cx: chunk.chunkX,
 				cy: chunk.chunkY,
 				cz: chunk.chunkZ,
-				blob: packChunkBlob(chunk),
+				blob,
 			});
 			savedChunks.push(chunk);
 		}
@@ -160,11 +167,14 @@ class WorldStorageImpl {
 			if (!chunk.needsPersistence()) continue;
 			if (chunk.isBoatChunk) continue;
 
+			const blob = packChunkBlob(chunk);
+			if (blob === null) continue;
+
 			writes.push({
 				cx: chunk.chunkX,
 				cy: chunk.chunkY,
 				cz: chunk.chunkZ,
-				blob: packChunkBlob(chunk),
+				blob,
 			});
 			savedChunks.push(chunk);
 		}
@@ -386,8 +396,30 @@ class WorldStorageImpl {
  * Build the storage blob for a chunk. Shared by saveChunk/saveChunks so
  * there's a single implementation to keep correct (and a single call site
  * for the JIT to specialize).
+ *
+ * Returns null when the chunk holds no voxel data, so callers must skip the
+ * write. This is load-bearing, not defensive: a chunk whose voxel storage
+ * has been released (the LOD-only load path, or an explicit far-LOD release)
+ * reports hasVoxelData === false while isUniform/light_array still describe
+ * a real terrain chunk. Serializing it would emit FLAG_IS_UNIFORM with
+ * uniformBlockId 0 and zero light bytes, and the next load would read that
+ * back as uniform air with no light — silently destroying terrain. Skipping
+ * is always safe: callers leave the dirty flags set, so a later re-hydration
+ * saves the real data.
  */
-function packChunkBlob(chunk: Chunk): Uint8Array {
+function packChunkBlob(chunk: Chunk): Uint8Array | null {
+	if (!chunk.hasVoxelData) {
+		if (import.meta.env?.DEV) {
+			console.warn(
+				"[WorldStorage] refusing to save a chunk with no voxel data (skipping).",
+				chunk.chunkX,
+				chunk.chunkY,
+				chunk.chunkZ,
+			);
+		}
+		return null;
+	}
+
 	const blocks = chunk.block_array;
 	const palette = chunk.palette;
 	const light = chunk.light_array;

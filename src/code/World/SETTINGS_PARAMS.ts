@@ -83,10 +83,17 @@ export const SETTING_PARAMS = {
 	// even while the world render is throttled. Keep false unless edges look
 	// jaggy on a beefy GPU.
 	ENABLE_MSAA: true,
-	// Frame-rate cap. The engine loop is an uncapped requestAnimationFrame,
-	// so on 120Hz+ monitors the GPU renders flat-out even when each frame is
-	// cheap. 60 is a good default; 0 = uncapped.
-	FPS_CAP: 60,
+	// --- Frame pacing ---
+	// There is deliberately no frame-rate cap. Capping an uncapped rAF loop
+	// has to be done by *skipping* rAF callbacks, and a skipped callback
+	// presents no new content: Chrome's DevTools Frames track records every
+	// such BeginFrame as a dropped frame, and the canvas desyncs from the
+	// compositor on high-refresh displays. There is no engine-side pacing API
+	// to do this without skipping, so a cap here is a footgun.
+	//
+	// To limit GPU load, use RENDER_SCALE (pixel count) or ENABLE_MSAA above
+	// instead — they cut cost without dropping frames.
+
 	// Aggregate cap (MiB) on face-arena storage across ALL arenas (CPU+GPU
 	// each). Without it, every arena may legally grow to its own 128 MiB
 	// binding cap (~0.8 GB total with the usual 6 arenas).

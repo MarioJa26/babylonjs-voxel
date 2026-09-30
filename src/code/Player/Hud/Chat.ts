@@ -1,7 +1,10 @@
 import { ChatHistory } from "@/code/Lib/ChatHistory";
 import { closeUi, openUi, UiFocus } from "@/code/Lib/GameRuntimeState";
 import { Map1 } from "@/code/Maps/Map1";
-import { currentWorldSeed, runLocateCommand } from "@/code/Player/LocateCommand";
+import {
+	currentWorldSeed,
+	runLocateCommand,
+} from "@/code/Player/LocateCommand";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { getWorldNameFromUrl, worldSeedFor } from "@/code/World/WorldContext";
 import type { Player } from "../Player";
@@ -176,9 +179,7 @@ export class Chat {
 				this.#addSystem(
 					"  !locate <name> tp - ...and teleport there (keeps current y)",
 				);
-				this.#addSystem(
-					"  !locate all  - List the nearest of every structure",
-				);
+				this.#addSystem("  !locate all  - List the nearest of every structure");
 				this.#addSystem("  !h / !help   - Show this help");
 				break;
 			default:
@@ -308,7 +309,8 @@ export class Chat {
 			reply: (text) => this.#addSystem(text),
 		});
 	}
-	#timeLabel(fraction: number): string {		if (fraction < 0.25) return "morning";
+	#timeLabel(fraction: number): string {
+		if (fraction < 0.25) return "morning";
 		if (fraction < 0.5) return "day";
 		if (fraction < 0.75) return "evening";
 		return "night";

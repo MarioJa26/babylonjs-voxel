@@ -439,8 +439,7 @@ export class PlayerHud {
 		const visible =
 			boss !== null &&
 			this.#player.stats?.gamemode !== Gamemodes.Creative &&
-			bossDistanceSq(boss.position, this.#player.position) <=
-				BOSS_BAR_RANGE_SQ;
+			bossDistanceSq(boss.position, this.#player.position) <= BOSS_BAR_RANGE_SQ;
 
 		if (!visible) {
 			if (this.#prevBossPct >= 0) {

@@ -6,7 +6,12 @@ import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { SUBSURFACE_LAYER_DEPTH } from "../Terrain/SurfaceBlockResolver";
 import { getBiome } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
+import {
+	aabbOverlaps,
+	chunkWorldBounds,
+	computeRegion,
+	type RegionConfig,
+} from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
 
 // Biomes where open water ponds would look out of place (oceans, deserts,
@@ -77,13 +82,7 @@ export class PondFeature implements IWorldFeature {
 		generatingChunkZ: number,
 		columnPrepassResolver?: ColumnPrepassResolver,
 	) {
-		const region = computeRegion(
-			chunkX,
-			chunkZ,
-			chunkSize,
-			seed,
-			POND_REGION,
-		);
+		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, POND_REGION);
 		if (!region) return;
 
 		const { centerX: cx, centerZ: cz, regionHash } = region;

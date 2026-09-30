@@ -153,7 +153,13 @@ export class MayaTempleFeature implements IWorldFeature {
 				// too low cannot fit the dungeon beneath it, and the level clamp
 				// would otherwise invert the temple (rooms above their own
 				// plaza, punching through the pyramid).
-				if (!isMayaTempleSiteValid(resolved.centerX, resolved.centerZ, getFinalTerrainHeight)) {
+				if (
+					!isMayaTempleSiteValid(
+						resolved.centerX,
+						resolved.centerZ,
+						getFinalTerrainHeight,
+					)
+				) {
 					continue;
 				}
 

@@ -1,8 +1,8 @@
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
 import { LIGHT_NIBBLE_MASK, SKY_LIGHT_SHIFT } from "@/code/Lib/VoxelMath";
-import { isTransparent } from "../Meshing/ChunkFaceMasks";
 import { unpackBlockId } from "../DataStructures/BlockEncoding";
+import { isTransparent } from "../Meshing/ChunkFaceMasks";
 import { filtersFullSunlight } from "../Worker/ChunkMesherConstants";
 
 interface SunlightChunk {
@@ -18,7 +18,6 @@ const SIZE = GenerationParams.CHUNK_SIZE;
 const SIZE2 = SIZE * SIZE;
 const MIN_GENERATION_WORLD_Y = 32;
 const seedCapacity = Math.max(8, 1 << (32 - Math.clz32(SIZE ** 3)));
-const seedQueue = new Uint16Array(seedCapacity);
 
 export function seedSunlight(
 	chunk: SunlightChunk,
@@ -29,7 +28,8 @@ export function seedSunlight(
 	isUniform: boolean,
 	uniformBlockId: number,
 	canReadBlocks: boolean,
-): number {
+): { length: number; seeds: Uint16Array } {
+	const seedQueue = new Uint16Array(seedCapacity);
 	const topWorldY = chunk.chunkY * SIZE + SIZE - 1;
 	const hasLoadedAbove = aboveChunk?.isLoaded === true;
 	const canSeedFromGeneratorHeight = topWorldY >= MIN_GENERATION_WORLD_Y;
@@ -118,9 +118,5 @@ export function seedSunlight(
 		}
 	}
 
-	return length;
-}
-
-export function copySunlightSeeds(length: number): Uint16Array {
-	return seedQueue.slice(0, length);
+	return { length, seeds: seedQueue.slice(0, length) };
 }

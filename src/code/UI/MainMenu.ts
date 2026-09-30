@@ -134,7 +134,6 @@ export class MainMenu {
 	private optVertDist!: { row: HTMLElement; getValue: () => number };
 	private optRenderScale!: { row: HTMLElement; getValue: () => number };
 	private optMsaa!: { row: HTMLElement; getValue: () => boolean };
-	private optFpsCap!: { row: HTMLElement; getValue: () => number };
 	private optVolume!: { row: HTMLElement; getValue: () => number };
 	private optMuted!: { row: HTMLElement; getValue: () => boolean };
 	private optCrosshairSize!: { row: HTMLElement; getValue: () => number };
@@ -497,14 +496,6 @@ export class MainMenu {
 			settings.msaaEnabled,
 			() => "",
 		);
-		this.optFpsCap = this.makeOptionSlider(
-			"FPS Limit",
-			0,
-			120,
-			30,
-			settings.fpsCap,
-			(v) => (v === 0 ? "Uncapped" : `${v} fps`),
-		);
 		this.optVolume = this.makeOptionSlider(
 			"Master Volume",
 			0,
@@ -526,7 +517,6 @@ export class MainMenu {
 			this.optVertDist,
 			this.optRenderScale,
 			this.optMsaa,
-			this.optFpsCap,
 			this.optVolume,
 			this.optMuted,
 		]) {
@@ -553,7 +543,6 @@ export class MainMenu {
 			next.verticalRenderDistance = this.optVertDist.getValue();
 			next.renderScale = this.optRenderScale.getValue() / 100;
 			next.msaaEnabled = this.optMsaa.getValue();
-			next.fpsCap = this.optFpsCap.getValue();
 			next.masterVolume = this.optVolume.getValue() / 100;
 			next.muted = this.optMuted.getValue();
 			next.crosshairId = normalizeCrosshairId(this.crosshairId);

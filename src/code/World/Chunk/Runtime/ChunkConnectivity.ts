@@ -1,9 +1,9 @@
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
+import { unpackBlockId } from "../DataStructures/BlockEncoding";
 import {
 	connectFacesMask,
 	FACE_CONNECT_THRESHOLD,
 } from "../Meshing/ChunkFaceMasks";
-import { unpackBlockId } from "../DataStructures/BlockEncoding";
 import { BLOCK_TYPE } from "../Worker/ChunkMesherConstants";
 
 const SIZE = GenerationParams.CHUNK_SIZE;
@@ -12,13 +12,11 @@ const SIZE3 = SIZE * SIZE * SIZE;
 const MAX = SIZE - 1;
 const FULL_CONNECTIVITY = connectFacesMask(0x3f);
 const USE_FAST_COORDINATES = SIZE === 32;
-const visited = new Uint8Array(SIZE3);
-const stack = new Int32Array(SIZE3);
-const faceCounts = new Uint16Array(6);
 
 function premarkOpaque(
 	blocks: Uint8Array | Uint16Array,
 	paletteOpacity: Uint8Array | null,
+	visited: Uint8Array,
 ): void {
 	if (paletteOpacity !== null && blocks instanceof Uint8Array) {
 		for (let i = 0; i < SIZE3; i++) {
@@ -43,7 +41,11 @@ function premarkOpaque(
 	}
 }
 
-function computeConnectivity(): number {
+function computeConnectivity(
+	visited: Uint8Array,
+	stack: Int32Array,
+	faceCounts: Uint16Array,
+): number {
 	let connectivity = 0;
 
 	for (let z = 0; z < SIZE; z++) {
@@ -150,6 +152,9 @@ export function computeStoredFaceConnectivity(
 	blocks: Uint8Array | Uint16Array,
 	paletteOpacity: Uint8Array | null,
 ): number {
-	premarkOpaque(blocks, paletteOpacity);
-	return computeConnectivity();
+	const visited = new Uint8Array(SIZE3);
+	const stack = new Int32Array(SIZE3);
+	const faceCounts = new Uint16Array(6);
+	premarkOpaque(blocks, paletteOpacity, visited);
+	return computeConnectivity(visited, stack, faceCounts);
 }

@@ -493,9 +493,7 @@ export class Player {
 
 					if (result.kind === "toggled") {
 						this.#playerHud.showTempleMessage(
-							result.charged
-								? "The seal takes the light."
-								: "The seal dims.",
+							result.charged ? "The seal takes the light." : "The seal dims.",
 						);
 					} else if (result.kind === "gate-locked") {
 						this.#playerHud.showTempleMessage(

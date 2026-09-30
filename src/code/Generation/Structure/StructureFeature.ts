@@ -2,7 +2,12 @@ import type { Biome } from "../Biome/BiomeTypes";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
+import {
+	aabbOverlaps,
+	chunkWorldBounds,
+	computeRegion,
+	type RegionConfig,
+} from "./RegionFeature";
 import { Structure, type StructureData } from "./Structure";
 
 /**

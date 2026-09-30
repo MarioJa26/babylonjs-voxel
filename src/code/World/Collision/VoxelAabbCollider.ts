@@ -40,21 +40,13 @@ type VoxelAabbDebugOptions = {
 	renderOrder?: number;
 };
 
-// Module-level scratch BlockShapeInfo — avoids per-voxel allocations in
-// the isSolidBlockAt callback.  Safe because overlaps() consumes the
+// Per-instance scratch BlockShapeInfo — avoids per-voxel allocations in
+// the isSolidBlockAt callback. Safe because overlaps() consumes the
 // result immediately (no retained references across frames).
-export const _blockShapeInfoScratch: BlockShapeInfo = {
-	shape: null as unknown as ShapeDefinition,
-	rotation: 0,
-	slice: 0,
-	flipY: false,
-};
-
 // Module-level scratch for VoxelBlockResolver implementations — resolvers
 // write their { blockId, blockState } pair here instead of allocating a fresh
 // literal per collidable voxel. Safe because createVoxelColliderBlockSampler
-// destructures the resolver result immediately (including inside the fence
-// neighbor-mask path, which only reads .blockId per probe).
+// destructures the resolver result immediately.
 export const _voxelResolveScratch: { blockId: number; blockState: number } = {
 	blockId: 0,
 	blockState: 0,
@@ -127,6 +119,13 @@ export function createVoxelColliderBlockSampler(
 		return r ? r.blockId : 0;
 	};
 
+	const blockShapeInfoScratch: BlockShapeInfo = {
+		shape: null as unknown as ShapeDefinition,
+		rotation: 0,
+		slice: 0,
+		flipY: false,
+	};
+
 	return (x, y, z): BlockShapeInfo | null => {
 		const resolved = resolveBlock(x, y, z);
 		if (resolved === null) return null;
@@ -135,22 +134,20 @@ export function createVoxelColliderBlockSampler(
 		if (isPassThroughBlock(blockId)) return null;
 
 		if (isFenceBlockId(blockId)) {
-			// Hoisted to sampler-creation scope: allocating this lookup per
-			// fence voxel put a closure on every collidable fence probe.
 			const mask = computeFenceNeighborMask(x, y, z, neighborIdLookup);
-			_blockShapeInfoScratch.shape = getFenceDynamicShape(mask);
-			_blockShapeInfoScratch.rotation = 0;
-			_blockShapeInfoScratch.slice = 0;
-			_blockShapeInfoScratch.flipY = false;
-			return _blockShapeInfoScratch;
+			blockShapeInfoScratch.shape = getFenceDynamicShape(mask);
+			blockShapeInfoScratch.rotation = 0;
+			blockShapeInfoScratch.slice = 0;
+			blockShapeInfoScratch.flipY = false;
+			return blockShapeInfoScratch;
 		}
 
 		const shape = getShapeForBlockId(blockId);
-		_blockShapeInfoScratch.shape = shape;
-		_blockShapeInfoScratch.rotation = shape.rotateY ? state & 3 : 0;
-		_blockShapeInfoScratch.slice = 0;
-		_blockShapeInfoScratch.flipY = shape.allowFlipY && (state & 4) !== 0;
-		return _blockShapeInfoScratch;
+		blockShapeInfoScratch.shape = shape;
+		blockShapeInfoScratch.rotation = shape.rotateY ? state & 3 : 0;
+		blockShapeInfoScratch.slice = 0;
+		blockShapeInfoScratch.flipY = shape.allowFlipY && (state & 4) !== 0;
+		return blockShapeInfoScratch;
 	};
 }
 

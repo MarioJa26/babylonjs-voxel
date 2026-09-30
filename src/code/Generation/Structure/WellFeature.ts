@@ -2,7 +2,12 @@ import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
+import {
+	aabbOverlaps,
+	chunkWorldBounds,
+	computeRegion,
+	type RegionConfig,
+} from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
 
 const TEMPERATE_BIOMES = new Set([
@@ -51,13 +56,7 @@ export class WellFeature implements IWorldFeature {
 	) {
 		if (!TEMPERATE_BIOMES.has(biome.id)) return;
 
-		const region = computeRegion(
-			chunkX,
-			chunkZ,
-			chunkSize,
-			seed,
-			WELL_REGION,
-		);
+		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, WELL_REGION);
 		if (!region) return;
 
 		const { centerX: wx, centerZ: wz } = region;

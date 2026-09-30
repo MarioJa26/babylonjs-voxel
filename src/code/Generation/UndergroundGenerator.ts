@@ -9,6 +9,7 @@ import {
 import { CaveNoiseGrid } from "./CaveNoiseGrid";
 import type { NoiseInstance } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
+import { fillMineshaftSealMask } from "./Structure/MineshaftSeal";
 import { fillSealColumnMask } from "./Structure/StructureSeal";
 
 const MIN_SOLID_NEIGHBORS = 5;
@@ -23,7 +24,7 @@ const _carvedIndices = new Uint32Array(MAX_CHUNK_VOLUME);
  * Per-column "inside a structure seal" flag, indexed `localX + localZ * size`.
  * See Structure/StructureSeal — a Maya temple's dungeon is written before this
  * pass runs, so without the seal the cave carve would chew holes straight
- * through it.
+ * through it. MineshaftSeal ORs its own columns into the same buffer.
  */
 const _sealColumns = new Uint8Array(MAX_CHUNK_VOLUME);
 
@@ -118,19 +119,40 @@ export class UndergroundGenerator {
 		// this pass, so cave carving has to step around the protected columns.
 		// The mask is derived purely from world coordinates + seed, so the seal
 		// agrees with the structure pass without the two talking to each other.
-		const seal =
-			seedAsInt === undefined
-				? { hasSeal: false, minY: 0, maxY: -1 }
-				: fillSealColumnMask(
-						chunkX,
-						chunkZ,
-						cs,
-						seedAsInt,
-						_sealColumns,
-					);
-		const sealActive = seal.hasSeal;
-		const sealMinY = seal.minY;
-		const sealMaxY = seal.maxY;
+		let sealActive = false;
+		let sealMinY = 0;
+		let sealMaxY = -1;
+
+		if (seedAsInt !== undefined) {
+			const temple = fillSealColumnMask(
+				chunkX,
+				chunkZ,
+				cs,
+				seedAsInt,
+				_sealColumns,
+			);
+			sealActive = temple.hasSeal;
+			sealMinY = temple.minY;
+			sealMaxY = temple.maxY;
+
+			// Mineshafts seal the same way, and OR into the same column buffer —
+			// hence OR-only in fillMineshaftSealMask. Without this a cave pass
+			// would leave a mineshaft as a ragged hole in the rock, and a cave
+			// that happened to reach daylight would pour skylight into a shaft
+			// that is required to be dark.
+			const mineshaft = fillMineshaftSealMask(
+				chunkX,
+				chunkZ,
+				cs,
+				seedAsInt,
+				_sealColumns,
+			);
+			if (mineshaft.hasSeal) {
+				sealActive = true;
+				if (mineshaft.minY < sealMinY) sealMinY = mineshaft.minY;
+				if (mineshaft.maxY > sealMaxY) sealMaxY = mineshaft.maxY;
+			}
+		}
 
 		// PERF: Reuse pre-sampled cave noise grid instead of allocating per chunk.
 		this.caveGrid.reset(chunkX, chunkY, chunkZ, cs);
@@ -150,8 +172,7 @@ export class UndergroundGenerator {
 
 			// Hoisted out of the inner loop: the whole Y slice is either inside
 			// the sealed band or entirely outside it.
-			const ySealed =
-				sealActive && worldY >= sealMinY && worldY <= sealMaxY;
+			const ySealed = sealActive && worldY >= sealMinY && worldY <= sealMaxY;
 
 			const depthT = clamp01(
 				(worldY - params.CAVE_FULL_DENSITY_DEPTH) / fullDepthDenom,

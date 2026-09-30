@@ -73,22 +73,39 @@ async function runCodec(
 	},
 	bytes: Uint8Array,
 ): Promise<Uint8Array> {
-	// Start draining the readable before feeding the writable so a large
-	// payload can never stall on readable-side backpressure.
-	const done = new Response(codec.readable).arrayBuffer();
+	const reader = codec.readable.getReader();
+	const chunks: Uint8Array[] = [];
+	let totalLength = 0;
+
+	const readPromise = (async () => {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			chunks.push(value);
+			totalLength += value.byteLength;
+		}
+	})();
 
 	const writer = codec.writable.getWriter();
 	try {
 		await writer.write(toPlainBytes(bytes));
 		await writer.close();
 	} catch (error) {
-		done.catch(() => {}); // avoid an unhandled rejection on the read side
+		readPromise.catch(() => {});
 		throw error;
 	} finally {
 		writer.releaseLock();
 	}
 
-	return new Uint8Array(await done);
+	await readPromise;
+
+	const result = new Uint8Array(totalLength);
+	let offset = 0;
+	for (const chunk of chunks) {
+		result.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return result;
 }
 
 /** Compress bytes with zlib "deflate". */

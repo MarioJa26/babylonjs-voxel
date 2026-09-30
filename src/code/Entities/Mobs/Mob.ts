@@ -58,6 +58,12 @@ export type MobSpawnConfig = {
 	flockSize?: { min: number; max: number };
 };
 
+const SPATIAL_CELL_SIZE = 8;
+
+function spatialHash(x: number, y: number, z: number): number {
+	return (x * 73856093) ^ (y * 19349663) ^ (z * 83492791);
+}
+
 export class MobRegistry {
 	#configs = new Map<string, MobSpawnConfig>();
 	#allMobs = new Set<Mob>();
@@ -66,6 +72,7 @@ export class MobRegistry {
 	#countsByType = new Map<string, number>();
 	#naturalCountsByType = new Map<string, number>();
 	#naturalTotal = 0;
+	#spatialGrid = new Map<number, Set<Mob>>();
 
 	register(config: MobSpawnConfig): void {
 		this.#configs.set(config.mobType, config);
@@ -87,6 +94,17 @@ export class MobRegistry {
 				(this.#naturalCountsByType.get(mob.mobType) || 0) + 1,
 			);
 		}
+
+		const cx = Math.floor(mob.position.x / SPATIAL_CELL_SIZE);
+		const cy = Math.floor(mob.position.y / SPATIAL_CELL_SIZE);
+		const cz = Math.floor(mob.position.z / SPATIAL_CELL_SIZE);
+		const key = spatialHash(cx, cy, cz);
+		let cell = this.#spatialGrid.get(key);
+		if (!cell) {
+			cell = new Set<Mob>();
+			this.#spatialGrid.set(key, cell);
+		}
+		cell.add(mob);
 	}
 
 	removeMob(mob: Mob): void {
@@ -109,6 +127,52 @@ export class MobRegistry {
 				this.#naturalCountsByType.set(mob.mobType, naturalCount - 1);
 			}
 		}
+
+		const cx = Math.floor(mob.position.x / SPATIAL_CELL_SIZE);
+		const cy = Math.floor(mob.position.y / SPATIAL_CELL_SIZE);
+		const cz = Math.floor(mob.position.z / SPATIAL_CELL_SIZE);
+		const key = spatialHash(cx, cy, cz);
+		const cell = this.#spatialGrid.get(key);
+		if (cell) {
+			cell.delete(mob);
+			if (cell.size === 0) {
+				this.#spatialGrid.delete(key);
+			}
+		}
+	}
+
+	getMobsInRegion(
+		minX: number,
+		minY: number,
+		minZ: number,
+		maxX: number,
+		maxY: number,
+		maxZ: number,
+	): Mob[] {
+		const result: Mob[] = [];
+		const minCX = Math.floor(minX / SPATIAL_CELL_SIZE);
+		const minCY = Math.floor(minY / SPATIAL_CELL_SIZE);
+		const minCZ = Math.floor(minZ / SPATIAL_CELL_SIZE);
+		const maxCX = Math.floor(maxX / SPATIAL_CELL_SIZE);
+		const maxCY = Math.floor(maxY / SPATIAL_CELL_SIZE);
+		const maxCZ = Math.floor(maxZ / SPATIAL_CELL_SIZE);
+
+		for (let cx = minCX; cx <= maxCX; cx++) {
+			for (let cy = minCY; cy <= maxCY; cy++) {
+				for (let cz = minCZ; cz <= maxCZ; cz++) {
+					const key = spatialHash(cx, cy, cz);
+					const cell = this.#spatialGrid.get(key);
+					if (cell) {
+						for (const mob of cell) {
+							if (!mob.isDisposed) {
+								result.push(mob);
+							}
+						}
+					}
+				}
+			}
+		}
+		return result;
 	}
 
 	getAllMobs(): ReadonlySet<Mob> {

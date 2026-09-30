@@ -79,7 +79,79 @@ function findWaterSurface(
 
 // --- Surface scanning ---
 
+const SURFACE_CACHE_SIZE = 256;
+const surfaceCacheKeys = new Int32Array(SURFACE_CACHE_SIZE * 2);
+const surfaceCacheValues = new Int32Array(SURFACE_CACHE_SIZE);
+const surfaceCacheHead = { value: 0 };
+let surfaceCacheInitialized = false;
+
+function getSurfaceCached(
+	x: number,
+	z: number,
+	startGroundY: number,
+	stepUp: number,
+	stepDown: number,
+	headroom: number,
+	allowWater: boolean,
+): SurfaceResult | null {
+	if (!surfaceCacheInitialized) {
+		surfaceCacheKeys.fill(-1);
+		surfaceCacheInitialized = true;
+	}
+
+	const key = (x * 73856093) ^ (z * 19349663);
+	const idx = (key >>> 0) % SURFACE_CACHE_SIZE;
+	const cacheKey = surfaceCacheKeys[idx * 2];
+	const cacheKey2 = surfaceCacheKeys[idx * 2 + 1];
+
+	if (cacheKey === x && cacheKey2 === z) {
+		const cachedY = surfaceCacheValues[idx];
+		return {
+			groundY: cachedY,
+			cost: 1,
+			kind: PathNodeKind.Land,
+		};
+	}
+
+	const result = findSurfaceUncached(
+		x,
+		z,
+		startGroundY,
+		stepUp,
+		stepDown,
+		headroom,
+		allowWater,
+	);
+	if (result) {
+		surfaceCacheKeys[idx * 2] = x;
+		surfaceCacheKeys[idx * 2 + 1] = z;
+		surfaceCacheValues[idx] = result.groundY;
+	}
+	return result;
+}
+
 export function findSurface(
+	x: number,
+	z: number,
+	startGroundY: number,
+	stepUp: number,
+	stepDown: number,
+	headroom: number,
+	allowWater = true,
+	result?: SurfaceResult,
+): SurfaceResult | null {
+	return getSurfaceCached(
+		x,
+		z,
+		startGroundY,
+		stepUp,
+		stepDown,
+		headroom,
+		allowWater,
+	);
+}
+
+function findSurfaceUncached(
 	x: number,
 	z: number,
 	startGroundY: number,

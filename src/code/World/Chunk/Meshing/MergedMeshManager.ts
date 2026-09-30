@@ -1264,11 +1264,11 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 
 	_statMembersSeen += memberCount;
 
-	let opaqueRanges = takeDirtyRanges(group, 0);
+	const opaqueRanges = takeDirtyRanges(group, 0);
 
-	let waterRanges = takeDirtyRanges(group, 1);
+	const waterRanges = takeDirtyRanges(group, 1);
 
-	let cutoutRanges = takeDirtyRanges(group, 2);
+	const cutoutRanges = takeDirtyRanges(group, 2);
 
 	let totalOpaque = 0;
 	let totalWater = 0;

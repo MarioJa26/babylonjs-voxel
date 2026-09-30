@@ -2,7 +2,12 @@ import type { Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
+import {
+	aabbOverlaps,
+	chunkWorldBounds,
+	computeRegion,
+	type RegionConfig,
+} from "./RegionFeature";
 
 /**
  * Region grid for this feature's placement, hoisted so /locate can resolve
@@ -35,13 +40,7 @@ export class GeodeFeature implements IWorldFeature {
 		generatingChunkX: number,
 		generatingChunkZ: number,
 	) {
-		const region = computeRegion(
-			chunkX,
-			chunkZ,
-			chunkSize,
-			seed,
-			GEODE_REGION,
-		);
+		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, GEODE_REGION);
 		if (!region) return;
 
 		const { regionHash, centerX: cx, centerZ: cz } = region;

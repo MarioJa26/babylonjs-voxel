@@ -156,7 +156,7 @@ export class Arrow {
 
 	static #frameRemote: NonNullable<typeof Map1.remoteMobManager> | null = null;
 
-	static #frameMobs: Iterable<Mob> | null = null;
+	static #frameMobRegistry: NonNullable<typeof Map1.mobRegistry> | null = null;
 
 	private static readonly _arrowSpawnScratch = {
 		x: 0,
@@ -212,8 +212,7 @@ export class Arrow {
 			if (deltaMs > 0 && arrows.length > 0 && !isUiOpen(UiFocus.pauseMenu)) {
 				Arrow.#frameRemote = Map1.remoteMobManager;
 
-				const registry = Map1.mobRegistry;
-				Arrow.#frameMobs = registry === null ? null : registry.getAllMobs();
+				Arrow.#frameMobRegistry = Map1.mobRegistry;
 
 				const dt = Math.min(deltaMs * 0.001, MAX_TICK_DT);
 
@@ -698,9 +697,9 @@ export class Arrow {
 			return true;
 		}
 
-		const mobs = Arrow.#frameMobs;
+		const registry = Arrow.#frameMobRegistry;
 
-		if (mobs === null) {
+		if (registry === null) {
 			return false;
 		}
 
@@ -713,6 +712,15 @@ export class Arrow {
 
 		let bestT = Number.POSITIVE_INFINITY;
 		let bestMob: Mob | null = null;
+
+		const mobs = registry.getMobsInRegion(
+			minX - 2,
+			minY - 2,
+			minZ - 2,
+			maxX + 2,
+			maxY + 2,
+			maxZ + 2,
+		);
 
 		for (const mob of mobs) {
 			if (mob.isDisposed) {

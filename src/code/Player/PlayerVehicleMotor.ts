@@ -239,7 +239,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	// PERF: Pre-computed constants derived from other parameters.
 	// Avoids repeated arithmetic in the physics hot path.
 	private readonly colliderHalfWidthProbe: number; // colliderHalfWidth * 0.75
-	private readonly colliderHalfWidthWater: number; // colliderHalfWidth * 0.9
+
 	private readonly stepUpCooldownMs: number; // stepUpCooldown * 1000
 	private readonly jumpImpulse: number; // gravity.length * jumpHeight
 	// PERF: Foot-probe offsets baked once — never rebuilt per frame.
@@ -247,10 +247,6 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	private readonly _groundProbeOffsets: ReadonlyArray<
 		readonly [number, number]
 	>;
-	// Water-check Y offsets baked once.
-	private readonly _waterYOffsets: ReadonlyArray<number>;
-	// Water-check XZ offsets baked once.
-	private readonly _waterXZOffsets: ReadonlyArray<readonly [number, number]>;
 
 	constructor(options: PlayerVehicleMotorOptions) {
 		this.scene = options.scene;
@@ -261,7 +257,6 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 		// PERF: Pre-compute all derived constants once at construction time.
 		this.colliderHalfWidthProbe = this.colliderHalfWidth * 0.75;
-		this.colliderHalfWidthWater = this.colliderHalfWidth * 0.9;
 		this.stepUpCooldownMs = this.stepUpCooldown * 1000;
 		this.jumpImpulse = this.#characterGravityLen * this.jumpHeight;
 		this.footProbeHalfWidth = this.colliderHalfWidth * 0.7;
@@ -276,18 +271,6 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			[-r, 0],
 			[0, r],
 			[0, -r],
-		] as const;
-
-		const hw = this.colliderHalfHeight;
-		this._waterYOffsets = [-hw + 0.12, -hw * 0.2, hw * 0.2] as const;
-
-		const rw = this.colliderHalfWidthWater;
-		this._waterXZOffsets = [
-			[0, 0],
-			[rw, 0],
-			[-rw, 0],
-			[0, rw],
-			[0, -rw],
 		] as const;
 
 		this.voxelCollider = new VoxelAabbCollider(
@@ -1332,7 +1315,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		);
 		{
 			const v = this.velocity;
-			const hSpeed = Math.hypot(v.x, v.z);
+			const hSpeed = Math.sqrt(v.x * v.x + v.z * v.z);
 			const dt = (deltaMs ?? 16.6) / 1000;
 			this.#displayWalkPhase += hSpeed * dt * WALK_STRIDE_FACTOR;
 			const targetAmp = Math.min(1, hSpeed / WALK_REF_SPEED);
@@ -1618,7 +1601,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			this.integrateVoxelMovementStep(deltaTime);
 			return;
 		}
-		const sub = Math.min(8, Math.ceil(deltaTime / (1 / 120)));
+		const sub = Math.min(4, Math.ceil(deltaTime / (1 / 120)));
 		const dt = deltaTime / sub;
 		for (let i = 0; i < sub; i++) this.integrateVoxelMovementStep(dt);
 	}
@@ -1689,17 +1672,12 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 	private isInWater(): boolean {
 		const pos = this.voxelPosition;
-		// PERF: Pre-baked Y and XZ offset arrays — no per-frame array literal.
-		for (const dy of this._waterYOffsets) {
-			const y = pos.y + dy;
-			for (const [dx, dz] of this._waterXZOffsets) {
-				if (
-					getBlockByWorldCoords(pos.x + dx, y, pos.z + dz) === BlockType.Water
-				)
-					return true;
-			}
-		}
-		return false;
+		const y = pos.y;
+		return (
+			getBlockByWorldCoords(pos.x, y, pos.z) === BlockType.Water ||
+			getBlockByWorldCoords(pos.x, y + 1, pos.z) === BlockType.Water ||
+			getBlockByWorldCoords(pos.x, y - 1, pos.z) === BlockType.Water
+		);
 	}
 
 	private isValidSavedPosition(p: unknown): p is Vec3 {

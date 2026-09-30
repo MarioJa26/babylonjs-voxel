@@ -10,6 +10,10 @@
  * A cheap broad-phase sphere reject skips mobs that cannot possibly intersect.
  * Returns null on miss. Zero-length segments never hit.
  */
+let cachedYaw = Number.NaN;
+let cachedCos = 0;
+let cachedSin = 0;
+
 export function segmentMobHit(
 	startX: number,
 	startY: number,
@@ -45,8 +49,13 @@ export function segmentMobHit(
 	// R(y) maps local→world as wx = cos·lx + sin·lz, wz = −sin·lx + cos·lz
 	// (same convention as the instance matrices), so its inverse is
 	// lx = cos·wx − sin·wz, lz = sin·wx + cos·wz.
-	const c = Math.cos(yaw);
-	const s = Math.sin(yaw);
+	if (yaw !== cachedYaw) {
+		cachedCos = Math.cos(yaw);
+		cachedSin = Math.sin(yaw);
+		cachedYaw = yaw;
+	}
+	const c = cachedCos;
+	const s = cachedSin;
 	const rx = startX - centerX;
 	const rz = startZ - centerZ;
 	const lsx = c * rx - s * rz;

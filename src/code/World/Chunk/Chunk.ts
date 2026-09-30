@@ -12,6 +12,7 @@ import type { MeshData } from "./DataStructures/MeshData";
 import { LoadedChunkIndex } from "./Loading/LoadedChunkIndex";
 import { connectFacesMask } from "./Meshing/ChunkFaceMasks";
 import { removeChunkFromGroup } from "./Meshing/MergedMeshManager";
+import { type ChunkCensus, getChunkCensus } from "./Runtime/ChunkCensus";
 import { computeStoredFaceConnectivity } from "./Runtime/ChunkConnectivity";
 import {
 	beginChunkEditBatch,
@@ -31,8 +32,7 @@ import {
 	chunkInstances as registryChunkInstances,
 	unregisterChunk,
 } from "./Runtime/ChunkRegistry";
-import { copySunlightSeeds, seedSunlight } from "./Runtime/ChunkSunlight";
-import { type ChunkCensus, getChunkCensus } from "./Runtime/ChunkCensus";
+import { seedSunlight } from "./Runtime/ChunkSunlight";
 import {
 	clearHeaderRow,
 	LIGHT_HEADER_ROW_SIZE,
@@ -281,6 +281,7 @@ export class Chunk {
 	private _isUniform = true;
 	private _uniformBlockId = 0;
 	private _palette: Uint16Array | null = null;
+	private _paletteMap: Map<number, number> | null = null;
 	private _hasVoxelData = false;
 
 	// Cached Uint32Array view over light_array — avoids re-allocation on every recomputeDarkCache call.
@@ -461,6 +462,7 @@ export class Chunk {
 		this._isUniform = true;
 		this._uniformBlockId = 0;
 		this._palette = null;
+		this._paletteMap = null;
 		this._paletteOpacity = null;
 		this._hasVoxelData = false;
 	}
@@ -536,6 +538,10 @@ export class Chunk {
 			this._isUniform = false;
 			this._uniformBlockId = 0;
 			this._palette = palette;
+			this._paletteMap = new Map();
+			for (let i = 0; i < palette.length; i++) {
+				this._paletteMap.set(palette[i], i);
+			}
 			this._block_array = blocks;
 		} else if (blocks) {
 			this._isUniform = false;
@@ -645,6 +651,10 @@ export class Chunk {
 			const sharedPalette = makeSharedUint16(palette.length);
 			sharedPalette.set(palette);
 			this._palette = sharedPalette;
+			this._paletteMap = new Map();
+			for (let i = 0; i < sharedPalette.length; i++) {
+				this._paletteMap.set(sharedPalette[i], i);
+			}
 		}
 
 		this.updateLightView();
@@ -833,7 +843,7 @@ export class Chunk {
 			}
 		}
 
-		const seedLength = seedSunlight(
+		const { length: seedLength, seeds } = seedSunlight(
 			this,
 			aboveChunk,
 			light,
@@ -845,11 +855,7 @@ export class Chunk {
 		);
 		const pool = Chunk._lightPool;
 		if (seedLength > 0 && pool !== null) {
-			pool.enqueueDeferredLightFromSunlightInit?.(
-				this,
-				copySunlightSeeds(seedLength),
-				seedLength,
-			);
+			pool.enqueueDeferredLightFromSunlightInit?.(this, seeds, seedLength);
 		}
 	}
 	// =========================================================================
@@ -1020,6 +1026,24 @@ export class Chunk {
 			return;
 		}
 
+		// Voxel storage has been released (LOD-only load, or an explicit
+		// far-LOD release). The _isUniform branch below would build a 2-entry
+		// palette over a freshly allocated all-air volume, so a single edit
+		// would silently delete the rest of the chunk. Refuse instead: the
+		// streaming layer re-hydrates a chunk before it can be edited.
+		if (!this._hasVoxelData) {
+			if (import.meta.env?.DEV) {
+				console.warn(
+					"Attempted to set block on a chunk with no voxel data. Action ignored. ",
+					this.id,
+					localX,
+					localY,
+					localZ,
+				);
+			}
+			return;
+		}
+
 		const index = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
 
 		const packedBlock = packBlockValue(blockId, state);
@@ -1038,13 +1062,15 @@ export class Chunk {
 			this._isUniform = false;
 			this._hasVoxelData = true;
 
-			// Avoid makeSharedUint16([oldPacked, packedBlock]), which creates
-			// a temporary JavaScript array on every uniform-to-palette change.
 			const palette = makeSharedUint16(2);
 			palette[0] = oldPacked;
 			palette[1] = packedBlock;
 
 			this._palette = palette;
+			this._paletteMap = new Map([
+				[oldPacked, 0],
+				[packedBlock, 1],
+			]);
 			this._block_array = makeSharedUint8(Chunk.SIZE3 >>> 1);
 			this.setNibble(index, 1);
 
@@ -1061,12 +1087,14 @@ export class Chunk {
 					return;
 				}
 
-				let newPaletteIndex = -1;
+				let newPaletteIndex = this._paletteMap?.get(packedBlock) ?? -1;
 
-				for (let i = 0; i < palette.length; i++) {
-					if (palette[i] === packedBlock) {
-						newPaletteIndex = i;
-						break;
+				if (newPaletteIndex === -1) {
+					for (let i = 0; i < palette.length; i++) {
+						if (palette[i] === packedBlock) {
+							newPaletteIndex = i;
+							break;
+						}
 					}
 				}
 
@@ -1081,6 +1109,10 @@ export class Chunk {
 					expandedPalette[newPaletteIndex] = packedBlock;
 
 					this._palette = expandedPalette;
+					this._paletteMap = new Map();
+					for (let i = 0; i < expandedPalette.length; i++) {
+						this._paletteMap.set(expandedPalette[i], i);
+					}
 					this.setNibble(index, newPaletteIndex);
 					paletteChanged = true;
 				} else {

@@ -1369,7 +1369,13 @@ export class ChunkWorkerPool {
 	 * light array.
 	 */
 	private tryScheduleRelightOnly(chunk: Chunk): boolean {
-		if (!chunk.light_array) return false;
+		// A released chunk's light_array is Chunk.EMPTY_LIGHT_ARRAY — a
+		// zero-length Uint8Array, which is still truthy — so a bare null
+		// check never rejects it. hasVoxelData is the real precondition, and
+		// the length check keeps a genuinely empty array from reaching the
+		// worker (which would register a 0-byte light SAB).
+		if (!chunk.hasVoxelData) return false;
+		if (!chunk.light_array || chunk.light_array.length === 0) return false;
 
 		const baseline = this.blockRevisionAtMesh.get(chunk.id);
 		const lod = chunk.lodLevel ?? 0;
@@ -3721,18 +3727,36 @@ export class ChunkWorkerPool {
 		precomputeLod: number | undefined,
 	): boolean {
 		if (taskType === TaskType.Remesh) {
-			if (!taskChunk!.isLoaded) {
-				this.taskQueuePriority.delete(taskChunk!);
+			const chunk = taskChunk;
+			if (chunk === undefined) {
+				return false;
+			}
+
+			if (!chunk.isLoaded) {
+				this.taskQueuePriority.delete(chunk);
+				return false;
+			}
+
+			// No voxel data: meshing it would build a uniform-air mesh. This
+			// MUST be checked before isCompletelyEmptyChunk below, because that
+			// predicate is true for a released chunk (isUniform &&
+			// uniformBlockId === 0) and would route it into
+			// clearChunkMeshIfPresent — replacing a valid mesh with a hole.
+			// Skip the task and let scheduleRemesh's hasVoxelData branch decide
+			// whether a cached mesh can stand in.
+			if (!chunk.hasVoxelData) {
+				this.pendingRemeshMap.delete(chunk);
+				this.taskQueuePriority.delete(chunk);
 				return false;
 			}
 
 			if (
-				this.isCompletelyEmptyChunk(taskChunk!) ||
-				this.isUniformSolidMeshSkippable(taskChunk!)
+				this.isCompletelyEmptyChunk(chunk) ||
+				this.isUniformSolidMeshSkippable(chunk)
 			) {
-				this.clearChunkMeshIfPresent(taskChunk!);
-				this.pendingRemeshMap.delete(taskChunk!);
-				this.taskQueuePriority.delete(taskChunk!);
+				this.clearChunkMeshIfPresent(chunk);
+				this.pendingRemeshMap.delete(chunk);
+				this.taskQueuePriority.delete(chunk);
 				return false;
 			}
 		}
@@ -3752,6 +3776,17 @@ export class ChunkWorkerPool {
 			const lod = taskChunk.lodLevel ?? 0;
 
 			if (!taskChunk.isLoaded) {
+				return false;
+			}
+
+			// A relight re-reads the chunk's light grid in the worker, so it
+			// requires voxel data exactly like a full remesh. This is the
+			// only dispatch arm that had no hasVoxelData gate, which is
+			// harmless today only because released chunks are never handed
+			// here. Rejecting here (rather than falling through to
+			// scheduleRemesh) keeps the voxel-less case from re-entering the
+			// queue via that call.
+			if (!taskChunk.hasVoxelData) {
 				return false;
 			}
 

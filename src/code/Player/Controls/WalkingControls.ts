@@ -285,7 +285,16 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		let bestT = Number.POSITIVE_INFINITY;
 		let bestMob: Mob | null = null;
 
-		for (const mob of registry.getAllMobs()) {
+		const minX = Math.min(ray.startX, endX) - 2;
+		const minY = Math.min(ray.startY, endY) - 2;
+		const minZ = Math.min(ray.startZ, endZ) - 2;
+		const maxX = Math.max(ray.startX, endX) + 2;
+		const maxY = Math.max(ray.startY, endY) + 2;
+		const maxZ = Math.max(ray.startZ, endZ) + 2;
+
+		const mobs = registry.getMobsInRegion(minX, minY, minZ, maxX, maxY, maxZ);
+
+		for (const mob of mobs) {
 			if (mob.isDisposed) continue;
 			const halfExtents = mob.hitHalfExtents;
 			const t = segmentMobHit(

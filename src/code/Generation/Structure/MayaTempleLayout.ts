@@ -1280,7 +1280,10 @@ function makeBossGate(
 			1,
 			across === "x" ? Math.abs(ex - sx) : Math.abs(ez - sz),
 		);
-		const along = Math.min(length, Math.max(BOSS_GATE_CLEARANCE, length * 0.45));
+		const along = Math.min(
+			length,
+			Math.max(BOSS_GATE_CLEARANCE, length * 0.45),
+		);
 		const wallX = across === "x" ? sx + Math.sign(ex - sx) * along : sx;
 		const wallZ = across === "x" ? sz : sz + Math.sign(ez - sz) * along;
 
@@ -1289,7 +1292,10 @@ function makeBossGate(
 			y: y0,
 			z: wallZ,
 			ring: [],
-			gate: { wall: buildGateWall(wallX, wallZ, across, chosen.width, y0, y1), across },
+			gate: {
+				wall: buildGateWall(wallX, wallZ, across, chosen.width, y0, y1),
+				across,
+			},
 		};
 	}
 
@@ -1329,12 +1335,7 @@ function buildGateWall(
 	return wall;
 }
 
-function pointDistSq(
-	ax: number,
-	az: number,
-	bx: number,
-	bz: number,
-): number {
+function pointDistSq(ax: number, az: number, bx: number, bz: number): number {
 	const dx = ax - bx;
 	const dz = az - bz;
 	return dx * dx + dz * dz;

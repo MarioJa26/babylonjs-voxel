@@ -144,7 +144,8 @@ export class LightGenerator {
 	 * are still collected. Player-placed torches are unaffected: the block-edit
 	 * path adds emission at any depth.
 	 */
-	public static readonly EMISSION_MIN_WORLD_Y = LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y;
+	public static readonly EMISSION_MIN_WORLD_Y =
+		LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y;
 
 	/**
 	 * Emission floor used for chunks that contain a sealed structure. Deep

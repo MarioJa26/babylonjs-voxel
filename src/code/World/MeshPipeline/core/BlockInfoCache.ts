@@ -388,16 +388,17 @@ function doesRectUnionCoverUnitSquare(rects: FaceRect[]): boolean {
 	return doesRectUnionCoverUnitSquareGeneral(rects);
 }
 
+const CORNERS: ReadonlyArray<readonly [number, number]> = [
+	[0, 0],
+	[1, 0],
+	[0, 1],
+	[1, 1],
+];
+
 /** Check if two L/T-shaped rects cover the unit square. */
 function doesTwoRectsCoverUnitSquare(a: FaceRect, b: FaceRect): boolean {
 	// All 4 corners of [0,1]x[0,1] must be covered by at least one rect.
-	const corners: Array<[number, number]> = [
-		[0, 0],
-		[1, 0],
-		[0, 1],
-		[1, 1],
-	];
-	for (const [u, v] of corners) {
+	for (const [u, v] of CORNERS) {
 		const inA =
 			u >= a.u0 - EPS && u <= a.u1 + EPS && v >= a.v0 - EPS && v <= a.v1 + EPS;
 		const inB =

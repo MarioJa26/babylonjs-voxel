@@ -22,8 +22,11 @@ import { setIsPaused } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
 import { play, playDebris, playPlace } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
+import {
+	currentWorldSeed,
+	runLocateCommand,
+} from "@/code/Player/LocateCommand";
 import type { Player } from "@/code/Player/Player";
-import { currentWorldSeed, runLocateCommand } from "@/code/Player/LocateCommand";
 import { Gamemodes } from "@/code/Player/PlayerStats";
 import {
 	deleteBlock,

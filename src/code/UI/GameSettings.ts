@@ -20,8 +20,6 @@ export interface GameSettings {
 	renderScale: number;
 	/** 4x MSAA on the main surface (costly; see SETTING_PARAMS.ENABLE_MSAA). */
 	msaaEnabled: boolean;
-	/** Frame-rate cap in Hz; 0 = uncapped. */
-	fpsCap: number;
 	/** Master audio volume 0..1 (see AudioManager). */
 	masterVolume: number;
 	/** Mute all game audio. */
@@ -47,7 +45,6 @@ const DEFAULTS: GameSettings = {
 	mouseSensitivity: 0.003,
 	renderScale: SETTING_PARAMS.RENDER_SCALE,
 	msaaEnabled: SETTING_PARAMS.ENABLE_MSAA,
-	fpsCap: SETTING_PARAMS.FPS_CAP,
 	masterVolume: 0.8,
 	muted: false,
 	crosshairId: DEFAULT_CROSSHAIR_OPTIONS.crosshairId,
@@ -98,9 +95,6 @@ export function loadGameSettings(): GameSettings {
 				typeof parsed.msaaEnabled === "boolean"
 					? parsed.msaaEnabled
 					: defaults.msaaEnabled,
-			fpsCap: [0, 30, 60, 120].includes(parsed.fpsCap ?? defaults.fpsCap)
-				? (parsed.fpsCap ?? defaults.fpsCap)
-				: defaults.fpsCap,
 			masterVolume: clamp(
 				parsed.masterVolume ?? defaults.masterVolume,
 				0,
@@ -146,6 +140,5 @@ export function applyGameSettingsToEngine(
 	SETTING_PARAMS.CAMERA_FOV = Math.round(settings.fov);
 	SETTING_PARAMS.RENDER_SCALE = settings.renderScale;
 	SETTING_PARAMS.ENABLE_MSAA = settings.msaaEnabled;
-	SETTING_PARAMS.FPS_CAP = settings.fpsCap;
 	return settings;
 }

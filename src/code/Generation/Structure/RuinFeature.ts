@@ -3,7 +3,12 @@ import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
+import {
+	aabbOverlaps,
+	chunkWorldBounds,
+	computeRegion,
+	type RegionConfig,
+} from "./RegionFeature";
 import { type DoorSide, StructureBuilder } from "./StructureBuilder";
 
 const EXOTIC_BIOMES = new Set([
@@ -47,13 +52,7 @@ export class RuinFeature implements IWorldFeature {
 	) {
 		if (!EXOTIC_BIOMES.has(biome.id)) return;
 
-		const region = computeRegion(
-			chunkX,
-			chunkZ,
-			chunkSize,
-			seed,
-			RUIN_REGION,
-		);
+		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, RUIN_REGION);
 		if (!region) return;
 
 		const { centerX: rx, centerZ: rz, regionHash } = region;

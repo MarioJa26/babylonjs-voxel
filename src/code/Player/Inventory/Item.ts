@@ -306,7 +306,9 @@ export class Item implements IUsable {
 			const y1 = y + 1;
 			const z1 = z + 1;
 
-			for (const mob of mobRegistry.getAllMobs()) {
+			const mobs = mobRegistry.getMobsInRegion(x, y, z, x1, y1, z1);
+
+			for (const mob of mobs) {
 				const mp = mob.position;
 
 				if (

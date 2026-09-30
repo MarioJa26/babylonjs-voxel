@@ -1203,14 +1203,8 @@ function tick(deltaMs: number): void {
 		const life = lplife[i];
 		const age = lpage[i] + dt;
 
-		// Death check first: expiring particles skip physics, collision
-		// probes (the expensive part), and billboard upload entirely.
 		if (age >= life) {
 			removeParticle(i);
-			// removeParticle swapped the last live particle into slot i;
-			// reprocess this slot instead of skipping it (previous `continue`
-			// without i-- skipped the swapped particle for a frame, popping
-			// one live sprite per death).
 			i--;
 			continue;
 		}
@@ -1229,7 +1223,6 @@ function tick(deltaMs: number): void {
 			lpz[i] += lpvz[i] * dt;
 		}
 
-		// Re-read flags: collideParticle may have set SETTLED_BIT this frame.
 		if ((lpflags[i] & SETTLED_BIT) === 0) {
 			const spin = lpspin[i];
 			if (spin !== 0) {

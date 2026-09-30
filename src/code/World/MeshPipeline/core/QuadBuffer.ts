@@ -76,17 +76,9 @@ export class QuadBuffer {
 		tint: number,
 		meta: number,
 	): void {
-		let i = this.count * 12;
+		const i = this.count * 12;
 		let buf = this.buf;
 
-		// Growth fallback for pathological custom-shape chunks that exceed
-		// the upfront reserve. The common path stays branch-predicted (single
-		// length compare); only overflow pays for ensureCapacity + rebind.
-		// NOTE: rta.length stays 0 for the whole build (bind/finish bracket
-		// it) with the live face count tracked in this.count, while
-		// ResizableTypedArray.grow() copies subarray(0, length). Sync length
-		// first or growth would discard all previously emitted faces and
-		// corrupt the mesh (garbage/offset geometry).
 		if (i + 12 > buf.length) {
 			this.rta.length = i;
 			this.rta.ensureCapacity(i + 12);
@@ -94,22 +86,11 @@ export class QuadBuffer {
 			this.buf = buf;
 		}
 
-		// Positions/dims are single bytes; emitters guarantee in-range values
-		// (boundary faces encode 255 + shader sentinel, never raw 256).
-		buf[i] = sx;
-		buf[i + 1] = sy;
-		buf[i + 2] = sz;
-		buf[i + 3] = axisFace | (tint << 3);
-
-		buf[i + 4] = sw;
-		buf[i + 5] = sh;
-		buf[i + 6] = tx;
-		buf[i + 7] = ty;
-
-		buf[i + 8] = ao;
-		buf[i + 9] = light;
-		buf[i + 10] = meta;
-		buf[i + 11] = 0; // chunk-index lane, stamped by merged-group assembly
+		const view = new Uint32Array(buf.buffer, buf.byteOffset, buf.length >>> 2);
+		const i4 = i >>> 2;
+		view[i4] = sx | (sy << 8) | (sz << 16) | ((axisFace | (tint << 3)) << 24);
+		view[i4 + 1] = sw | (sh << 8) | (tx << 16) | (ty << 24);
+		view[i4 + 2] = ao | (light << 8) | (meta << 16);
 
 		this.count++;
 	}

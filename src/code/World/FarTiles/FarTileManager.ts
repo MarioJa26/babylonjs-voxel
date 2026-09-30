@@ -60,18 +60,15 @@ import { getFarTileLevels, isFarTilesEnabled } from "./FarTileLadder";
 const MAX_TILE_REQUESTS_PER_UPDATE = 24;
 const UNLOAD_MARGIN_CHUNKS = 4;
 
-// Collision-free tile-key packing using 26 bits per axis (same as
-// packColumnKey) plus 6 bits for level — uses BigInt to stay unique for the
-// full ±33M tile range without overflow.
 const TILE_KEY_AXIS_BITS = 26;
 const TILE_KEY_AXIS_MASK = 0x3ffffff;
-const TILE_KEY_LEVEL_SHIFT = BigInt(TILE_KEY_AXIS_BITS * 2);
+const TILE_KEY_LEVEL_SHIFT = TILE_KEY_AXIS_BITS * 2;
 
-function packTileKey(levelIndex: number, tx: number, tz: number): bigint {
+function packTileKey(levelIndex: number, tx: number, tz: number): number {
 	return (
-		(BigInt(levelIndex) << TILE_KEY_LEVEL_SHIFT) |
-		(BigInt(tx & TILE_KEY_AXIS_MASK) << BigInt(TILE_KEY_AXIS_BITS)) |
-		BigInt(tz & TILE_KEY_AXIS_MASK)
+		(levelIndex << TILE_KEY_LEVEL_SHIFT) |
+		((tx & TILE_KEY_AXIS_MASK) << TILE_KEY_AXIS_BITS) |
+		(tz & TILE_KEY_AXIS_MASK)
 	);
 }
 
@@ -774,20 +771,20 @@ class FarTileManagerImpl {
 	// A/B: dirty ranges are left intact and drain when visibility returns.
 	private farTilesVisible = true;
 
-	private readonly tiles = new Map<bigint, TileEntry>();
-	private readonly pendingByKey = new Set<bigint>();
-	private readonly keyByRequestId = new Map<number, bigint>();
+	private readonly tiles = new Map<number, TileEntry>();
+	private readonly pendingByKey = new Set<number>();
+	private readonly keyByRequestId = new Map<number, number>();
 
 	private lastPlayerChunkX = Number.NaN;
 	private lastPlayerChunkZ = Number.NaN;
 
 	// Reused scratch arrays for update() — avoids per-frame allocations
-	private _wantedKeys: bigint[] = [];
+	private _wantedKeys: number[] = [];
 	private _wantedLevels: number[] = [];
 	private _wantedTx: number[] = [];
 	private _wantedTz: number[] = [];
 	private _wantedDist: number[] = [];
-	private _evictKeys: bigint[] = [];
+	private _evictKeys: number[] = [];
 	private _evictEntries: TileEntry[] = [];
 	private _evictWaterSlots: FarSlot[] = [];
 	private _evictStraightByLevel: FarSlot[][] = [];
@@ -1223,13 +1220,12 @@ class FarTileManagerImpl {
 			stampOriginSlot(arena.cpu, opaqueSlot, originSlot);
 			arena.pushDirty(opaqueSlot.base, opaqueSlot.count);
 
-			// Partition faces into the straight/reversed winding meshes so
-			// backface culling sees the intended orientation per face.
 			const straight = this.terrainStraight[data.levelIndex];
 			const reversed = this.terrainReversed[data.levelIndex];
 			const base = opaqueSlot.base;
+			const faces = data.opaqueFaces;
 			for (let j = 0; j < opaqueCount; j++) {
-				const backFace = (data.opaqueFaces[j * 4 + 1] >>> 20) & 1;
+				const backFace = (faces[j * 4 + 1] >>> 20) & 1;
 				if (backFace) straight.appendFace(base + j);
 				else reversed.appendFace(base + j);
 			}
@@ -1399,9 +1395,6 @@ class FarTileManagerImpl {
 	}
 
 	private hasPendingFarWork(): boolean {
-		// Pending worker requests do not imply any main-thread or GPU work.
-		// handleResult() marks the relevant arenas and meshes dirty when a result
-		// actually arrives.
 		for (let i = 0; i < this.terrainArenas.length; i++) {
 			const arena = this.terrainArenas[i];
 
@@ -1420,6 +1413,14 @@ class FarTileManagerImpl {
 			) {
 				return true;
 			}
+
+			if (this.terrainStraight[i].hasPendingSync()) {
+				return true;
+			}
+
+			if (this.terrainReversed[i].hasPendingSync()) {
+				return true;
+			}
 		}
 
 		if (this.waterArena.hasDirty() || this.waterArena.bufferRebound) {
@@ -1428,18 +1429,6 @@ class FarTileManagerImpl {
 
 		if (Number.isFinite(this.originsDirtyMin)) {
 			return true;
-		}
-
-		for (let i = 0; i < this.terrainStraight.length; i++) {
-			if (this.terrainStraight[i].hasPendingSync()) {
-				return true;
-			}
-		}
-
-		for (let i = 0; i < this.terrainReversed.length; i++) {
-			if (this.terrainReversed[i].hasPendingSync()) {
-				return true;
-			}
 		}
 
 		if (this.waterReversed.hasPendingSync()) {

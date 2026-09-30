@@ -13,9 +13,11 @@ import { FROZEN_SHRINE_REGION } from "./Structure/FrozenShrineFeature";
 import { GEODE_REGION } from "./Structure/GeodeFeature";
 import { IGLOO_REGION } from "./Structure/IglooFeature";
 import { INFERNAL_PIT_REGION } from "./Structure/InfernalPitFeature";
-import { LAVA_POOL_REGION, resolveLavaPoolCentre } from "./Structure/LavaPoolFeature";
+import {
+	LAVA_POOL_REGION,
+	resolveLavaPoolCentre,
+} from "./Structure/LavaPoolFeature";
 import { LIGHTHOUSE_REGION } from "./Structure/LighthouseFeature";
-import { MAYA_TEMPLE_REGION } from "./Structure/StructureSeal";
 import { MINESHAFT_REGION } from "./Structure/MineshaftFeature";
 import { MOUNTAIN_CABIN_REGION } from "./Structure/MountainCabinFeature";
 import { MUSHROOM_HUT_REGION } from "./Structure/MushroomHutFeature";
@@ -24,17 +26,18 @@ import { PETRIFIED_SHRINE_REGION } from "./Structure/PetrifiedShrineFeature";
 import { POND_REGION } from "./Structure/PondFeature";
 import { PYRAMID_REGION } from "./Structure/PyramidFeature";
 import { RAVINE_REGION } from "./Structure/RavineFeature";
+import { computeRegion, type RegionConfig } from "./Structure/RegionFeature";
 import { RUIN_REGION } from "./Structure/RuinFeature";
 import { SHIPWRECK_REGION } from "./Structure/ShipwreckFeature";
 import { SNOW_FORT_REGION } from "./Structure/SnowFortFeature";
 import { STONE_CIRCLE_REGION } from "./Structure/StoneCircleFeature";
 import { STRUCTURE_REGION } from "./Structure/StructureFeature";
+import { MAYA_TEMPLE_REGION } from "./Structure/StructureSeal";
 import { TOWER_REGION } from "./Structure/TowerFeature";
 import { TREEHOUSE_REGION } from "./Structure/TreehouseFeature";
 import { TROPICAL_TEMPLE_REGION } from "./Structure/TropicalTempleFeature";
 import { WATCHTOWER_REGION } from "./Structure/WatchtowerFeature";
 import { WELL_REGION } from "./Structure/WellFeature";
-import { computeRegion, type RegionConfig } from "./Structure/RegionFeature";
 import { WINDMILL_REGION } from "./Structure/WindmillFeature";
 
 // ---------------------------------------------------------------------------
@@ -97,7 +100,11 @@ export const LOCATABLE_STRUCTURES: readonly LocatableStructure[] = [
 		region: TROPICAL_TEMPLE_REGION,
 		aliases: ["tropical"],
 	},
-	{ key: "abyssal_temple", label: "Abyssal temple", region: ABYSSAL_TEMPLE_REGION },
+	{
+		key: "abyssal_temple",
+		label: "Abyssal temple",
+		region: ABYSSAL_TEMPLE_REGION,
+	},
 	{ key: "pyramid", label: "Pyramid", region: PYRAMID_REGION },
 	{ key: "tower", label: "Tower", region: TOWER_REGION },
 	{
@@ -132,17 +139,33 @@ export const LOCATABLE_STRUCTURES: readonly LocatableStructure[] = [
 		aliases: ["lava"],
 	},
 	{ key: "cabin", label: "Abandoned cabin", region: ABANDONED_CABIN_REGION },
-	{ key: "bamboo_shrine", label: "Bamboo shrine", region: BAMBOO_SHRINE_REGION },
+	{
+		key: "bamboo_shrine",
+		label: "Bamboo shrine",
+		region: BAMBOO_SHRINE_REGION,
+	},
 	{ key: "caravan_camp", label: "Caravan camp", region: CARAVAN_CAMP_REGION },
 	{
 		key: "cliff_dwelling",
 		label: "Cliff dwelling",
 		region: CLIFF_DWELLING_REGION,
 	},
-	{ key: "crystal_shrine", label: "Crystal shrine", region: CRYSTAL_SHRINE_REGION },
-	{ key: "frozen_shrine", label: "Frozen shrine", region: FROZEN_SHRINE_REGION },
+	{
+		key: "crystal_shrine",
+		label: "Crystal shrine",
+		region: CRYSTAL_SHRINE_REGION,
+	},
+	{
+		key: "frozen_shrine",
+		label: "Frozen shrine",
+		region: FROZEN_SHRINE_REGION,
+	},
 	{ key: "igloo", label: "Igloo", region: IGLOO_REGION },
-	{ key: "mountain_cabin", label: "Mountain cabin", region: MOUNTAIN_CABIN_REGION },
+	{
+		key: "mountain_cabin",
+		label: "Mountain cabin",
+		region: MOUNTAIN_CABIN_REGION,
+	},
 	{ key: "mushroom_hut", label: "Mushroom hut", region: MUSHROOM_HUT_REGION },
 	{ key: "observatory", label: "Observatory", region: OBSERVATORY_REGION },
 	{
@@ -194,13 +217,17 @@ const BY_NAME: Map<string, LocatableStructure> = (() => {
 /** Canonical keys only — what a plural is allowed to resolve back to. */
 const BY_KEY: Map<string, LocatableStructure> = (() => {
 	const map = new Map<string, LocatableStructure>();
-	for (const structure of LOCATABLE_STRUCTURES) map.set(structure.key, structure);
+	for (const structure of LOCATABLE_STRUCTURES)
+		map.set(structure.key, structure);
 	return map;
 })();
 
 /** Normalise player input to the shape the index is keyed on. */
 function normaliseName(name: string): string {
-	return name.trim().toLowerCase().replace(/[\s-]+/g, "_");
+	return name
+		.trim()
+		.toLowerCase()
+		.replace(/[\s-]+/g, "_");
 }
 
 /**
@@ -238,7 +265,9 @@ export function suggestLocatableStructures(
 	if (!key) return [];
 	const head = key.slice(0, 3);
 	return LOCATABLE_STRUCTURES.filter(
-		(s) => s.key.startsWith(head) || (s.aliases ?? []).some((a) => a.startsWith(head)),
+		(s) =>
+			s.key.startsWith(head) ||
+			(s.aliases ?? []).some((a) => a.startsWith(head)),
 	).slice(0, limit);
 }
 

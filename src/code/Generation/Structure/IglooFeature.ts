@@ -3,7 +3,12 @@ import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
-import { aabbOverlaps, chunkWorldBounds, computeRegion, type RegionConfig } from "./RegionFeature";
+import {
+	aabbOverlaps,
+	chunkWorldBounds,
+	computeRegion,
+	type RegionConfig,
+} from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
 
 const COLD_BIOMES = new Set([
@@ -46,13 +51,7 @@ export class IglooFeature implements IWorldFeature {
 	) {
 		if (!COLD_BIOMES.has(biome.id)) return;
 
-		const region = computeRegion(
-			chunkX,
-			chunkZ,
-			chunkSize,
-			seed,
-			IGLOO_REGION,
-		);
+		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, IGLOO_REGION);
 		if (!region) return;
 
 		const { centerX: cx, centerZ: cz } = region;
