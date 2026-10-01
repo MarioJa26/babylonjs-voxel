@@ -1658,6 +1658,7 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 
 	addToScene(scene, mesh);
 	meshState.set(mesh, state);
+	livePackedMeshes.add(mesh);
 	ensureInstancedBuild(input.material, mesh);
 
 	return mesh;
@@ -2014,7 +2015,9 @@ function applyMeshMeta(
 
 	anyMesh.boundMin = boundMin;
 	anyMesh.boundMax = boundMax;
-	anyMesh.isVisible = true;
+	// Respect the F7 diagnostic override: a rebuild must not silently
+	// re-show geometry the operator has switched off.
+	anyMesh.visible = chunkMeshesVisible;
 
 	if (mesh.material !== input.material) {
 		mesh.material = input.material;
@@ -2030,6 +2033,38 @@ function applyMeshMeta(
 	}
 }
 
+/*
+ * PERF DIAGNOSTIC (F7): live packed chunk meshes, kept only so their draw
+ * contribution can be switched off wholesale.
+ *
+ * When frame CPU is a few milliseconds, every queue is empty and frames are
+ * still slow, the cost is on the GPU and the only way to attribute it is to
+ * remove one class of draw at a time. `meshState` is a WeakMap (not
+ * iterable), so this Set mirrors the live set purely for that purpose.
+ * Nothing in the render path reads it.
+ */
+const livePackedMeshes = new Set<Mesh>();
+let chunkMeshesVisible = true;
+
+export function areChunkMeshesVisible(): boolean {
+	return chunkMeshesVisible;
+}
+
+/**
+ * Toggle visibility of every packed chunk mesh. Packed chunks are the bulk
+ * of the world's draw work (hundreds of groups sharing a handful of arenas),
+ * so this separates "chunk geometry/raster cost" from far tiles, sky and
+ * distant terrain. Does not touch uploads or dirty state: arena contents and
+ * group rebuilds survive, so re-enabling restores the full picture at once.
+ */
+export function setChunkMeshesVisible(visible: boolean): boolean {
+	chunkMeshesVisible = visible;
+	for (const mesh of livePackedMeshes) {
+		mesh.visible = visible;
+	}
+	return visible;
+}
+
 export function disposePackedMesh(mesh: Mesh): void {
 	const state = meshState.get(mesh);
 
@@ -2039,6 +2074,8 @@ export function disposePackedMesh(mesh: Mesh): void {
 		freeFaces(state.faceArena, state.faceBase, state.faceCount);
 		freeOffsetBlock(state.offsetBase);
 	}
+
+	livePackedMeshes.delete(mesh);
 
 	if (sceneRef && mesh) {
 		removeFromScene(sceneRef, mesh);
@@ -2057,6 +2094,7 @@ export function destroyPackedArenas(): void {
 	}
 
 	meshState.clear();
+	livePackedMeshes.clear();
 
 	const engine = engineRef;
 	const arenas = faceArenas;

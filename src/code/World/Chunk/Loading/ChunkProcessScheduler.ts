@@ -1,3 +1,4 @@
+import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
 import type { Chunk } from "../Chunk";
 import type { QueuedChunkRequest } from "./ChunkStreamingController";
@@ -147,6 +148,34 @@ export class ChunkProcessScheduler {
 
 		let shouldContinue = false;
 		this.isProcessing = true;
+
+		/*
+		 * PERF INSTRUMENTATION.
+		 *
+		 * The stages before the first `await` run synchronously inside the
+		 * caller's onBeforeRender callback, so they are already covered by the
+		 * `streaming` section. Every stage AFTER an await resumes in a
+		 * microtask with no frame in progress — ApplyLoadedChunks,
+		 * ApplyHydration, ScheduleGeneration (the actual worker dispatch) and
+		 * Finalize. That is the bulk of the scheduler and it was invisible.
+		 *
+		 * Time it as off-frame work. `markResume` is placed AFTER each await
+		 * rather than before, because the main thread is genuinely idle while
+		 * the storage read is in flight; counting that wait would overstate
+		 * the cost and misdiagnose it as main-thread pressure.
+		 */
+		let offFrameStart = 0;
+		let offFrameMs = 0;
+		const markResume = (): void => {
+			const now = performance.now();
+			if (offFrameStart !== 0) offFrameMs += now - offFrameStart;
+			offFrameStart = now;
+		};
+		const markSuspend = (): void => {
+			if (offFrameStart === 0) return;
+			offFrameMs += performance.now() - offFrameStart;
+			offFrameStart = 0;
+		};
 
 		let state = this.inFlightProcessState;
 		if (!state) {
@@ -446,19 +475,24 @@ export class ChunkProcessScheduler {
 									: undefined;
 
 							if (nearPromise && farPromise) {
+								markSuspend();
 								await Promise.all([nearPromise, farPromise]);
 							} else if (nearPromise) {
+								markSuspend();
 								await nearPromise;
 							} else if (farPromise) {
+								markSuspend();
 								await farPromise;
 							}
 
+							markResume();
 							this.beginSlice(state);
 							state.stage = ProcessStage.ApplyLoadedChunks;
 						} catch (error) {
 							console.warn("Failed to load chunks from storage", error);
 							state.nearLoadedDataMap.clear();
 							state.farLoadedDataMap.clear();
+							markResume();
 							this.beginSlice(state);
 							state.stage = ProcessStage.ApplyLoadedChunks;
 						}
@@ -506,16 +540,19 @@ export class ChunkProcessScheduler {
 						try {
 							state.hydrateMap.clear();
 
+							markSuspend();
 							await WorldStorage.loadChunks(
 								state.hydrateIds,
 								{ includeVoxelData: true },
 								state.hydrateMap,
 							);
 
+							markResume();
 							this.beginSlice(state);
 						} catch (error) {
 							console.warn("Failed to hydrate chunks from storage", error);
 							state.hydrateMap.clear();
+							markResume();
 							this.beginSlice(state);
 						}
 
@@ -609,6 +646,12 @@ export class ChunkProcessScheduler {
 				this.adapter.getLoadQueue().length > 0 ||
 				this.adapter.getUnloadQueueSet().size > 0;
 		} finally {
+			// Covers every exit path, including the `return` in Finalize.
+			markSuspend();
+			if (offFrameMs > 0) {
+				frameProfiler.noteOffFrameValue("streamAsync", offFrameMs);
+			}
+
 			this.isProcessing = false;
 
 			if (shouldContinue) {

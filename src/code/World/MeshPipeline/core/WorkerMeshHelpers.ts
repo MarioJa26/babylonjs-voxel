@@ -461,7 +461,7 @@ export class MeshBuildSession implements MeshContext {
 		this.neighbors = neighbors;
 
 		if (!skipBlockFill) {
-			this.buildOpaqueClassification(psVol);
+			this.buildOpaqueClassification(psVol, this.lodStep <= 1);
 		}
 	}
 
@@ -474,27 +474,54 @@ export class MeshBuildSession implements MeshContext {
 		this.ownedNeedsCustom = new Uint8Array(psVol);
 	}
 
-	private buildOpaqueClassification(psVol: number): void {
+	/**
+	 * Precompute the per-cell opaque + needs-custom classification over the
+	 * whole padded volume, so the hot mask/cell loops do a single byte load
+	 * instead of a cache probe.
+	 *
+	 * `computeCustom` is false for lodStep > 1. emitCustomShapes early-outs on
+	 * lodStep > 1 anyway (custom shapes are not emitted at reduced LOD), so
+	 * needsCustom has no consumer at those LODs — skipping it drops one cache
+	 * probe and two byte stores per cell, ~39k of each per chunk.
+	 *
+	 * NOTE: the opaque pass itself must stay full-resolution. emitLodBorderSkirts
+	 * runs only when lodStep > 1 and reads opaque[] at EVERY y of the four border
+	 * columns (LodBorderSkirts.emitBorderColumn), so striding this loop by
+	 * lodStep would leave border cells unclassified and open holes along every
+	 * LOD>=4 chunk boundary.
+	 */
+	private buildOpaqueClassification(psVol: number, computeCustom: boolean): void {
 		const opaqueBits = this.opaque;
 		const customBits = this.needsCustom;
 		const padded = this.block;
 
 		let customCount = 0;
 
-		for (let i = 0; i < psVol; i++) {
-			// getCachedFlagsAndId's low 16 bits ARE the flags, so masking the
-			// combined value directly is equivalent to getFlagsFromCombined()
-			// but skips a function call per cell over the whole padded volume.
-			const flags = getCachedFlagsAndId(padded[i]) & 0xffff;
+		if (computeCustom) {
+			for (let i = 0; i < psVol; i++) {
+				// getCachedFlagsAndId's low 16 bits ARE the flags, so masking the
+				// combined value directly is equivalent to getFlagsFromCombined()
+				// but skips a function call per cell over the whole padded volume.
+				const flags = getCachedFlagsAndId(padded[i]) & 0xffff;
 
-			opaqueBits[i] = (flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED ? 1 : 0;
-			const custom = (flags & CUSTOM_TEST_MASK) === FLAG_SOLID ? 1 : 0;
-			customBits[i] = custom;
-			customCount += custom;
+				opaqueBits[i] =
+					(flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED ? 1 : 0;
+				const custom = (flags & CUSTOM_TEST_MASK) === FLAG_SOLID ? 1 : 0;
+				customBits[i] = custom;
+				customCount += custom;
+			}
+		} else {
+			for (let i = 0; i < psVol; i++) {
+				const flags = getCachedFlagsAndId(padded[i]) & 0xffff;
+
+				opaqueBits[i] =
+					(flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED ? 1 : 0;
+			}
 		}
 
 		// Lets emitCustomShapes bail out without scanning the volume for
-		// plain terrain chunks (the overwhelming majority).
+		// plain terrain chunks (the overwhelming majority). Zero when custom
+		// shapes aren't computed, so that bail-out still holds.
 		this.needsCustomCount = customCount;
 	}
 }

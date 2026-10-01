@@ -43,6 +43,12 @@ export class PlayerLoadingGate {
 	private teleported = false;
 	private fallbackForced = false;
 
+	// Last chunk coordinate handed to updateChunksAround(). Seeded to an
+	// impossible value so the first real call always runs.
+	private lastStreamedCx = Number.NaN;
+	private lastStreamedCy = Number.NaN;
+	private lastStreamedCz = Number.NaN;
+
 	constructor(
 		private readonly scene: SceneContext,
 		private readonly player: Player,
@@ -111,18 +117,39 @@ export class PlayerLoadingGate {
 		const chunkY = worldToChunkCoord(playerPos.y);
 		const chunkZ = worldToChunkCoord(playerPos.z);
 
-		updateChunksAround(
-			chunkX,
-			chunkY,
-			chunkZ,
-			SETTING_PARAMS.RENDER_DISTANCE,
-			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
-			undefined,
-			undefined,
-			undefined,
-			playerPos.x,
-			playerPos.z,
-		);
+		/*
+		 * PERF: this used to re-run the full updateChunksAround() reconcile +
+		 * shell + underground + refresh + sort on EVERY frame until the spawn
+		 * chunk loaded — up to 300 frames at the 5s fallback timeout, and for
+		 * the whole window it duplicated the same call in streamTick (which is
+		 * chunk-change gated). Reconcile is a ~539-chunk scan, so during load-in
+		 * it was pure per-frame overhead on a thread that is already the
+		 * bottleneck. Gate it on the chunk coordinate changing, which is all
+		 * it ever needed to do: the shell is derived from the coords, and
+		 * standing still has nothing new to reconcile.
+		 */
+		if (
+			chunkX !== this.lastStreamedCx ||
+			chunkY !== this.lastStreamedCy ||
+			chunkZ !== this.lastStreamedCz
+		) {
+			this.lastStreamedCx = chunkX;
+			this.lastStreamedCy = chunkY;
+			this.lastStreamedCz = chunkZ;
+
+			void updateChunksAround(
+				chunkX,
+				chunkY,
+				chunkZ,
+				SETTING_PARAMS.RENDER_DISTANCE,
+				SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
+				undefined,
+				undefined,
+				undefined,
+				playerPos.x,
+				playerPos.z,
+			);
+		}
 
 		const chunksReady = areChunksLoadedAround(
 			chunkX,

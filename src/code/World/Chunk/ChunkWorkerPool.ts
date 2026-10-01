@@ -1,3 +1,4 @@
+import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
 import type {
 	RemoteChunkProvider,
@@ -1416,6 +1417,14 @@ export class ChunkWorkerPool {
 	// work here and drain everything in a single macrotask. This eliminates
 	// frame-time fragmentation where 4-5 independent callbacks each consumed
 	// 1-2ms in separate event-loop ticks.
+	//
+	// PERF NOTE: this macrotask runs BETWEEN animation frames, so none of the
+	// work below appears in any onBeforeRender profiler section — it still
+	// spends the frame budget, and it is where the chunk-mesh `writeBuffer`
+	// uploads happen (processMeshQueueLoop → flushDirtyMergedGroups →
+	// rebuildGroupData). Each branch is timed under a distinct off-frame
+	// section so the F5 report attributes the cost instead of it reading as
+	// unexplained dropped frames.
 	// -------------------------------------------------------------------------
 
 	private _centralChannel: MessageChannel | null = null;
@@ -1444,27 +1453,39 @@ export class ChunkWorkerPool {
 
 		if (flags & ChunkWorkerPool.WORK_PROCESS_QUEUE) {
 			this.processQueuePumpScheduled = false;
-			this.processQueue();
+			frameProfiler.measureOffFrame("poolQueue", () => this.processQueue());
 		}
 		if (flags & ChunkWorkerPool.WORK_MESH) {
 			this.meshDrainScheduled = false;
-			this.processMeshQueueLoop();
+			// Includes the merged-group rebuild and its GPU uploads — the
+			// single largest off-frame cost in this file.
+			frameProfiler.measureOffFrame("poolMeshDrain", () =>
+				this.processMeshQueueLoop(),
+			);
 		}
 		if (flags & ChunkWorkerPool.WORK_DEFERRED_LIGHT) {
 			this.deferredLightingPumpScheduled = false;
-			this.processDeferredLightingQueue();
+			frameProfiler.measureOffFrame("poolLighting", () =>
+				this.processDeferredLightingQueue(),
+			);
 		}
 		if (flags & ChunkWorkerPool.WORK_LIGHT_REG) {
 			this._lightRegDrainScheduled = false;
-			this._drainLightRegistration();
+			frameProfiler.measureOffFrame("poolLighting", () =>
+				this._drainLightRegistration(),
+			);
 		}
 		if (flags & ChunkWorkerPool.WORK_REMESH_FLUSH) {
 			this.remeshFlushScheduled = false;
-			this.flushPendingRemeshQueue();
+			frameProfiler.measureOffFrame("poolLighting", () =>
+				this.flushPendingRemeshQueue(),
+			);
 		}
 		if (flags & ChunkWorkerPool.WORK_LIGHT_DIRTY) {
 			this.lightDirtyPumpScheduled = false;
-			this.processLightDirtyQueue();
+			frameProfiler.measureOffFrame("poolLighting", () =>
+				this.processLightDirtyQueue(),
+			);
 		}
 	};
 
@@ -1892,14 +1913,33 @@ export class ChunkWorkerPool {
 		this.insideMeshDrain = true;
 		try {
 			const start = performance.now();
-			let iterCount = 0;
 			let processed = 0;
 
-			while (
-				this.meshResultQueueReadIdx < this.meshResultQueue.length &&
-				((iterCount++ & 15) !== 0 ||
-					performance.now() - start < ChunkWorkerPool.MESH_INGEST_BUDGET_MS)
-			) {
+			/*
+			 * PERF: check the clock on EVERY result.
+			 *
+			 * This loop used to be guarded by
+			 *   `((iterCount++ & 15) !== 0 || now - start < MESH_INGEST_BUDGET_MS)`
+			 * which is true on 15 of every 16 iterations WITHOUT ever reading
+			 * the clock — the 3.5ms budget was only enforced once per 16
+			 * results. Each iteration calls createMeshFromData (vertex/index
+			 * buffer construction), so during a storm 16 results cost far more
+			 * than the whole shared budget, and the drain plus
+			 * flushDirtyMergedGroups below landed as one 25-64ms macrotask
+			 * against a 5.5ms target. That single overrun is what Chrome's
+			 * Frames track records as a dropped frame.
+			 *
+			 * `processed !== 0` keeps a minimum of one result per drain so the
+			 * pipeline can never stall on an empty-but-nonempty queue.
+			 */
+			while (this.meshResultQueueReadIdx < this.meshResultQueue.length) {
+				if (
+					processed !== 0 &&
+					performance.now() - start >= ChunkWorkerPool.MESH_INGEST_BUDGET_MS
+				) {
+					break;
+				}
+
 				const data = this.meshResultQueue[this.meshResultQueueReadIdx];
 				const workerIdx =
 					this.meshResultWorkerIdx[this.meshResultQueueReadIdx] ?? 0;
@@ -2370,6 +2410,10 @@ export class ChunkWorkerPool {
 		return (event: MessageEvent<WorkerMessageData>) => {
 			let failed = false;
 
+			// A worker message handler is a plain task, not an onBeforeRender
+			// callback, so its cost never shows up in a frame section. Time it
+			// as off-frame work.
+			const startedAt = performance.now();
 			try {
 				failed = this.handleTerrainMessageBody(workerIndex, event.data);
 			} catch (messageError) {
@@ -2380,6 +2424,11 @@ export class ChunkWorkerPool {
 				);
 				this.handleWorkerFailure(workerIndex, messageError);
 				return;
+			} finally {
+				frameProfiler.noteOffFrameValue(
+					"workerMsg",
+					performance.now() - startedAt,
+				);
 			}
 
 			if (failed) return;
@@ -2578,6 +2627,8 @@ export class ChunkWorkerPool {
 			let failed = false;
 			const data = event.data as MeshWorkerResponse & { type?: string };
 
+			// Off-frame task — see makeTerrainMessageHandler.
+			const startedAt = performance.now();
 			try {
 				failed = this.handleMeshMessageBody(workerIndex, data);
 			} catch (messageError) {
@@ -2588,6 +2639,11 @@ export class ChunkWorkerPool {
 				);
 				this.handleWorkerFailure(workerIndex, messageError);
 				return;
+			} finally {
+				frameProfiler.noteOffFrameValue(
+					"workerMsg",
+					performance.now() - startedAt,
+				);
 			}
 
 			if (failed) return;
@@ -3132,7 +3188,11 @@ export class ChunkWorkerPool {
 
 		void yieldToEventLoop().then(() => {
 			this.remotePumpScheduled = false;
-			this.pumpRemoteGeneration();
+			// MessageChannel macrotask — runs between frames, so it is off-frame
+			// work against the same budget.
+			frameProfiler.measureOffFrame("remotePump", () => {
+				this.pumpRemoteGeneration();
+			});
 		});
 	}
 

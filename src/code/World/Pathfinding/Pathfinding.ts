@@ -78,80 +78,18 @@ function findWaterSurface(
 }
 
 // --- Surface scanning ---
-
-const SURFACE_CACHE_SIZE = 256;
-const surfaceCacheKeys = new Int32Array(SURFACE_CACHE_SIZE * 2);
-const surfaceCacheValues = new Int32Array(SURFACE_CACHE_SIZE);
-const surfaceCacheHead = { value: 0 };
-let surfaceCacheInitialized = false;
-
-function getSurfaceCached(
-	x: number,
-	z: number,
-	startGroundY: number,
-	stepUp: number,
-	stepDown: number,
-	headroom: number,
-	allowWater: boolean,
-): SurfaceResult | null {
-	if (!surfaceCacheInitialized) {
-		surfaceCacheKeys.fill(-1);
-		surfaceCacheInitialized = true;
-	}
-
-	const key = (x * 73856093) ^ (z * 19349663);
-	const idx = (key >>> 0) % SURFACE_CACHE_SIZE;
-	const cacheKey = surfaceCacheKeys[idx * 2];
-	const cacheKey2 = surfaceCacheKeys[idx * 2 + 1];
-
-	if (cacheKey === x && cacheKey2 === z) {
-		const cachedY = surfaceCacheValues[idx];
-		return {
-			groundY: cachedY,
-			cost: 1,
-			kind: PathNodeKind.Land,
-		};
-	}
-
-	const result = findSurfaceUncached(
-		x,
-		z,
-		startGroundY,
-		stepUp,
-		stepDown,
-		headroom,
-		allowWater,
-	);
-	if (result) {
-		surfaceCacheKeys[idx * 2] = x;
-		surfaceCacheKeys[idx * 2 + 1] = z;
-		surfaceCacheValues[idx] = result.groundY;
-	}
-	return result;
-}
+//
+// NOTE: a (x,z)-keyed memo was tried here and reverted. A surface result is a
+// function of ALL of startGroundY/stepUp/stepDown/headroom/allowWater plus
+// current terrain, and the A* expansion loop varies stepUp/stepDown per node
+// kind (PathNodeKind.Water widens the window). A cache keyed only on the
+// column therefore returned a fabricated `cost: 1, kind: Land` for water
+// queries, corrupting A* move costs and saturating NODE_CAPACITY. It also
+// dropped the caller's `result` scratch, allocating per expansion — the exact
+// opposite of the intent. Any future cache must key on every parameter and be
+// invalidated on block edits.
 
 export function findSurface(
-	x: number,
-	z: number,
-	startGroundY: number,
-	stepUp: number,
-	stepDown: number,
-	headroom: number,
-	allowWater = true,
-	result?: SurfaceResult,
-): SurfaceResult | null {
-	return getSurfaceCached(
-		x,
-		z,
-		startGroundY,
-		stepUp,
-		stepDown,
-		headroom,
-		allowWater,
-	);
-}
-
-function findSurfaceUncached(
 	x: number,
 	z: number,
 	startGroundY: number,

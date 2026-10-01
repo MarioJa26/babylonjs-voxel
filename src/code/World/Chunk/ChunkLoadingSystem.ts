@@ -1,3 +1,4 @@
+import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import {
@@ -406,7 +407,10 @@ function pumpRemoteGenerationDeferred(): void {
 
 	setTimeout(() => {
 		remoteGenerationPumpScheduled = false;
-		ChunkWorkerPool.getInstance().pumpRemoteGeneration();
+		// setTimeout macrotask — off-frame work against the same budget.
+		frameProfiler.measureOffFrame("remotePump", () => {
+			ChunkWorkerPool.getInstance().pumpRemoteGeneration();
+		});
 	}, 0);
 }
 

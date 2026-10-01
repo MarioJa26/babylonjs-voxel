@@ -7,7 +7,11 @@ import {
 } from "../../Occlusion/GroupOctree";
 import type { Chunk } from "../Chunk";
 import type { MeshData } from "../DataStructures/MeshData";
-import { disposePackedMesh, maxFacesPerArena } from "./PackedChunkMesh.js";
+import {
+	disposePackedMesh,
+	getTotalFaceUploadBytes,
+	maxFacesPerArena,
+} from "./PackedChunkMesh.js";
 
 // Lite `Mesh` has no `.dispose()` — free its packed-arena slices, unregister
 // from the scene, then free GPU resources.
@@ -896,6 +900,9 @@ function validateSettledSlotExtents(
 let _lastMergedFlushMs = 0;
 let _mergedFlushTotalMs = 0;
 let _mergedFlushCount = 0;
+// Face bytes the most recent flush handed to the GPU, and whether it stopped
+// on a budget (CPU time or GPU bytes) with work still queued.
+let _lastMergedFlushGpuBytes = 0;
 let _lastMergedFlushExhausted = false;
 
 // PERF instrumentation for the stable-slot layout: how many member copies the
@@ -924,11 +931,13 @@ export function getMergedSlotStats(): {
 export function getMergedMeshFlushStats(): {
 	lastMs: number;
 	avgMs: number;
+	lastGpuBytes: number;
 	budgetExhausted: boolean;
 } {
 	return {
 		lastMs: _lastMergedFlushMs,
 		avgMs: _mergedFlushCount > 0 ? _mergedFlushTotalMs / _mergedFlushCount : 0,
+		lastGpuBytes: _lastMergedFlushGpuBytes,
 		budgetExhausted: _lastMergedFlushExhausted,
 	};
 }
@@ -954,12 +963,45 @@ export function getMergedLayerMemoryStats(): {
 let _mergedFlushRafScheduled = false;
 const _flushSnapshot: MergedMeshGroup[] = [];
 
-export function flushDirtyMergedGroups(maxBudgetMs = 5): void {
+/**
+ * Burst ceiling on face bytes a single flush may hand to `queue.writeBuffer`.
+ *
+ * The CPU-time budget below cannot bound GPU work: rebuilding a merged group
+ * is cheap (measured ~0.3 ms for a whole flush) but each group also enqueues
+ * face + instance uploads. When a deep streaming backlog drains in one
+ * macrotask the flush can queue a very large amount of bytes at once, and the
+ * next frame then stalls inside `writeBuffer` while Dawn's staging ring drains.
+ *
+ * That stall is invisible to the CPU-side frame profiler because it happens in
+ * lite's `_record()`, after the onBeforeRender hooks have returned — which is
+ * exactly the reported signature: Frame CPU ~4 ms, Thread Busy ~14%, every
+ * queue empty, and yet the frame takes 2+ vsync intervals with a GPU queue
+ * drain in the hundreds of ms.
+ *
+ * Budgeting bytes bounds queue DEPTH. It does not reduce total throughput, and
+ * at measured steady-state rates (hundreds of KB per flush) this ceiling rarely
+ * binds — it is a rail against bursts (first load, teleport, cache warm-up).
+ *
+ * Deferred groups stay in dirtyGroups and are processed on later flushes, so
+ * no geometry is lost, and at least one group always runs so an oversized
+ * group can never stall the pipeline.
+ */
+const DEFAULT_GPU_UPLOAD_BUDGET_BYTES = 2 * 1024 * 1024;
+
+export function flushDirtyMergedGroups(
+	maxBudgetMs = 5,
+	maxGpuBytes = DEFAULT_GPU_UPLOAD_BUDGET_BYTES,
+): void {
 	if (dirtyGroups.size === 0) return;
 
 	const startedAt = performance.now();
 	const deadline =
 		maxBudgetMs > 0 ? startedAt + maxBudgetMs : Number.POSITIVE_INFINITY;
+
+	// Monotonic face-upload total sampled at entry; the loop stops once this
+	// flush has itself enqueued maxGpuBytes. Always process at least one group
+	// so a single oversized group can never stall the pipeline forever.
+	const gpuBytesAtEntry = getTotalFaceUploadBytes();
 
 	_statMembersSeen = 0;
 	_statCopiesPerformed = 0;
@@ -968,10 +1010,24 @@ export function flushDirtyMergedGroups(maxBudgetMs = 5): void {
 
 	let processedCount = 0;
 	let budgetExhausted = false;
+	let gpuBudgetExhausted = false;
 
 	for (const group of dirtyGroups) {
 		if (processedCount !== 0 && performance.now() >= deadline) {
 			budgetExhausted = true;
+			break;
+		}
+
+		// Checked BEFORE processing so the group stays queued. Note this
+		// measures the PREVIOUS groups' uploads — the group about to be
+		// processed is intentionally allowed to overshoot once, which is what
+		// keeps progress guaranteed for oversized single groups.
+		if (
+			processedCount !== 0 &&
+			maxGpuBytes > 0 &&
+			getTotalFaceUploadBytes() - gpuBytesAtEntry >= maxGpuBytes
+		) {
+			gpuBudgetExhausted = true;
 			break;
 		}
 
@@ -1013,19 +1069,23 @@ export function flushDirtyMergedGroups(maxBudgetMs = 5): void {
 	if (dirtyGroups.size > 0) {
 		if (_requestFlush) {
 			_requestFlush();
-		} else if (budgetExhausted && !_mergedFlushRafScheduled) {
+		} else if (
+			(budgetExhausted || gpuBudgetExhausted) &&
+			!_mergedFlushRafScheduled
+		) {
 			_mergedFlushRafScheduled = true;
 
 			setTimeout(() => {
 				_mergedFlushRafScheduled = false;
-				flushDirtyMergedGroups(maxBudgetMs);
+				flushDirtyMergedGroups(maxBudgetMs, maxGpuBytes);
 			}, 0);
 		}
 	}
 
 	const elapsed = performance.now() - startedAt;
 	_lastMergedFlushMs = elapsed;
-	_lastMergedFlushExhausted = budgetExhausted;
+	_lastMergedFlushGpuBytes = getTotalFaceUploadBytes() - gpuBytesAtEntry;
+	_lastMergedFlushExhausted = budgetExhausted || gpuBudgetExhausted;
 	_mergedFlushTotalMs += elapsed;
 	_mergedFlushCount++;
 }

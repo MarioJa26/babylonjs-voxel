@@ -206,9 +206,18 @@ export class Player {
 	}
 
 	public tick(deltaMs: number): void {
-		if (getIsPaused() || !this.#loopController) return;
+		const loopController = this.#loopController;
+		if (!loopController) return;
 
-		this.#loopController.tick(deltaMs);
+		// PERF: the pause gate lives in the controller, not here. tick() has to
+		// keep running while paused so the frame profiler commits a sample
+		// every frame — the streaming and farTiles scene hooks are not
+		// pause-gated, so without a commit their section time accumulated
+		// without bound and the first frame after unpause reported garbage.
+		// The controller skips its body when paused, so behaviour is unchanged.
+		loopController.tick(deltaMs);
+
+		if (getIsPaused()) return;
 		this.#updatePlayerBody(deltaMs);
 	}
 

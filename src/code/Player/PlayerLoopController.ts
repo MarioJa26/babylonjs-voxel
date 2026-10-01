@@ -12,7 +12,7 @@ import {
 } from "../Generation/TerrainHeightMap";
 import type { IControls } from "../Interface/IControls";
 import { frameProfiler } from "../Lib/FrameProfiler";
-import { isUiOpen, setInCave } from "../Lib/GameRuntimeState";
+import { getIsPaused, isUiOpen, setInCave } from "../Lib/GameRuntimeState";
 import { worldToChunkCoord } from "../Lib/VoxelMath";
 import {
 	makeSprintEmitterState,
@@ -34,9 +34,11 @@ import {
 	getMergedSlotStats,
 } from "../World/Chunk/Meshing/MergedMeshManager";
 import {
+	areChunkMeshesVisible,
 	getPackedMeshMemoryStats,
 	getPackedUploadStats,
 	resetPackedUploadStats,
+	setChunkMeshesVisible,
 } from "../World/Chunk/Meshing/PackedChunkMesh";
 import { BlockTickScheduler } from "../World/Chunk/Simulation/BlockTickScheduler";
 import {
@@ -51,6 +53,7 @@ import {
 	resetGpuPressure,
 } from "../World/Light/liteGpuBuffer";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
+import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import { onSpawnPrepared } from "../World/SpawnPoint";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import {
@@ -70,6 +73,9 @@ const MOB_TYPE_NAMES: Record<number, string> = {
 	[MobTypeId.Chicken]: "Chicken",
 	[MobTypeId.Sheep]: "Sheep",
 };
+
+/** Matches DEBUG_HUD_INTERVAL_MS — see #lastProfilerReportMs. */
+const PROFILER_REPORT_INTERVAL_MS = 1250;
 
 export class PlayerLoopController {
 	// ---- chunk-loading position tracking ----
@@ -110,6 +116,12 @@ export class PlayerLoopController {
 	#lastDebugHudUpdateMs = 0;
 	#mainThreadMs = 0;
 	static readonly DEBUG_HUD_INTERVAL_MS = 1250;
+
+	// Throttle for frameProfiler.report(). Separate from the HUD interval
+	// because a spike frame deliberately bypasses that one, and report()
+	// sorts several sample windows — too costly to repeat per spiking frame.
+	#lastProfilerReportMs = 0;
+	#cachedReport: ReturnType<typeof frameProfiler.report> | null = null;
 
 	// A frame longer than this is flagged as a spike in the HUD and forces the
 	// GPU-lag probe to sample EVERY frame. ~6x a 16.7 ms frame.
@@ -185,10 +197,17 @@ export class PlayerLoopController {
 			this.#strideDistance = 0;
 		};
 
-		// Profiling keys: F5 dumps a frame-section report plus the GPU-upload
-		// counters, F6 toggles far-tile visibility for GPU-side A/B comparison
-		// (CPU sections vs rAF delta). F6 now also STOPS far-tile uploads, so
-		// it is a valid A/B for attributing a `writeBuffer` spike.
+		// Profiling keys. These are a GPU-side bisect for the case where frame
+		// CPU is small, every queue is empty, and frames are still slow — the
+		// only way to attribute that is to remove one class of draw at a time:
+		//   F5  dump a frame-section report plus the GPU-upload counters
+		//   F6  far-tile visibility (also STOPS far-tile uploads, so it is a
+		//       valid A/B for attributing a `writeBuffer` spike)
+		//   F7  packed chunk-mesh visibility — the bulk of world draw work.
+		//       Leaves uploads and dirty state untouched, so re-enabling
+		//       restores the full picture at once.
+		// F3 (DebugControlHelper) hides the debug panel, which is the
+		// DOM/compositing arm of the same bisect.
 		window.addEventListener("keydown", this.#profilerKeyDown);
 	}
 
@@ -213,9 +232,13 @@ export class PlayerLoopController {
 			e.preventDefault();
 			const next = !FarTileManager.isFarTilesVisible();
 			FarTileManager.setFarTilesVisible(next);
+			console.info(`[Profiler] far tiles visible: ${next} ...`);
+		} else if (key === "f7") {
+			e.preventDefault();
+			const next = setChunkMeshesVisible(!areChunkMeshesVisible());
 			console.info(
-				`[Profiler] far tiles visible: ${next} ` +
-					"(uploads suspended while hidden; re-enabling drains the backlog)",
+				`[Profiler] packed chunk meshes visible: ${next} ` +
+					"(uploads and dirty state untouched; re-enabling restores everything)",
 			);
 		}
 	};
@@ -229,6 +252,15 @@ export class PlayerLoopController {
 
 	public tick(deltaMs: number): void {
 		const frameStart = performance.now();
+
+		// Paused: skip the simulation body, but still commit a profiler sample.
+		// The streaming and farTiles hooks are not pause-gated, so their
+		// section time has to be committed somewhere or it accumulates.
+		if (getIsPaused()) {
+			this.#commitFrame(deltaMs, frameStart);
+			return;
+		}
+
 		const dtSec = deltaMs * 0.001;
 
 		// Batch the whole tick wave: a flood tick can write hundreds of blocks;
@@ -357,30 +389,37 @@ export class PlayerLoopController {
 
 		this.#freezeActiveMeshes();
 
-		/*
-		 * Commit the frame from a microtask, not inline.
-		 *
-		 * Lite's `onBeforeRender` UNSHIFTS, so the most recently registered
-		 * hook runs FIRST. That makes this callback (registered last, in
-		 * TestScene.registerFrameUpdate) run before the `streaming` hook
-		 * (PlayerLoopController.#installStreaming) and the `farTiles` hook
-		 * (FarTileManager.init). Committing inline therefore recorded those
-		 * two sections one frame late AND folded their time into
-		 * (unaccounted) — the sections that matter most when diagnosing an
-		 * upload spike were the two the profiler mis-attributed.
-		 *
-		 * `_update()` runs every hook synchronously and a microtask only drains
-		 * once that stack empties, so this lands after all of them regardless
-		 * of registration order. It also runs after `_record()`/submit, which
-		 * is harmless: endFrame only timestamps and commits.
-		 */
+		this.#commitFrame(deltaMs, frameStart);
+	}
+
+	/*
+	 * Commit the frame from a microtask, not inline.
+	 *
+	 * Lite's `onBeforeRender` UNSHIFTS, so the most recently registered
+	 * hook runs FIRST. That makes this callback (registered last, in
+	 * TestScene.registerFrameUpdate) run before the `streaming` hook
+	 * (PlayerLoopController.#installStreaming) and the `farTiles` hook
+	 * (FarTileManager.init). Committing inline therefore recorded those
+	 * two sections one frame late AND folded their time into
+	 * (unaccounted) — the sections that matter most when diagnosing an
+	 * upload spike were the two the profiler mis-attributed.
+	 *
+	 * `_update()` runs every hook synchronously and a microtask only drains
+	 * once that stack empties, so this lands after all of them regardless
+	 * of registration order. It also runs after `_record()`/submit, which
+	 * is harmless: endFrame only timestamps and commits.
+	 *
+	 * The elapsed span from `frameStart` to here is therefore the CPU time of
+	 * the whole rAF task, not just this controller's share.
+	 */
+	#commitFrame(deltaMs: number, frameStart: number): void {
 		queueMicrotask(() => {
 			if (this.#pendingGpuLagMs > 0) {
 				frameProfiler.noteSectionValue("gpuLag", this.#pendingGpuLagMs);
 				this.#pendingGpuLagMs = 0;
 			}
 
-			frameProfiler.endFrame(deltaMs);
+			frameProfiler.endFrame(deltaMs, performance.now() - frameStart);
 		});
 	}
 
@@ -730,6 +769,46 @@ export class PlayerLoopController {
 			this.#mainThreadMs.toFixed(1),
 			"performance",
 		);
+
+		// Whole-thread accounting, not just this hook. `Frame CPU` is the CPU
+		// time inside the rAF task; `Thread Busy` adds the work done in tasks
+		// that run between frames (the worker-pool MessageChannel drain,
+		// worker messages, the chunk scheduler's async tail) and divides by the
+		// frame delta. Anything over 100% means the main thread cannot keep up
+		// with the refresh deadline, which is exactly when Chrome's Frames
+		// track starts showing drops — even with every section reading ~0.
+		//
+		// The report sorts several 300-sample windows, so it carries its own
+		// throttle rather than riding the HUD's: `spike` deliberately bypasses
+		// the HUD interval, and re-sorting on every spiking frame would inflate
+		// the very frames under investigation.
+		if (now - this.#lastProfilerReportMs >= PROFILER_REPORT_INTERVAL_MS) {
+			this.#lastProfilerReportMs = now;
+			this.#cachedReport = frameProfiler.report(300);
+		}
+		const profReport = this.#cachedReport;
+		if (profReport !== null) {
+			const refresh = frameProfiler.estimatedRefreshMs();
+			PlayerHud.updateDebugInfo(
+				"Frame CPU p95",
+				`${profReport.frameCpu.p95.toFixed(1)}ms avg ${profReport.frameCpu.avg.toFixed(1)} ` +
+					`(refresh ${refresh.toFixed(1)}ms)`,
+				"performance",
+			);
+			const busy = Math.max(0, profReport.busy.p95);
+			PlayerHud.updateDebugInfo(
+				"Thread Busy",
+				`${(busy * 100).toFixed(0)}% (avg ${(Math.max(0, profReport.busy.avg) * 100).toFixed(0)}%)`,
+				"performance",
+			);
+			let offFrameTotal = 0;
+			for (const s of profReport.offFrame) offFrameTotal += s.avg;
+			PlayerHud.updateDebugInfo(
+				"Off-Frame Work",
+				`${offFrameTotal.toFixed(2)}ms/frame`,
+				"performance",
+			);
+		}
 		// PERF DIAGNOSTIC: peak queue-drain time in the current window, plus the
 		// live back-pressure factor. A high peak alongside a low main-thread
 		// time means the frame is GPU/queue-bound (the `writeBuffer`
@@ -895,6 +974,50 @@ export class PlayerLoopController {
 				`(${mem.arenaUsedFaces}/${mem.arenaCapacityFaces}f) ` +
 				`off:${mib(mem.offsetBytes)} grp:${layers.groups}/${mib(layers.layerBytes)}MiB`,
 			"workers",
+		);
+
+		/*
+		 * PERF DIAGNOSTIC: the actual GPU surface size, which nothing else
+		 * reports. Fragment cost scales with these pixels, and RENDER_SCALE is
+		 * a multiplier on devicePixelRatio — so a 2x DPR display at scale 1
+		 * is 4x the pixels of a 1x one, and an MSAA 4x surface multiplies the
+		 * raster and resolve cost again. When frame CPU is small and frames
+		 * are still slow, this row is what decides between "too many pixels"
+		 * and "too much geometry".
+		 */
+		const engine = Map1.engine;
+		if (engine !== null) {
+			const canvas = engine.canvas;
+			PlayerHud.updateDebugInfo(
+				"Render Surface",
+				`${canvas.width}x${canvas.height} = ${mib(
+					canvas.width * canvas.height * 4,
+				)}Mpx px ` +
+					`dpr:${(typeof window === "undefined" ? 1 : window.devicePixelRatio).toFixed(2)} ` +
+					`scale:${SETTING_PARAMS.RENDER_SCALE} ` +
+					`msaa:${SETTING_PARAMS.ENABLE_MSAA ? "4x" : "off"}`,
+				"performance",
+			);
+		}
+
+		/*
+		 * PERF DIAGNOSTIC: face bytes the last merged-group flush handed to
+		 * `queue.writeBuffer`. The flush has a 2 MiB ceiling on this (restored
+		 * after it was dropped in 93e52bc) because a CPU-time budget cannot
+		 * bound GPU work — an unbounded flush parks a large staging backlog and
+		 * the next frame stalls inside writeBuffer during lite's _record(),
+		 * after the onBeforeRender hooks have returned. That is why a
+		 * budget-exhausted flush is expected during streaming and is not a bug.
+		 * A value pinned at the ceiling with `stalled` means uploads are the
+		 * limiter, not the CPU.
+		 */
+		const flushStats = getMergedMeshFlushStats();
+		PlayerHud.updateDebugInfo(
+			"GPU Upload Flush",
+			`${mib(flushStats.lastGpuBytes)}MiB/flush ` +
+				`cpu:${flushStats.lastMs.toFixed(2)}ms ` +
+				`${flushStats.budgetExhausted ? "capped" : "clear"}`,
+			"performance",
 		);
 
 		const census = Chunk.getCensus();
