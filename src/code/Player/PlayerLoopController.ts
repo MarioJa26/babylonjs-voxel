@@ -215,6 +215,10 @@ export class PlayerLoopController {
 		const key = e.key.toLowerCase();
 		if (key === "f5") {
 			e.preventDefault();
+			// F5 is the explicit "I'm profiling now" gesture; the profiler is
+			// off by default, so make sure it records going forward. (The dump
+			// itself may be empty on the first press — history starts here.)
+			if (!frameProfiler.isEnabled()) frameProfiler.setEnabled(true);
 			frameProfiler.logReport();
 			PlayerHud.updateDebugInfo(
 				"Profiler",

@@ -55,6 +55,7 @@ type DynamicBlockMutator = (
 ) => boolean;
 
 type DynamicBlockProviderEntry = {
+	handle: symbol;
 	provider: DynamicBlockProvider;
 	mutator?: DynamicBlockMutator;
 };
@@ -65,7 +66,10 @@ export type DynamicBlockQueryOptions = {
 
 const loadQueue: QueuedChunkRequest[] = [];
 const unloadQueueSet: Set<Chunk> = new Set();
-const dynamicBlockProviders: Map<symbol, DynamicBlockProviderEntry> = new Map();
+// PERF: plain array, not a Map — sampled on every voxel query (collision,
+// raycast, light), and providers are few (one per boat). Index iteration
+// skips Map iterator setup and symbol-key hashing in the hot path.
+const dynamicBlockProviders: DynamicBlockProviderEntry[] = [];
 
 const debug = new ChunkLoadingDebug();
 
@@ -477,10 +481,7 @@ export function registerDynamicBlockProvider(
 	mutator?: DynamicBlockMutator,
 ): symbol {
 	const handle = Symbol("dynamicBlockProvider");
-	dynamicBlockProviders.set(handle, {
-		provider,
-		mutator,
-	});
+	dynamicBlockProviders.push({ handle, provider, mutator });
 	return handle;
 }
 
@@ -490,7 +491,12 @@ export function unregisterDynamicBlockProvider(
 	if (!handle) {
 		return;
 	}
-	dynamicBlockProviders.delete(handle);
+	for (let i = 0; i < dynamicBlockProviders.length; i++) {
+		if (dynamicBlockProviders[i].handle === handle) {
+			dynamicBlockProviders.splice(i, 1);
+			return;
+		}
+	}
 }
 
 function sampleDynamicBlock(
@@ -499,14 +505,16 @@ function sampleDynamicBlock(
 	worldZ: number,
 	options?: DynamicBlockQueryOptions,
 ): DynamicBlockSample | null {
-	if (dynamicBlockProviders.size === 0) {
+	const providers = dynamicBlockProviders;
+	if (providers.length === 0) {
 		return null;
 	}
 
 	const ignored = options?.ignoredDynamicBlockProviders;
 
-	for (const [handle, entry] of dynamicBlockProviders) {
-		if (ignored?.has(handle)) {
+	for (let i = 0; i < providers.length; i++) {
+		const entry = providers[i];
+		if (ignored?.has(entry.handle)) {
 			continue;
 		}
 
@@ -526,14 +534,14 @@ function tryMutateDynamicBlock(
 	blockId: number,
 	blockState: number,
 ): boolean {
-	if (dynamicBlockProviders.size === 0) {
+	const providers = dynamicBlockProviders;
+	if (providers.length === 0) {
 		return false;
 	}
 
-	for (const entry of dynamicBlockProviders.values()) {
-		const handled =
-			entry.mutator?.(worldX, worldY, worldZ, blockId, blockState) ?? false;
-		if (handled) {
+	for (let i = 0; i < providers.length; i++) {
+		const mutator = providers[i].mutator;
+		if (mutator && mutator(worldX, worldY, worldZ, blockId, blockState)) {
 			return true;
 		}
 	}

@@ -108,7 +108,12 @@ export class FrameProfiler {
 	// work turns into a "0 work" reading, so it is reported once per name.
 	private readonly unknownSections = new Set<string>();
 
-	private enabled = true;
+	// Off by default: begin/end/note* each early-return on this flag, so the
+	// steady-state cost is a single branch per call. Auto-enabled by the debug
+	// panel (PlayerHud.showDebugPanel) and the F5 dump (PlayerLoopController),
+	// so profiling only runs while someone is actually looking at it. report()
+	// degrades to zeros until enough frames accumulate after the first enable.
+	private enabled = false;
 
 	constructor(
 		sectionNames: string[],

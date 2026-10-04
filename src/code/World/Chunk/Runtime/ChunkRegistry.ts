@@ -5,7 +5,12 @@ import { packCoords } from "../DataStructures/ChunkCoords";
 export const chunkInstances = new Map<bigint, Chunk>();
 export const chunkByNumericKey = new Map<number, Chunk>();
 
-const FAST_SLOTS = 8;
+// PERF: 8 slots thrashed in a streaming world — mobs, collision, raycasts and
+// lighting touch many distinct chunks per frame, so lookups fell through to
+// packChunkKeyFast + Map.get almost every time. 32 still costs one extra
+// 3-compare check per miss in the worst case, but cuts Map traffic for all
+// callers. Must stay a power of two (cursor mask below).
+const FAST_SLOTS = 32;
 const EMPTY_COORDINATE = 0x7fffffff;
 const fastX = new Int32Array(FAST_SLOTS).fill(EMPTY_COORDINATE);
 const fastY = new Int32Array(FAST_SLOTS).fill(EMPTY_COORDINATE);

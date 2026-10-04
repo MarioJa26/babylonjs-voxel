@@ -9,6 +9,7 @@ import {
 	openUi,
 	UiFocus,
 } from "@/code/Lib/GameRuntimeState";
+import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { Map1 } from "@/code/Maps/Map1";
 import { ContainerRejectReason } from "@/code/Network/protocol/messages";
 import type {
@@ -435,10 +436,19 @@ export class PlayerHud {
 		const fill = this.#bossBarFill;
 		if (!container || !fill) return;
 
+		// Gate on gamemode first: creative mode never shows the bar, and the
+		// check is cheaper than asking the encounter system for its boss.
+		if (this.#player.stats?.gamemode === Gamemodes.Creative) {
+			if (this.#prevBossPct >= 0) {
+				container.style.display = "none";
+				this.#prevBossPct = -1;
+			}
+			return;
+		}
+
 		const boss = getMayaDungeonEncounter()?.getLiveBoss() ?? null;
 		const visible =
 			boss !== null &&
-			this.#player.stats?.gamemode !== Gamemodes.Creative &&
 			bossDistanceSq(boss.position, this.#player.position) <= BOSS_BAR_RANGE_SQ;
 
 		if (!visible) {
@@ -1705,6 +1715,10 @@ export class PlayerHud {
 			PlayerHud.removeDebugInfo("Faces");
 			PlayerHud.debugPanelDiv.style.display = "block";
 			PlayerHud.debugPanelVisible = true;
+			// The profiler is off by default to avoid its per-frame overhead;
+			// the debug panel is the one place its readings are surfaced, so
+			// start recording here. F5 can also enable it independently.
+			if (!frameProfiler.isEnabled()) frameProfiler.setEnabled(true);
 		}
 	}
 
@@ -1712,6 +1726,7 @@ export class PlayerHud {
 		if (PlayerHud.debugPanelDiv) {
 			PlayerHud.debugPanelDiv.style.display = "none";
 			PlayerHud.debugPanelVisible = false;
+			if (frameProfiler.isEnabled()) frameProfiler.setEnabled(false);
 		}
 	}
 

@@ -85,6 +85,15 @@ export class MayaDungeonEncounter {
 	#lastSweep = -SWEEP_INTERVAL_MS;
 	#disposed = false;
 
+	/**
+	 * Cached live boss so the HUD's per-frame getLiveBoss() call is a single
+	 * field read + isDisposed check instead of a temples x mobs scan.
+	 * Validated lazily: any dispose path (temple release, wander-out, death)
+	 * is caught by the isDisposed check, and #populateNear refreshes it on
+	 * respawn.
+	 */
+	#boss: MayaGuardian | null = null;
+
 	constructor(
 		scene: SceneContext,
 		getPlayerPosition: () => Vec3,
@@ -206,6 +215,7 @@ export class MayaDungeonEncounter {
 			// natural mob cap the surface spawner enforces.
 			guardian.countsTowardMobCap = false;
 			mob = guardian;
+			this.#boss = guardian;
 		} else if (post.mobType === "skeleton") {
 			const skeleton = new Skeleton(post.x, standY, post.z, this.#scene);
 			skeleton.countsTowardMobCap = false;
@@ -264,17 +274,30 @@ export class MayaDungeonEncounter {
 		return count;
 	}
 
-	/** Live boss, if one is currently instantiated. Drives the boss HUD. */
+	/**
+	 * Live boss, if one is currently instantiated. Drives the boss HUD, which
+	 * polls this every frame — the cached reference keeps that O(1) instead of
+	 * a temples x mobs scan.
+	 */
 	getLiveBoss(): MayaGuardian | null {
-		for (const temple of this.#active.values()) {
-			for (const mob of temple.mobs.values()) {
-				if (mob.isDisposed) continue;
-				if (mob.mobType === MAYA_GUARDIAN_MOB_TYPE) {
-					return mob as MayaGuardian;
+		const cached = this.#boss;
+		if (cached && !cached.isDisposed) return cached;
+
+		let found: MayaGuardian | null = null;
+		if (cached || this.#active.size > 0) {
+			for (const temple of this.#active.values()) {
+				for (const mob of temple.mobs.values()) {
+					if (mob.isDisposed) continue;
+					if (mob.mobType === MAYA_GUARDIAN_MOB_TYPE) {
+						found = mob as MayaGuardian;
+						break;
+					}
 				}
+				if (found) break;
 			}
 		}
-		return null;
+		this.#boss = found;
+		return found;
 	}
 }
 
