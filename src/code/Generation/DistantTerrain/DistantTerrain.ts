@@ -27,6 +27,7 @@ import {
 	createDistantWaterMaterial,
 } from "@/code/World/Light/DistantTerrainShaderLite";
 import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer";
+import { setMeshBaseVisible } from "@/code/World/MeshVisibility";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import {
 	atlasTileSize,
@@ -282,6 +283,10 @@ function rebuildClipMeshes(): void {
 			lastWorldZ,
 		);
 	}
+
+	// Newly built meshes start with no gate state — carry the underwater
+	// decision onto them before the next frame renders.
+	applyDistantTerrainVisibility();
 }
 
 function createEmptyGridMesh(engine: EngineContext, name: string): Mesh {
@@ -314,6 +319,22 @@ let lastLy = Number.NaN;
 let lastLz = Number.NaN;
 let lastSunIntensity = Number.NaN;
 let lastUnderWater: boolean | null = null;
+
+/**
+ * Draw-only underwater gate. Distant terrain and its water sheet are hundreds
+ * of blocks out, while underwater fog is fully opaque at
+ * `MapFog.fogEndUnderWater` (100) — every fragment they would shade is fog
+ * colour, so the whole class of draw is skipped while the eye is submerged.
+ * Geometry/streaming is untouched, so surfacing shows the horizon at once.
+ */
+let distantUnderwater = false;
+
+function applyDistantTerrainVisibility(): void {
+	if (!mesh || !waterMesh) return;
+	const visible = !distantUnderwater;
+	setMeshBaseVisible(mesh, visible);
+	setMeshBaseVisible(waterMesh, visible);
+}
 let lastFogStart = Number.NaN;
 let lastFogEnd = Number.NaN;
 let lastFogColorR = Number.NaN;
@@ -355,6 +376,11 @@ function updateUniforms() {
 	const isUnderWater = camPos
 		? isEyeUnderwater(camPos.x, camPos.y, camPos.z)
 		: false;
+
+	if (isUnderWater !== distantUnderwater) {
+		distantUnderwater = isUnderWater;
+		applyDistantTerrainVisibility();
+	}
 
 	const start = MapFog.getFogStart(isUnderWater);
 	const end = MapFog.getFogEnd(isUnderWater);

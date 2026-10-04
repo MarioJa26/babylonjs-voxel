@@ -27,6 +27,7 @@ import {
 	createFarTileWaterMaterial,
 } from "../Light/FarTileShaderLite";
 import { onGpuWorkDone } from "../Light/liteGpuBuffer.js";
+import { setMeshBaseVisible } from "../MeshVisibility";
 import {
 	atlasTileSize,
 	getDiffuseTexture2D,
@@ -110,7 +111,6 @@ interface FarSlot {
 }
 
 interface FarMeshLike extends Mesh {
-	isVisible?: boolean;
 	thinInstances?: {
 		matrices: Float32Array;
 		count: number;
@@ -383,6 +383,14 @@ interface TileEntry {
 
 const STRAIGHT_INDICES = new Uint32Array([0, 1, 2, 0, 2, 3]);
 const REVERSED_INDICES = new Uint32Array([0, 2, 1, 0, 3, 2]);
+
+/**
+ * Effective base visibility for every far-tile mesh — the F6 diagnostic toggle
+ * ANDed with the underwater gate. Kept at module scope so a mesh attached later
+ * (level setup can run at any time, including while submerged) is born in the
+ * right state instead of needing a follow-up sweep.
+ */
+let farTilesBaseVisible = true;
 
 class WindingMesh {
 	mesh: FarMeshLike | null = null;
@@ -770,6 +778,12 @@ class FarTileManagerImpl {
 	// spike to this subsystem. Gating frame() on this makes the toggle a real
 	// A/B: dirty ranges are left intact and drain when visibility returns.
 	private farTilesVisible = true;
+
+	// Draw-only gate: far tiles reach hundreds of blocks out while underwater
+	// fog is fully opaque at 100 (MapFog.fogEndUnderWater), so every fragment
+	// they would shade is fog colour anyway. Streaming/uploads keep running so
+	// the horizon is ready the instant the eye breaks the surface.
+	private farTilesUnderwater = false;
 
 	private readonly tiles = new Map<number, TileEntry>();
 	private readonly pendingByKey = new Set<number>();
@@ -1298,18 +1312,25 @@ class FarTileManagerImpl {
 		};
 	}
 
-	public setFarTilesVisible(visible: boolean): void {
-		this.farTilesVisible = visible;
+	private applyFarTilesVisibility(): void {
+		const base = this.farTilesVisible && !this.farTilesUnderwater;
+		if (base === farTilesBaseVisible) return;
+		farTilesBaseVisible = base;
 
 		for (const wm of this.terrainStraight) {
-			if (wm.mesh) (wm.mesh as FarMeshLike).isVisible = visible;
+			if (wm.mesh) setMeshBaseVisible(wm.mesh, base);
 		}
 		for (const wm of this.terrainReversed) {
-			if (wm.mesh) (wm.mesh as FarMeshLike).isVisible = visible;
+			if (wm.mesh) setMeshBaseVisible(wm.mesh, base);
 		}
 		if (this.waterReversed.mesh) {
-			(this.waterReversed.mesh as FarMeshLike).isVisible = visible;
+			setMeshBaseVisible(this.waterReversed.mesh, base);
 		}
+	}
+
+	public setFarTilesVisible(visible: boolean): void {
+		this.farTilesVisible = visible;
+		this.applyFarTilesVisibility();
 	}
 
 	public isFarTilesVisible(): boolean {
@@ -1638,6 +1659,11 @@ class FarTileManagerImpl {
 			? isEyeUnderwater(cameraPosition.x, cameraPosition.y, cameraPosition.z)
 			: false;
 
+		if (underWater !== this.farTilesUnderwater) {
+			this.farTilesUnderwater = underWater;
+			this.applyFarTilesVisibility();
+		}
+
 		const fogStart = MapFog.getFogStart(underWater);
 		const fogEnd = MapFog.getFogEnd(underWater);
 		const fogColor = MapFog.getFogColor(underWater);
@@ -1761,6 +1787,7 @@ function attachFarTileMesh(
 	bindFarTileBuffers(material, arenaBuffer, originsBuffer);
 	addToScene(scene, mesh);
 	holder.mesh = mesh;
+	setMeshBaseVisible(mesh, farTilesBaseVisible);
 }
 
 function createQuadInstanceMesh(

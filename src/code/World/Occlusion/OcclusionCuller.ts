@@ -32,6 +32,8 @@ import {
 	getAllGroups,
 	type MergedMeshGroup,
 } from "../Chunk/Meshing/MergedMeshManager";
+import { pendingConnectivity } from "../Chunk/Runtime/ChunkConnectivityQueue";
+import { setMeshCulled } from "../MeshVisibility";
 import {
 	FrustumHint,
 	getOctreeGroupCount,
@@ -64,6 +66,8 @@ const MAX_RENDER_RADIUS =
 	2;
 const SEA_LEVEL = GenerationParams.SEA_LEVEL;
 const FRUSTUM_MARGIN = 32.0;
+/** Chunks per merged-group axis (`gridX/Y/Z` is `chunkX >> 2`). */
+const GROUP_CHUNKS = 4;
 
 // TEMP DEBUG: set true to disable frustum culling (for testing the gap).
 const DISABLE_FRUSTUM_CULL = false;
@@ -339,7 +343,10 @@ export class OcclusionCuller {
 	private _lastCamCY = -99999;
 	private _lastCamCZ = -99999;
 
-	private _topologyDirty = false;
+	// Throttle for the topology-triggered BFS restart: a burst of block edits
+	// collapses into one restart every N frames instead of one per edit. The
+	// "is there anything to recompute" test is just `pendingConnectivity.length`
+	// — chunks enqueue themselves on edit, so there is no per-frame scan.
 	private _topoDirtyFrameCount = 0;
 	private static readonly TOPO_THROTTLE_FRAMES = 3;
 
@@ -347,9 +354,6 @@ export class OcclusionCuller {
 	// that affects visibility has changed since last frame.
 	private _lastTotal = 0;
 	private _lastOccluded = 0;
-
-	private _dirtyConnectivityChunks: Chunk[] = [];
-	private _oceanFloorGroupCache = new WeakMap<MergedMeshGroup, boolean>();
 
 	private _bfsInProgress = false;
 	private _bfsQHead = 0;
@@ -368,24 +372,46 @@ export class OcclusionCuller {
 	private static readonly SWEEP_NEAR_DIST_SQ = (10 * Chunk.SIZE) ** 2;
 	private _sweepSlot = 0;
 
+	/**
+	 * Does the group's fixed 4×4×4 chunk block contain an ocean-floor band
+	 * chunk? Answered from grid coordinates alone — a group never moves, so
+	 * the result is derived once and cached on the group for its whole
+	 * lifetime.
+	 *
+	 * The previous implementation walked `membersArray` and memoised the
+	 * answer in a WeakMap that was dropped wholesale on ANY group mutation,
+	 * so one stream-in event made the next sweep re-walk every group's
+	 * members and re-run `columnMinHeight` noise for every below-sea-level
+	 * group. It was also load-order dependent: a group whose ocean-floor
+	 * member had not streamed in yet got `false`.
+	 *
+	 * For a column the band is the chunk range `[floor(minH / SIZE), -1]`, so
+	 * probing `min(baseY + 3, -1)` is exactly "does any band chunk fall inside
+	 * this block" — `isOceanFloorBandChunk` already applies the `chunkY < 0`
+	 * and `minH < SEA_LEVEL` filters, so one call per column is exact.
+	 */
 	private hasOceanFloorGroupMember(group: MergedMeshGroup): boolean {
-		const cached = this._oceanFloorGroupCache.get(group);
+		const cached = group.oceanFloorBand;
 		if (cached !== undefined) return cached;
 
-		const members = group.membersArray;
+		const baseX = group.gridX * GROUP_CHUNKS;
+		const baseY = group.gridY * GROUP_CHUNKS;
+		const baseZ = group.gridZ * GROUP_CHUNKS;
+
 		let hasOceanFloor = false;
-		for (let i = 0; i < members.length; i++) {
-			const chunk = members[i]?.chunk;
-			if (
-				chunk &&
-				isOceanFloorBandChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
-			) {
-				hasOceanFloor = true;
-				break;
+		if (baseY < 0) {
+			const probeY = Math.min(baseY + GROUP_CHUNKS - 1, -1);
+			for (let dx = 0; dx < GROUP_CHUNKS && !hasOceanFloor; dx++) {
+				for (let dz = 0; dz < GROUP_CHUNKS; dz++) {
+					if (isOceanFloorBandChunk(baseX + dx, probeY, baseZ + dz)) {
+						hasOceanFloor = true;
+						break;
+					}
+				}
 			}
 		}
 
-		this._oceanFloorGroupCache.set(group, hasOceanFloor);
+		group.oceanFloorBand = hasOceanFloor;
 		return hasOceanFloor;
 	}
 
@@ -409,28 +435,16 @@ export class OcclusionCuller {
 
 		const currentLoadedSize = Chunk.loadedChunks.size;
 
-		// Topology-dirty scan: queue reachable chunks whose face connectivity
-		// went stale (block edits) for recomputation at the next BFS restart.
+		// Topology-dirty check: chunks push themselves onto `pendingConnectivity`
+		// the instant a block edit invalidates their face connectivity, so this
+		// is an array-length read instead of the old O(reachable-chunks) walk.
 		let topologyTrigger = false;
-		{
-			const vis = this._topoVisibleChunks;
-			const len = vis.length;
-			for (let i = 0; i < len; i++) {
-				const chunk = vis[i];
-				if (chunk.connectivityDirty && !chunk.bfsQueuedForConnectivity) {
-					chunk.bfsQueuedForConnectivity = true;
-					this._dirtyConnectivityChunks.push(chunk);
-					this._topologyDirty = true;
-				}
-			}
-
-			if (this._topologyDirty) {
-				if (
-					++this._topoDirtyFrameCount >= OcclusionCuller.TOPO_THROTTLE_FRAMES
-				) {
-					topologyTrigger = true;
-					this._topoDirtyFrameCount = 0;
-				}
+		if (pendingConnectivity.length > 0) {
+			if (
+				++this._topoDirtyFrameCount >= OcclusionCuller.TOPO_THROTTLE_FRAMES
+			) {
+				topologyTrigger = true;
+				this._topoDirtyFrameCount = 0;
 			}
 		}
 
@@ -445,7 +459,6 @@ export class OcclusionCuller {
 			this._lastCamCX = camCX;
 			this._lastCamCY = camCY;
 			this._lastCamCZ = camCZ;
-			this._topologyDirty = false;
 			this._startBFS(camCX, camCY, camCZ);
 		}
 
@@ -481,7 +494,6 @@ export class OcclusionCuller {
 		}
 
 		const groupsMutated = consumeGroupsMutated();
-		if (groupsMutated) this._oceanFloorGroupCache = new WeakMap();
 		const needSweep =
 			cameraMoved ||
 			vpChanged ||
@@ -509,7 +521,7 @@ export class OcclusionCuller {
 		// MergedMeshManager functions), fall back to the flat loop so no group
 		// can get stuck with a stale visibility flag.
 		const allGroups = getAllGroups();
-		const G = 4;
+		const G = GROUP_CHUNKS;
 		const groupExtent = G * SIZE;
 		const gHalf = groupExtent * 0.5;
 		const queryId = this._currentQueryId;
@@ -613,8 +625,25 @@ export class OcclusionCuller {
 				}
 			}
 
+			/*
+			 * Out of the frustum the answer is already `false`, and the
+			 * reachability scan below can only confirm it — but that scan has
+			 * an early return that deliberately KEEPS the previous visibility
+			 * while the BFS is still spreading, which would leave an
+			 * out-of-frustum group drawn. Decide first, and skip the
+			 * ocean-floor probe and member walk entirely while we're here.
+			 */
+			if (!inFrustum) {
+				groupTotal++;
+				groupHidden++;
+				setMeshCulled(group.opaqueMeshRef, true);
+				setMeshCulled(group.waterMeshRef, true);
+				setMeshCulled(group.cutoutMeshRef, true);
+				return;
+			}
+
 			const isOceanFloorGroup =
-				inFrustum && !isSurfaceGroup && this.hasOceanFloorGroupMember(group);
+				!isSurfaceGroup && this.hasOceanFloorGroupMember(group);
 
 			// BFS reachability — hide groups sealed off from the camera's air
 			// region (Minecraft-style cave culling). Surface groups bypass the
@@ -627,7 +656,7 @@ export class OcclusionCuller {
 
 			let vis: boolean;
 			if (bypassBFS) {
-				vis = inFrustum;
+				vis = true;
 			} else {
 				let bfsReachable = false;
 				let bfsPrevious = false;
@@ -655,25 +684,19 @@ export class OcclusionCuller {
 				if (!bfsReachable && bfsPrevious && bfsInProgress) {
 					groupTotal++;
 					const mesh = group.opaqueMeshRef;
-					if (!mesh || mesh.isVisible === false) groupHidden++;
+					if (!mesh || mesh.visible === false) groupHidden++;
 					return;
 				}
 
-				vis = inFrustum && bfsReachable;
+				vis = bfsReachable;
 			}
 
 			groupTotal++;
 			if (!vis) groupHidden++;
 
-			if (group.opaqueMeshRef && group.opaqueMeshRef.isVisible !== vis) {
-				group.opaqueMeshRef.isVisible = vis;
-			}
-			if (group.waterMeshRef && group.waterMeshRef.isVisible !== vis) {
-				group.waterMeshRef.isVisible = vis;
-			}
-			if (group.cutoutMeshRef && group.cutoutMeshRef.isVisible !== vis) {
-				group.cutoutMeshRef.isVisible = vis;
-			}
+			setMeshCulled(group.opaqueMeshRef, !vis);
+			setMeshCulled(group.waterMeshRef, !vis);
+			setMeshCulled(group.cutoutMeshRef, !vis);
 		};
 
 		if (_frustumValid && getOctreeGroupCount() === allGroups.length) {
@@ -869,8 +892,9 @@ export class OcclusionCuller {
 
 		this._topoVisibleChunks.length = 0;
 
-		// Batch connectivity recomputation before BFS
-		const dirty = this._dirtyConnectivityChunks;
+		// Batch connectivity recomputation before BFS. Entries arrive here
+		// straight from the block-edit path, so nothing is scanned to find them.
+		const dirty = pendingConnectivity;
 		const dirtyLen = dirty.length;
 		for (let i = 0; i < dirtyLen; i++) {
 			const c = dirty[i];

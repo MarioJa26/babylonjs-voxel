@@ -48,6 +48,7 @@ import {
 	updateStorageBuffer,
 } from "@babylonjs/lite";
 import { onGpuWorkDone } from "../../Light/liteGpuBuffer.js";
+import { setMeshBaseVisible } from "../../MeshVisibility.js";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import type { MergedFaceRange } from "./MergedMeshManager.js";
 
@@ -58,7 +59,6 @@ interface EngineWithDevice extends EngineContext {
 	_device: GPUDevice;
 }
 interface PackedMesh extends Mesh {
-	isVisible: boolean;
 	thinInstances?: {
 		matrices: Float32Array;
 		count: number;
@@ -1913,7 +1913,7 @@ export function updatePackedChunkMesh(
 							oldCount,
 						);
 					} else {
-						(mesh as PackedMesh).isVisible = false;
+						setMeshBaseVisible(mesh, false);
 					}
 				}
 
@@ -1925,7 +1925,7 @@ export function updatePackedChunkMesh(
 				return mesh;
 			}
 
-			(mesh as PackedMesh).isVisible = false;
+			setMeshBaseVisible(mesh, false);
 
 			console.error(
 				`[PackedChunkMesh] arena restore failed for ${faceCount}-face ` +
@@ -2016,8 +2016,9 @@ function applyMeshMeta(
 	anyMesh.boundMin = boundMin;
 	anyMesh.boundMax = boundMax;
 	// Respect the F7 diagnostic override: a rebuild must not silently
-	// re-show geometry the operator has switched off.
-	anyMesh.visible = chunkMeshesVisible;
+	// re-show geometry the operator has switched off. This only re-asserts
+	// the `base` gate; a culled mesh stays culled.
+	setMeshBaseVisible(mesh, chunkMeshesVisible);
 
 	if (mesh.material !== input.material) {
 		mesh.material = input.material;
@@ -2060,7 +2061,7 @@ export function areChunkMeshesVisible(): boolean {
 export function setChunkMeshesVisible(visible: boolean): boolean {
 	chunkMeshesVisible = visible;
 	for (const mesh of livePackedMeshes) {
-		mesh.visible = visible;
+		setMeshBaseVisible(mesh, visible);
 	}
 	return visible;
 }

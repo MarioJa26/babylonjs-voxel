@@ -449,7 +449,11 @@ export class PlayerHud {
 			return;
 		}
 
-		container.style.display = "flex";
+		// Guarded: updateStats runs every frame, and re-parsing "flex" into the
+		// inline style each time is pure CSSOM churn while the bar is already up.
+		if (container.style.display !== "flex") {
+			container.style.display = "flex";
+		}
 		this.#prevBossPct = setBar(
 			fill,
 			this.#prevBossPct,

@@ -31,6 +31,8 @@
 
 const MAX_SECTION_NAME_LEN = 24;
 
+const compareNumbers = (a: number, b: number): number => a - b;
+
 export interface SectionStat {
 	name: string;
 	avg: number;
@@ -97,6 +99,9 @@ export class FrameProfiler {
 	private readonly recentDeltas: Float64Array;
 	private recentDeltaCount = 0;
 	private recentDeltaIdx = 0;
+
+	/** Window scratch for buildStats — reused so a report allocates nothing. */
+	private readonly statScratch: number[] = [];
 
 	// Names seen in begin()/noteOffFrameValue() that are not in either table.
 	// An unregistered name is silently discarded, which is exactly how real
@@ -339,28 +344,6 @@ export class FrameProfiler {
 		for (let o = 0; o < this.offFrameCount; o++) this.currentOffFrame[o] = 0;
 	}
 
-	/**
-	 * Percentile of a sample window. Copies the window (does not mutate the
-	 * ring buffer).
-	 */
-	private percentileOverWindow(
-		get: (slot: number) => number,
-		windowFrames: number,
-		p: number,
-	): number {
-		const n = Math.min(this.recordedFrames, windowFrames);
-		if (n === 0) return 0;
-		const samples: number[] = new Array(n);
-		const cap = this.frameMs.length;
-		for (let i = 0; i < n; i++) {
-			const slot = (this.writeIdx - 1 - i + cap * 2) % cap;
-			samples[i] = get(slot);
-		}
-		samples.sort((a, b) => a - b);
-		const rank = Math.min(n - 1, Math.max(0, Math.ceil((p / 100) * n) - 1));
-		return samples[rank];
-	}
-
 	private sectionValue(section: number, slot: number): number {
 		return this.sectionMs[section * this.frameMs.length + slot];
 	}
@@ -369,33 +352,49 @@ export class FrameProfiler {
 		return this.offFrameMs[section * this.frameMs.length + slot];
 	}
 
-	/** Mean over the window, for a slot-indexed metric. */
-	private meanOverWindow(
-		get: (slot: number) => number,
-		windowFrames: number,
-	): number {
-		const n = Math.min(this.recordedFrames, windowFrames);
-		if (n === 0) return 0;
-		const cap = this.frameMs.length;
-		let sum = 0;
-		for (let i = 0; i < n; i++) {
-			sum += get((this.writeIdx - 1 - i + cap * 2) % cap);
-		}
-		return sum / n;
+	private static percentileRank(p: number, n: number): number {
+		return Math.min(n - 1, Math.max(0, Math.ceil((p / 100) * n) - 1));
 	}
 
-	/** avg/p50/p95/max for a slot-indexed metric over the window. */
+	/**
+	 * avg/p50/p95/max for a slot-indexed metric over the window, in ONE pass.
+	 *
+	 * This used to be `meanOverWindow` plus three separate calls into a
+	 * `percentileOverWindow` that each allocated its own `number[]` and sorted
+	 * it with a comparator. A full `report()` therefore did 75 window copies
+	 * and 75 sorts of a 300-element array — a ~1-3 ms allocation-and-sort
+	 * burst on a 1250 ms timer inside the render loop, i.e. a self-inflicted
+	 * periodic frame spike in the exact frames the profiler is measuring.
+	 *
+	 * Filling one shared scratch and sorting it once per metric removes every
+	 * allocation and cuts the sort work by 3x. `statScratch` is safe to share
+	 * because `buildStats` consumes it before returning.
+	 */
 	private buildStats(
 		name: string,
 		get: (slot: number) => number,
 		windowFrames: number,
 	): SectionStat {
+		const n = Math.min(this.recordedFrames, windowFrames);
+		if (n === 0) return { name, avg: 0, p50: 0, p95: 0, max: 0 };
+
+		const samples = this.statScratch;
+		samples.length = n;
+		const cap = this.frameMs.length;
+		let sum = 0;
+		for (let i = 0; i < n; i++) {
+			const value = get((this.writeIdx - 1 - i + cap * 2) % cap);
+			samples[i] = value;
+			sum += value;
+		}
+		samples.sort(compareNumbers);
+
 		return {
 			name,
-			avg: this.meanOverWindow(get, windowFrames),
-			p50: this.percentileOverWindow(get, windowFrames, 50),
-			p95: this.percentileOverWindow(get, windowFrames, 95),
-			max: this.percentileOverWindow(get, windowFrames, 100),
+			avg: sum / n,
+			p50: samples[FrameProfiler.percentileRank(50, n)],
+			p95: samples[FrameProfiler.percentileRank(95, n)],
+			max: samples[FrameProfiler.percentileRank(100, n)],
 		};
 	}
 
@@ -442,60 +441,21 @@ export class FrameProfiler {
 		return {
 			frames: Math.min(this.recordedFrames, windowFrames),
 			droppedOutliers: this.droppedOutliers,
-			frame: {
-				avg: this.meanOverWindow((s) => this.frameMs[s], windowFrames),
-				p50: this.percentileOverWindow(
-					(s) => this.frameMs[s],
-					windowFrames,
-					50,
-				),
-				p95: this.percentileOverWindow(
-					(s) => this.frameMs[s],
-					windowFrames,
-					95,
-				),
-				max: this.percentileOverWindow(
-					(s) => this.frameMs[s],
-					windowFrames,
-					100,
-				),
-			},
-			frameCpu: {
-				avg: this.meanOverWindow((s) => this.frameCpuMs[s], windowFrames),
-				p50: this.percentileOverWindow(
-					(s) => this.frameCpuMs[s],
-					windowFrames,
-					50,
-				),
-				p95: this.percentileOverWindow(
-					(s) => this.frameCpuMs[s],
-					windowFrames,
-					95,
-				),
-				max: this.percentileOverWindow(
-					(s) => this.frameCpuMs[s],
-					windowFrames,
-					100,
-				),
-			},
-			busy: {
-				avg: this.meanOverWindow((s) => this.busyRatio[s], windowFrames),
-				p50: this.percentileOverWindow(
-					(s) => this.busyRatio[s],
-					windowFrames,
-					50,
-				),
-				p95: this.percentileOverWindow(
-					(s) => this.busyRatio[s],
-					windowFrames,
-					95,
-				),
-				max: this.percentileOverWindow(
-					(s) => this.busyRatio[s],
-					windowFrames,
-					100,
-				),
-			},
+			frame: this.buildStats(
+				"frame",
+				(s) => this.frameMs[s],
+				windowFrames,
+			),
+			frameCpu: this.buildStats(
+				"frameCpu",
+				(s) => this.frameCpuMs[s],
+				windowFrames,
+			),
+			busy: this.buildStats(
+				"busy",
+				(s) => this.busyRatio[s],
+				windowFrames,
+			),
 			sections,
 			offFrame,
 		};

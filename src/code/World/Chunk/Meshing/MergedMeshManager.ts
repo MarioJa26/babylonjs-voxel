@@ -120,6 +120,14 @@ export interface MergedMeshGroup {
 	opaqueMeshRef: any | null;
 	waterMeshRef: any | null;
 	cutoutMeshRef: any | null;
+
+	/**
+	 * Lazily derived, then immutable for the group's lifetime: does the group's
+	 * fixed 4×4×4 chunk block contain an ocean-floor band chunk? Cached on the
+	 * group itself so the culler never re-walks members or re-runs heightmap
+	 * noise after an unrelated group mutation.
+	 */
+	oceanFloorBand?: boolean;
 }
 
 export class MergedMeshMeta {

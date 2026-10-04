@@ -14,6 +14,7 @@ import { connectFacesMask } from "./Meshing/ChunkFaceMasks";
 import { removeChunkFromGroup } from "./Meshing/MergedMeshManager";
 import { type ChunkCensus, getChunkCensus } from "./Runtime/ChunkCensus";
 import { computeStoredFaceConnectivity } from "./Runtime/ChunkConnectivity";
+import { queueConnectivityRecompute } from "./Runtime/ChunkConnectivityQueue";
 import {
 	beginChunkEditBatch,
 	type ChunkLightPool,
@@ -382,7 +383,7 @@ export class Chunk {
 	public bfsSteps0 = 0;
 	public bfsSteps1 = 0;
 
-	/** True when this chunk is enqueued in OcclusionCuller._dirtyConnectivityChunks. */
+	/** True while this chunk sits in ChunkConnectivityQueue.pendingConnectivity. */
 	public bfsQueuedForConnectivity: boolean = false;
 
 	/**
@@ -1181,6 +1182,7 @@ export class Chunk {
 		this.persistenceRevision++;
 		this.connectivityDirty = true;
 		this.blockRevision++;
+		queueConnectivityRecompute(this);
 
 		markChunkDirtyForRemesh(this);
 		Chunk.onBlockModified?.(this);

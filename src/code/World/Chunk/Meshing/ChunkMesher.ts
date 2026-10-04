@@ -29,6 +29,7 @@ import {
 	createChunkOpaqueMaterial,
 	createChunkTransparentMaterial,
 } from "../../Light/OpaqueShaderLite";
+import { carryMeshCulled } from "../../MeshVisibility";
 import { packAtlas } from "../../Texture/AtlasPacker";
 import {
 	atlasTileSize,
@@ -493,6 +494,14 @@ setOnGroupMeshNeedsRebuild((group) => {
 	const oy = group.gridY * G * S;
 	const oz = group.gridZ * G * S;
 
+	/*
+	 * A rebuild that had to allocate a fresh mesh would otherwise lose the
+	 * group's cull decision and draw for a frame until the next sweep.
+	 * Capture any surviving ref before the first assignment overwrites it.
+	 */
+	const cullRef =
+		group.opaqueMeshRef ?? group.cutoutMeshRef ?? group.waterMeshRef;
+
 	// 1. Opaque first.
 	if (group.cachedOpaque && group.cachedOpaque.faceCount > 0) {
 		const built = buildLiteMesh(
@@ -508,8 +517,8 @@ setOnGroupMeshNeedsRebuild((group) => {
 		);
 
 		if (built) {
+			carryMeshCulled(cullRef, built);
 			group.opaqueMeshRef = built;
-			built.visible = true;
 		}
 	} else if (group.opaqueMeshRef) {
 		disposePackedMesh(group.opaqueMeshRef);
@@ -531,8 +540,8 @@ setOnGroupMeshNeedsRebuild((group) => {
 		);
 
 		if (built) {
+			carryMeshCulled(cullRef, built);
 			group.cutoutMeshRef = built;
-			built.visible = true;
 		}
 	} else if (group.cutoutMeshRef) {
 		disposePackedMesh(group.cutoutMeshRef);
@@ -554,8 +563,8 @@ setOnGroupMeshNeedsRebuild((group) => {
 		);
 
 		if (built) {
+			carryMeshCulled(cullRef, built);
 			group.waterMeshRef = built;
-			built.visible = true;
 		}
 	} else if (group.waterMeshRef) {
 		disposePackedMesh(group.waterMeshRef);
