@@ -541,6 +541,7 @@ function pushFullDirtyRange(
 	ranges.length = 0;
 
 	_statDirtyFacesFlush += count;
+	_statFullExtentUploads++;
 	ranges.push(acquireRange(start, count));
 }
 
@@ -921,18 +922,25 @@ let _statMembersSeen = 0;
 let _statCopiesPerformed = 0;
 let _statDirtyFacesFlush = 0;
 let _statWasteFacesMax = 0;
+// Count of whole-layer full-extent dirty ranges pushed (a full GPU rewrite of
+// a layer). A healthy layout drives this toward zero: content edits and slot
+// shuffles should upload only the affected slots, so a spike here means a
+// compaction or an unavoidable structural rewrite is happening every flush.
+let _statFullExtentUploads = 0;
 
 export function getMergedSlotStats(): {
 	membersSeen: number;
 	copiesPerformed: number;
 	dirtyFaces: number;
 	wasteFacesMax: number;
+	fullExtentUploads: number;
 } {
 	return {
 		membersSeen: _statMembersSeen,
 		copiesPerformed: _statCopiesPerformed,
 		dirtyFaces: _statDirtyFacesFlush,
 		wasteFacesMax: _statWasteFacesMax,
+		fullExtentUploads: _statFullExtentUploads,
 	};
 }
 
@@ -1015,6 +1023,7 @@ export function flushDirtyMergedGroups(
 	_statCopiesPerformed = 0;
 	_statDirtyFacesFlush = 0;
 	_statWasteFacesMax = 0;
+	_statFullExtentUploads = 0;
 
 	let processedCount = 0;
 	let budgetExhausted = false;
@@ -1413,13 +1422,18 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		_statWasteFacesMax = totalWaste;
 	}
 
-	const previousOpaqueExtent = opaqueState.appendedFaces;
-	const previousWaterExtent = waterState.appendedFaces;
-	const previousCutoutExtent = cutoutState.appendedFaces;
-
-	let opaqueStructuralChange = false;
-	let waterStructuralChange = false;
-	let cutoutStructuralChange = false;
+	/*
+	 * Only compaction forces a whole-layer (full-extent) upload. A layer that
+	 * is compacted has its contents reset to zero and every member re-acquired,
+	 * so the entire extent genuinely changed. Every other change — a member
+	 * moving slot (a face count crossing a boundary) or the high-water mark
+	 * shifting as chunks stream in/out — is covered by the per-member slot
+	 * ranges and the released-slot zero-fills pushed below, so it stays a
+	 * ranged upload. That is the common case and used to force a full rewrite.
+	 */
+	let opaqueCompaction = false;
+	let waterCompaction = false;
+	let cutoutCompaction = false;
 
 	if (
 		opaqueState.appendedFaces > 0 &&
@@ -1429,7 +1443,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		clearSlotHoleArray(opaqueState.holes);
 		clearSlotHoleArray(opaqueState.released);
 		opaqueState.appendedFaces = 0;
-		opaqueStructuralChange = true;
+		opaqueCompaction = true;
 
 		group.opaqueData?.fill(0);
 
@@ -1451,7 +1465,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		clearSlotHoleArray(waterState.holes);
 		clearSlotHoleArray(waterState.released);
 		waterState.appendedFaces = 0;
-		waterStructuralChange = true;
+		waterCompaction = true;
 
 		group.waterData?.fill(0);
 
@@ -1473,7 +1487,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		clearSlotHoleArray(cutoutState.holes);
 		clearSlotHoleArray(cutoutState.released);
 		cutoutState.appendedFaces = 0;
-		cutoutStructuralChange = true;
+		cutoutCompaction = true;
 
 		group.cutoutData?.fill(0);
 
@@ -1507,8 +1521,14 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			}
 		} else {
 			const wantedFaces = slotClassFor(opaqueCount, maximumFaces);
-
-			if (member.slotOpaqueFaces !== wantedFaces) {
+			// Hysteresis: keep the current slot unless it is too small or
+			// grossly oversized (>2x the needed class). A face count wiggling
+			// within a class no longer frees + re-acquires the slot, which is
+			// what used to force a whole-layer full upload on every edit.
+			if (
+				member.slotOpaqueFaces < wantedFaces ||
+				member.slotOpaqueFaces > wantedFaces * 2
+			) {
 				pushReleasedSlot(
 					opaqueState,
 					member.slotOpaqueOffset,
@@ -1541,8 +1561,13 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			}
 		} else {
 			const wantedFaces = slotClassFor(waterCount, maximumFaces);
-
-			if (member.slotWaterFaces !== wantedFaces) {
+			// Hysteresis (see opaque above): keep the slot unless it is too
+			// small or grossly oversized, so a small face-count wiggle does not
+			// churn the slot and force a whole-layer rewrite.
+			if (
+				member.slotWaterFaces < wantedFaces ||
+				member.slotWaterFaces > wantedFaces * 2
+			) {
 				pushReleasedSlot(
 					waterState,
 					member.slotWaterOffset,
@@ -1575,8 +1600,11 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			}
 		} else {
 			const wantedFaces = slotClassFor(cutoutCount, maximumFaces);
-
-			if (member.slotCutoutFaces !== wantedFaces) {
+			// Hysteresis (see opaque above).
+			if (
+				member.slotCutoutFaces < wantedFaces ||
+				member.slotCutoutFaces > wantedFaces * 2
+			) {
 				pushReleasedSlot(
 					cutoutState,
 					member.slotCutoutOffset,
@@ -1618,19 +1646,19 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		group.cachedOpaque = null;
 	}
 
-	if (
-		opaqueState.released.length > 0 ||
-		opaqueState.appendedFaces !== previousOpaqueExtent
-	) {
-		opaqueStructuralChange = true;
-	}
-
+	/*
+	 * A released slot is zero-filled in place (it is now a hole the merged draw
+	 * still reads), so its extent must be uploaded. Push it as a ranged dirty
+	 * range here rather than forcing a whole-layer rewrite — this is the hole
+	 * a slot shuffle / streaming out leaves behind.
+	 */
 	while (opaqueState.released.length > 0 && group.opaqueData) {
 		const released = opaqueState.released.pop()!;
 		const begin = released.offset * FACE_BYTES;
 		const end = begin + released.faces * FACE_BYTES;
 
 		group.opaqueData.fill(0, begin, end);
+		pushDirtyRange(opaqueRanges, released.offset, released.faces);
 		insertOwnedSlotHole(opaqueState, released);
 	}
 
@@ -1640,19 +1668,15 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		group.cachedWater = null;
 	}
 
-	if (
-		waterState.released.length > 0 ||
-		waterState.appendedFaces !== previousWaterExtent
-	) {
-		waterStructuralChange = true;
-	}
-
+	// Released (now-hole) water slots are zero-filled in place, so upload them
+	// as ranged dirty ranges (see opaque above).
 	while (waterState.released.length > 0 && group.waterData) {
 		const released = waterState.released.pop()!;
 		const begin = released.offset * FACE_BYTES;
 		const end = begin + released.faces * FACE_BYTES;
 
 		group.waterData.fill(0, begin, end);
+		pushDirtyRange(waterRanges, released.offset, released.faces);
 		insertOwnedSlotHole(waterState, released);
 	}
 
@@ -1667,19 +1691,15 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		group.cachedCutout = null;
 	}
 
-	if (
-		cutoutState.released.length > 0 ||
-		cutoutState.appendedFaces !== previousCutoutExtent
-	) {
-		cutoutStructuralChange = true;
-	}
-
+	// Released (now-hole) cutout slots are zero-filled in place, so upload
+	// them as ranged dirty ranges (see opaque above).
 	while (cutoutState.released.length > 0 && group.cutoutData) {
 		const released = cutoutState.released.pop()!;
 		const begin = released.offset * FACE_BYTES;
 		const end = begin + released.faces * FACE_BYTES;
 
 		group.cutoutData.fill(0, begin, end);
+		pushDirtyRange(cutoutRanges, released.offset, released.faces);
 		insertOwnedSlotHole(cutoutState, released);
 	}
 
@@ -1715,6 +1735,23 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				byteOffset,
 			);
 
+			/*
+			 * The merged draw renders the WHOLE slot extent (content plus the
+			 * slack faces up to slotOpaqueFaces), and that slack must read as a
+			 * degenerate zero record. Zero it here: it can be stale both when
+			 * the slot moved/grew (fresh bytes may still hold the previous
+			 * occupant's faces) and when the member shrank within its slot
+			 * (the tail is the old content).
+			 */
+			if (opaqueFaceCount < member.slotOpaqueFaces) {
+				const slackStart = (byteOffset + opaqueFaceCount * FACE_BYTES) >>> 0;
+				opaqueData.fill(
+					0,
+					slackStart,
+					byteOffset + member.slotOpaqueFaces * FACE_BYTES,
+				);
+			}
+
 			if (chunkIndex !== 0) {
 				opaqueWords ??= new Uint32Array(
 					opaqueData.buffer,
@@ -1734,8 +1771,19 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			member.lastBuiltOpaqueOffset = byteOffset;
 			_statCopiesPerformed++;
 
-			if (!opaqueStructuralChange) {
-				pushDirtyRange(opaqueRanges, member.slotOpaqueOffset, opaqueFaceCount);
+			/*
+			 * Upload the member's WHOLE slot extent (content + zeroed slack)
+			 * as a ranged dirty range — not the whole layer. This is correct
+			 * whether the slot moved or the member edited in place, and it
+			 * keeps the upload bounded to one slot instead of the full layer.
+			 * Compaction already marks the whole extent dirty, so skip it.
+			 */
+			if (!opaqueCompaction) {
+				pushDirtyRange(
+					opaqueRanges,
+					member.slotOpaqueOffset,
+					member.slotOpaqueFaces,
+				);
 			}
 		}
 
@@ -1758,6 +1806,17 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				byteOffset,
 			);
 
+			// Zero the slot slack so the full slot extent reads as degenerate
+			// (see opaque above).
+			if (waterFaceCount < member.slotWaterFaces) {
+				const slackStart = (byteOffset + waterFaceCount * FACE_BYTES) >>> 0;
+				waterData.fill(
+					0,
+					slackStart,
+					byteOffset + member.slotWaterFaces * FACE_BYTES,
+				);
+			}
+
 			if (chunkIndex !== 0) {
 				waterWords ??= new Uint32Array(
 					waterData.buffer,
@@ -1777,8 +1836,12 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			member.lastBuiltWaterOffset = byteOffset;
 			_statCopiesPerformed++;
 
-			if (!waterStructuralChange) {
-				pushDirtyRange(waterRanges, member.slotWaterOffset, waterFaceCount);
+			if (!waterCompaction) {
+				pushDirtyRange(
+					waterRanges,
+					member.slotWaterOffset,
+					member.slotWaterFaces,
+				);
 			}
 		}
 
@@ -1801,6 +1864,17 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				byteOffset,
 			);
 
+			// Zero the slot slack so the full slot extent reads as degenerate
+			// (see opaque above).
+			if (cutoutFaceCount < member.slotCutoutFaces) {
+				const slackStart = (byteOffset + cutoutFaceCount * FACE_BYTES) >>> 0;
+				cutoutData.fill(
+					0,
+					slackStart,
+					byteOffset + member.slotCutoutFaces * FACE_BYTES,
+				);
+			}
+
 			if (chunkIndex !== 0) {
 				cutoutWords ??= new Uint32Array(
 					cutoutData.buffer,
@@ -1820,21 +1894,31 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			member.lastBuiltCutoutOffset = byteOffset;
 			_statCopiesPerformed++;
 
-			if (!cutoutStructuralChange) {
-				pushDirtyRange(cutoutRanges, member.slotCutoutOffset, cutoutFaceCount);
+			if (!cutoutCompaction) {
+				pushDirtyRange(
+					cutoutRanges,
+					member.slotCutoutOffset,
+					member.slotCutoutFaces,
+				);
 			}
 		}
 	}
 
-	if (opaqueStructuralChange && opaqueState.appendedFaces > 0) {
+	/*
+	 * A full-extent rewrite is only required when a layer was compacted (its
+	 * whole contents were reset and every member re-acquired). Slot shuffles
+	 * and extent changes are fully covered by the per-member slot ranges and
+	 * the released-slot zero-fills above, so they no longer reach here.
+	 */
+	if (opaqueCompaction && opaqueState.appendedFaces > 0) {
 		pushFullDirtyRange(opaqueRanges, 0, opaqueState.appendedFaces);
 	}
 
-	if (waterStructuralChange && waterState.appendedFaces > 0) {
+	if (waterCompaction && waterState.appendedFaces > 0) {
 		pushFullDirtyRange(waterRanges, 0, waterState.appendedFaces);
 	}
 
-	if (cutoutStructuralChange && cutoutState.appendedFaces > 0) {
+	if (cutoutCompaction && cutoutState.appendedFaces > 0) {
 		pushFullDirtyRange(cutoutRanges, 0, cutoutState.appendedFaces);
 	}
 

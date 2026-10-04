@@ -965,7 +965,8 @@ export class PlayerLoopController {
 				`ifull:${uploadStats.instanceFullUploads} ` +
 				`irng:${uploadStats.instanceRangedUploads} ` +
 				`ipeak:${mib(uploadStats.peakInstanceUploadBytes)}M ` +
-				`dirty:${slotStats.dirtyFaces}f grow:${uploadStats.arenaGrows}` +
+				`dirty:${slotStats.dirtyFaces}f full:${slotStats.fullExtentUploads} ` +
+				`grow:${uploadStats.arenaGrows}` +
 				`/${uploadStats.arenaCompactions}`,
 			"workers",
 		);
