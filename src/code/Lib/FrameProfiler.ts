@@ -441,21 +441,13 @@ export class FrameProfiler {
 		return {
 			frames: Math.min(this.recordedFrames, windowFrames),
 			droppedOutliers: this.droppedOutliers,
-			frame: this.buildStats(
-				"frame",
-				(s) => this.frameMs[s],
-				windowFrames,
-			),
+			frame: this.buildStats("frame", (s) => this.frameMs[s], windowFrames),
 			frameCpu: this.buildStats(
 				"frameCpu",
 				(s) => this.frameCpuMs[s],
 				windowFrames,
 			),
-			busy: this.buildStats(
-				"busy",
-				(s) => this.busyRatio[s],
-				windowFrames,
-			),
+			busy: this.buildStats("busy", (s) => this.busyRatio[s], windowFrames),
 			sections,
 			offFrame,
 		};

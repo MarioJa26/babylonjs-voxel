@@ -440,9 +440,7 @@ export class OcclusionCuller {
 		// is an array-length read instead of the old O(reachable-chunks) walk.
 		let topologyTrigger = false;
 		if (pendingConnectivity.length > 0) {
-			if (
-				++this._topoDirtyFrameCount >= OcclusionCuller.TOPO_THROTTLE_FRAMES
-			) {
+			if (++this._topoDirtyFrameCount >= OcclusionCuller.TOPO_THROTTLE_FRAMES) {
 				topologyTrigger = true;
 				this._topoDirtyFrameCount = 0;
 			}

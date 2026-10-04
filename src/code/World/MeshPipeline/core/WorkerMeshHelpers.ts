@@ -490,7 +490,10 @@ export class MeshBuildSession implements MeshContext {
 	 * lodStep would leave border cells unclassified and open holes along every
 	 * LOD>=4 chunk boundary.
 	 */
-	private buildOpaqueClassification(psVol: number, computeCustom: boolean): void {
+	private buildOpaqueClassification(
+		psVol: number,
+		computeCustom: boolean,
+	): void {
 		const opaqueBits = this.opaque;
 		const customBits = this.needsCustom;
 		const padded = this.block;
@@ -504,8 +507,7 @@ export class MeshBuildSession implements MeshContext {
 				// but skips a function call per cell over the whole padded volume.
 				const flags = getCachedFlagsAndId(padded[i]) & 0xffff;
 
-				opaqueBits[i] =
-					(flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED ? 1 : 0;
+				opaqueBits[i] = (flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED ? 1 : 0;
 				const custom = (flags & CUSTOM_TEST_MASK) === FLAG_SOLID ? 1 : 0;
 				customBits[i] = custom;
 				customCount += custom;
@@ -514,8 +516,7 @@ export class MeshBuildSession implements MeshContext {
 			for (let i = 0; i < psVol; i++) {
 				const flags = getCachedFlagsAndId(padded[i]) & 0xffff;
 
-				opaqueBits[i] =
-					(flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED ? 1 : 0;
+				opaqueBits[i] = (flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED ? 1 : 0;
 			}
 		}
 

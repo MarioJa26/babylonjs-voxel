@@ -616,11 +616,6 @@ function createBoatChunkMesh(
 	const matWater = getTransparentMaterialForLodBucket(0);
 	const matCutout = getCutoutMaterialForLodBucket(0);
 
-	// Cache coords locally (avoids repeated property access)
-	const x = chunk.chunkX;
-	const y = chunk.chunkY;
-	const z = chunk.chunkZ;
-
 	// ---- OPAQUE ----
 	let mesh = chunk.mesh;
 

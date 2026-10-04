@@ -38,7 +38,10 @@ function applyMeshVisibility(mesh: GatedMesh): void {
  * gate, and the next sweep re-applies once a mesh exists (`groupsMutated`
  * forces that sweep), so this is a pure no-op rather than an error.
  */
-export function setMeshCulled(mesh: Mesh | null | undefined, culled: boolean): void {
+export function setMeshCulled(
+	mesh: Mesh | null | undefined,
+	culled: boolean,
+): void {
 	if (!mesh) return;
 	const m = mesh as GatedMesh;
 	if (m.__visCulled === culled) return;
