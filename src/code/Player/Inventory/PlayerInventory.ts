@@ -108,13 +108,24 @@ export class PlayerInventory {
 			for (let col = 0; col < width; col++) {
 				const item = slotRow[col].item;
 
-				savedRow[col] =
-					item === null
-						? null
-						: {
-								itemId: item.itemId,
-								stackSize: item.stackSize,
-							};
+				if (item === null) {
+					savedRow[col] = null;
+					continue;
+				}
+
+				const entry: SavedInventoryItem = {
+					itemId: item.itemId,
+					stackSize: item.stackSize,
+				};
+
+				// Only persist durability when it differs from pristine. This
+				// serialises on every inventory mutation, so an extra field on
+				// every undamaged stack is real cost for no information.
+				if (item.maxDurability > 0 && item.durability < item.maxDurability) {
+					entry.durability = item.durability;
+				}
+
+				savedRow[col] = entry;
 			}
 
 			savedSlots[row] = savedRow;
@@ -147,6 +158,24 @@ export class PlayerInventory {
 				if (item === null) continue;
 
 				item.stackSize = savedItem.stackSize;
+
+				// Durability is deliberately NOT validated by #isValidSavedInventoryItem. That
+				// validator rejects the entire state on failure, so adding a check
+				// there means one corrupt number silently wipes the player's whole
+				// inventory. Instead a non-finite value is ignored (the item loads
+				// pristine) and an out-of-range one is clamped.
+				const savedDurability = savedItem.durability;
+				if (
+					savedDurability !== undefined &&
+					Number.isFinite(savedDurability) &&
+					item.maxDurability > 0
+				) {
+					item.durability = Math.min(
+						Math.max(0, Math.floor(savedDurability)),
+						item.maxDurability,
+					);
+				}
+
 				this.#placeItemInSlot(this.#inventorySlots[row][col], item);
 			}
 		}

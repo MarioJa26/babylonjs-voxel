@@ -3,13 +3,13 @@ import { onSceneDispose } from "@babylonjs/lite";
 import { getArrowTooltipStats } from "@/code/Entities/Arrow/ArrowTypes";
 import { getMayaDungeonEncounter } from "@/code/Entities/MayaDungeonEncounter";
 import { activeWorldSeedAsInt } from "@/code/Entities/TempleLootTable";
+import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import {
 	closeUi,
 	isUiOpen,
 	openUi,
 	UiFocus,
 } from "@/code/Lib/GameRuntimeState";
-import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { Map1 } from "@/code/Maps/Map1";
 import { ContainerRejectReason } from "@/code/Network/protocol/messages";
 import type {
@@ -17,7 +17,10 @@ import type {
 	RemoteContainerSlotUpdate,
 	RemoteContainerState,
 } from "@/code/Network/RemoteContainerManager";
-import { getToolTooltipStats } from "@/code/Player/Inventory/ProceduralTools";
+import {
+	getDurabilityTooltip,
+	getToolTooltipStats,
+} from "@/code/Player/Inventory/ProceduralTools";
 import { loadGameSettings } from "@/code/UI/GameSettings";
 import {
 	buildBlockInventorySlots,
@@ -1826,7 +1829,10 @@ export class PlayerHud {
 
 				const arrowStats = getArrowTooltipStats(item.itemId);
 				const toolStats = getToolTooltipStats(item.itemId);
-				const stats = [arrowStats, toolStats].filter(Boolean).join("\n");
+				const durabilityStats = getDurabilityTooltip(item);
+				const stats = [arrowStats, toolStats, durabilityStats]
+					.filter(Boolean)
+					.join("\n");
 				const desc = stats ? `${item.description}\n${stats}` : item.description;
 				let descDiv = nameDiv.nextElementSibling as HTMLDivElement | null;
 

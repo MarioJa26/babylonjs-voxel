@@ -13,11 +13,14 @@ import {
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "@/code/World/Texture/BlockType";
 import {
+	canHarvestBlock,
 	getBlockBreakTime,
 	getBlockInfo,
 } from "@/code/World/Texture/TextureDefinitions";
+import { HARVEST_DURABILITY_COST } from "../../Inventory/Durability";
 import { dropWorldItem } from "../../Inventory/dropWorldItem";
 import { Item } from "../../Inventory/Item";
+import { getToolKind } from "../../Inventory/ProceduralTools";
 import type { Player } from "../../Player";
 import { Gamemodes } from "../../PlayerStats";
 import { updateCrackingState } from "./BlockBreakingVisuals";
@@ -108,7 +111,22 @@ export type BoatBlockHitContext = {
 
 type CrackBlockPosition = { x: number; y: number; z: number };
 
-function getDroppedBlockId(blockId: number): number {
+/**
+ * Item id a block drops when broken.
+ *
+ * `toolLookupId` is the breaking tool's id, or 0 for bare hands / a spent tool.
+ * A block whose `requiredLevel` exceeds the tool's mining level still breaks —
+ * it just yields nothing, which is what makes high-tier stone read as a wall
+ * without ever producing a dead end the player cannot leave.
+ *
+ * Multiplayer note: `dropWorldItem` is server-authoritative, so this must
+ * resolve identically on both sides or MP will desync the drop.
+ */
+function getDroppedBlockId(blockId: number, toolLookupId: number): number {
+	if (toolLookupId !== 0 && !canHarvestBlock(blockId, toolLookupId)) {
+		return 0;
+	}
+
 	if (blockId === BlockType.Grass001 || blockId === 14 || blockId === 51) {
 		return 46;
 	}
@@ -274,10 +292,15 @@ export class BlockBreakingHandler {
 		const item =
 			this.#player.playerInventory.inventory[0][selectedHotbarSlot]?.item;
 
+		// getToolLookupId() reports 0 once a tool is spent, which every lookup
+		// already treats as bare hands — so a worn-out pickaxe mines slowly and
+		// stops being able to harvest gated blocks without a special case here.
+		const toolLookupId = item?.getToolLookupId();
+
 		const breakTime =
 			this.#player.stats.gamemode === Gamemodes.Creative
 				? 0.1
-				: getBlockBreakTime(blockId, item?.itemId) || 0.001;
+				: getBlockBreakTime(blockId, toolLookupId) || 0.001;
 
 		if (this.#isSameTarget(hit, boatContext)) {
 			this.#breakTimer += dt;
@@ -433,6 +456,37 @@ export class BlockBreakingHandler {
 		playMineHit(blockId);
 	}
 
+	/**
+	 * Spend one point of durability from the held item after a successful break.
+	 *
+	 * Gated on three things so wear tracks work actually done:
+	 *   - survival only (creative never wears, and unlike the existing
+	 *     `!== Creative` checks elsewhere this excludes spectator/adventure too);
+	 *   - the item must have a durability budget;
+	 *   - a block with a `preferredTool` only wears that tool kind, so mining
+	 *     stone with a sword costs nothing.
+	 *
+	 * Runs after the block has already broken, so a spent tool is never the
+	 * reason a break silently fails.
+	 */
+	#wearToolForHarvest(blockId: number): void {
+		if (this.#player.stats.gamemode !== Gamemodes.Survival) return;
+
+		const selected = this.#player.playerHud.selectedHotbarSlot;
+		const item = this.#player.playerInventory.inventory[0][selected]?.item;
+		if (item === undefined || item === null || !item.isDurable) return;
+
+		const preferredTool = getBlockInfo(blockId)?.preferredTool;
+		if (
+			preferredTool !== undefined &&
+			getToolKind(item.itemId) !== preferredTool
+		) {
+			return;
+		}
+
+		item.wearDurability(HARVEST_DURABILITY_COST);
+	}
+
 	#breakBlock(
 		x: number,
 		y: number,
@@ -448,17 +502,28 @@ export class BlockBreakingHandler {
 		// CREATIVE CAN ALWAYS MINE EVERY BLOCK.
 		if (!getBlockInfo(blockId) && !isCreative) return;
 
-		const dropId = getDroppedBlockId(blockId);
+		this.#wearToolForHarvest(blockId);
 
-		// The drop may not exist as an item (unregistered block id) — still
-		// break the block, just without a drop.
+		const heldItem =
+			this.#player.playerInventory.inventory[0][
+				this.#player.playerHud.selectedHotbarSlot
+			]?.item;
+		const dropId = isCreative
+			? getDroppedBlockId(blockId, 0)
+			: getDroppedBlockId(blockId, heldItem?.getToolLookupId() ?? 0);
+
+		// The drop may not exist as an item (unregistered block id, or a block
+		// gated above the tool's mining level) — still break the block, just
+		// without a drop.
 		let worldItem: Item | null = null;
-		try {
-			worldItem = Item.createById(dropId);
-			worldItem.stackSize = 1;
-			worldItem.itemId = dropId;
-		} catch {
-			worldItem = null;
+		if (dropId !== 0) {
+			try {
+				worldItem = Item.createById(dropId);
+				worldItem.stackSize = 1;
+				worldItem.itemId = dropId;
+			} catch {
+				worldItem = null;
+			}
 		}
 
 		const v = computeDeterministicDropVelocity(blockId, 0.67);

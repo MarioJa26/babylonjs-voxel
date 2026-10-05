@@ -150,6 +150,22 @@ async function loadRegisteredItemFromUrl(url: string): Promise<void> {
 export function registerItem(def: ItemDefinition): void {
 	const existing = definitions.get(def.id);
 
+	// Re-registering an id under a *different* blockId means two unrelated
+	// things (a tool and a mason shape variant, say) claim the same id. The
+	// shallow merge below silently produces a chimera that keeps the first
+	// definition's icon and maxStack while adopting the second's name, blockId
+	// and useAction — so a pickaxe turns into a placeable ore slab that still
+	// draws a pickaxe icon. Report it loudly instead.
+	if (existing !== undefined && existing.blockId !== def.blockId) {
+		console.warn(
+			`ItemRegistry: item id ${def.id} registered twice with different ` +
+				`blockIds — existing "${existing.name}" (blockId ` +
+				`${String(existing.blockId)}) vs incoming "${def.name}" ` +
+				`(blockId ${String(def.blockId)}). One of the two data sources ` +
+				`is using an id range it does not own.`,
+		);
+	}
+
 	if (existing !== undefined && existing.blockId !== undefined) {
 		deleteBlockIndex(existing.blockId, getBlockState(existing));
 	}

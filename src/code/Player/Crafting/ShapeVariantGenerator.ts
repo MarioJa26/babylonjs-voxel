@@ -3,6 +3,7 @@ import {
 	getShapeDefinitions,
 	shapeInitPromise,
 } from "@/code/World/Shape/BlockShapes";
+import { MAX_SHAPE_VARIANT_SOURCE_ID } from "@/code/World/Texture/BlockMaterial";
 import { getVirtualBlockId } from "@/code/World/Texture/BlockTextures";
 import { BlockType } from "@/code/World/Texture/BlockType";
 import {
@@ -77,7 +78,10 @@ export async function generateShapeVariants(): Promise<void> {
 
 	for (const def of TextureDefinitions) {
 		if (
-			def.id >= 500 ||
+			// Cap below the 10-bit budget on purpose: source blocks 101-104 would
+			// generate virtual ids 1000-1019, which collide with the hand-authored
+			// wooden/stone/iron tool items. See MAX_SHAPE_VARIANT_SOURCE_ID.
+			def.id > MAX_SHAPE_VARIANT_SOURCE_ID ||
 			def.id === BlockType.Air ||
 			def.id === BlockType.MasonTable
 		) {

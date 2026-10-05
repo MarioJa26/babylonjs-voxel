@@ -1,5 +1,10 @@
 import {
+	clampMaterialTier,
+	type MaterialTier,
+} from "@/code/Player/Inventory/Materials/MaterialTier";
+import {
 	getToolKind,
+	getToolMiningLevel,
 	getToolSpeedMultiplier,
 	parseToolKind,
 	type ToolKindId,
@@ -13,6 +18,14 @@ export interface TextureDefinition {
 	hardness?: number;
 	shape?: string;
 	preferredTool?: ToolKindId;
+	/**
+	 * MaterialTier required to harvest this block, compared against
+	 * `getToolMiningLevel()`. Omitted means hand-mineable.
+	 *
+	 * A too-weak tool still breaks the block — it just yields nothing, and
+	 * slowly. That reads as a wall without ever producing a dead end.
+	 */
+	requiredLevel?: MaterialTier;
 }
 
 const BLOCKS_URL = "/data/blocks.json";
@@ -96,6 +109,18 @@ async function loadBlockDefinitions(): Promise<TextureDefinition[]> {
 				definition.preferredTool = preferred;
 			}
 
+			if (raw.requiredLevel !== undefined) {
+				const requiredLevel = clampMaterialTier(raw.requiredLevel);
+				if (requiredLevel === undefined) {
+					console.warn(
+						`Block ${definition.name} has an out-of-range requiredLevel:`,
+						raw.requiredLevel,
+					);
+				} else {
+					definition.requiredLevel = requiredLevel;
+				}
+			}
+
 			normalized.push(definition);
 		}
 
@@ -122,6 +147,11 @@ function normalizeBlockId(id: unknown): BlockType | null {
 	return null;
 }
 
+/**
+ * Seconds to break a block. Distinct from {@link canHarvestBlock}: a block can
+ * always be broken if it is finite-hardness, but a too-weak tool breaks it
+ * slowly and drops nothing.
+ */
 export function getBlockBreakTime(id: number, toolItemId?: number): number {
 	const def = TextureDefinitionMap.get(id);
 	const hardness = def?.hardness ?? DEFAULT_BLOCK_HARDNESS;
@@ -154,6 +184,38 @@ export function getBlockBreakTime(id: number, toolItemId?: number): number {
 	// No preferred tool: any tool still speeds up (backward compatible).
 	const effectiveSpeed = speedMultiplier ?? DEFAULT_TOOL_SPEED_MULTIPLIER;
 	return (hardness * BREAK_TIME_SCALE) / effectiveSpeed;
+}
+
+/**
+ * Whether the tool can harvest a block's drop.
+ *
+ * True when the block declares no `requiredLevel`, or when the tool's material
+ * meets or exceeds it. Blocks with no blocks.json entry fall back to requiring
+ * nothing so unregistered experimental ids stay collectable.
+ *
+ * A block with `hardness: Infinity` is never harvestable — you cannot harvest
+ * what you cannot break.
+ */
+export function canHarvestBlock(id: number, toolItemId?: number): boolean {
+	const def = TextureDefinitionMap.get(id);
+
+	if (def?.hardness === Infinity) return false;
+
+	const requiredLevel = def?.requiredLevel;
+
+	if (requiredLevel === undefined) {
+		return true;
+	}
+
+	return getToolMiningLevel(toolItemId) >= requiredLevel;
+}
+
+/**
+ * MaterialTier needed to harvest a block, for HUD messaging.
+ * Undefined when the block is not gated.
+ */
+export function getBlockRequiredLevel(id: number): MaterialTier | undefined {
+	return TextureDefinitionMap.get(id)?.requiredLevel;
 }
 
 export function getBlockInfo(id: number): TextureDefinition | undefined {

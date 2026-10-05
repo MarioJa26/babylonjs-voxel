@@ -22,8 +22,15 @@ import {
 import type { Player } from "../Player";
 import { Gamemodes } from "../PlayerStats";
 import { drawCubeIcon, iconAtlasesReadyPromise } from "./CubeIcon";
+import {
+	canStackTogether,
+	isDepleted,
+	repairAmount,
+	toolLookupId,
+} from "./Durability";
 import { getRegisteredItemById } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
+import { getToolMaxDurability } from "./ProceduralTools";
 import type { ItemDefinition } from "./Types/InventoryTypes";
 
 // ─── Module-level constants (V8 inlines as immediates, zero memory per instance) ───
@@ -32,6 +39,9 @@ const TWO_PI = Math.PI * 2;
 const HALF_QUARTER = QUARTER_TURN * 0.5;
 const INV_QUARTER = 1 / QUARTER_TURN;
 const CANVAS_SIZE = 64;
+
+/** CSS class marking a spent (durability 0) item. Styled in style/Item.css. */
+const DEPLETED_ITEM_CLASS = "inventory-item--depleted";
 // ─── Rotation policy: flat lookup (avoids Map.get overhead for 2 entries) ───
 // Only "cube" and "slab" return true; everything else defaults to true.
 // Since the default is true, we only need to track exceptions (none currently).
@@ -87,6 +97,12 @@ export class Item implements IUsable {
 	blockState = 0;
 	row: number;
 	col: number;
+	// ─── Durability (Phase 1) ───
+	// maxDurability is the material's budget (0 = indestructible). `durability`
+	// is per-instance and only meaningful when maxDurability > 0, which is why it
+	// must survive a save/load round-trip rather than being derived from itemId.
+	durability = 0;
+	maxDurability = 0;
 
 	// ─── Private fields (underscore convention: V8 optimises better than #private
 	//     when mixed with prototype method access) ───
@@ -145,6 +161,18 @@ export class Item implements IUsable {
 		this._stackLabel = label;
 
 		this._refreshIcon();
+		this._applyDepletedStyle();
+	}
+
+	/**
+	 * Visually mark a spent item. Uses a CSS class rather than an inline filter
+	 * so the appearance lives in the stylesheet with the rest of the HUD skin.
+	 * No-op while the item still has budget, so the common path touches nothing.
+	 */
+	private _applyDepletedStyle(): void {
+		const div = this._div;
+		if (div === null) return;
+		div.classList.toggle(DEPLETED_ITEM_CLASS, this.isSpent);
 	}
 
 	// ─── Bound handler (single allocation per instance, not per drag) ───
@@ -169,6 +197,8 @@ export class Item implements IUsable {
 		item.itemId = def.id;
 		item.blockId = def.blockId ?? def.id;
 		item.blockState = def.blockState ?? 0;
+		item.maxDurability = def.maxDurability ?? getToolMaxDurability(def.id);
+		item.durability = item.maxDurability;
 
 		// Resolve use action once at creation (not per-use)
 		if (def.useAction === "place_block") {
@@ -477,9 +507,74 @@ export class Item implements IUsable {
 		drawCubeIcon(ctx, this.blockId);
 	}
 
+	// ─── Durability ───
+
+	/** Whether this item has a durability budget at all. */
+	public get isDurable(): boolean {
+		return this.maxDurability > 0;
+	}
+
+	/** Whether this item has spent all of its durability. */
+	public get isSpent(): boolean {
+		return isDepleted(this.durability, this.maxDurability);
+	}
+
+	/**
+	 * The id to hand to id-based tool lookups (`getToolMiningLevel`,
+	 * `getToolSpeedMultiplier`, `getToolKind`, `getMeleeDamage`,
+	 * `getMeleeRange`).
+	 *
+	 * A spent tool reports id 0, which every one of those already treats as bare
+	 * hands. That single indirection is what makes a depleted pickaxe mine at
+	 * hand pace and a depleted sword hit like a fist, with no branching at the
+	 * call sites.
+	 */
+	public getToolLookupId(): number {
+		return toolLookupId(this.itemId, this.durability, this.maxDurability);
+	}
+
+	/**
+	 * Spend durability. No-op unless the item is durable, the amount is
+	 * positive, and there is budget left to spend. Returns true if it wore.
+	 */
+	public wearDurability(amount: number): boolean {
+		if (amount <= 0 || this.maxDurability <= 0) return false;
+		if (this.durability <= 0) return false;
+		this.durability = Math.max(0, this.durability - amount);
+		if (this.durability === 0) this._applyDepletedStyle();
+		return true;
+	}
+
+	/** Restore durability, clamped to the budget. Returns the amount restored. */
+	public repairDurability(amount: number): number {
+		const restored = repairAmount(this.durability, this.maxDurability, amount);
+		if (restored <= 0) return 0;
+		// Leaving the spent state is the only transition worth a DOM write.
+		if (this.durability <= 0) this._applyDepletedStyle();
+		this.durability += restored;
+		return restored;
+	}
+
+	/** Fully restore durability. Returns the amount restored. */
+	public repairFully(): number {
+		return this.repairDurability(this.maxDurability);
+	}
+
+	/** Durability as a 0..1 fraction, for durability bars. 1 when indestructible. */
+	public getDurabilityFraction(): number {
+		if (this.maxDurability <= 0) return 1;
+		return this.durability / this.maxDurability;
+	}
+
 	// ─── Stack operations (hot path: inventory drag/drop) ───
 	public static stackItemAtoB(itemA: Item, itemB: Item): number {
 		if (itemA.itemId !== itemB.itemId) return itemA._stackSize;
+		// Never fold a worn item into a pristine one (or two differently-worn
+		// ones together). Without this the weaker half's durability is silently
+		// overwritten by the survivor's, which is a free repair — or worse, a
+		// free downgrade. Durable items are maxStack 1 anyway, so in practice
+		// this only guards against a mis-authored definition.
+		if (!canStackTogether(itemA, itemB)) return itemA._stackSize;
 		const combined = itemA._stackSize + itemB._stackSize;
 		const bMax = itemB._maxStack;
 		const bNew = combined > bMax ? bMax : combined;

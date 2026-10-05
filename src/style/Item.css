@@ -31,3 +31,20 @@
 	text-shadow: var(--hud-text-shadow, 2px 2px 2px black);
 	pointer-events: none;
 }
+
+/*
+ * A spent item is never destroyed, only disabled — it must still read as
+ * "this is your tool, and it needs work", so it desaturates rather than
+ * disappearing or greying out to unreadable.
+ */
+.inventory-item--depleted {
+	filter: grayscale(0.75) brightness(0.62);
+	opacity: 0.85;
+}
+
+/* The stack label sits on top of a desaturated icon and would vanish with it. */
+.inventory-item--depleted .stack-label {
+	filter: none;
+	opacity: 1;
+	color: var(--hud-warn, #f0a020);
+}

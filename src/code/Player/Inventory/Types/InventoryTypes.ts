@@ -21,10 +21,23 @@ export type ItemDefinition = {
 	spawnMobType?: string;
 	/** Food: hunger points restored when eaten via the use_food action. */
 	hunger?: number;
+	/**
+	 * Durability budget for this item type. Omitted or 0 means indestructible.
+	 * When omitted, the tool material's budget is used instead, so hand-authored
+	 * tool definitions do not have to repeat it.
+	 */
+	maxDurability?: number;
 };
+
 export type SavedInventoryItem = {
 	itemId: number;
 	stackSize: number;
+	/**
+	 * Remaining durability. Omitted when the item is pristine or indestructible,
+	 * which keeps the save payload small — this serialises to localStorage on
+	 * every inventory mutation.
+	 */
+	durability?: number;
 };
 
 export type SavedInventoryState = {

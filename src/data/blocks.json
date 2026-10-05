@@ -597,7 +597,7 @@
 		"name": "grass006_cross",
 		"path": "/texture/dirt/Grass006_1K",
 		"shape": "cross_diagonal",
-		"hardness": 0.6,
+		"hardness": 0.01,
 		"preferredTool": "shovel"
 	},
 	{
@@ -681,6 +681,13 @@
 		"name": "Emerald Ore",
 		"path": "/texture/ore/emerald_ore_1k",
 		"hardness": 1.8,
+		"preferredTool": "pickaxe"
+	},
+	{
+		"id": "TempleGlyph",
+		"name": "temple_glyph",
+		"path": "/texture/stone/red_sandstone_wall_1k",
+		"hardness": 2.0,
 		"preferredTool": "pickaxe"
 	}
 ]

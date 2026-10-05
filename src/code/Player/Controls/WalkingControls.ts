@@ -11,6 +11,7 @@ import { isUiOpen, UiFocus } from "../../Lib/GameRuntimeState";
 import type { BlockRaycastHit } from "../Hud/BlockHighlight/BlockRaycaster";
 import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
 import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakingBlockHandler";
+import { MELEE_DURABILITY_COST } from "../Inventory/Durability";
 import { swingHeldItemView } from "../Inventory/HeldItemView";
 import type { Item } from "../Inventory/Item";
 import { getRegisteredItemById } from "../Inventory/ItemRegistry";
@@ -237,7 +238,11 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	#applyMeleeHit(target: MeleeHit): void {
 		this.#miningHeld = false;
 		this.#blockBreaking.stop();
-		const damage = getMeleeDamage(this.selectedItem?.itemId);
+		const held = this.selectedItem;
+		// getToolLookupId() reports 0 once a tool is spent, which getMeleeDamage
+		// already treats as bare fists — so a spent sword hits like a hand.
+		const damage = getMeleeDamage(held?.getToolLookupId());
+		this.#wearMeleeTool(held);
 		if (target.kind === "local") {
 			target.mob.takeDamage(damage, vec3(target.x, target.y, target.z));
 			return;
@@ -249,6 +254,13 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		if (!remote || !netClient) return;
 		netClient.sendMobDamage(target.id, damage);
 		remote.noteOutgoingDamage(target.id);
+	}
+
+	/** Spend one point of durability from the swinging item. Survival only. */
+	#wearMeleeTool(held: Item | null): void {
+		if (held === null) return;
+		if (this.#player.stats.gamemode !== Gamemodes.Survival) return;
+		held.wearDurability(MELEE_DURABILITY_COST);
 	}
 
 	#getMeleeRay(): MeleeRay {
@@ -271,7 +283,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 			dirX,
 			dirY,
 			dirZ,
-			reach: getMeleeRange(this.selectedItem?.itemId),
+			reach: getMeleeRange(this.selectedItem?.getToolLookupId()),
 		};
 	}
 
