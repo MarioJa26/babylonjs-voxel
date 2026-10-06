@@ -20,6 +20,7 @@ import {
 } from "../Maps/BlockBreakParticles";
 import { Map1 } from "../Maps/Map1";
 import { isEyeUnderwater } from "../Maps/UnderWaterEffect";
+import { tickStationRuntime } from "../World/BlockInventory/StationRuntime";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
 	getBlockByWorldCoords,
@@ -47,7 +48,16 @@ import {
 } from "../World/Chunk/Simulation/WaterSimulation";
 import { FarTileManager } from "../World/FarTiles/FarTileManager";
 import {
+	cycleGpuProbe,
+	getGpuExecSnapshot,
+	getLastBisectSummary,
+	isBisectRunning,
+	isLiveSortEnabled,
+	runBucketBisect,
+} from "../World/Light/gpuBottleneckProbe";
+import {
 	getGpuPressureFactor,
+	getGpuPressureMs,
 	onGpuWorkDone,
 	publishGpuPressure,
 	resetGpuPressure,
@@ -206,6 +216,17 @@ export class PlayerLoopController {
 		//   F7  packed chunk-mesh visibility — the bulk of world draw work.
 		//       Leaves uploads and dirty state untouched, so re-enabling
 		//       restores the full picture at once.
+		//   F9  GPU probe cycle: off → timings → timings+liveSort → off.
+		//       Timings are Lite timestamp-queries (whole-frame GPU ms +
+		//       per-task ms in the HUD — the number DevTools cannot show).
+		//       The live sort orders opaque draws front-to-back within each
+		//       renderOrder group to test the overdraw probe's sort-gain
+		//       live; watch GPU Exec AND Main Thread Ms (bundle re-record
+		//       costs CPU). No-op when the device lacks timestamp-query.
+		//   F10 automated GPU bucket bisect: medians for all-on / far-off /
+		//       chunks-off / both-off plus an overdraw replay, then restores
+		//       visibility. Stand still with streaming settled until it
+		//       reports (~10s); results go to console + the GPU Bisect row.
 		// F3 (DebugControlHelper) hides the debug panel, which is the
 		// DOM/compositing arm of the same bisect.
 		window.addEventListener("keydown", this.#profilerKeyDown);
@@ -244,6 +265,43 @@ export class PlayerLoopController {
 				`[Profiler] packed chunk meshes visible: ${next} ` +
 					"(uploads and dirty state untouched; re-enabling restores everything)",
 			);
+		} else if (key === "f9") {
+			e.preventDefault();
+			const engine = Map1.engine;
+			const scene = Map1.mainScene;
+			if (!engine || !scene) {
+				console.warn("[Profiler] F9: engine/scene not ready");
+				return;
+			}
+			// Diagnostic cycle: off → timings → timings+liveSort → off.
+			const level = cycleGpuProbe(engine, scene);
+			console.info(`[Profiler] GPU probe level: ${level}`);
+		} else if (key === "f10") {
+			e.preventDefault();
+			if (isBisectRunning()) {
+				console.info("[Profiler] GPU bisect already running — ignoring");
+				return;
+			}
+			const engine = Map1.engine;
+			const scene = Map1.mainScene;
+			if (!engine || !scene) {
+				console.warn("[Profiler] F10: engine/scene not ready");
+				return;
+			}
+			console.info(
+				"[Profiler] GPU bisect starting — stand still with streaming " +
+					"settled until it reports (~10s)",
+			);
+			void runBucketBisect(engine, scene, {
+				isFarVisible: () => FarTileManager.isFarTilesVisible(),
+				setFarVisible: (visible: boolean) => {
+					FarTileManager.setFarTilesVisible(visible);
+				},
+				isChunksVisible: () => areChunkMeshesVisible(),
+				setChunksVisible: (visible: boolean) => {
+					setChunkMeshesVisible(visible);
+				},
+			});
 		}
 	};
 
@@ -274,10 +332,20 @@ export class PlayerLoopController {
 		Chunk.beginBlockEditBatch();
 		try {
 			this.#blockTickScheduler.processFrame();
+			// Stations tick here rather than on BlockTickScheduler: that ring is
+			// built for sparse one-shots (max 63 ticks of delay, a 4096-entry
+			// safety ceiling), and a world full of smelting furnaces would blow
+			// both budgets while needing continuous work every tick.
+			tickStationRuntime(dtSec, this.getPlayerPosition());
 		} finally {
 			Chunk.endBlockEditBatch();
 		}
 		frameProfiler.end("blockTicks");
+
+		// Station panel: reach check plus a progress redraw. Separate from the
+		// runtime tick because it is UI, and it must run even while a station
+		// overlay is open (only the pause menu freezes the world).
+		this.playerHud.updateStationUI();
 
 		const vehicle = this.playerVehicle;
 		const stats = this.playerStats;
@@ -824,6 +892,51 @@ export class PlayerLoopController {
 				`throttle:${(getGpuPressureFactor() * 100).toFixed(0)}%`,
 			"performance",
 		);
+
+		// PERF DIAGNOSTIC: true GPU EXECUTION time from Lite timestamp
+		// queries (F9 toggles). Unlike GPU Lag Peak above (queue-drain
+		// backlog), this is how long the GPU actually spent executing the
+		// frame — the number that decides pixel-bound vs vertex-bound vs
+		// upload-bound together with the RENDER_SCALE sweep and F6/F7.
+		// `drain` is the live queue-drain EWMA: exec small + drain large
+		// means transfer/upload backlog (hitches while streaming), not
+		// shader cost.
+		{
+			const gpuEngine = Map1.engine;
+			if (gpuEngine) {
+				const snap = getGpuExecSnapshot(gpuEngine);
+				PlayerHud.updateDebugInfo(
+					"GPU Exec",
+					!snap.supported
+						? "unsupported (no timestamp-query)"
+						: !snap.enabled
+							? "off (F9 to enable)"
+							: `${snap.frameMs.toFixed(2)}ms draws:${snap.draws} ` +
+								`drain:${getGpuPressureMs().toFixed(1)}ms` +
+								(isLiveSortEnabled() ? " SORT" : ""),
+					"performance",
+				);
+				if (snap.supported && snap.enabled) {
+					PlayerHud.updateDebugInfo(
+						"GPU Tasks",
+						snap.taskStatus === "available"
+							? snap.tasks
+									.map((t) => `${t.name}:${t.ms.toFixed(2)}ms`)
+									.join(" ") +
+									(snap.droppedTasks > 0
+										? ` (+${snap.droppedTasks} dropped)`
+										: "")
+							: snap.taskStatus,
+						"performance",
+					);
+				}
+				PlayerHud.updateDebugInfo(
+					"GPU Bisect",
+					getLastBisectSummary(),
+					"performance",
+				);
+			}
+		}
 
 		PlayerHud.updateDebugInfo(
 			"Player Pos",

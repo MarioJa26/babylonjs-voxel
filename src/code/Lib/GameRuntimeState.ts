@@ -31,12 +31,15 @@ export function setGameTimeScale(value: number): void {
 //   - "pauseMenu"  -> genuine pause: world tick + world time freeze.
 //   - "inventory"  -> non-blocking overlay: world keeps running, mouse freed.
 //   - "masonTable" -> non-blocking overlay: world keeps running, mouse freed.
+//   - "station"    -> non-blocking overlay. Station smelt ticks keep running,
+//                     so an open furnace shows a live progress bar.
 // ---------------------------------------------------------------------------
 export const enum UiFocus {
 	pauseMenu,
 	inventory,
 	masonTable,
 	woodCrate,
+	station,
 	chat,
 }
 

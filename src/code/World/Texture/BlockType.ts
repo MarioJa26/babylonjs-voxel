@@ -109,6 +109,38 @@ export enum BlockType {
 	 * texture, so it needs no new art.
 	 */
 	TempleGlyph = 104,
+	// ─── Stations (Phase 3a) ───
+	// All three reuse existing textures, following the TempleGlyph precedent, so
+	// they need no new art. Swap these paths when dedicated art lands.
+	/** Brick kiln. Burns fuel into charcoal; the fuel slot is the material. */
+	Kiln = 105,
+	/** Metal furnace. Smelts ore into ingots; needs input *and* fuel. */
+	Furnace = 106,
+	/** Slate grindstone. Repairs the durability of whatever tool is placed on it. */
+	Whetstone = 107,
+	/** Alloying station: melts scrap, mixes metals, and quick-repairs. */
+	Crucible = 108,
+	/** Smithing station: draws wire, weaves chain, plates, tips tools, inscribes runes. */
+	Anvil = 109,
+	/** T6+ alloying station for the reinforced metals. */
+	Smeltery = 110,
+	/**
+	 * Tin ore. Shallow and rare — bronze is the first alloy, so it must not be
+	 * a deep-and-late unlock. Reuses the gold ore texture family.
+	 */
+	TinOre = 111,
+
+	// ─── Placed smithing tools (Phase 3c) ───
+	// One block per (kind, tier) so the tier is visible in the world: a stone
+	// hammer and an iron hammer that look identical would defeat the purpose of
+	// placing them beside a station. Wear lives in blockState bits 0-2, which
+	// costs no persistence at all — see Player/Inventory/SmithTools.ts.
+	//
+	// Ordered by SmithTools.SMITH_TOOL_KINDS x SMITH_TOOL_TIERS:
+	//   hammer, tongs, chisel, graver, burin, rune_engraver, underworldbrand
+	//   each ascending Stone, Bronze, Iron, ReinforcedIron, ReinforcedSilver,
+	//   UnderworldIron.
+	SmithToolHammer = 120,
 }
 
 export const Hardness = {

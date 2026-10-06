@@ -1,4 +1,5 @@
 import Alea from "alea";
+import { BlockType } from "@/code/World/Texture/BlockType";
 import { WATER_BLOCK_ID } from "../World/Chunk/Worker/ChunkMesherConstants";
 import { LightGenerator, type LightSeedState } from "./LightGenerator";
 import {
@@ -29,7 +30,20 @@ type GenerateChunkResult = {
 };
 
 const IS_ORE = new Uint8Array(128);
-for (const id of [16, 21, 79, 80, 96, 97, 98, 99, 101, 102, 103]) {
+for (const id of [
+	16,
+	21,
+	79,
+	80,
+	96,
+	97,
+	98,
+	99,
+	101,
+	102,
+	103,
+	BlockType.TinOre,
+]) {
 	IS_ORE[id] = 1;
 }
 

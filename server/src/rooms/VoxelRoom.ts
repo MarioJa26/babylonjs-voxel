@@ -22,6 +22,8 @@
  */
 import { type Client, ClientState, CloseCode, Room } from "colyseus";
 import { isNightTimeFraction, MOB_STATS } from "@/code/Entities/MobConfig";
+import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap.ts";
+import { computeSeedAsInt } from "@/code/Generation/WorldSeed.ts";
 import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
 import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath.ts";
 import {
@@ -38,6 +40,10 @@ import {
 	decodeMobDamageInto,
 	decodeMobSpawnRequestInto,
 	decodePitchByte,
+	decodeStationClaimResultInto,
+	decodeStationOpenInto,
+	decodeStationSetSlotInto,
+	decodeStationUpgradeInto,
 	decodeTntIgniteInto,
 	decodeYawByte,
 	encodeArrowSpawn,
@@ -63,6 +69,9 @@ import {
 	encodePlayerLeave,
 	encodePlayerSkin,
 	encodeSpawnPosition,
+	encodeStationRejected,
+	encodeStationResultClaimed,
+	encodeStationState,
 	encodeTntIgnite,
 	encodeWorldConfig,
 	encodeYawByte,
@@ -94,12 +103,19 @@ import {
 	type MobUpdateBatchEntry,
 	type PlayerStateBatchEntry,
 	type PlayerStateData,
+	type StationClaimResultData,
+	type StationOpenData,
+	StationRejectReason,
+	type StationSetSlotData,
+	type StationUpgradeData,
 	type TntIgniteData,
 } from "@/code/Network/protocol/messages.ts";
 import {
 	TOOL_KINDS,
 	TOOL_MATERIALS,
 } from "@/code/Player/Inventory/ProceduralTools";
+import { stationKindForBlock } from "@/code/World/BlockInventory/StationManager.ts";
+import type { StationKind } from "@/code/World/BlockInventory/StationTypes.ts";
 import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding.ts";
 import { BlockTickScheduler } from "@/code/World/Chunk/Simulation/BlockTickScheduler.ts";
 import { WaterSimulation } from "@/code/World/Chunk/Simulation/WaterSimulation.ts";
@@ -119,8 +135,6 @@ import {
 } from "@/code/World/Storage/ChunkKey.ts";
 import { serializeVoxelData } from "@/code/World/Storage/VoxelSerializer.ts";
 import { BlockType } from "@/code/World/Texture/BlockType.ts";
-import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap.ts";
-import { computeSeedAsInt } from "@/code/Generation/WorldSeed.ts";
 import heldItemDefinitions from "../../../public/data/items.json";
 import { getServerConfig } from "../config/ServerConfig.ts";
 import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
@@ -143,6 +157,14 @@ import {
 } from "../world/MobSimulation.ts";
 import type { StoredChunkData } from "../world/ServerWorldStorage.ts";
 import { ServerWorldStorage } from "../world/ServerWorldStorage.ts";
+import {
+	PHASE_3A_STATION_KINDS,
+	type ServerStation,
+	ServerStationStore,
+	STATION_KIND_IDS,
+	STATION_TICK_MS,
+	stationKey,
+} from "../world/StationSimulation.ts";
 import { ServerWaterBlockAccess } from "../world/WaterBlockAccess.ts";
 import {
 	createWorldSpawn,
@@ -225,6 +247,8 @@ const FULL_SNAPSHOT_INTERVAL = 2000;
 const PLAYER_SAVE_INTERVAL = 3000;
 const MOB_UPDATE_INTERVAL = 100;
 const ITEM_UPDATE_INTERVAL = 100;
+/** Fixed smelt step, matching the client's 20 Hz station tick. */
+const STATION_TICK_INTERVAL = STATION_TICK_MS;
 const ITEM_PICKUP_RADIUS = 2.5;
 const ITEM_PICKUP_RADIUS_SQ = ITEM_PICKUP_RADIUS * ITEM_PICKUP_RADIUS;
 const MAX_ITEM_ID = 65535;
@@ -371,6 +395,7 @@ export class VoxelRoom extends Room {
 	private mobUpdateEncoder = new BinaryEncoder(2048);
 	private itemSim!: ServerItemSimulation;
 	private itemTickAccum = 0;
+	private stationTickAccum = 0;
 	private itemStatePool: ItemUpdateBatchEntry[] = [];
 	private itemStateScratch: ItemUpdateBatchEntry[] = [];
 	private itemSnapshotScratch: ServerItem[] = [];
@@ -379,6 +404,7 @@ export class VoxelRoom extends Room {
 	// Shared live view: every viewer gets SlotUpdates for every accepted
 	// write (last-write-wins per slot, no exclusive lock).
 	private containerStore!: ServerContainerStore;
+	private stationStore!: ServerStationStore;
 	private readonly containerViewers = new Map<string, Set<string>>();
 	private readonly viewerContainers = new Map<string, Set<string>>();
 	// Authoritative water simulation — shares the client's WaterSimulation logic
@@ -525,6 +551,33 @@ export class VoxelRoom extends Room {
 		y: 0,
 		z: 0,
 	};
+	// Reusable decode targets for the station family, in the house style for hot
+	// binary paths: zero allocation per message.
+	private readonly stationOpenScratch: StationOpenData = {
+		x: 0,
+		y: 0,
+		z: 0,
+	};
+	private readonly stationClaimResultScratch: StationClaimResultData = {
+		x: 0,
+		y: 0,
+		z: 0,
+	};
+
+	private readonly stationSetSlotScratch: StationSetSlotData = {
+		x: 0,
+		y: 0,
+		z: 0,
+		slot: 0,
+		itemId: 0,
+		stackSize: 0,
+	};
+	private readonly stationUpgradeScratch: StationUpgradeData = {
+		x: 0,
+		y: 0,
+		z: 0,
+		capTier: 0,
+	};
 	private readonly containerSetSlotScratch: ContainerSetSlotData = {
 		x: 0,
 		y: 0,
@@ -630,7 +683,11 @@ export class VoxelRoom extends Room {
 
 		this.mobSim = new ServerMobSimulation(this.worldStorage);
 		this.itemSim = new ServerItemSimulation(this.worldStorage);
-		this.containerStore = new ServerContainerStore(this.worldStorage, this.seedAsInt);
+		this.containerStore = new ServerContainerStore(
+			this.worldStorage,
+			this.seedAsInt,
+		);
+		this.stationStore = new ServerStationStore(this.worldStorage);
 
 		// Authoritative water simulation. Shares the client's WaterSimulation
 		// class (single definition) — only the block access and scheduler are
@@ -948,6 +1005,7 @@ export class VoxelRoom extends Room {
 		this.containerViewers.clear();
 		this.viewerContainers.clear();
 		this.containerStore?.clear();
+		this.stationStore?.clear();
 
 		await this.mobSim.persistAll();
 		this.clearChunkFlush();
@@ -1363,6 +1421,15 @@ export class VoxelRoom extends Room {
 		// cache synchronously and broadcast to clients so their meshes update.
 		this.waterScheduler.processFrame();
 		this.broadcastWaterEdits();
+
+		// Authoritative smelting. Runs on a fixed 20 Hz step rather than the frame
+		// delta so a stutter cannot accelerate a smelt, and only active stations
+		// are visited.
+		this.stationTickAccum += deltaMs;
+		while (this.stationTickAccum >= STATION_TICK_MS) {
+			this.stationTickAccum -= STATION_TICK_MS;
+			this.tickStations();
+		}
 
 		// Engine optimization: Single pass over players for state batch and save logic
 		const stateScratch = this.statesScratch;
@@ -2198,10 +2265,13 @@ export class VoxelRoom extends Room {
 
 				// Capture the pre-edit block so a broken crate can scatter its
 				// server-owned contents (clients never see crate inventories).
+				const preEditBlock = this.getAuthoritativeBlock(edit.x, edit.y, edit.z);
 				const brokeCrate =
 					edit.action === BlockActionType.Break &&
-					this.getAuthoritativeBlock(edit.x, edit.y, edit.z) ===
-						BlockType.WoodCrate;
+					preEditBlock === BlockType.WoodCrate;
+				const brokeStation =
+					edit.action === BlockActionType.Break &&
+					stationKindForBlock(preEditBlock) !== undefined;
 				const blockId =
 					edit.action === BlockActionType.Break ? 0 : edit.blockId;
 				const blockState =
@@ -2216,6 +2286,7 @@ export class VoxelRoom extends Room {
 					edit.action,
 				);
 				if (brokeCrate) this.scatterContainerContents(edit.x, edit.y, edit.z);
+				if (brokeStation) this.scatterStationContents(edit.x, edit.y, edit.z);
 
 				this.editBroadcastEncoder.reset();
 				this.editBroadcastEncoder.writeUint8(MessageType.BlockEditBroadcast);
@@ -2278,13 +2349,22 @@ export class VoxelRoom extends Room {
 				// and sends follow-up Explosion messages for the cascade.
 				const applied: BlockEditData[] = [];
 				const craterCrates: Array<{ x: number; y: number; z: number }> = [];
+				const craterStations: Array<{ x: number; y: number; z: number }> = [];
 				const collectCrater = (targets: typeof destroy): void => {
 					for (const target of targets) {
-						if (
-							this.getAuthoritativeBlock(target.x, target.y, target.z) ===
-							BlockType.WoodCrate
-						) {
+						const preBlock = this.getAuthoritativeBlock(
+							target.x,
+							target.y,
+							target.z,
+						);
+						if (preBlock === BlockType.WoodCrate) {
 							craterCrates.push({ x: target.x, y: target.y, z: target.z });
+						} else if (stationKindForBlock(preBlock) !== undefined) {
+							craterStations.push({
+								x: target.x,
+								y: target.y,
+								z: target.z,
+							});
 						}
 						applied.push(
 							this.applyServerEdit(
@@ -2303,6 +2383,9 @@ export class VoxelRoom extends Room {
 				collectCrater(chain);
 				for (const crate of craterCrates) {
 					this.scatterContainerContents(crate.x, crate.y, crate.z);
+				}
+				for (const station of craterStations) {
+					this.scatterStationContents(station.x, station.y, station.z);
 				}
 
 				if (applied.length > 0) {
@@ -2561,6 +2644,54 @@ export class VoxelRoom extends Room {
 					containerKey(close.x, close.y, close.z),
 					client.sessionId,
 				);
+				break;
+			}
+
+			case MessageType.StationOpen: {
+				const open = decodeStationOpenInto(dec, this.stationOpenScratch);
+				void this.handleStationOpen(client, open.x, open.y, open.z);
+				break;
+			}
+
+			case MessageType.StationSetSlot: {
+				const write = decodeStationSetSlotInto(dec, this.stationSetSlotScratch);
+				const player = this.players.get(client.sessionId);
+				if (!player) return;
+				this.handleStationSetSlot(
+					client,
+					player,
+					write.x,
+					write.y,
+					write.z,
+					write.slot,
+					write.itemId,
+					write.stackSize,
+				);
+				break;
+			}
+
+			case MessageType.StationClaimResult: {
+				const claim = decodeStationClaimResultInto(
+					dec,
+					this.stationClaimResultScratch,
+				);
+				const player = this.players.get(client.sessionId);
+				if (!player) return;
+				this.handleStationClaimResult(
+					client,
+					player,
+					claim.x,
+					claim.y,
+					claim.z,
+				);
+				break;
+			}
+
+			case MessageType.StationUpgrade: {
+				const up = decodeStationUpgradeInto(dec, this.stationUpgradeScratch);
+				const player = this.players.get(client.sessionId);
+				if (!player) return;
+				this.handleStationUpgrade(client, player, up.x, up.y, up.z, up.capTier);
 				break;
 			}
 
@@ -3237,6 +3368,214 @@ export class VoxelRoom extends Room {
 		return withinReach(x, y, z, player.x, player.y, player.z, maxReachSq);
 	}
 
+	// ─── Stations ───
+
+	private stationKindAt(
+		x: number,
+		y: number,
+		z: number,
+	): StationKind | undefined {
+		const kind = stationKindForBlock(this.getAuthoritativeBlock(x, y, z));
+		if (kind === undefined) return undefined;
+		// Phase 3a ships three kinds. Refuse the rest until Phase 3c lands, so a
+		// client cannot open a crucible that has no recipes.
+		return PHASE_3A_STATION_KINDS.includes(kind) ? kind : undefined;
+	}
+
+	private sendStationRejected(
+		client: Client,
+		x: number,
+		y: number,
+		z: number,
+		reason: number,
+	): void {
+		client.sendBytes("binary", encodeStationRejected({ x, y, z, reason }));
+	}
+
+	private encodeStationState(station: ServerStation): Uint8Array {
+		return encodeStationState({
+			x: station.x,
+			y: station.y,
+			z: station.z,
+			version: station.version,
+			kind: STATION_KIND_IDS.indexOf(station.kind),
+			capTier: station.capTier,
+			input: station.input ?? { itemId: 0, stackSize: 0 },
+			fuel: station.fuel ?? { itemId: 0, stackSize: 0 },
+			output: station.output ?? { itemId: 0, stackSize: 0 },
+			smeltProgress: station.smeltProgress,
+			burnRemaining: station.burnRemaining,
+			lit: this.stationStore.isStationLit(station),
+		});
+	}
+
+	private async handleStationOpen(
+		client: Client,
+		x: number,
+		y: number,
+		z: number,
+	): Promise<void> {
+		const player = this.players.get(client.sessionId);
+		if (!player) return;
+
+		if (!this.isContainerInReach(player, x, y, z)) {
+			this.sendStationRejected(client, x, y, z, StationRejectReason.TooFar);
+			return;
+		}
+
+		const kind = this.stationKindAt(x, y, z);
+		if (kind === undefined) {
+			this.sendStationRejected(client, x, y, z, StationRejectReason.NotStation);
+			return;
+		}
+
+		const station = await this.stationStore.open(x, y, z, kind);
+
+		// Re-validate after the await: the station may have been broken and the
+		// client may have disconnected while loading from storage.
+		if (!this.players.has(client.sessionId)) return;
+		if (this.stationKindAt(x, y, z) === undefined) {
+			this.sendStationRejected(client, x, y, z, StationRejectReason.NotStation);
+			return;
+		}
+
+		this.addContainerViewer(stationKey(x, y, z), client.sessionId);
+		client.sendBytes("binary", this.encodeStationState(station));
+	}
+
+	private handleStationSetSlot(
+		client: Client,
+		player: { x: number; y: number; z: number },
+		x: number,
+		y: number,
+		z: number,
+		slot: number,
+		itemId: number,
+		stackSize: number,
+	): void {
+		if (!this.isContainerInReach(player, x, y, z)) {
+			this.sendStationRejected(client, x, y, z, StationRejectReason.TooFar);
+			return;
+		}
+		if (this.stationKindAt(x, y, z) === undefined) {
+			this.sendStationRejected(client, x, y, z, StationRejectReason.NotStation);
+			return;
+		}
+
+		const result = this.stationStore.setSlot(x, y, z, slot, itemId, stackSize);
+		if (result.rejected !== null) {
+			const reason =
+				result.rejected === "notfound"
+					? StationRejectReason.NotFound
+					: result.rejected === "badslot"
+						? StationRejectReason.BadSlot
+						: StationRejectReason.ReadOnlySlot;
+			this.sendStationRejected(client, x, y, z, reason);
+			return;
+		}
+
+		if (result.station !== null) this.fanOutStationState(result.station);
+	}
+
+	private handleStationUpgrade(
+		client: Client,
+		player: { x: number; y: number; z: number },
+		x: number,
+		y: number,
+		z: number,
+		capTier: number,
+	): void {
+		if (!this.isContainerInReach(player, x, y, z)) {
+			this.sendStationRejected(client, x, y, z, StationRejectReason.TooFar);
+			return;
+		}
+
+		const result = this.stationStore.upgradeCap(x, y, z, capTier);
+		if (result.rejected !== null) {
+			this.sendStationRejected(
+				client,
+				x,
+				y,
+				z,
+				result.rejected === "notfound"
+					? StationRejectReason.NotFound
+					: StationRejectReason.BadUpgrade,
+			);
+			return;
+		}
+
+		if (result.station !== null) this.fanOutStationState(result.station);
+	}
+
+	/**
+	 * Hand the result stack to one client.
+	 *
+	 * The store removes the stack, so two clients racing for the same output get
+	 * one stack between them: the loser sees an empty result and is told nothing.
+	 * Inventory is client-side in this build, so the server sends the taken stack
+	 * to the winner and it adds it locally.
+	 */
+	private handleStationClaimResult(
+		client: Client,
+		player: { x: number; y: number; z: number },
+		x: number,
+		y: number,
+		z: number,
+	): void {
+		if (!this.isContainerInReach(player, x, y, z)) {
+			this.sendStationRejected(client, x, y, z, StationRejectReason.TooFar);
+			return;
+		}
+		if (this.stationKindAt(x, y, z) === undefined) {
+			this.sendStationRejected(client, x, y, z, StationRejectReason.NotStation);
+			return;
+		}
+
+		const result = this.stationStore.claimResult(x, y, z);
+		if (result.rejected !== null) {
+			this.sendStationRejected(client, x, y, z, StationRejectReason.NotFound);
+			return;
+		}
+		if (result.claimed !== null) {
+			const taken = encodeStationResultClaimed({
+				x,
+				y,
+				z,
+				itemId: result.claimed.itemId,
+				stackSize: result.claimed.stackSize,
+			});
+			this.sendToSession(client.sessionId, taken);
+		}
+		if (result.station !== null) this.fanOutStationState(result.station);
+	}
+
+	/** Push a fresh snapshot to everyone viewing the station. */
+	private fanOutStationState(station: ServerStation): void {
+		const bytes = this.encodeStationState(station);
+		const viewers = this.containerViewers.get(
+			stationKey(station.x, station.y, station.z),
+		);
+		if (viewers === undefined) return;
+		for (const sessionId of viewers) {
+			this.sendToSession(sessionId, bytes);
+		}
+	}
+
+	/**
+	 * Advance every active station and fan out to its viewers.
+	 *
+	 * Only stations with contents or progress are ticked, so a world full of cold
+	 * furnaces costs nothing. Views are capped by the client: the panel shows a
+	 * progress bar, and a player who walks away gets no updates until they look
+	 * again.
+	 */
+	private tickStations(): void {
+		const changed = this.stationStore.tick();
+		for (const station of changed) {
+			this.fanOutStationState(station);
+		}
+	}
+
 	// Engine perf: per-message validation path. Once-per-session reach warning
 	// (avoids warn spam when a stale client keeps missing).
 	private warnReachRejected(
@@ -3466,6 +3805,65 @@ export class VoxelRoom extends Room {
 	 * the authoritative edit path, so multiplayer clients must NOT scatter
 	 * crate contents locally.
 	 */
+	/**
+	 * A station was broken: drop its server-owned input and fuel as world items
+	 * and force-close every viewer. The result slot is excluded on purpose —
+	 * returning a finished smelt on break would let a player bank progress for
+	 * free by replacing the block.
+	 */
+	private scatterStationContents(x: number, y: number, z: number): void {
+		const key = stationKey(x, y, z);
+		const contents = this.stationStore.takeAll(x, y, z);
+
+		const viewers = this.containerViewers.get(key);
+		if (viewers) {
+			const rejected = encodeStationRejected({
+				x,
+				y,
+				z,
+				reason: StationRejectReason.NotFound,
+			});
+			for (const sessionId of viewers) {
+				this.sendToSession(sessionId, rejected);
+				const owned = this.viewerContainers.get(sessionId);
+				if (owned) {
+					owned.delete(key);
+					if (owned.size === 0) this.viewerContainers.delete(sessionId);
+				}
+			}
+			this.containerViewers.delete(key);
+		}
+
+		for (let i = 0; i < contents.length; i++) {
+			const slot = contents[i];
+			const item = this.itemSim.add(
+				slot.itemId,
+				slot.stackSize,
+				x + 0.5,
+				y + 0.5,
+				z + 0.5,
+				(Math.random() - 0.5) * 1.5,
+				2,
+				(Math.random() - 0.5) * 1.5,
+			);
+			this.broadcastBytes(
+				"binary",
+				encodeItemSpawn({
+					id: item.id,
+					itemId: item.itemId,
+					stackSize: item.stackSize,
+					x: item.x,
+					y: item.y,
+					z: item.z,
+					vx: item.vx,
+					vy: item.vy,
+					vz: item.vz,
+				}),
+				{},
+			);
+		}
+	}
+
 	private scatterContainerContents(x: number, y: number, z: number): void {
 		const key = containerKey(x, y, z);
 		const contents = this.containerStore.takeAll(x, y, z);

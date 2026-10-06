@@ -8,6 +8,12 @@ import {
 	saveBlockInventory,
 } from "@/code/World/BlockInventory/BlockInventoryManager";
 import {
+	getStationState,
+	stationKindForBlock,
+} from "@/code/World/BlockInventory/StationManager";
+import { notifyStationBlockBroken } from "@/code/World/BlockInventory/StationRuntime";
+import type { StationKind } from "@/code/World/BlockInventory/StationTypes";
+import {
 	deleteBlock,
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
@@ -487,6 +493,39 @@ export class BlockBreakingHandler {
 		item.wearDurability(HARVEST_DURABILITY_COST);
 	}
 
+	/**
+	 * Drop a broken station's contents into the world.
+	 *
+	 * Deliberately does *not* return the result slot: a half-finished smelt
+	 * going back into the player's inventory would let them bank progress for
+	 * free by breaking and replacing the block.
+	 */
+	#spillStation(x: number, y: number, z: number, kind: StationKind): void {
+		const state = getStationState(x, y, z, kind);
+
+		for (const stack of [state.input, state.fuel]) {
+			if (stack === null || stack.stackSize <= 0) continue;
+
+			try {
+				const item = Item.createById(stack.itemId);
+				item.stackSize = stack.stackSize;
+				const v = computeDeterministicDropVelocity(stack.itemId, 0.5);
+				dropWorldItem(
+					item,
+					x + 0.5,
+					y + 0.5,
+					z + 0.5,
+					v.x,
+					v.y,
+					v.z,
+					this.#player,
+				);
+			} catch {
+				// Item id no longer registered; drop nothing rather than throw.
+			}
+		}
+	}
+
 	#breakBlock(
 		x: number,
 		y: number,
@@ -573,6 +612,14 @@ export class BlockBreakingHandler {
 			);
 		} else {
 			deleteBlock(x, y, z);
+		}
+
+		// A station spills its contents on break and drops its record, so a player
+		// cannot mine a furnace and leave a half-smelted job in storage for ever.
+		const stationKind = stationKindForBlock(blockId);
+		if (stationKind !== undefined) {
+			notifyStationBlockBroken(x, y, z);
+			this.#spillStation(x, y, z, stationKind);
 		}
 
 		if (blockId === BlockType.WoodCrate) {

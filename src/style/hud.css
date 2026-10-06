@@ -46,6 +46,7 @@
 .hud-content-wrapper,
 .mason-overlay,
 .woodcrate-overlay,
+.station-overlay,
 .inventory-container,
 .inventory-slot,
 .crafting-slot,
@@ -455,6 +456,22 @@
 
 .equip-slot::after {
 	content: attr(data-label);
+}
+
+/*
+ * Once a slot adopts a live ItemSlot it also gains the `inventory-slot` class,
+ * which is what carries the hover treatment and the item icon styling. The
+ * `.equip-slot` frame stays smaller so the 31-slot block still reads as a
+ * distinct group beside the 10x10 grid, so only the essentials are restated.
+ */
+.equip-slot.inventory-slot {
+	background-color: var(--hud-bg-slot);
+	border: var(--slot-frame-w) solid var(--hud-frame);
+}
+
+/* The placeholder initial would otherwise sit on top of the item icon. */
+.equip-slot.inventory-slot:has(.inventory-item)::after {
+	content: "";
 }
 
 .crafting-header {
@@ -1690,4 +1707,88 @@ body.hud-hidden #chat-messages,
 body.hud-hidden #chat-input {
 	/* biome-ignore lint/complexity/noImportantStyles: <Needed to hide elements> */
 	display: none !important;
+}
+
+/* ─── Station panel (kiln / furnace / whetstone) ─── */
+/* Shares the overlay frame with the mason table and wood crate, so all three
+   modal panels feel like the same surface. */
+
+.station-panel {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--slot-gap);
+	padding: 1em;
+	background-color: var(--hud-bg-panel);
+	border: var(--panel-frame-w) solid var(--hud-frame);
+	border-radius: var(--hud-radius-md);
+	box-shadow: var(--hud-shadow-panel);
+	font-family: var(--ui-font-family);
+	color: var(--hud-text);
+}
+
+.station-title {
+	font-size: 1.1em;
+	font-weight: 700;
+	color: var(--hud-accent);
+}
+
+.station-slots {
+	display: flex;
+	flex-direction: row;
+	align-items: flex-start;
+	gap: calc(var(--slot-gap) * 1.5);
+}
+
+.station-cell {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: calc(var(--slot-gap) * 0.4);
+}
+
+.station-cell-label {
+	font-size: 0.75em;
+	color: var(--hud-text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+
+/* The ItemSlot supplies its own .inventory-slot div; this only sizes it. */
+.station-slot-host {
+	width: var(--slot-size);
+	height: var(--slot-size);
+}
+
+.station-progress {
+	width: var(--slot-size);
+	height: 4px;
+	margin-top: calc(var(--slot-gap) * 0.3);
+	background-color: rgba(0, 0, 0, 0.55);
+	border-radius: 2px;
+	overflow: hidden;
+}
+
+.station-progress-fill {
+	height: 100%;
+	width: 0%;
+	background-color: var(--hud-accent);
+	transition: width 80ms linear;
+}
+
+.station-status {
+	font-size: 0.85em;
+	color: var(--hud-text-muted);
+	min-height: 1.2em;
+}
+
+/* Click a station slot to take its contents back. The cursor is the only
+   affordance — there is no button, and the result slot is read-only for
+   writing so it needs a way out. */
+.station-slot-host {
+	cursor: pointer;
+}
+
+.station-slot-host .inventory-item {
+	pointer-events: none;
 }

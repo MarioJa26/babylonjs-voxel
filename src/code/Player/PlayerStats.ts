@@ -96,8 +96,22 @@ export class PlayerStats {
 		}
 	}
 
+	/**
+	 * Fraction of incoming damage armour absorbs, 0..1. Pushed in by the
+	 * equipment system whenever worn gear changes.
+	 *
+	 * A scalar rather than a reference to `Equipment` on purpose: `Equipment`
+	 * depends on `Item`, which transitively reaches this class, so holding the
+	 * object here would close an import cycle. `takeDamage` is the only damage
+	 * sink in the game, so this single subtraction covers every source.
+	 */
+	public damageReduction = 0;
+
 	public takeDamage(amount: number): void {
-		this.health = Math.max(0, this.health - amount);
+		// Drowning and starvation pass fractional amounts, so no rounding here.
+		const reduction = this.damageReduction;
+		const applied = reduction > 0 ? amount * (1 - reduction) : amount;
+		this.health = Math.max(0, this.health - applied);
 	}
 
 	/** XP for the next level: 7 + level * 4 (cheap early, grindy late). */

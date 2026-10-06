@@ -9,6 +9,7 @@ import {
 	parseToolKind,
 	type ToolKindId,
 } from "@/code/Player/Inventory/ProceduralTools";
+import blocksRaw from "../../../data/blocks.json";
 import { BlockType } from "./BlockType";
 
 export interface TextureDefinition {
@@ -29,6 +30,20 @@ export interface TextureDefinition {
 }
 
 const BLOCKS_URL = "/data/blocks.json";
+
+/**
+ * The same data as the fetch below, bundled.
+ *
+ * `/data/blocks.json` is a root-relative URL, which `fetch` only accepts in a
+ * browser. Under Node (tests, the headless checks) it rejects with
+ * ERR_INVALID_URL, and because the load failure was swallowed the caller got an
+ * empty definition list rather than an error — so every block silently fell back
+ * to default hardness and looked unbreakable or unminable. Importing the file
+ * directly, as `BlockShapes.ts` already does, keeps the definitions populated
+ * everywhere. `public/data/blocks.json` stays the source of truth and is copied
+ * to `src/data/blocks.json`.
+ */
+const BUNDLED_BLOCKS = blocksRaw as unknown;
 
 const DEFAULT_BLOCK_HARDNESS = 0.5;
 const BREAK_TIME_SCALE = 1.5;
@@ -57,6 +72,31 @@ async function loadAndPublishBlockDefinitions(): Promise<TextureDefinition[]> {
 }
 
 async function loadBlockDefinitions(): Promise<TextureDefinition[]> {
+	const data = await loadBlockData();
+
+	if (!Array.isArray(data)) {
+		console.warn("Blocks JSON must be an array; using bundled copy.");
+		return normalizeBlockData(BUNDLED_BLOCKS);
+	}
+
+	return normalizeBlockData(data);
+}
+
+/**
+ * Prefer the live file, fall back to the bundled copy.
+ *
+ * A failed fetch must not silently yield zero definitions — an empty list reads
+ * as "every block has default hardness", which is a much harder failure to spot
+ * than a loud one.
+ */
+async function loadBlockData(): Promise<unknown> {
+	// A root-relative URL only resolves against a document/worker base. Under Node
+	// there is none, so go straight to the bundled copy rather than provoking an
+	// Invalid URL rejection on every load.
+	if (typeof location === "undefined" || location.href === "") {
+		return BUNDLED_BLOCKS;
+	}
+
 	try {
 		const response = await fetch(BLOCKS_URL);
 
@@ -64,71 +104,71 @@ async function loadBlockDefinitions(): Promise<TextureDefinition[]> {
 			throw new Error(`Failed to load blocks: ${response.status}`);
 		}
 
-		const data = (await response.json()) as unknown;
-
-		if (!Array.isArray(data)) {
-			throw new Error("Blocks JSON must be an array.");
-		}
-
-		const normalized: TextureDefinition[] = [];
-
-		for (const entry of data) {
-			if (!entry || typeof entry !== "object") {
-				continue;
-			}
-
-			const raw = entry as Record<string, unknown>;
-			const id = normalizeBlockId(raw.id);
-
-			if (id === null) {
-				console.warn("Skipping block with invalid id:", entry);
-				continue;
-			}
-
-			if (typeof raw.name !== "string" || typeof raw.path !== "string") {
-				console.warn("Skipping block with invalid fields:", entry);
-				continue;
-			}
-
-			const definition: TextureDefinition = {
-				id,
-				name: raw.name,
-				path: raw.path,
-			};
-
-			if (typeof raw.hardness === "number") {
-				definition.hardness = raw.hardness;
-			}
-
-			if (typeof raw.shape === "string") {
-				definition.shape = raw.shape;
-			}
-
-			const preferred = parseToolKind(raw.preferredTool);
-			if (preferred !== undefined) {
-				definition.preferredTool = preferred;
-			}
-
-			if (raw.requiredLevel !== undefined) {
-				const requiredLevel = clampMaterialTier(raw.requiredLevel);
-				if (requiredLevel === undefined) {
-					console.warn(
-						`Block ${definition.name} has an out-of-range requiredLevel:`,
-						raw.requiredLevel,
-					);
-				} else {
-					definition.requiredLevel = requiredLevel;
-				}
-			}
-
-			normalized.push(definition);
-		}
-
-		return normalized;
+		return (await response.json()) as unknown;
 	} catch (error) {
-		console.warn("Block definitions failed to load:", error);
-		return [];
+		console.warn("Falling back to bundled blocks.json:", error);
+		return BUNDLED_BLOCKS;
 	}
+}
+
+function normalizeBlockData(data: unknown): TextureDefinition[] {
+	if (!Array.isArray(data)) return [];
+
+	const normalized: TextureDefinition[] = [];
+
+	for (const entry of data) {
+		if (!entry || typeof entry !== "object") {
+			continue;
+		}
+
+		const raw = entry as Record<string, unknown>;
+		const id = normalizeBlockId(raw.id);
+
+		if (id === null) {
+			console.warn("Skipping block with invalid id:", entry);
+			continue;
+		}
+
+		if (typeof raw.name !== "string" || typeof raw.path !== "string") {
+			console.warn("Skipping block with invalid fields:", entry);
+			continue;
+		}
+
+		const definition: TextureDefinition = {
+			id,
+			name: raw.name,
+			path: raw.path,
+		};
+
+		if (typeof raw.hardness === "number") {
+			definition.hardness = raw.hardness;
+		}
+
+		if (typeof raw.shape === "string") {
+			definition.shape = raw.shape;
+		}
+
+		const preferred = parseToolKind(raw.preferredTool);
+		if (preferred !== undefined) {
+			definition.preferredTool = preferred;
+		}
+
+		if (raw.requiredLevel !== undefined) {
+			const requiredLevel = clampMaterialTier(raw.requiredLevel);
+			if (requiredLevel === undefined) {
+				console.warn(
+					`Block ${definition.name} has an out-of-range requiredLevel:`,
+					raw.requiredLevel,
+				);
+			} else {
+				definition.requiredLevel = requiredLevel;
+			}
+		}
+
+		normalized.push(definition);
+	}
+
+	return normalized;
 }
 
 function normalizeBlockId(id: unknown): BlockType | null {

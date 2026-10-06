@@ -1,6 +1,7 @@
+import { BlockType } from "@/code/World/Texture/BlockType";
+import { BIOME_ID, type Biome } from "./Biome/BiomeTypes";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 import { getPRNGBySeed } from "./NoiseAndParameters/Squirrel13";
-import { BIOME_ID, type Biome } from "./Biome/BiomeTypes";
 
 type OreDefinition = {
 	id: number;
@@ -88,6 +89,18 @@ const ORE_TYPES: OreDefinition[] = [
 		blocksPerVein: 28,
 		spawnChance: 60,
 		attempts: 6,
+	},
+	{
+		// Bronze is the first alloy and the first reason to build a furnace, so
+		// tin sits high and is the rarest of the shallow metals. Without it the
+		// whole T3 tier is unreachable.
+		id: BlockType.TinOre,
+		name: "Tin",
+		maxY: 64,
+		veinRadius: 3,
+		blocksPerVein: 14,
+		spawnChance: 42,
+		attempts: 5,
 	},
 	{
 		id: 98,

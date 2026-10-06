@@ -25,8 +25,16 @@
  * (compact stride-16 vec4 injected by the lite patch) carries the absolute
  * face index in instData.x; instance_index is not used for indexing.
  *
- * Fragment stages keep the previous fog/sky/atlas math bit-for-bit; only the
- * vertex stage changed its data source.
+ * Vertex-stage notes (GPU perf):
+ * - Corner weights and axis bases are derived arithmetically (no const-array
+ *   dynamic indexing); water uses a reduced decode (skips tile/light word).
+ * - Terrain varyings are packed: planar UV (axis-selected in the vertex
+ *   stage) + tile/shade + fog — 4 locations instead of 6.
+ *
+ * Fragment stages keep the previous fog/sky/atlas math bit-for-bit, except
+ * fully-fogged pixels return the fog colour without an atlas fetch (the
+ * fetch itself uses explicit LOD 0 — the identical texel, since the atlas
+ * is uploaded without mips).
  */
 import {
 	createShaderMaterial,
@@ -55,36 +63,14 @@ fn ftSkyboxColor(viewDirY : f32, nightAmount : f32) -> vec3<f32> {
 `;
 
 // Shared face-decode + quad-expansion prologue for both variants.
+//
+// PERF: corner weights and axis bases are derived arithmetically (no
+// const-array dynamic indexing), so the vertex stage pays pure ALU instead
+// of array loads + bounds checks per vertex.
 const FACE_EXPAND_WGSL = /* wgsl */ `
 const FAR_TILE_Y_OFFSET : f32 = 1024.0;
 
-const CORNER_U = array<f32, 4>(0.0, 1.0, 1.0, 0.0);
-const CORNER_V = array<f32, 4>(0.0, 0.0, 1.0, 1.0);
-
-// Right-handed (U, V) bases per axis — mirrors the deleted CPU AXIS_BASIS:
-//   axis 0: U=Y(w), V=Z(h)   axis 1: U=Z(w), V=X(h)   axis 2: U=X(w), V=Y(h)
-const AXIS_U = array<vec3<f32>, 3>(
-  vec3<f32>(0.0, 1.0, 0.0),
-  vec3<f32>(0.0, 0.0, 1.0),
-  vec3<f32>(1.0, 0.0, 0.0),
-);
-const AXIS_V = array<vec3<f32>, 3>(
-  vec3<f32>(0.0, 0.0, 1.0),
-  vec3<f32>(1.0, 0.0, 0.0),
-  vec3<f32>(0.0, 1.0, 0.0),
-);
-
-// Unsigned +axis normal per face axis — the old CPU path always emitted
-// +axis normals (backFace flipped WINDING, never the normal).
-const AXIS_NORMAL = array<vec3<f32>, 3>(
-  vec3<f32>(1.0, 0.0, 0.0),
-  vec3<f32>(0.0, 1.0, 0.0),
-  vec3<f32>(0.0, 0.0, 1.0),
-);
-
 struct DecodedFace {
-  originX : f32,
-  originZ : f32,
   x : f32,
   y : f32,
   z : f32,
@@ -98,6 +84,16 @@ struct DecodedFace {
   axis : u32,
 }
 
+fn decodeCornerWeights(vi : u32) -> vec2<f32> {
+  // Identity walk [P00,P10,P11,P01]: corner 0:(0,0) 1:(1,0) 2:(1,1) 3:(0,1).
+  // au = bit1 XOR bit0, av = bit1 — branchless, no array lookup.
+  let corner = vi & 3u;
+  return vec2<f32>(
+    f32(((corner >> 1u) ^ corner) & 1u),
+    f32((corner >> 1u) & 1u),
+  );
+}
+
 fn expandFace(ii : u32, vi : u32) -> DecodedFace {
   var d : DecodedFace;
   let i4 = ii * 4u;
@@ -107,8 +103,6 @@ fn expandFace(ii : u32, vi : u32) -> DecodedFace {
   let w3 = faceData[i4 + 3u];
 
   let origin = tileOrigins[(w3 >> 8u) & 0xffffu];
-  d.originX = origin.x;
-  d.originZ = origin.y;
 
   d.x = origin.x + f32(w0 & 0x3ffu);
   d.y = f32((w0 >> 10u) & 0xfffu) - FAR_TILE_Y_OFFSET;
@@ -126,10 +120,58 @@ fn expandFace(ii : u32, vi : u32) -> DecodedFace {
   // Corner weights are the identity walk [P00,P10,P11,P01]; the per-mesh
   // index buffer supplies straight vs reversed triangulation (see module
   // doc) so winding matches the face's intended normal with culling on.
-  let corner = vi & 3u;
-  d.au = CORNER_U[corner];
-  d.av = CORNER_V[corner];
+  let corner = decodeCornerWeights(vi);
+  d.au = corner.x;
+  d.av = corner.y;
   return d;
+}
+
+// Water-only decode: water faces are always axis-1 (top) quads, so the
+// atlas-tile/light word (w2) is never read and the axis is hardcoded —
+// 1 fewer storage load and no tile/light unpack ALU per water vertex.
+fn expandWaterFace(ii : u32, vi : u32) -> DecodedFace {
+  var d : DecodedFace;
+  let i4 = ii * 4u;
+  let w0 = faceData[i4];
+  let w1 = faceData[i4 + 1u];
+  let w3 = faceData[i4 + 3u];
+
+  let origin = tileOrigins[(w3 >> 8u) & 0xffffu];
+
+  d.x = origin.x + f32(w0 & 0x3ffu);
+  d.y = f32((w0 >> 10u) & 0xfffu) - FAR_TILE_Y_OFFSET;
+  d.z = origin.y + f32((w0 >> 22u) & 0x3ffu);
+
+  d.w = f32(w1 & 0x3ffu);
+  d.h = f32((w1 >> 10u) & 0x3ffu);
+  d.axis = 1u;
+
+  d.tileX = 0.0;
+  d.tileY = 0.0;
+  d.lightFactor = 1.0;
+
+  let corner = decodeCornerWeights(vi);
+  d.au = corner.x;
+  d.av = corner.y;
+  return d;
+}
+
+// Branchless axis bases from the face axis, mirroring the deleted CPU
+// AXIS_BASIS and AXIS_NORMAL tables:
+//   axis 0: U=Y(w), V=Z(h), N=+X   axis 1: U=Z(w), V=X(h), N=+Y
+//   axis 2: U=X(w), V=Y(h), N=+Z
+// The old CPU path always emitted +axis normals (backFace flipped WINDING,
+// never the normal), so N·L uses the unsigned axis vector exactly as before.
+fn axisBases(axis : u32) -> mat3x3<f32> {
+  let isX = select(0.0, 1.0, axis == 0u);
+  let isY = select(0.0, 1.0, axis == 1u);
+  let isZ = 1.0 - max(isX, isY);
+  // Columns are (U, V, N).
+  return mat3x3<f32>(
+    vec3<f32>(isZ, isX, isY),
+    vec3<f32>(isY, isZ, isX),
+    vec3<f32>(isX, isY, isZ),
+  );
 }
 `;
 
@@ -138,16 +180,16 @@ ${FACE_EXPAND_WGSL}
 ${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
-  @location(0) vPositionW : vec3<f32>,
-  @location(1) vTile : vec2<f32>,
-  // Per-vertex shading: every far-tile face is FLAT (axis-aligned constant
-  // normal), so N·L and the sky term are identical across each quad's pixels
-  // and fold exactly into one scalar here instead of per-pixel work.
-  @location(2) vShade : f32,
-  // Triplanar UV hint derived from the face axis: 0 = X-facing, 1 = Y, 2 = Z.
-  @location(3) vAxisMode : f32,
-  @location(4) vFogColor : vec3<f32>,
-  @location(5) vFogFactor : f32,
+  // Axis-selected planar UV (world-position XY/XZ/ZY divided by
+  // textureScale here in the vertex stage). The fragment only fract()s it,
+  // which saves passing the 3-float world position plus the axis mode.
+  @location(0) vUV : vec2<f32>,
+  // Per-face payload: xy = atlas tile, z = flat shade. Every far-tile
+  // face is FLAT (axis-aligned constant normal), so N·L and the sky term
+  // are identical across each quad's pixels and fold into one scalar.
+  @location(1) vTileShade : vec3<f32>,
+  @location(2) vFogColor : vec3<f32>,
+  @location(3) vFogFactor : f32,
 };
 
 @vertex
@@ -155,25 +197,28 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
   var out : VSOut;
   let f = expandFace(u32(input.instData.x), vertexIndex);
 
-  let uvec = AXIS_U[f.axis];
-  let vvec = AXIS_V[f.axis];
-  let worldPos = vec3<f32>(f.x, f.y, f.z) + uvec * (f.au * f.w) + vvec * (f.av * f.h);
+  let bases = axisBases(f.axis);
+  let worldPos = vec3<f32>(f.x, f.y, f.z) + bases[0] * (f.au * f.w) + bases[1] * (f.av * f.h);
 
   out.pos = shaderSystem.worldViewProjection * vec4<f32>(worldPos, 1.0);
-  out.vPositionW = worldPos;
-  out.vTile = vec2<f32>(f.tileX, f.tileY);
+
+  // Triplanar-ish planar projection, branchless: X-faces sample ZY,
+  // Y-faces sample XZ, Z-faces sample XY — same mapping as before.
+  let isXFace = f.axis == 0u;
+  let isYFace = f.axis == 1u;
+  out.vUV = vec2<f32>(
+    select(worldPos.x, worldPos.z, isXFace),
+    select(worldPos.y, worldPos.z, isYFace),
+  ) / shaderUniforms.textureScale;
 
   // Chunk-matching sun convention: dot(N, +lightDirection). The old CPU
   // path always emitted +axis normals (backFace flipped WINDING, not the
   // normal), so N·L here uses the unsigned axis vector exactly like before.
-  let nrm = AXIS_NORMAL[f.axis];
-  let ndotl = max(0.0, dot(nrm, shaderUniforms.lightDirection));
+  let ndotl = max(0.0, dot(bases[2], shaderUniforms.lightDirection));
   let sun = shaderUniforms.sunLightIntensity;
-  out.vShade =
+  let shade =
     (ndotl * sun * 0.6 + 0.48 * (sun + 0.2)) * mix(0.55, 1.0, f.lightFactor);
-
-  // axis 0 = X-facing (mode 0), axis 1 = Y-facing (mode 1), axis 2 = Z (2).
-  out.vAxisMode = f32(f.axis);
+  out.vTileShade = vec3<f32>(f.tileX, f.tileY, shade);
 
   let toCamera = shaderSystem.cameraPosition - worldPos;
   let dist = length(toCamera);
@@ -201,33 +246,32 @@ const terrainFragmentWGSL = /* wgsl */ `
 ${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
-  @location(0) vPositionW : vec3<f32>,
-  @location(1) vTile : vec2<f32>,
-  @location(2) vShade : f32,
-  @location(3) vAxisMode : f32,
-  @location(4) vFogColor : vec3<f32>,
-  @location(5) vFogFactor : f32,
+  @location(0) vUV : vec2<f32>,
+  @location(1) vTileShade : vec3<f32>,
+  @location(2) vFogColor : vec3<f32>,
+  @location(3) vFogFactor : f32,
 };
 
 fn sampleAtlasTile(tile : vec2<f32>, worldUV : vec2<f32>) -> vec3<f32> {
   let baseUV = vec2<f32>(tile.x * shaderUniforms.atlasTileSize, 1.0 - ((tile.y + 1.0) * shaderUniforms.atlasTileSize));
   let atlasUV = baseUV + fract(worldUV) * shaderUniforms.atlasTileSize;
-  return textureSample(diffuseTexture, diffuseTextureSampler, atlasUV).rgb;
+  // Explicit LOD 0: the atlas is uploaded with mipMaps:false (single level,
+  // see DistantTerrain init), so this samples the identical texel that
+  // textureSample would — while staying legal inside the non-uniform fog
+  // early-out below, where implicit derivatives are forbidden by WGSL.
+  return textureSampleLevel(diffuseTexture, diffuseTextureSampler, atlasUV, 0.0).rgb;
 }
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-  // Triplanar-ish UV selection so side faces tile correctly. The dominant
-  // axis arrives precomputed from the vertex stage (faces are flat).
-  var worldUV = in.vPositionW.xz / shaderUniforms.textureScale;
-  if (in.vAxisMode < 0.5) {
-    worldUV = in.vPositionW.zy / shaderUniforms.textureScale;
-  } else if (in.vAxisMode > 1.5) {
-    worldUV = in.vPositionW.xy / shaderUniforms.textureScale;
+  // Fully-fogged horizon pixels are pure fog colour — skip the atlas fetch
+  // and shading entirely. This covers the largest on-screen far-tile area.
+  if (in.vFogFactor <= 0.001) {
+    return vec4<f32>(in.vFogColor, 1.0);
   }
 
-  let texColor = sampleAtlasTile(in.vTile, worldUV);
-  let finalColor = texColor * in.vShade;
+  let texColor = sampleAtlasTile(in.vTileShade.xy, in.vUV);
+  let finalColor = texColor * in.vTileShade.z;
 
   let colorWithFog = mix(in.vFogColor, finalColor, in.vFogFactor);
   return vec4<f32>(colorWithFog, 1.0);
@@ -253,7 +297,9 @@ fn mainVertex(
 ) -> VSOut {
   var out : VSOut;
 
-  let f = expandFace(u32(input.instData.x), vertexIndex);
+  // Water faces are always flat top quads — the specialized decode skips
+  // the axis/tile/light words entirely.
+  let f = expandWaterFace(u32(input.instData.x), vertexIndex);
 
   let worldPos =
     vec3<f32>(f.x, f.y, f.z) +
@@ -339,6 +385,11 @@ struct VSOut {
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
+  // Fully-fogged horizon pixels are pure fog colour — skip spec math.
+  if (in.vFogFactor <= 0.001) {
+    return vec4<f32>(in.vFogColor, 1.0);
+  }
+
   let normal = vec3<f32>(0.0, 1.0, 0.0);
 
   let viewDir = normalize(

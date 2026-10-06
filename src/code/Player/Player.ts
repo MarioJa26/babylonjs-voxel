@@ -7,10 +7,10 @@ import type {
 } from "@babylonjs/lite";
 import { addToScene } from "@babylonjs/lite";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
-import { type IMountableUser, Mount } from "@/code/Entities/Mount";
 import { interactWithGlyph } from "@/code/Entities/MayaTempleGlyphs";
-import { activeWorldSeedAsInt } from "@/code/Entities/TempleLootTable";
+import { type IMountableUser, Mount } from "@/code/Entities/Mount";
 import { igniteTnt } from "@/code/Entities/PrimedTnt";
+import { activeWorldSeedAsInt } from "@/code/Entities/TempleLootTable";
 import { Map1 } from "@/code/Maps/Map1";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
@@ -473,6 +473,28 @@ export class Player {
 					const z = Math.floor(blockHit.z);
 
 					this.#playerHud.showWoodCrateUI(x, y, z);
+					return;
+				}
+
+				// Kiln / Furnace / Whetstone / Crucible / Anvil / Smeltery.
+				// Listed explicitly rather than a `default` branch, so adding a
+				// station is a deliberate act rather than a silent fallthrough.
+				case BlockType.Kiln:
+				case BlockType.Furnace:
+				case BlockType.Whetstone:
+				case BlockType.Crucible:
+				case BlockType.Anvil:
+				case BlockType.Smeltery: {
+					if (this.#playerHud.isStationOpen) {
+						this.#playerHud.hideStationUI();
+						return;
+					}
+
+					const x = Math.floor(blockHit.x);
+					const y = Math.floor(blockHit.y);
+					const z = Math.floor(blockHit.z);
+
+					this.#playerHud.showStationUI(x, y, z);
 					return;
 				}
 

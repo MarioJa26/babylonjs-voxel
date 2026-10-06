@@ -102,6 +102,11 @@ export const MOB_ITEM_DROPS: Readonly<
 	],
 	bird: [{ itemId: ITEM_FEATHER, min: 1, max: 2 }],
 	songbird: [{ itemId: ITEM_FEATHER, min: 1, max: 1 }],
+	// Cows are the only source of hide, which is the root of the whole leather
+	// line. Kept in sync with server/src/world/MobDrops.ts, which is keyed by
+	// numeric MobTypeId instead — adding a drop to one and not the other means MP
+	// players get nothing.
+	cow: [{ itemId: 1118, min: 1, max: 2 }],
 	// Boss payload. Diamond (1020) has no other producer in the game, so this
 	// is the only way to obtain it; the guardian is the reward for clearing a
 	// full temple.

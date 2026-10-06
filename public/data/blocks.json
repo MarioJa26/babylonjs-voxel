@@ -1,4 +1,4 @@
-[
+﻿[
 	{
 		"id": "Cobble",
 		"name": "Cobble",
@@ -689,5 +689,396 @@
 		"path": "/texture/stone/red_sandstone_wall_1k",
 		"hardness": 2.0,
 		"preferredTool": "pickaxe"
+	},
+	{
+		"id": "Kiln",
+		"name": "kiln",
+		"path": "/texture/brick/brick_wall_10_1k",
+		"hardness": 2.5,
+		"preferredTool": "pickaxe"
+	},
+	{
+		"id": "Furnace",
+		"name": "furnace",
+		"path": "/texture/metal/metal01_1k",
+		"hardness": 3.0,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 2
+	},
+	{
+		"id": "Whetstone",
+		"name": "whetstone",
+		"path": "/texture/stone/slate_floor_1k",
+		"hardness": 2.5,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 2
+	},
+	{
+		"id": "Crucible",
+		"name": "crucible",
+		"path": "/texture/stone/quarry_wall_1k",
+		"hardness": 3.5,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 3
+	},
+	{
+		"id": "Anvil",
+		"name": "anvil",
+		"path": "/texture/metal/metal_grate_rusty_1k",
+		"hardness": 3.5,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 3
+	},
+	{
+		"id": "Smeltery",
+		"name": "smeltery",
+		"path": "/texture/brick/castle_brick_02_red_1k",
+		"hardness": 4.0,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 6
+	},
+	{
+		"id": "TinOre",
+		"name": "tin_ore",
+		"path": "/texture/cobble/cobble07_1k",
+		"hardness": 1.4,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 2
+	},
+	{
+		"id": 120,
+		"name": "smith_hammer_stone",
+		"path": "/texture/cobble/cobble05_1k",
+		"hardness": 1.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 2
+	},
+	{
+		"id": 121,
+		"name": "smith_hammer_bronze",
+		"path": "/texture/cobble/cobblecopper_1k",
+		"hardness": 1.6,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 3
+	},
+	{
+		"id": 122,
+		"name": "smith_hammer_iron",
+		"path": "/texture/metal/metal01_1k",
+		"hardness": 2.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 4
+	},
+	{
+		"id": 123,
+		"name": "smith_hammer_reinforced_iron",
+		"path": "/texture/metal/metal_grate_rusty_1k",
+		"hardness": 2.8,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 5
+	},
+	{
+		"id": 124,
+		"name": "smith_hammer_reinforced_silver",
+		"path": "/texture/stone/crystal_block_02_1k",
+		"hardness": 3.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 7
+	},
+	{
+		"id": 125,
+		"name": "smith_hammer_underworld_iron",
+		"path": "/texture/stone/obsidian_tiles_1k",
+		"hardness": 4,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 8
+	},
+	{
+		"id": 126,
+		"name": "smith_tongs_stone",
+		"path": "/texture/cobble/cobble05_1k",
+		"hardness": 1.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 2
+	},
+	{
+		"id": 127,
+		"name": "smith_tongs_bronze",
+		"path": "/texture/cobble/cobblecopper_1k",
+		"hardness": 1.6,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 3
+	},
+	{
+		"id": 128,
+		"name": "smith_tongs_iron",
+		"path": "/texture/metal/metal01_1k",
+		"hardness": 2.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 4
+	},
+	{
+		"id": 129,
+		"name": "smith_tongs_reinforced_iron",
+		"path": "/texture/metal/metal_grate_rusty_1k",
+		"hardness": 2.8,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 5
+	},
+	{
+		"id": 130,
+		"name": "smith_tongs_reinforced_silver",
+		"path": "/texture/stone/crystal_block_02_1k",
+		"hardness": 3.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 7
+	},
+	{
+		"id": 131,
+		"name": "smith_tongs_underworld_iron",
+		"path": "/texture/stone/obsidian_tiles_1k",
+		"hardness": 4,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 8
+	},
+	{
+		"id": 132,
+		"name": "smith_chisel_stone",
+		"path": "/texture/cobble/cobble05_1k",
+		"hardness": 1.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 2
+	},
+	{
+		"id": 133,
+		"name": "smith_chisel_bronze",
+		"path": "/texture/cobble/cobblecopper_1k",
+		"hardness": 1.6,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 3
+	},
+	{
+		"id": 134,
+		"name": "smith_chisel_iron",
+		"path": "/texture/metal/metal01_1k",
+		"hardness": 2.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 4
+	},
+	{
+		"id": 135,
+		"name": "smith_chisel_reinforced_iron",
+		"path": "/texture/metal/metal_grate_rusty_1k",
+		"hardness": 2.8,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 5
+	},
+	{
+		"id": 136,
+		"name": "smith_chisel_reinforced_silver",
+		"path": "/texture/stone/crystal_block_02_1k",
+		"hardness": 3.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 7
+	},
+	{
+		"id": 137,
+		"name": "smith_chisel_underworld_iron",
+		"path": "/texture/stone/obsidian_tiles_1k",
+		"hardness": 4,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 8
+	},
+	{
+		"id": 138,
+		"name": "smith_graver_stone",
+		"path": "/texture/cobble/cobble05_1k",
+		"hardness": 1.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 2
+	},
+	{
+		"id": 139,
+		"name": "smith_graver_bronze",
+		"path": "/texture/cobble/cobblecopper_1k",
+		"hardness": 1.6,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 3
+	},
+	{
+		"id": 140,
+		"name": "smith_graver_iron",
+		"path": "/texture/metal/metal01_1k",
+		"hardness": 2.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 4
+	},
+	{
+		"id": 141,
+		"name": "smith_graver_reinforced_iron",
+		"path": "/texture/metal/metal_grate_rusty_1k",
+		"hardness": 2.8,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 5
+	},
+	{
+		"id": 142,
+		"name": "smith_graver_reinforced_silver",
+		"path": "/texture/stone/crystal_block_02_1k",
+		"hardness": 3.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 7
+	},
+	{
+		"id": 143,
+		"name": "smith_graver_underworld_iron",
+		"path": "/texture/stone/obsidian_tiles_1k",
+		"hardness": 4,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 8
+	},
+	{
+		"id": 144,
+		"name": "smith_burin_stone",
+		"path": "/texture/cobble/cobble05_1k",
+		"hardness": 1.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 2
+	},
+	{
+		"id": 145,
+		"name": "smith_burin_bronze",
+		"path": "/texture/cobble/cobblecopper_1k",
+		"hardness": 1.6,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 3
+	},
+	{
+		"id": 146,
+		"name": "smith_burin_iron",
+		"path": "/texture/metal/metal01_1k",
+		"hardness": 2.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 4
+	},
+	{
+		"id": 147,
+		"name": "smith_burin_reinforced_iron",
+		"path": "/texture/metal/metal_grate_rusty_1k",
+		"hardness": 2.8,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 5
+	},
+	{
+		"id": 148,
+		"name": "smith_burin_reinforced_silver",
+		"path": "/texture/stone/crystal_block_02_1k",
+		"hardness": 3.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 7
+	},
+	{
+		"id": 149,
+		"name": "smith_burin_underworld_iron",
+		"path": "/texture/stone/obsidian_tiles_1k",
+		"hardness": 4,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 8
+	},
+	{
+		"id": 150,
+		"name": "smith_rune_engraver_stone",
+		"path": "/texture/cobble/cobble05_1k",
+		"hardness": 1.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 2
+	},
+	{
+		"id": 151,
+		"name": "smith_rune_engraver_bronze",
+		"path": "/texture/cobble/cobblecopper_1k",
+		"hardness": 1.6,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 3
+	},
+	{
+		"id": 152,
+		"name": "smith_rune_engraver_iron",
+		"path": "/texture/metal/metal01_1k",
+		"hardness": 2.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 4
+	},
+	{
+		"id": 153,
+		"name": "smith_rune_engraver_reinforced_iron",
+		"path": "/texture/metal/metal_grate_rusty_1k",
+		"hardness": 2.8,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 5
+	},
+	{
+		"id": 154,
+		"name": "smith_rune_engraver_reinforced_silver",
+		"path": "/texture/stone/crystal_block_02_1k",
+		"hardness": 3.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 7
+	},
+	{
+		"id": 155,
+		"name": "smith_rune_engraver_underworld_iron",
+		"path": "/texture/stone/obsidian_tiles_1k",
+		"hardness": 4,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 8
+	},
+	{
+		"id": 156,
+		"name": "smith_underworldbrand_stone",
+		"path": "/texture/cobble/cobble05_1k",
+		"hardness": 1.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 2
+	},
+	{
+		"id": 157,
+		"name": "smith_underworldbrand_bronze",
+		"path": "/texture/cobble/cobblecopper_1k",
+		"hardness": 1.6,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 3
+	},
+	{
+		"id": 158,
+		"name": "smith_underworldbrand_iron",
+		"path": "/texture/metal/metal01_1k",
+		"hardness": 2.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 4
+	},
+	{
+		"id": 159,
+		"name": "smith_underworldbrand_reinforced_iron",
+		"path": "/texture/metal/metal_grate_rusty_1k",
+		"hardness": 2.8,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 5
+	},
+	{
+		"id": 160,
+		"name": "smith_underworldbrand_reinforced_silver",
+		"path": "/texture/stone/crystal_block_02_1k",
+		"hardness": 3.2,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 7
+	},
+	{
+		"id": 161,
+		"name": "smith_underworldbrand_underworld_iron",
+		"path": "/texture/stone/obsidian_tiles_1k",
+		"hardness": 4,
+		"preferredTool": "pickaxe",
+		"requiredLevel": 8
 	}
 ]

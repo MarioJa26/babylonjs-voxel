@@ -39,6 +39,9 @@ export const MOB_ITEM_DROPS: Readonly<Record<number, MobFoodDrop[]>> = {
 	],
 	[MobTypeId.Bird]: [{ itemId: 1114, min: 1, max: 2 }],
 	[MobTypeId.Songbird]: [{ itemId: 1114, min: 1, max: 1 }],
+	// Cow hide (1118) — the only source of the leather line. Must stay in sync
+	// with the string-keyed client table in src/code/Entities/Mobs/MobDrops.ts.
+	[MobTypeId.Cow]: [{ itemId: 1118, min: 1, max: 2 }],
 	[MobTypeId.Guardian]: [
 		{ itemId: 1020, min: 1, max: 2 }, // Diamond
 		{ itemId: 1051, min: 1, max: 3 }, // Emerald

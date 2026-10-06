@@ -40,6 +40,14 @@ import {
 	type PlayerSkinData,
 	type PlayerStateBatchEntry,
 	type PlayerStateData,
+	type StationClaimResultData,
+	type StationOpenData,
+	type StationRejectedData,
+	type StationResultClaimedData,
+	type StationSetSlotData,
+	type StationSlotUpdateData,
+	type StationStateData,
+	type StationUpgradeData,
 	type TntIgniteData,
 } from "./messages";
 
@@ -2017,6 +2025,223 @@ export function encodeContainerRejected(
 export function decodeContainerRejectedInto(
 	dec: BinaryDecoder,
 	target: ContainerRejectedData,
+): typeof target {
+	dec.readCoordsInto(target);
+	target.reason = dec.readUint8();
+	return target;
+}
+
+// ---------------------------------------------------------------------------
+// Server-authoritative stations (kiln / furnace / whetstone)
+//
+// A station is not a fixed grid, so the wire is an explicit three-slot triple
+// plus two progress counters rather than a width/height/pairs loop.
+//
+// StationOpen (C->S):        [type:1][x:i32][y:i32][z:i32]
+// StationState (S->C):       [type:1][x:i32][y:i32][z:i32][version:u32][kind:u8][capTier:u8]
+//                                      [inId:u16][inN:u16][fuelId:u16][fuelN:u16]
+//                                      [outId:u16][outN:u16]
+//                                      [smeltProgress:u16][burnRemaining:u16][lit:u8]
+// StationSetSlot (C->S):     [type:1][x:i32][y:i32][z:i32][slot:u8][itemId:u16][stack:u16]
+// StationUpgrade (C->S):     [type:1][x:i32][y:i32][z:i32][capTier:u8]
+// StationSlotUpdate (S->C):  [type:1][x:i32][y:i32][z:i32][version:u32][slot:u8]
+//                                      [itemId:u16][stack:u16]
+//                                      [smeltProgress:u16][burnRemaining:u16][lit:u8]
+// StationRejected (S->C):    [type:1][x:i32][y:i32][z:i32][reason:u8]
+//
+// `lit` is sent rather than derived, so the client can never disagree with the
+// server about what lit means. StationSlotUpdate omits the other two slots
+// because the progress counter moves every tick: fanning a full snapshot 20x a
+// second per viewer would be the single largest source of traffic in the game.
+// ---------------------------------------------------------------------------
+
+export function encodeStationOpen(data: StationOpenData): Uint8Array {
+	const enc = new BinaryEncoder(13);
+	enc.writeUint8(MessageType.StationOpen);
+	enc.writeCoords(data.x, data.y, data.z);
+	return enc.getBytes();
+}
+
+export function decodeStationOpenInto(
+	dec: BinaryDecoder,
+	target: StationOpenData,
+): typeof target {
+	return dec.readCoordsInto(target);
+}
+
+export function encodeStationState(data: StationStateData): Uint8Array {
+	// 1 + 12 + 4 + 1 + 1 + 12 + 4 + 1
+	const enc = new BinaryEncoder(36);
+	enc.writeUint8(MessageType.StationState);
+	enc.writeCoords(data.x, data.y, data.z);
+	enc.writeUint32(data.version);
+	enc.writeUint8(data.kind);
+	enc.writeUint8(data.capTier);
+	enc.writeUint16(data.input.itemId);
+	enc.writeUint16(data.input.stackSize);
+	enc.writeUint16(data.fuel.itemId);
+	enc.writeUint16(data.fuel.stackSize);
+	enc.writeUint16(data.output.itemId);
+	enc.writeUint16(data.output.stackSize);
+	enc.writeUint16(data.smeltProgress);
+	enc.writeUint16(data.burnRemaining);
+	enc.writeUint8(data.lit ? 1 : 0);
+	return enc.getBytes();
+}
+
+export function decodeStationStateInto(
+	dec: BinaryDecoder,
+	target: StationStateData,
+): typeof target {
+	dec.readCoordsInto(target);
+	target.version = dec.readUint32();
+	target.kind = dec.readUint8();
+	target.capTier = dec.readUint8();
+	target.input = { itemId: dec.readUint16(), stackSize: dec.readUint16() };
+	target.fuel = { itemId: dec.readUint16(), stackSize: dec.readUint16() };
+	target.output = { itemId: dec.readUint16(), stackSize: dec.readUint16() };
+	target.smeltProgress = dec.readUint16();
+	target.burnRemaining = dec.readUint16();
+	target.lit = dec.readUint8() !== 0;
+	return target;
+}
+
+export function encodeStationSetSlot(data: StationSetSlotData): Uint8Array {
+	const enc = new BinaryEncoder(18);
+	enc.writeUint8(MessageType.StationSetSlot);
+	enc.writeCoords(data.x, data.y, data.z);
+	enc.writeUint8(data.slot);
+	enc.writeUint16(data.itemId);
+	enc.writeUint16(data.stackSize);
+	return enc.getBytes();
+}
+
+export function decodeStationSetSlotInto(
+	dec: BinaryDecoder,
+	target: StationSetSlotData,
+): typeof target {
+	dec.readCoordsInto(target);
+	target.slot = dec.readUint8();
+	target.itemId = dec.readUint16();
+	target.stackSize = dec.readUint16();
+	return target;
+}
+
+export function encodeStationUpgrade(data: StationUpgradeData): Uint8Array {
+	const enc = new BinaryEncoder(14);
+	enc.writeUint8(MessageType.StationUpgrade);
+	enc.writeCoords(data.x, data.y, data.z);
+	enc.writeUint8(data.capTier);
+	return enc.getBytes();
+}
+
+export function decodeStationUpgradeInto(
+	dec: BinaryDecoder,
+	target: StationUpgradeData,
+): typeof target {
+	dec.readCoordsInto(target);
+	target.capTier = dec.readUint8();
+	return target;
+}
+
+/**
+ * StationResultClaimed (S->C): [type:1][x:i32][y:i32][z:i32][itemId:u16][stack:u16]
+ *
+ * Sent to the claiming client alone, so other viewers learn the result is gone
+ * from the normal slot broadcast rather than from this message.
+ */
+export function encodeStationResultClaimed(
+	data: StationResultClaimedData,
+): Uint8Array {
+	const enc = _singleEventEncoder;
+	enc.reset();
+	enc.writeUint8(MessageType.StationResultClaimed);
+	enc.writeCoords(data.x, data.y, data.z);
+	enc.writeUint16(data.itemId);
+	enc.writeUint16(data.stackSize);
+	return enc.getBytes();
+}
+
+export function decodeStationResultClaimedInto(
+	dec: BinaryDecoder,
+	target: StationResultClaimedData,
+): typeof target {
+	dec.readCoordsInto(target);
+	target.itemId = dec.readUint16();
+	target.stackSize = dec.readUint16();
+	return target;
+}
+
+/**
+ * StationClaimResult (C->S): [type:1][x:i32][y:i32][z:i32]
+ *
+ * Deliberately carries no item id or count. The server decides what the result
+ * slot holds and hands it over whole, so a client cannot claim a different stack
+ * than the one on screen or claim the same stack twice.
+ */
+export function encodeStationClaimResult(
+	data: StationClaimResultData,
+): Uint8Array {
+	const enc = new BinaryEncoder(13);
+	enc.writeUint8(MessageType.StationClaimResult);
+	enc.writeCoords(data.x, data.y, data.z);
+	return enc.getBytes();
+}
+
+export function decodeStationClaimResultInto(
+	dec: BinaryDecoder,
+	target: StationClaimResultData,
+): typeof target {
+	dec.readCoordsInto(target);
+	return target;
+}
+
+export function encodeStationSlotUpdate(
+	data: StationSlotUpdateData,
+): Uint8Array {
+	const enc = _singleEventEncoder;
+	enc.reset();
+	enc.writeUint8(MessageType.StationSlotUpdate);
+	enc.writeCoords(data.x, data.y, data.z);
+	enc.writeUint32(data.version);
+	enc.writeUint8(data.slot < 0 ? 255 : data.slot);
+	enc.writeUint16(data.itemId);
+	enc.writeUint16(data.stackSize);
+	enc.writeUint16(data.smeltProgress);
+	enc.writeUint16(data.burnRemaining);
+	enc.writeUint8(data.lit ? 1 : 0);
+	return enc.getBytes();
+}
+
+export function decodeStationSlotUpdateInto(
+	dec: BinaryDecoder,
+	target: StationSlotUpdateData,
+): typeof target {
+	dec.readCoordsInto(target);
+	target.version = dec.readUint32();
+	const slot = dec.readUint8();
+	// 255 is the wire form of "a counter changed, not a slot".
+	target.slot = slot === 255 ? -1 : slot;
+	target.itemId = dec.readUint16();
+	target.stackSize = dec.readUint16();
+	target.smeltProgress = dec.readUint16();
+	target.burnRemaining = dec.readUint16();
+	target.lit = dec.readUint8() !== 0;
+	return target;
+}
+
+export function encodeStationRejected(data: StationRejectedData): Uint8Array {
+	const enc = _singleEventEncoder;
+	enc.reset();
+	enc.writeUint8(MessageType.StationRejected);
+	enc.writeCoords(data.x, data.y, data.z);
+	enc.writeUint8(data.reason);
+	return enc.getBytes();
+}
+
+export function decodeStationRejectedInto(
+	dec: BinaryDecoder,
+	target: StationRejectedData,
 ): typeof target {
 	dec.readCoordsInto(target);
 	target.reason = dec.readUint8();

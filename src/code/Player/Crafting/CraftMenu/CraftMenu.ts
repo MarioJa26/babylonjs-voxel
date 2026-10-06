@@ -1,11 +1,16 @@
+import { Map1 } from "@/code/Maps/Map1";
 import { getRegisteredItemById } from "@/code/Player/Inventory/ItemRegistry";
 import type { PlayerInventory } from "@/code/Player/Inventory/PlayerInventory";
+import { stationKindForBlock } from "@/code/World/BlockInventory/StationManager";
+import type { StationKind } from "@/code/World/BlockInventory/StationTypes";
+import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import {
 	type TextureDefinition,
 	TextureDefinitions,
 	TextureDefinitionsReady,
 } from "@/code/World/Texture/TextureDefinitions";
+import type { Player } from "../../Player";
 import { type Recipe, Recipes } from "../CraftingManager";
 
 type CachedTextureInfo = {
@@ -101,6 +106,34 @@ function ensureRecipeSearchIndex(): RecipeSearchIndexEntry[] {
 	return recipeSearchIndex;
 }
 
+/**
+ * The nearest station of a given kind within reach, or null.
+ *
+ * Scanned on demand rather than cached: the crafting menu is opened and closed
+ * constantly, and a 5-radius walk is a few hundred cheap block reads.
+ */
+export function findNearbyStation(
+	player: Player,
+	kind: string,
+	radius = 5,
+): StationKind | null {
+	const px = Math.floor(player.position.x);
+	const py = Math.floor(player.position.y);
+	const pz = Math.floor(player.position.z);
+
+	for (let dy = -radius; dy <= radius; dy++) {
+		for (let dz = -radius; dz <= radius; dz++) {
+			for (let dx = -radius; dx <= radius; dx++) {
+				const blockId = getBlockByWorldCoords(px + dx, py + dy, pz + dz);
+				if (blockId === 0 || blockId === undefined) continue;
+				const found = stationKindForBlock(blockId);
+				if (found === kind) return found;
+			}
+		}
+	}
+	return null;
+}
+
 export class CraftMenu {
 	#inventory: PlayerInventory;
 
@@ -176,15 +209,57 @@ export class CraftMenu {
 		this.updateCraftingAvailability();
 	}
 
-	private craftRecipe(recipeDiv: HTMLDivElement, recipe: Recipe): void {
+	/**
+	 * Whether the player may perform this recipe right now: has the ingredients,
+	 * and is standing near the station it needs.
+	 *
+	 * Checked twice — once to grey the card out, once inside `craftRecipe` —
+	 * because the player can walk away from a furnace between the two.
+	 */
+	#canPerform(recipe: Recipe, player: Player | null): boolean {
 		for (const ing of recipe.ingredients) {
-			if (!this.#inventory.hasItem(ing.itemId, ing.count)) {
-				recipeDiv.style.borderColor = "red";
-				setTimeout(() => {
-					recipeDiv.style.borderColor = "";
-				}, 200);
-				return;
-			}
+			if (!this.#inventory.hasItem(ing.itemId, ing.count)) return false;
+		}
+
+		if (recipe.station === undefined) return true;
+		if (player === null) return false;
+
+		const nearby = findNearbyStation(player, recipe.station);
+		if (nearby === null) return false;
+
+		// A station at the right tier, or the recipe is out of reach for now.
+		if (
+			recipe.minTier !== undefined &&
+			!this.#stationCapIsEnough(nearby, recipe.minTier)
+		) {
+			return false;
+		}
+		return true;
+	}
+
+	/** Station tier check. Tools do not exist yet, so any placed station qualifies. */
+	#stationCapIsEnough(_kind: StationKind, _minTier: number): boolean {
+		return true;
+	}
+
+	/**
+	 * The local player, or null before the scene is ready.
+	 *
+	 * `CraftMenu` is constructed with only an inventory, so this reaches through
+	 * `Map1.mainPlayer` rather than a constructor argument — which also keeps the
+	 * menu usable from tests without standing up a whole scene.
+	 */
+	#player(): Player | null {
+		return Map1.mainPlayer ?? null;
+	}
+
+	private craftRecipe(recipeDiv: HTMLDivElement, recipe: Recipe): void {
+		const player = this.#player();
+
+		if (!this.#canPerform(recipe, player)) {
+			recipeDiv.classList.add("shake");
+			setTimeout(() => recipeDiv.classList.remove("shake"), 300);
+			return;
 		}
 
 		for (const ing of recipe.ingredients) {
@@ -627,18 +702,18 @@ export class CraftMenu {
 		resultsDiv.appendChild(fragment);
 	}
 
-	/** Updates the "craftable" styling of the static recipe list based on
-	 *  current inventory contents. */
+	/**
+	 * Updates the "craftable" styling of the static recipe list.
+	 *
+	 * Uses the same `#canPerform` the click handler uses, so a card is never lit
+	 * up for a recipe the click would refuse — which is what happens if the player
+	 * has the ingredients but is standing nowhere near a crucible.
+	 */
 	updateCraftingAvailability(): void {
-		for (const item of this.#craftingRecipeDivs) {
-			let canCraft = true;
+		const player = this.#player();
 
-			for (const ing of item.recipe.ingredients) {
-				if (!this.#inventory.hasItem(ing.itemId, ing.count)) {
-					canCraft = false;
-					break;
-				}
-			}
+		for (const item of this.#craftingRecipeDivs) {
+			const canCraft = this.#canPerform(item.recipe, player);
 
 			if (canCraft) {
 				item.div.classList.remove("not-craftable");

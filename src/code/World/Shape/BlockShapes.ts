@@ -1,5 +1,6 @@
 import blockShapesRaw from "../../../data/block-shapes.json";
 import blocksRaw from "../../../data/blocks.json";
+import { MAX_SHAPE_VARIANT_SOURCE_ID } from "../Texture/BlockMaterial";
 import { BlockType } from "../Texture/BlockType";
 
 // Face mask bits: +X=0, -X=1, +Y=2, -Y=3, +Z=4, -Z=5
@@ -51,6 +52,24 @@ type RawBlockDefinition = {
 const SHAPE_SCALE = 16;
 const BLOCK_ID_CAPACITY = 65536;
 const VIRTUAL_BLOCK_ID_START = 500;
+
+/**
+ * Highest source block id that gets virtual shape entries in the shape map.
+ *
+ * Must be the same cap `ShapeVariantGenerator` applies when it creates the
+ * variant *definitions*. The two are separate loops over the same data, so
+ * capping only one of them leaves the map claiming variants the registry never
+ * built.
+ *
+ * Source blocks 101-104 (ruby / sapphire / emerald ore, TempleGlyph) would
+ * otherwise map to virtual ids 1000-1019 — exactly the hand-authored wooden,
+ * stone and iron tool item ids. That writes slab/stairs/half_wall/pane/fence
+ * entries over the tool range, so a tool id resolves to a gem ore's shape and
+ * `getAtlasTile` returns the gem's atlas tile: tools render as ore blocks and
+ * stop behaving like tools. The generator was already capped at 100; the shape
+ * map was not, which is what let the overwrite through.
+ */
+const MAX_SHAPE_SOURCE_ID = MAX_SHAPE_VARIANT_SOURCE_ID;
 
 const VIRTUAL_SHAPES = [
 	"slab",
@@ -296,6 +315,12 @@ const loadBlockShapeMap = (
 			}
 
 			if (shapeName !== "cube") {
+				continue;
+			}
+
+			// Blocks above the cap stay cubes: their virtual ids would land in the
+			// tool item range. See MAX_SHAPE_SOURCE_ID.
+			if (id > MAX_SHAPE_SOURCE_ID) {
 				continue;
 			}
 

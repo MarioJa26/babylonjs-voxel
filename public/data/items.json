@@ -460,5 +460,113 @@
 		"description": "Dropped by birds.\nLight as air.",
 		"icon": "/texture/items/item/feather/feather.png",
 		"maxStack": 64
+	},
+	{
+		"id": 1118,
+		"name": "Cow Hide",
+		"description": "Dropped by cows.\nTough, warm, and the start of every early armour set.",
+		"maxStack": 16
+	},
+	{
+		"id": 1119,
+		"name": "Leather",
+		"description": "Cured cow hide.\nLight armour, but it will keep the cold off.",
+		"maxStack": 16
+	},
+	{
+		"id": 1120,
+		"name": "Leather Cap",
+		"description": "A boiled leather cap.\nThe first thing worth wearing.",
+		"maxStack": 1,
+		"armorSlot": "head",
+		"armorValue": 1,
+		"maxDurability": 40
+	},
+	{
+		"id": 1121,
+		"name": "Leather Tunic",
+		"description": "A boiled leather tunic.\nBetter protection than the cap, by a little.",
+		"maxStack": 1,
+		"armorSlot": "chest",
+		"armorValue": 1,
+		"maxDurability": 40
+	},
+	{
+		"id": 1122,
+		"name": "Leather Trousers",
+		"description": "Boiled leather trousers.\nStiff, but they turn a claw better than cloth.",
+		"maxStack": 1,
+		"armorSlot": "legs",
+		"armorValue": 1,
+		"maxDurability": 40
+	},
+	{
+		"id": 1123,
+		"name": "Leather Boots",
+		"description": "Boiled leather boots.\nQuiet on stone.",
+		"maxStack": 1,
+		"armorSlot": "feet",
+		"armorValue": 1,
+		"maxDurability": 40
+	},
+	{
+		"id": 1124,
+		"name": "Charcoal",
+		"description": "Wood burned down to carbon.\nBurns far longer than the wood it came from.",
+		"maxStack": 64
+	},
+	{
+		"id": 1125,
+		"name": "Tin Ingot",
+		"description": "A soft, pale metal.\nUseless alone, and the reason bronze exists.",
+		"maxStack": 64
+	},
+	{
+		"id": 1126,
+		"name": "Bronze Ingot",
+		"description": "Copper and tin, married in a crucible.\nHarder than either parent.",
+		"maxStack": 64
+	},
+	{
+		"id": 1127,
+		"name": "Iron Wire",
+		"description": "Iron drawn out to a finger's thickness.\nChain is woven from this.",
+		"maxStack": 64
+	},
+	{
+		"id": 1128,
+		"name": "Leather Chain",
+		"description": "Boiled leather strips, woven tight.\nA poor under-layer, but better than nothing.",
+		"maxStack": 1,
+		"armorSlot": "chain",
+		"armorValue": 1,
+		"maxDurability": 60
+	},
+	{
+		"id": 1129,
+		"name": "Bronze Chain",
+		"description": "Bronze rings, woven through a drawplate and closed by hand.",
+		"maxStack": 1,
+		"armorSlot": "chain",
+		"armorValue": 2,
+		"maxDurability": 320
+	},
+	{
+		"id": 1130,
+		"name": "Iron Chain",
+		"description": "Iron rings on iron wire.\nThe under-layer every serious smith works toward.",
+		"maxStack": 1,
+		"armorSlot": "chain",
+		"armorValue": 3,
+		"maxDurability": 600
+	},
+	{
+		"id": 1131,
+		"name": "Underworld Chain",
+		"description": "Black iron, drawn below the Seal.\nIt rings a little too long.",
+		"maxStack": 1,
+		"armorSlot": "chain",
+		"armorValue": 6,
+		"maxDurability": 5200
 	}
 ]

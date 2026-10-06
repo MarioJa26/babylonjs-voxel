@@ -20,6 +20,13 @@ export class PlayerInventory {
 	#y: number;
 	#inventorySlots: ItemSlot[][];
 	#inventoryControls: InventoryControls;
+	/**
+	 * Slots that live outside the grid (armour and accessories). Kept as a flat
+	 * list because `#deleteItemNoNotify` has to find them: their row/col address
+	 * space is disjoint from the grid, so the grid lookup misses and would leave
+	 * a dropped item still referenced by its slot.
+	 */
+	#equipmentSlots: ItemSlot[] = [];
 
 	public onInventoryChangedObservable = new Observable<void>();
 
@@ -404,6 +411,10 @@ export class PlayerInventory {
 		worldItem.itemId = item.itemId;
 		worldItem.blockId = item.blockId ?? item.itemId;
 		worldItem.blockState = item.blockState ?? 0;
+		// Carry the wear across, or dropping and re-picking-up a spent tool
+		// mints a pristine one — a free repair with no station.
+		worldItem.maxDurability = item.maxDurability;
+		worldItem.durability = item.durability;
 		worldItem.refreshIconStyle();
 		worldItem.stackSize = dropCount;
 
@@ -509,6 +520,23 @@ export class PlayerInventory {
 		}
 	}
 
+	/**
+	 * Adopt slots that live outside the grid (armour, accessories).
+	 *
+	 * `#deleteItemNoNotify` resolves an item's container from its row/col, which
+	 * only covers the grid. Without registering these, dropping an equipped item
+	 * removes its DOM node but leaves the slot still pointing at it — a ghost
+	 * that reappears on the next render.
+	 */
+	public registerEquipmentSlots(slots: readonly ItemSlot[]): void {
+		for (const slot of slots) {
+			slot.isEquipmentSlot = true;
+			if (!this.#equipmentSlots.includes(slot)) {
+				this.#equipmentSlots.push(slot);
+			}
+		}
+	}
+
 	#deleteItemNoNotify(item: Item): boolean {
 		if (item === null || item === undefined) return false;
 
@@ -520,14 +548,24 @@ export class PlayerInventory {
 			changed = true;
 		}
 
-		const slot =
+		const gridSlot =
 			item.row >= 0 && item.col >= 0
 				? this.#inventorySlots[item.row]?.[item.col]
 				: undefined;
 
-		if (slot !== undefined && slot.item === item) {
-			slot.clearItemSlots();
+		if (gridSlot !== undefined && gridSlot.item === item) {
+			gridSlot.clearItemSlots();
 			changed = true;
+		} else {
+			// Equipment slots use a disjoint address, so the grid lookup above
+			// always misses for them.
+			for (const slot of this.#equipmentSlots) {
+				if (slot.item === item) {
+					slot.item = null;
+					changed = true;
+					break;
+				}
+			}
 		}
 
 		item.row = -1;

@@ -9,6 +9,27 @@ export interface Recipe {
 	resultId: number;
 	resultCount: number;
 	ingredients: Ingredient[];
+	/**
+	 * Station this recipe must be performed at, or undefined for a hand recipe.
+	 *
+	 * Deliberately a plain string rather than an import from StationTypes: the
+	 * crafting table must not depend on the station subsystem, and nothing here
+	 * needs the kind list.
+	 */
+	station?:
+		| "kiln"
+		| "furnace"
+		| "crucible"
+		| "anvil"
+		| "whetstone"
+		| "smeltery";
+	/** Min MaterialTier of the station cap required. */
+	minTier?: number;
+}
+
+/** Whether a recipe is a hand recipe — craftable from the inventory. */
+export function isHandRecipe(recipe: Recipe): boolean {
+	return recipe.station === undefined;
 }
 
 export const Recipes: Recipe[] = [
@@ -166,6 +187,107 @@ export const Recipes: Recipe[] = [
 		resultCount: 1,
 		ingredients: [{ itemId: 1048, count: 1 }],
 	},
+	// ─── Leather armour (tier 0) ───
+	// Hides come from cows; leather is the first material on the ladder and the
+	// first thing with an equipment slot.
+	{
+		resultId: 1119,
+		resultCount: 3,
+		ingredients: [{ itemId: 1118, count: 1 }],
+	},
+	{
+		resultId: 1120,
+		resultCount: 1,
+		ingredients: [{ itemId: 1119, count: 5 }],
+	},
+	{
+		resultId: 1121,
+		resultCount: 1,
+		ingredients: [{ itemId: 1119, count: 8 }],
+	},
+	{
+		resultId: 1122,
+		resultCount: 1,
+		ingredients: [{ itemId: 1119, count: 7 }],
+	},
+	{
+		resultId: 1123,
+		resultCount: 1,
+		ingredients: [{ itemId: 1119, count: 4 }],
+	},
+	// ─── Station blocks ───
+	// Crafted by hand so a player is never stranded without a way to make the
+	// stations that produce everything else. These are the recipe *items*; the
+	// blocks themselves place from the auto-registered block item.
+	{
+		resultId: 105,
+		resultCount: 1,
+		ingredients: [{ itemId: 1, count: 8 }],
+	},
+	{
+		resultId: 106,
+		resultCount: 1,
+		ingredients: [
+			{ itemId: 105, count: 1 },
+			{ itemId: 1, count: 4 },
+		],
+	},
+	{
+		resultId: 107,
+		resultCount: 1,
+		ingredients: [
+			{ itemId: 1, count: 4 },
+			{ itemId: 35, count: 1 },
+		],
+	},
+	{
+		resultId: 108,
+		resultCount: 1,
+		ingredients: [
+			{ itemId: 1, count: 8 },
+			{ itemId: 1021, count: 2 },
+		],
+		station: "crucible",
+		minTier: 3,
+	},
+	{
+		resultId: 109,
+		resultCount: 1,
+		ingredients: [
+			{ itemId: 1, count: 8 },
+			{ itemId: 1021, count: 3 },
+		],
+		station: "crucible",
+		minTier: 3,
+	},
+	{
+		resultId: 110,
+		resultCount: 1,
+		ingredients: [
+			{ itemId: 1, count: 16 },
+			{ itemId: 1025, count: 4 },
+		],
+		station: "smeltery",
+		minTier: 6,
+	},
+	// ─── Alloys ───
+	// Two inputs, so these are crafting recipes gated on a station rather than
+	// station smelts: mixing metals happens in the crucible, not in a smelt chain.
+	{
+		resultId: 1126,
+		resultCount: 1,
+		ingredients: [
+			{ itemId: 1026, count: 3 }, // Copper Ingot
+			{ itemId: 1125, count: 1 }, // Tin Ingot
+		],
+		station: "crucible",
+		minTier: 3,
+	},
+	// ─── Smithing ───
+	// Chainmaking lives in STATION_RECIPES, not here: draw-wire and weave-chain
+	// are single-input transforms that fit an anvil's input slot, so they run at
+	// the station itself and the panel shows the result. Only the alloy recipes,
+	// which need two inputs at once, stay in the crafting list.
 ];
 
 export interface MasonRecipe {

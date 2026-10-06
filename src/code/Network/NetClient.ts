@@ -25,6 +25,10 @@ import {
 	encodeContainerSetSlot,
 	encodeHeldItemSelect,
 	encodeSkinUpload,
+	encodeStationClaimResult,
+	encodeStationOpen,
+	encodeStationSetSlot,
+	encodeStationUpgrade,
 	type WorldConfigData,
 } from "./protocol/encoder";
 import {
@@ -846,6 +850,45 @@ export class NetClient {
 		const room = this.getConnectedRoom();
 		if (room === null) return;
 		room.sendBytes("binary", encodeContainerClose({ x, y, z }));
+	}
+
+	// ─── Stations ───
+	// No Close message: a station is a fixed block position, so the server needs
+	// no per-client view registration the way crates need one. Reaching it again
+	// just re-opens.
+
+	sendStationOpen(x: number, y: number, z: number): void {
+		const room = this.getConnectedRoom();
+		if (room === null) return;
+		room.sendBytes("binary", encodeStationOpen({ x, y, z }));
+	}
+
+	sendStationSetSlot(
+		x: number,
+		y: number,
+		z: number,
+		slot: number,
+		itemId: number,
+		stackSize: number,
+	): void {
+		const room = this.getConnectedRoom();
+		if (room === null) return;
+		room.sendBytes(
+			"binary",
+			encodeStationSetSlot({ x, y, z, slot, itemId, stackSize }),
+		);
+	}
+
+	sendStationUpgrade(x: number, y: number, z: number, capTier: number): void {
+		const room = this.getConnectedRoom();
+		if (room === null) return;
+		room.sendBytes("binary", encodeStationUpgrade({ x, y, z, capTier }));
+	}
+
+	sendStationClaimResult(x: number, y: number, z: number): void {
+		const room = this.getConnectedRoom();
+		if (room === null) return;
+		room.sendBytes("binary", encodeStationClaimResult({ x, y, z }));
 	}
 
 	sendMobSpawnRequest(typeId: number, x: number, y: number, z: number): void {

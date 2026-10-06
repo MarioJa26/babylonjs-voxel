@@ -24,6 +24,8 @@ export class PlayerStatePersistence {
 	private static readonly PLAYER_INVENTORY_STORAGE_KEY =
 		"b102.playerInventory.v1";
 	private static readonly PLAYER_STATS_STORAGE_KEY = "b102.playerStats.v1";
+	private static readonly PLAYER_EQUIPMENT_STORAGE_KEY =
+		"b102.playerEquipment.v1";
 	private static readonly PLAYER_STATE_SAVE_INTERVAL_MS = 15000;
 	private static readonly CHUNK_SAVE_BATCH_SIZE = 32;
 	private static readonly CHUNK_SAVE_NOW_BATCH_SIZE = 64;
@@ -181,6 +183,13 @@ export class PlayerStatePersistence {
 				this.storageKey(PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY),
 				JSON.stringify(inventoryState),
 			);
+
+			// Equipment lives outside the grid, so it needs its own record. Written
+			// alongside the inventory to keep it on the same undebounced path.
+			window.localStorage.setItem(
+				this.storageKey(PlayerStatePersistence.PLAYER_EQUIPMENT_STORAGE_KEY),
+				JSON.stringify(this.player.playerHud.equipment.getSavedState()),
+			);
 		} catch (error) {
 			console.warn("Failed to save player inventory to localStorage.", error);
 		}
@@ -204,6 +213,7 @@ export class PlayerStatePersistence {
 		if (typeof window === "undefined") return;
 		this.restorePosition();
 		this.restoreInventory();
+		this.restoreEquipment();
 		this.restoreStats();
 	}
 
@@ -255,6 +265,23 @@ export class PlayerStatePersistence {
 		} catch (error) {
 			console.warn(
 				"Failed to restore player inventory from localStorage.",
+				error,
+			);
+		}
+	}
+
+	private restoreEquipment(): void {
+		try {
+			const raw = window.localStorage.getItem(
+				this.storageKey(PlayerStatePersistence.PLAYER_EQUIPMENT_STORAGE_KEY),
+			);
+			// Absent is the normal case for a pre-armour save, not an error.
+			if (!raw) return;
+
+			this.player.playerHud.equipment.restoreSavedState(JSON.parse(raw));
+		} catch (error) {
+			console.warn(
+				"Failed to restore player equipment from localStorage.",
 				error,
 			);
 		}

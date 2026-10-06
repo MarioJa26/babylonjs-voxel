@@ -1,5 +1,5 @@
-/**
- * NetworkManager — high-level multiplayer coordinator.
+﻿/**
+ * NetworkManager â€” high-level multiplayer coordinator.
  *
  * Integrates with the existing game:
  * - Sends local player position at fixed rate
@@ -45,6 +45,7 @@ import { NetClient, type RemotePlayer } from "./NetClient";
 import { BlockActionType, BlockEditRejectReason } from "./protocol/messages";
 import { RemoteContainerManager } from "./RemoteContainerManager";
 import { RemotePlayerRenderer } from "./RemotePlayerRenderer";
+import { RemoteStationManager } from "./RemoteStationManager";
 
 const SEND_RATE = 20;
 const SEND_INTERVAL_MS = 1000 / SEND_RATE;
@@ -105,6 +106,7 @@ export class NetworkManager {
 	private chunkProvider: RemoteChunkProvider;
 	/** Server-authoritative crate sync (owned here so the HUD can reach it). */
 	readonly containers: RemoteContainerManager;
+	readonly stations: RemoteStationManager;
 	private player: Player;
 	private sendAccum = 0;
 	private lastSentHeldItemId = -1;
@@ -122,7 +124,7 @@ export class NetworkManager {
 	private serverSeed: string | null = null;
 	private _lastPlayerCount = 0;
 	private _canvas: HTMLCanvasElement | null = null;
-	// Canvas size cache — reading clientWidth/clientHeight forces layout, so
+	// Canvas size cache â€” reading clientWidth/clientHeight forces layout, so
 	// they are sampled once per resize instead of on every frame.
 	private _canvasWidth = 0;
 	private _canvasHeight = 0;
@@ -143,6 +145,7 @@ export class NetworkManager {
 		);
 		this.chunkProvider = new RemoteChunkProvider(this.client);
 		this.containers = new RemoteContainerManager(this.client);
+		this.stations = new RemoteStationManager(this.client);
 	}
 
 	async connect(playerName: string, worldName: string): Promise<void> {
@@ -474,7 +477,7 @@ export class NetworkManager {
 
 		if (action !== BlockActionType.Break) return;
 
-		// The local chunk still holds the PRE-break block here — trust it over
+		// The local chunk still holds the PRE-break block here â€” trust it over
 		// the wire id for visuals. Relayed Break edits have been observed to
 		// carry the post-edit state (air = 0), which made every remote break
 		// emit particles for frame 0 (cobblestone) instead of the real block.
@@ -522,7 +525,9 @@ export class NetworkManager {
 			reasonText = "invalid edit";
 		}
 
-		this.hud.addSystemMessage(`Block edit rejected (${reasonText}) — reverted`);
+		this.hud.addSystemMessage(
+			`Block edit rejected (${reasonText}) â€” reverted`,
+		);
 	}
 
 	private sampleBreakLight(x: number, y: number, z: number): number {
@@ -725,6 +730,7 @@ export class NetworkManager {
 		ChunkWorkerPool.getInstance()?.setRemoteChunkProvider(null);
 		this.client.disconnect();
 		this.containers.dispose();
+		this.stations.dispose();
 		this.renderer.dispose();
 		this.hud.dispose();
 		window.removeEventListener("resize", this._onCanvasResize);

@@ -1,4 +1,4 @@
-import type { SceneContext } from "@babylonjs/lite";
+﻿import type { SceneContext } from "@babylonjs/lite";
 import { onSceneDispose } from "@babylonjs/lite";
 import { getArrowTooltipStats } from "@/code/Entities/Arrow/ArrowTypes";
 import { getMayaDungeonEncounter } from "@/code/Entities/MayaDungeonEncounter";
@@ -30,6 +30,7 @@ import {
 	saveBlockInventory,
 	serializeBlockSlots,
 } from "@/code/World/BlockInventory/BlockInventoryManager";
+import { StationUi } from "@/code/World/BlockInventory/StationUi";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
@@ -38,6 +39,7 @@ import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 import { MasonRecipes } from "../Crafting/CraftingManager";
 import { CraftMenu } from "../Crafting/CraftMenu/CraftMenu";
 import { CreativePalette } from "../Inventory/CreativePalette";
+import { Equipment } from "../Inventory/Equipment";
 import { Item } from "../Inventory/Item";
 import type { ItemSlot } from "../Inventory/ItemSlot";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
@@ -93,7 +95,7 @@ export class PlayerHud {
 
 	/**
 	 * Short transient narration for world interactions that have no UI of their
-	 * own — currently the Maya temple glyph puzzle. Routed through the chat log
+	 * own â€” currently the Maya temple glyph puzzle. Routed through the chat log
 	 * because there is no generic HUD widget API to hang a toast on.
 	 */
 	public showTempleMessage(text: string): void {
@@ -145,12 +147,13 @@ export class PlayerHud {
 	#creativePalette: CreativePalette | null = null;
 	#playerPreview = new PlayerPreview(() => {
 		// Sample the voxel light at chest height (below the head) so the
-		// preview is lit like the spot the player is standing in — and never
+		// preview is lit like the spot the player is standing in â€” and never
 		// goes dark when the head clips a ceiling mid-jump.
 		const p = this.#player.position;
 		return getLightByWorldCoords(p.x, p.y + PLAYER_LIGHT_SAMPLE_Y_OFFSET, p.z);
 	});
 	#armorPanel = new ArmorPanel();
+	#equipment: Equipment;
 
 	static debugPanelDiv: HTMLDivElement;
 	static debugPanelVisible = true;
@@ -170,7 +173,7 @@ export class PlayerHud {
 	// writes never invalidate layout, so hovering items can no longer force
 	// the engine's per-frame resize read into a synchronous layout flush.
 	// (Previously every mousemove wrote left/top and listeners were swapped
-	// per hover — 128 forced layouts in a 4.85s capture.)
+	// per hover â€” 128 forced layouts in a 4.85s capture.)
 	static #tooltipPendingX = 0;
 	static #tooltipPendingY = 0;
 	static #tooltipRafId: number | null = null;
@@ -199,9 +202,17 @@ export class PlayerHud {
 		this.#player = player;
 		PlayerHud.#inventory = player.playerInventory;
 		this.#craftMenu = new CraftMenu(player.playerInventory);
+
+		// Equipment is created before the HUD so the panel can adopt live slots
+		// during initializeHUD(), and registered with the inventory so dropping an
+		// equipped item clears its slot instead of leaving a ghost.
+		this.#equipment = new Equipment();
+		PlayerHud.#inventory.registerEquipmentSlots(this.#equipment.slots);
+
 		// Apply persisted crosshair visuals (style/size/color/visibility).
 		this.crossHair = new Crosshair(loadGameSettings());
 		this.#overlayDiv = this.initializeHUD();
+		this.#armorPanel.adoptSlots(this.#equipment.slots);
 		this.createHotbarUI();
 		this.createStatsUI();
 		this.initializeBossBar();
@@ -215,9 +226,24 @@ export class PlayerHud {
 			}
 		});
 
+		// Armour feeds PlayerStats through a scalar, so every change has to push
+		// the new value. Wired to both observables because a slot can change from
+		// either side: dragging gear in, or wearing it away.
+		const pushMitigation = (): void => {
+			player.stats.damageReduction = this.#equipment.mitigation;
+		};
+		this.#equipment.onChanged = pushMitigation;
+		PlayerHud.#inventory.onInventoryChangedObservable.add(pushMitigation);
+		pushMitigation();
+
 		void this.#craftMenu.build(this.#craftingContainer);
 
 		this.#chat = new Chat(player);
+	}
+
+	/** Live equipment. Exposed so persistence and tests can reach the slots. */
+	public get equipment(): Equipment {
+		return this.#equipment;
 	}
 
 	private initializeHUD(): HTMLDivElement {
@@ -396,8 +422,8 @@ export class PlayerHud {
 	 * Boss health bar, centred above the hotbar. Hidden until a Maya Guardian is
 	 * instantiated and nearby.
 	 *
-	 * There is no generic HUD widget API in this codebase — every panel is a
-	 * hand-rolled `document.createElement` tree appended to `document.body` — so
+	 * There is no generic HUD widget API in this codebase â€” every panel is a
+	 * hand-rolled `document.createElement` tree appended to `document.body` â€” so
 	 * this follows the same shape as `createStatsUI` and reuses the
 	 * `statPct` / `setBar` change-guarded helpers.
 	 */
@@ -475,7 +501,7 @@ export class PlayerHud {
 	}
 
 	/**
-	 * Create the bow draw progress indicator — a small bar centered just below
+	 * Create the bow draw progress indicator â€” a small bar centered just below
 	 * the crosshair. Hidden by default; shown while drawing.
 	 */
 	private initializeDrawIndicator(): void {
@@ -648,7 +674,7 @@ export class PlayerHud {
 		return this.#masonTableOpen;
 	}
 
-	// ─── Wood Crate ─────────────────────────────────────────────────────────
+	// â”€â”€â”€ Wood Crate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 	#woodCrateKeyHandler?: (e: KeyboardEvent) => void;
 	#woodCrateClickHandler?: (e: MouseEvent) => void;
@@ -854,7 +880,7 @@ export class PlayerHud {
 	/**
 	 * Catch-all for inventory-system mutations (Q-drop, stack consumes) that
 	 * edit crate items in place without touching slot setters. Repairs
-	 * depleted/detached crate items, then pushes the diff (remote only —
+	 * depleted/detached crate items, then pushes the diff (remote only â€”
 	 * pushCrateDiff gates on remote/loading itself).
 	 */
 	#onInventorySystemChanged(): void {
@@ -867,7 +893,7 @@ export class PlayerHud {
 	 * Q-drop depletes the hovered item in place and its delete path only
 	 * knows the player grid, so a fully-dropped crate item is left behind as
 	 * a detached 0-stack ghost. Clear those (and re-attach renders that lost
-	 * their DOM parent) so the grid — and the next diff — reflect reality.
+	 * their DOM parent) so the grid â€” and the next diff â€” reflect reality.
 	 */
 	#repairCrateSlots(): void {
 		const grid = this.#woodCrateSlots;
@@ -879,7 +905,7 @@ export class PlayerHud {
 				if (item.stackSize <= 0) {
 					slot.clearItemSlots();
 				} else if (item.div.parentElement !== slot.divItemSlot) {
-					// Content unchanged — re-render only, no server write
+					// Content unchanged â€” re-render only, no server write
 					// (the diff against last-sent stays clean).
 					slot.item = item;
 				}
@@ -887,7 +913,7 @@ export class PlayerHud {
 		}
 	}
 
-	// ─── Server-authoritative crate sync ────────────────────────────────
+	// â”€â”€â”€ Server-authoritative crate sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 	private static emptyCrateSnapshot(): {
 		itemId: number;
@@ -1042,7 +1068,7 @@ export class PlayerHud {
 					item.stackSize = update.stackSize;
 					slot.item = item;
 				} catch {
-					// Unknown item id — render empty rather than crashing.
+					// Unknown item id â€” render empty rather than crashing.
 					slot.clearItemSlots();
 				}
 			}
@@ -1071,7 +1097,7 @@ export class PlayerHud {
 			detail = "is not a crate";
 		}
 		this.hideWoodCrateUI();
-		net?.notifySystemMessage(`Crate ${detail} — closed`);
+		net?.notifySystemMessage(`Crate ${detail} â€” closed`);
 	}
 
 	#moveItemBetweenCrateAndInventory(slot: ItemSlot): boolean {
@@ -1094,7 +1120,7 @@ export class PlayerHud {
 
 		// First try to stack into existing stacks.
 		if (this.tryStackItemIntoRows(slot, item, targetRows)) {
-			// In-place stack merges bypass slot setters — push explicitly.
+			// In-place stack merges bypass slot setters â€” push explicitly.
 			this.#pushCrateDiff();
 			return true;
 		}
@@ -1945,5 +1971,44 @@ export class PlayerHud {
 		}
 
 		this.updateBossBar();
+	}
+
+	// ─── Station UI (kiln / furnace / whetstone) ───
+	//
+	// A thin delegate. The panel itself lives in StationUi because it needs a
+	// non-trivial teardown — an Escape handler, a per-frame reach check and a
+	// runtime change hook — and PlayerHud is already ~2000 lines of hand-rolled
+	// DOM with no room for another 200.
+
+	#stationUi: StationUi | null = null;
+
+	private get stationUi(): StationUi {
+		if (this.#stationUi === null) {
+			this.#stationUi = new StationUi(this.#scene, this.#player);
+		}
+		return this.#stationUi;
+	}
+
+	public get isStationOpen(): boolean {
+		return this.#stationUi !== null && this.#stationUi.isOpen;
+	}
+
+	public showStationUI(x: number, y: number, z: number): void {
+		this.stationUi.show(x, y, z);
+	}
+
+	public hideStationUI(): void {
+		this.#stationUi?.hide();
+	}
+
+	/** Drives the station panel's reach check and progress redraw. */
+	public updateStationUI(): void {
+		this.#stationUi?.update();
+	}
+
+	/** Apply a completed whetstone repair, which mutates an item rather than
+	 *  producing a new one. */
+	public onStationRepairCompleted(): void {
+		this.#stationUi?.applyPendingRepair();
 	}
 }

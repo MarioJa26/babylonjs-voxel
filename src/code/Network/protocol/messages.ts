@@ -1,42 +1,42 @@
-/**
+﻿/**
  * Binary protocol definitions for b102 multiplayer.
  *
  * Message types are single-byte IDs. All multi-byte integers are little-endian.
  * Positions are float32 (sub-block precision, full float range).
- * Rotations are uint8 (yaw: 0-255 maps the full 360° circle, pitch: 0-255 maps
- * -90°..+90°).
+ * Rotations are uint8 (yaw: 0-255 maps the full 360Â° circle, pitch: 0-255 maps
+ * -90Â°..+90Â°).
  *
  * Player identity:
- *  - C→S messages (PlayerState, BlockEdit) carry NO sessionId — the server
+ *  - Câ†’S messages (PlayerState, BlockEdit) carry NO sessionId â€” the server
  *    uses the connection identity.
- *  - S→C PlayerStateBatch uses a per-room uint8 player index (assigned at
+ *  - Sâ†’C PlayerStateBatch uses a per-room uint8 player index (assigned at
  *    join, announced in PlayerJoin) instead of repeating sessionId strings.
  *  - PlayerJoin carries the assigned index; PlayerLeave carries the index
  *    instead of a sessionId string.
  *
- * Shared between client and server — single source of truth. The server
+ * Shared between client and server â€” single source of truth. The server
  * imports this module via its "@/code/Network/protocol/*" path alias.
  */
 
 export const MessageType = {
-	// Client → Server
+	// Client â†’ Server
 	PlayerState: 0x01,
 	BlockEdit: 0x02,
 	ChunkRequest: 0x03,
 	ChunkRequestBatch: 0x04,
-	ItemDrop: 0x05, // C→S: a player dropped an item into the world
-	ItemPickup: 0x06, // C→S: a player picked up a server item (by instance id)
+	ItemDrop: 0x05, // Câ†’S: a player dropped an item into the world
+	ItemPickup: 0x06, // Câ†’S: a player picked up a server item (by instance id)
 	HeldItemSelect: 0x08,
-	SkinUpload: 0x07, // C→S: this client's avatar skin as PNG bytes
-	MobSpawnRequest: 0x2a, // C→S: a player used a spawn egg (cap-exempt mob)
-	MobDamage: 0x20, // C→S request / S→C accepted hit effect for a server mob
-	MobImpact: 0x2d, // S→C: a mob landed after a fall
-	ArrowShoot: 0x2b, // C→S: a player fired an arrow (cosmetic sync)
-	ArrowSpawn: 0x2c, // S→C: relay an arrow's trajectory to the other clients
-	Explosion: 0x2e, // C→S: a primed TNT detonated (server applies the crater)
-	TntIgnite: 0x2f, // C→S ignite request / S→C relay: spawn a primed TNT entity
+	SkinUpload: 0x07, // Câ†’S: this client's avatar skin as PNG bytes
+	MobSpawnRequest: 0x2a, // Câ†’S: a player used a spawn egg (cap-exempt mob)
+	MobDamage: 0x20, // Câ†’S request / Sâ†’C accepted hit effect for a server mob
+	MobImpact: 0x2d, // Sâ†’C: a mob landed after a fall
+	ArrowShoot: 0x2b, // Câ†’S: a player fired an arrow (cosmetic sync)
+	ArrowSpawn: 0x2c, // Sâ†’C: relay an arrow's trajectory to the other clients
+	Explosion: 0x2e, // Câ†’S: a primed TNT detonated (server applies the crater)
+	TntIgnite: 0x2f, // Câ†’S ignite request / Sâ†’C relay: spawn a primed TNT entity
 
-	// Server → Client
+	// Server â†’ Client
 	PlayerStateBatch: 0x10,
 	PlayerJoin: 0x11,
 	PlayerLeave: 0x12,
@@ -47,47 +47,65 @@ export const MessageType = {
 	WorldTime: 0x17,
 	ChatMessage: 0x18,
 	ChunkDataBatch: 0x19,
-	ChunkUnchangedBatch: 0x1c, // Server → client: multiple "still valid" stamps
-	WorldConfig: 0x1a, // Server → client: authoritative world seed on join
-	SpawnPosition: 0x1b, // Server → client: teleport player to saved position
-	BlockEditRejected: 0x1d, // Server → client: a block edit was rejected
+	ChunkUnchangedBatch: 0x1c, // Server â†’ client: multiple "still valid" stamps
+	WorldConfig: 0x1a, // Server â†’ client: authoritative world seed on join
+	SpawnPosition: 0x1b, // Server â†’ client: teleport player to saved position
+	BlockEditRejected: 0x1d, // Server â†’ client: a block edit was rejected
 	PlayerHeldItem: 0x1f,
-	PlayerSkin: 0x1e, // S→C: another player's skin PNG, keyed by room index
+	PlayerSkin: 0x1e, // Sâ†’C: another player's skin PNG, keyed by room index
 
-	// Server → Client: server-authoritative mobs
+	// Server â†’ Client: server-authoritative mobs
 	MobSpawn: 0x21, // New mob appeared (also sent as join snapshot)
 	MobUpdateBatch: 0x22, // Position batch for all mobs (fixed-rate broadcast)
 	MobDespawn: 0x23, // Mob removed (wandered off / despawned)
 
-	// Server → Client: deflated chunk blobs — the full serialized storage
+	// Server â†’ Client: deflated chunk blobs â€” the full serialized storage
 	// blob (serializeVoxelData output) compressed with zlib deflate. Carries
 	// the same data as ChunkData/ChunkDataBatch but ~5-10x smaller on the
 	// wire, and the client can persist it without re-serializing.
 	ChunkDataDeflated: 0x24, // Single chunk: [cx:i32][cy:i32][cz:i32][version:u32][len:u32][deflated blob]
 	ChunkDataDeflatedBatch: 0x25, // Multiple deflated chunk blobs in one message
 
-	// Server → Client: server-authoritative dropped items
+	// Server â†’ Client: server-authoritative dropped items
 	ItemSpawn: 0x26, // A dropped item appeared in the world
 	ItemUpdateBatch: 0x27, // Position batch for all dropped items (fixed-rate)
 	ItemDespawn: 0x28, // A dropped item was picked up / expired / removed
-	ItemPickupRejected: 0x29, // S→C: this client's ItemPickup was denied
+	ItemPickupRejected: 0x29, // Sâ†’C: this client's ItemPickup was denied
 
 	// Server-authoritative block containers (Wood Crate). The server owns the
 	// slot contents; clients render the crate UI from ContainerState and push
 	// every local edit as a ContainerSetSlot delta (last-write-wins per slot).
-	ContainerOpen: 0x30, // C→S: request to view the crate at (x, y, z)
-	ContainerState: 0x31, // S→C: full slot snapshot for a crate
-	ContainerSetSlot: 0x32, // C→S: set one crate slot (itemId 0 = clear)
-	ContainerSlotUpdate: 0x33, // S→C: one crate slot changed (relay to viewers)
-	ContainerClose: 0x34, // C→S: stop viewing the crate at (x, y, z)
-	ContainerRejected: 0x35, // S→C: open/write refused (also forces UI close)
+	ContainerOpen: 0x30, // Câ†’S: request to view the crate at (x, y, z)
+	ContainerState: 0x31, // Sâ†’C: full slot snapshot for a crate
+	ContainerSetSlot: 0x32, // Câ†’S: set one crate slot (itemId 0 = clear)
+	ContainerSlotUpdate: 0x33, // Sâ†’C: one crate slot changed (relay to viewers)
+	ContainerClose: 0x34, // Câ†’S: stop viewing the crate at (x, y, z)
+	ContainerRejected: 0x35, // Sâ†’C: open/write refused (also forces UI close)
+
+	// Server-authoritative stations (kiln / furnace / whetstone, and the
+	// Phase 3c crucible / anvil / smeltery). A station is not a fixed slot
+	// grid: it is an input / fuel / result triple plus two progress
+	// counters, so it gets its own message family rather than reusing the
+	// container wire with extra fields.
+	//
+	// The server ticks the smelt, so the client never reports progress - it
+	// only requests a view, writes a slot, and receives authoritative
+	// snapshots.
+	StationOpen: 0x36, // C->S: request to view the station at (x, y, z)
+	StationState: 0x37, // S->C: full station snapshot
+	StationSetSlot: 0x38, // C->S: set input(0) / fuel(1) / result(2)
+	StationUpgrade: 0x39, // C->S: raise the station cap (Phase 3c)
+	StationSlotUpdate: 0x3a, // S->C: one station slot or counter changed
+	StationRejected: 0x3b, // S->C: open/write refused, forces UI close
+	StationClaimResult: 0x3c, // C->S: take the server-owned result stack
+	StationResultClaimed: 0x3d, // S->C: result handed to the claiming client
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];
 
 /**
  * Discriminator for decoded chunk responses. Not part of the wire format
- * (the wire distinguishes data vs unchanged via MessageType) — it is stamped
+ * (the wire distinguishes data vs unchanged via MessageType) â€” it is stamped
  * by the decoders so consumers can switch on a numeric value instead of
  * comparing strings.
  */
@@ -113,7 +131,7 @@ export const BlockEditRejectReason = {
 export type BlockEditRejectReason =
 	(typeof BlockEditRejectReason)[keyof typeof BlockEditRejectReason];
 
-/** Server → Client: the server rejected a block edit from this client. */
+/** Server â†’ Client: the server rejected a block edit from this client. */
 export interface BlockEditRejectedData {
 	x: number;
 	y: number;
@@ -126,7 +144,7 @@ export interface BlockEditRejectedData {
 	reason: number;
 }
 
-/** Client → Server: full local player state (no sessionId — connection identity). */
+/** Client â†’ Server: full local player state (no sessionId â€” connection identity). */
 export interface PlayerStateData {
 	x: number;
 	y: number;
@@ -136,7 +154,7 @@ export interface PlayerStateData {
 	animation: number;
 }
 
-/** Server → Client: one entry of a PlayerStateBatch (index instead of sessionId). */
+/** Server â†’ Client: one entry of a PlayerStateBatch (index instead of sessionId). */
 export interface PlayerStateBatchEntry extends PlayerStateData {
 	index: number;
 }
@@ -182,7 +200,7 @@ export interface PlayerHeldItemData extends HeldItemSelectionData {
 export const MAX_SKIN_BYTES = 16 * 1024;
 
 /**
- * Server → Client: a player's avatar skin as raw PNG bytes, keyed by the
+ * Server â†’ Client: a player's avatar skin as raw PNG bytes, keyed by the
  * same per-room uint8 index used by PlayerJoin / PlayerStateBatch.
  */
 export interface PlayerSkinData {
@@ -196,17 +214,17 @@ export interface ChatMessageData {
 	message: string;
 }
 
-/** One entry of a S→C MobUpdateBatch: identity + snapshot state. */
+/** One entry of a Sâ†’C MobUpdateBatch: identity + snapshot state. */
 export interface MobUpdateBatchEntry {
 	mobId: number;
 	x: number;
 	y: number;
 	z: number;
-	/** 0-255 byte mapping the full 360° circle (same convention as players). */
+	/** 0-255 byte mapping the full 360Â° circle (same convention as players). */
 	yaw: number;
 }
 
-/** S→C: a single mob appeared (also sent as the join snapshot). */
+/** Sâ†’C: a single mob appeared (also sent as the join snapshot). */
 export interface MobSpawnData {
 	/** Server-assigned mob id (uint16). */
 	id: number;
@@ -215,17 +233,17 @@ export interface MobSpawnData {
 	x: number;
 	y: number;
 	z: number;
-	/** 0-255 byte mapping the full 360° circle (same convention as players). */
+	/** 0-255 byte mapping the full 360Â° circle (same convention as players). */
 	yaw: number;
 }
 
-/** S→C: a single mob was removed (wandered off / despawned). */
+/** Sâ†’C: a single mob was removed (wandered off / despawned). */
 export interface MobDespawnData {
 	/** Server-assigned mob id (uint16). */
 	mobId: number;
 }
 
-/** C→S: a player used a spawn egg — the server spawns a cap-exempt mob. */
+/** Câ†’S: a player used a spawn egg â€” the server spawns a cap-exempt mob. */
 export interface MobSpawnRequestData {
 	/** MobTypeId (Chicken=1, Sheep=2). */
 	typeId: number;
@@ -234,7 +252,7 @@ export interface MobSpawnRequestData {
 	z: number;
 }
 
-/** C→S: a player's projectile (arrow) hit a server mob. */
+/** Câ†’S: a player's projectile (arrow) hit a server mob. */
 export interface MobDamageData {
 	/** Server-assigned mob id (uint16). */
 	mobId: number;
@@ -243,11 +261,11 @@ export interface MobDamageData {
 }
 
 /**
- * C→S: a primed TNT detonated at (x, y, z). The server validates the blast
+ * Câ†’S: a primed TNT detonated at (x, y, z). The server validates the blast
  * center against the sender's position (reach + fuse-travel slack) and the
  * radius against MAX_EXPLOSION_RADIUS, then applies the crater itself from
  * authoritative world state and relays the breaks as a BlockEditBatch.
- * Per-block Break messages for explosion craters must NOT be sent — blocks
+ * Per-block Break messages for explosion craters must NOT be sent â€” blocks
  * past the normal reach would be rejected as TooFar and rolled back.
  */
 export interface ExplosionData {
@@ -258,9 +276,9 @@ export interface ExplosionData {
 }
 
 /**
- * C→S: this client ignited the TNT block at (x, y, z) with the given fuse
+ * Câ†’S: this client ignited the TNT block at (x, y, z) with the given fuse
  * and blast radius (full block vs. half-size slab / half wall variant).
- * S→C: relay — other clients spawn a cosmetic primed TNT entity there.
+ * Sâ†’C: relay â€” other clients spawn a cosmetic primed TNT entity there.
  * Like ArrowShoot/ArrowSpawn this is cosmetic sync: receivers simulate the
  * bounce/flash/fuse locally and play detonation FX, but only the lighting
  * client sends the authoritative Explosion message. The server validates
@@ -274,7 +292,7 @@ export interface TntIgniteData {
 	fuse: number;
 	radius: number;
 }
-/** S→C: cosmetic ground impact for a server-authoritative mob. */
+/** Sâ†’C: cosmetic ground impact for a server-authoritative mob. */
 export interface MobImpactData {
 	/** Server-assigned mob id (uint16). */
 	mobId: number;
@@ -287,9 +305,9 @@ export interface MobImpactData {
 }
 
 /**
- * Arrow trajectory sync (cosmetic only — damage is reported separately via
- * MobDamage, which the server validates). C→S ArrowShoot carries the shooter's
- * initial state; S→C ArrowSpawn relays it to the other clients, which simulate
+ * Arrow trajectory sync (cosmetic only â€” damage is reported separately via
+ * MobDamage, which the server validates). Câ†’S ArrowShoot carries the shooter's
+ * initial state; Sâ†’C ArrowSpawn relays it to the other clients, which simulate
  * the same ballistic flight locally.
  */
 export interface ArrowTrajectoryData {
@@ -309,7 +327,7 @@ export interface ArrowTrajectoryData {
  * item positions and lifetimes; clients only render + interpolate.
  */
 
-/** C→S: a player dropped an item into the world. */
+/** Câ†’S: a player dropped an item into the world. */
 export interface ItemDropData {
 	itemId: number;
 	stackSize: number;
@@ -321,13 +339,13 @@ export interface ItemDropData {
 	vz: number;
 }
 
-/** C→S: a player picked up a server item, referenced by its instance id. */
+/** Câ†’S: a player picked up a server item, referenced by its instance id. */
 export interface ItemPickupData {
 	/** Server-assigned item instance id (uint32). */
 	itemId: number;
 }
 
-/** S→C: a dropped item appeared in the world. */
+/** Sâ†’C: a dropped item appeared in the world. */
 export interface ItemSpawnData {
 	/** Server-assigned item instance id (uint32). */
 	id: number;
@@ -341,7 +359,7 @@ export interface ItemSpawnData {
 	vz: number;
 }
 
-/** One entry of a S→C ItemUpdateBatch: identity + snapshot state. */
+/** One entry of a Sâ†’C ItemUpdateBatch: identity + snapshot state. */
 export interface ItemUpdateBatchEntry {
 	/** Server-assigned item instance id (uint32). */
 	id: number;
@@ -353,7 +371,7 @@ export interface ItemUpdateBatchEntry {
 	vz: number;
 }
 
-/** S→C: a dropped item was removed (picked up / expired / out of bounds). */
+/** Sâ†’C: a dropped item was removed (picked up / expired / out of bounds). */
 export interface ItemDespawnData {
 	/** Server-assigned item instance id (uint32). */
 	id: number;
@@ -370,7 +388,7 @@ export const ItemPickupRejectReason = {
 export type ItemPickupRejectReason =
 	(typeof ItemPickupRejectReason)[keyof typeof ItemPickupRejectReason];
 
-/** S→C: the server rejected this client's optimistic ItemPickup request. */
+/** Sâ†’C: the server rejected this client's optimistic ItemPickup request. */
 export interface ItemPickupRejectedData {
 	/** Server-assigned item instance id (uint32). */
 	id: number;
@@ -384,7 +402,7 @@ export interface ContainerSlotData {
 	stackSize: number;
 }
 
-/** C→S: request to view the crate at a block position. */
+/** Câ†’S: request to view the crate at a block position. */
 export interface ContainerOpenData {
 	x: number;
 	y: number;
@@ -392,7 +410,7 @@ export interface ContainerOpenData {
 }
 
 /**
- * S→C: full slot snapshot for one crate. Slots are row-major
+ * Sâ†’C: full slot snapshot for one crate. Slots are row-major
  * (length === width * height). Version increments on every accepted write;
  * clients ignore SlotUpdates with an older version.
  */
@@ -406,7 +424,7 @@ export interface ContainerStateData {
 	slots: ContainerSlotData[];
 }
 
-/** C→S: set one crate slot. S→C relay adds the new version (slot update). */
+/** Câ†’S: set one crate slot. Sâ†’C relay adds the new version (slot update). */
 export interface ContainerSetSlotData {
 	x: number;
 	y: number;
@@ -418,12 +436,12 @@ export interface ContainerSetSlotData {
 	stackSize: number;
 }
 
-/** S→C: one crate slot changed. Fan-out to every viewer of the crate. */
+/** Sâ†’C: one crate slot changed. Fan-out to every viewer of the crate. */
 export interface ContainerSlotUpdateData extends ContainerSetSlotData {
 	version: number;
 }
 
-/** C→S: stop viewing the crate at a block position. */
+/** Câ†’S: stop viewing the crate at a block position. */
 export interface ContainerCloseData {
 	x: number;
 	y: number;
@@ -447,7 +465,160 @@ export const ContainerRejectReason = {
 export type ContainerRejectReason =
 	(typeof ContainerRejectReason)[keyof typeof ContainerRejectReason];
 
-/** S→C: a container open/write was denied. Clients close the crate UI. */
+/**
+ * Why the server refused a station open/write.
+ *
+ * Mirrors ContainerRejectReason and adds two station-specific refusals:
+ * the client may not write the read-only result slot, and it may not raise a
+ * cap beyond what a placed tool justifies.
+ */
+export const StationRejectReason = {
+	/** No such station (never opened, already broken, unknown coords). */
+	NotFound: 0,
+	/** The station is farther from the player than the interaction reach. */
+	TooFar: 1,
+	/** The block at the coords is not a station. */
+	NotStation: 2,
+	/** Slot index outside the three station slots. */
+	BadSlot: 3,
+	/** itemId/stackSize out of range. */
+	BadItem: 4,
+	/** A slot the client may not write — the result slot is server-owned. */
+	ReadOnlySlot: 5,
+	/** The requested cap is not a legal upgrade for this station. */
+	BadUpgrade: 6,
+} as const;
+
+export type StationRejectReason =
+	(typeof StationRejectReason)[keyof typeof StationRejectReason];
+
+/** Station slot indices, matching the panel's left-to-right layout. */
+export const StationSlotIndex = {
+	Input: 0,
+	Fuel: 1,
+	Result: 2,
+} as const;
+
+export type StationSlotIndex =
+	(typeof StationSlotIndex)[keyof typeof StationSlotIndex];
+
+export const STATION_SLOT_COUNT = 3;
+
+/** One station stack on the wire. `itemId` 0 means the slot is empty. */
+export interface StationSlotData {
+	itemId: number;
+	stackSize: number;
+}
+
+/** C->S: request to view the station at a block position. */
+export interface StationOpenData {
+	x: number;
+	y: number;
+	z: number;
+}
+
+/**
+ * S->C: full station snapshot.
+ *
+ * `capTier` rides along so the client can render the cap without a second round
+ * trip. `lit` is derived server-side rather than recomputed from `burnRemaining`
+ * on the client, so the two can never disagree about what "lit" means.
+ */
+export interface StationStateData {
+	x: number;
+	y: number;
+	z: number;
+	version: number;
+	/** Numeric StationKind; see StationTypes. */
+	kind: number;
+	capTier: number;
+	input: StationSlotData;
+	fuel: StationSlotData;
+	output: StationSlotData;
+	smeltProgress: number;
+	burnRemaining: number;
+	lit: boolean;
+}
+
+/** C->S: write one station slot. */
+export interface StationSetSlotData {
+	x: number;
+	y: number;
+	z: number;
+	/** 0 = input, 1 = fuel, 2 = result. */
+	slot: number;
+	/** 0 clears the slot. */
+	itemId: number;
+	stackSize: number;
+}
+
+/**
+ * C->S: take the result stack out of the station.
+ *
+ * Carries no item id or count on purpose. The server owns the result and hands
+ * it over whole, so a modified client cannot fabricate output by claiming an
+ * arbitrary stack, and cannot claim the same stack twice.
+ */
+export interface StationClaimResultData {
+	x: number;
+	y: number;
+	z: number;
+}
+
+/** C->S: request a cap increase. Validated server-side against placed tools. */
+export interface StationUpgradeData {
+	x: number;
+	y: number;
+	z: number;
+	capTier: number;
+}
+
+/**
+ * S->C: one slot or counter changed.
+ *
+ * Cheaper than a full snapshot for the common case — the progress counter moves
+ * every tick, so sending whole state 20x a second per viewer would be wasteful.
+ */
+export interface StationSlotUpdateData {
+	x: number;
+	y: number;
+	z: number;
+	version: number;
+	/** -1 = a counter changed, not a slot. */
+	slot: number;
+	itemId: number;
+	stackSize: number;
+	smeltProgress: number;
+	burnRemaining: number;
+	lit: boolean;
+}
+
+/**
+ * S->C: the result stack was handed to this client.
+ *
+ * Sent only to the claiming client. Player inventories are client-side, so the
+ * server cannot push the item in itself — it removes the stack from the station
+ * and tells the winner what it took, which the client then adds locally. The
+ * server-side removal is what stops duplication.
+ */
+export interface StationResultClaimedData {
+	x: number;
+	y: number;
+	z: number;
+	itemId: number;
+	stackSize: number;
+}
+
+/** S->C: a station open/write was denied. Clients close the station panel. */
+export interface StationRejectedData {
+	x: number;
+	y: number;
+	z: number;
+	/** One of StationRejectReason. */
+	reason: number;
+}
+
+/** Sâ†’C: a container open/write was denied. Clients close the crate UI. */
 export interface ContainerRejectedData {
 	x: number;
 	y: number;

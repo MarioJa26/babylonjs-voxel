@@ -1,54 +1,23 @@
-const ARMOR_SLOT_LABELS: readonly (readonly [id: string, label: string])[] = [
-	["head", "Helmet"],
-	["chest", "Chestplate"],
-	["legs", "Leggings"],
-	["feet", "Boots"],
-];
-
-const UNDERARMOR_SLOT_LABELS: readonly (readonly [
-	id: string,
-	label: string,
-])[] = [
-	["underhead", "Chainmail"],
-	["underchest", "Chainmail"],
-	["underlegs", "Chainmail"],
-	["underfeet", "Chainmail"],
-];
-
-const NECKLACE_SLOT_LABELS: readonly (readonly [id: string, label: string])[] =
-	[
-		["necklace1", "Necklace"],
-		["necklace2", "Necklace"],
-		["necklace3", "Necklace"],
-	];
-
-const RING_SLOT_LABELS: readonly (readonly [id: string, label: string])[] = [
-	["ring1", "Ring"],
-	["ring2", "Ring"],
-	["ring3", "Ring"],
-	["ring4", "Ring"],
-	["ring5", "Ring"],
-	["ring6", "Ring"],
-	["ring7", "Ring"],
-	["ring8", "Ring"],
-	["ring9", "Ring"],
-	["ring10", "Ring"],
-	["ring11", "Ring"],
-	["ring12", "Ring"],
-	["ring13", "Ring"],
-	["ring14", "Ring"],
-	["ring15", "Ring"],
-	["ring16", "Ring"],
-	["ring17", "Ring"],
-	["ring18", "Ring"],
-	["ring19", "Ring"],
-	["ring20", "Ring"],
-];
+import {
+	getArmorColumnPairs,
+	getEquipmentSlotIds,
+	groupForSlotId,
+	labelForSlotId,
+} from "../Inventory/EquipmentLayout";
+import type { ItemSlot } from "../Inventory/ItemSlot";
 
 /**
- * Standalone equipment panel showing armor and accessory slots. Renders below
- * the player preview in the inventory screen and stretches to match the
- * inventory panel height.
+ * Renders the equipment slots beneath the player preview in the inventory
+ * screen.
+ *
+ * The DOM skeleton here predates any gameplay and only ever wrote
+ * `data-slot`, which nothing read. It now adopts real `ItemSlot` elements owned
+ * by `Equipment` — this class stays purely presentational and reads the layout
+ * from `EquipmentLayout`, a data-only module, so the
+ * `PlayerHud -> ArmorPanel` edge never reaches back into `Equipment`.
+ *
+ * Slot contents and the armour aggregate both live in `Equipment`; this panel
+ * only places the nodes.
  */
 export class ArmorPanel {
 	readonly container: HTMLDivElement;
@@ -60,49 +29,71 @@ export class ArmorPanel {
 		const armorGrid = document.createElement("div");
 		armorGrid.className = "armor-grid";
 
-		for (let i = 0; i < ARMOR_SLOT_LABELS.length; i++) {
-			const [armorId, armorLabel] = ARMOR_SLOT_LABELS[i];
-			const [underId, underLabel] = UNDERARMOR_SLOT_LABELS[i];
+		// Four columns, each an outer slot stacked over its chain slot.
+		const pairs = getArmorColumnPairs();
+		for (let column = 0; column < pairs.length; column++) {
+			const pair = pairs[column]!;
 
-			const column = document.createElement("div");
-			column.className = "armor-column";
-			column.appendChild(ArmorPanel.#createEquipSlot(armorId, armorLabel));
-			column.appendChild(ArmorPanel.#createEquipSlot(underId, underLabel));
+			const columnEl = document.createElement("div");
+			columnEl.className = "armor-column";
+			columnEl.dataset.column = String(column);
 
-			armorGrid.appendChild(column);
+			columnEl.appendChild(ArmorPanel.#createEquipSlot(pair.armor));
+			columnEl.appendChild(ArmorPanel.#createEquipSlot(pair.underarmor));
+
+			armorGrid.appendChild(columnEl);
 		}
 
-		this.container.appendChild(armorGrid);
+		const ids = getEquipmentSlotIds();
 
 		const necklaces = document.createElement("div");
 		necklaces.className = "necklace-slots";
-		ArmorPanel.#appendEquipSlots(necklaces, NECKLACE_SLOT_LABELS);
-		this.container.appendChild(necklaces);
+		for (const id of ids) {
+			if (groupForSlotId(id) === "necklace") {
+				necklaces.appendChild(ArmorPanel.#createEquipSlot(id));
+			}
+		}
 
 		const rings = document.createElement("div");
 		rings.className = "ring-slots";
-		ArmorPanel.#appendEquipSlots(rings, RING_SLOT_LABELS);
+		for (const id of ids) {
+			if (groupForSlotId(id) === "ring") {
+				rings.appendChild(ArmorPanel.#createEquipSlot(id));
+			}
+		}
+
+		this.container.appendChild(armorGrid);
+		this.container.appendChild(necklaces);
 		this.container.appendChild(rings);
 	}
 
-	static #appendEquipSlots(
-		parent: HTMLElement,
-		slots: readonly (readonly [id: string, label: string])[],
-	): void {
-		const fragment = document.createDocumentFragment();
+	/**
+	 * Adopt the live slots. The `.equip-slot` divs created here are only
+	 * placeholders: assigning `divItemSlot` re-points each `ItemSlot` at its own
+	 * DOM node, adds the `inventory-slot` class the item styling expects, and
+	 * wires up drag/drop and tooltips.
+	 */
+	public adoptSlots(slots: readonly ItemSlot[]): void {
+		for (const slot of slots) {
+			const id = slot.equipmentSlotId;
+			if (id === null) continue;
 
-		for (let i = 0; i < slots.length; i++) {
-			const [id, label] = slots[i];
-			fragment.appendChild(ArmorPanel.#createEquipSlot(id, label));
+			const host = this.container.querySelector<HTMLDivElement>(
+				`.equip-slot[data-slot="${CSS.escape(id)}"]`,
+			);
+			if (host === null) continue;
+
+			slot.divItemSlot = host;
 		}
-
-		parent.appendChild(fragment);
 	}
 
-	static #createEquipSlot(id: string, label: string): HTMLDivElement {
+	static #createEquipSlot(id: string): HTMLDivElement {
+		const label = labelForSlotId(id);
 		const slot = document.createElement("div");
 		slot.className = "equip-slot";
 		slot.dataset.slot = id;
+		// Full label for the tooltip, and a single initial for the CSS
+		// ::after marker, which reads data-label directly.
 		slot.dataset.label = label[0] ?? "";
 		slot.title = label;
 		return slot;

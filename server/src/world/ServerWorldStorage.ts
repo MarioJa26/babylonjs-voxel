@@ -9,11 +9,11 @@
 import { LightGenerator } from "@/code/Generation/LightGenerator";
 import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
 import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath.ts";
-import { precomputeClosedFaceMasks } from "@/code/World/Chunk/Meshing/ChunkFaceMasks";
 import {
 	packBlockValue,
 	unpackBlockId,
 } from "@/code/World/Chunk/DataStructures/BlockEncoding";
+import { precomputeClosedFaceMasks } from "@/code/World/Chunk/Meshing/ChunkFaceMasks";
 import {
 	FACE_NY,
 	FACE_PY,
@@ -1646,6 +1646,60 @@ export class ServerWorldStorage {
 		this.assertActive();
 		await this.store.deleteMeta(`crate:${x},${y},${z}`);
 	}
+
+	/**
+	 * Persist a station's state (kiln / furnace / whetstone). Stored under its
+	 * own `station:` meta key rather than reusing `crate:`, because a station is
+	 * an explicit input/fuel/result triple with progress counters, not a slot
+	 * grid — and mixing the two would let a crate payload be read as a station.
+	 */
+	async saveStation(
+		x: number,
+		y: number,
+		z: number,
+		data: PersistedStation,
+	): Promise<void> {
+		this.assertActive();
+		await this.store.setMeta(
+			`station:${x},${y},${z}`,
+			JSON.stringify({
+				v: 1,
+				version: data.version,
+				kind: data.kind,
+				capTier: data.capTier,
+				input: data.input,
+				fuel: data.fuel,
+				output: data.output,
+				smeltProgress: data.smeltProgress,
+				burnRemaining: data.burnRemaining,
+			}),
+		);
+	}
+
+	/** Load a persisted station, or null if it was never written. */
+	async loadStation(
+		x: number,
+		y: number,
+		z: number,
+	): Promise<PersistedStation | null> {
+		this.assertActive();
+
+		const raw = await this.store.getMeta(`station:${x},${y},${z}`);
+		if (!raw) return null;
+
+		try {
+			const parsed: unknown = JSON.parse(raw);
+			return isPersistedStation(parsed) ? parsed : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Delete a station record (station block broken). No-op if absent. */
+	async deleteStation(x: number, y: number, z: number): Promise<void> {
+		this.assertActive();
+		await this.store.deleteMeta(`station:${x},${y},${z}`);
+	}
 }
 
 /** Durable snapshot of one crate's inventory (row-major slots). */
@@ -1687,6 +1741,68 @@ function isPersistedContainer(value: unknown): value is PersistedContainer {
 		Array.isArray(c.slots) &&
 		c.slots.length === c.width * c.height &&
 		c.slots.every(isPersistedContainerSlot)
+	);
+}
+
+/** Durable snapshot of one station's state. */
+export interface PersistedStation {
+	version: number;
+	/** Numeric StationKind. */
+	kind: number;
+	capTier: number;
+	input: { itemId: number; stackSize: number };
+	fuel: { itemId: number; stackSize: number };
+	output: { itemId: number; stackSize: number };
+	smeltProgress: number;
+	burnRemaining: number;
+}
+
+function isPersistedStationSlot(value: unknown): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	const s = value as { itemId?: unknown; stackSize?: unknown };
+	return (
+		typeof s.itemId === "number" &&
+		Number.isInteger(s.itemId) &&
+		s.itemId >= 0 &&
+		typeof s.stackSize === "number" &&
+		Number.isInteger(s.stackSize) &&
+		s.stackSize >= 0
+	);
+}
+
+function isPersistedStationCount(value: unknown): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isInteger(value) &&
+		value >= 0 &&
+		value <= 65535
+	);
+}
+
+/**
+ * Tolerant of a missing version tag but strict about counters: a station record
+ * with out-of-range progress would let a smelt complete for free, so it is
+ * rejected outright rather than clamped.
+ */
+function isPersistedStation(value: unknown): value is PersistedStation {
+	if (typeof value !== "object" || value === null) return false;
+	const s = value as Partial<PersistedStation>;
+
+	return (
+		((typeof s.version === "number" &&
+			Number.isInteger(s.version) &&
+			s.version >= 0) ||
+			// Pre-versioned records are accepted and treated as version 0 by the store.
+			s.version === undefined) &&
+		typeof s.kind === "number" &&
+		Number.isInteger(s.kind) &&
+		s.kind >= 0 &&
+		isPersistedStationCount(s.capTier) &&
+		isPersistedStationCount(s.smeltProgress) &&
+		isPersistedStationCount(s.burnRemaining) &&
+		isPersistedStationSlot(s.input) &&
+		isPersistedStationSlot(s.fuel) &&
+		isPersistedStationSlot(s.output)
 	);
 }
 

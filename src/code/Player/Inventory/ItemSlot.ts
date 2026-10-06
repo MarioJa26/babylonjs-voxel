@@ -25,6 +25,28 @@ export class ItemSlot implements EventListenerObject {
 	row: number;
 	col: number;
 
+	/**
+	 * Equipment slots live outside the inventory grid and must behave
+	 * differently in two ways:
+	 *
+	 *  - their (row, col) is a disjoint address, because the grid's address
+	 *    space is 0..y-1 / 0..x-1 and reusing a pair would let
+	 *    `PlayerInventory.#deleteItemNoNotify` clear a real inventory slot;
+	 *  - they must not become `PlayerInventory.currentlyHoveredSlot`, because
+	 *    that static is the target of shift-move and Q-drop, which would yank a
+	 *    equipped helmet into the hotbar or throw it on the floor.
+	 */
+	isEquipmentSlot = false;
+
+	/**
+	 * Optional constraint on what this slot will accept. Equipment uses it to
+	 * stop a chestplate landing in the helmet slot. Null means "anything".
+	 */
+	acceptsItem: ((item: Item) => boolean) | null = null;
+
+	/** Stable id for equipment slots (e.g. "head", "ring7"). Ignored by the grid. */
+	equipmentSlotId: string | null = null;
+
 	constructor(row: number, col: number) {
 		this.row = row;
 		this.col = col;
@@ -36,11 +58,23 @@ export class ItemSlot implements EventListenerObject {
 		this.initialize();
 	}
 
+	/** Whether `item` may be placed in this slot. Always true for the grid. */
+	public canAccept(item: Item | null): boolean {
+		if (item === null) return true;
+		if (this.acceptsItem === null) return true;
+		return this.acceptsItem(item);
+	}
+
 	public swapSlots(slot: ItemSlot): void {
 		if (slot === this) return;
 
 		const targetItem = this.#item;
 		const sourceItem = slot.#item;
+
+		// Refuse rather than silently refuse-and-hide: dropping the wrong piece
+		// on a slot should leave both items where they were.
+		if (!this.canAccept(sourceItem)) return;
+		if (!slot.canAccept(targetItem)) return;
 
 		if (
 			targetItem !== null &&
@@ -205,7 +239,12 @@ export class ItemSlot implements EventListenerObject {
 			}
 
 			case "mouseover": {
-				PlayerInventory.currentlyHoveredSlot = this;
+				// Equipment slots still show a tooltip but must not become the
+				// hovered slot: that static drives shift-move and Q-drop, which
+				// would pull equipped gear into the hotbar or onto the floor.
+				PlayerInventory.currentlyHoveredSlot = this.isEquipmentSlot
+					? null
+					: this;
 
 				const item = this.#item;
 				if (item !== null) {

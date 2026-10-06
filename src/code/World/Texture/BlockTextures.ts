@@ -1,3 +1,4 @@
+import { MAX_SHAPE_VARIANT_SOURCE_ID } from "./BlockMaterial";
 import { BlockType } from "./BlockType";
 import { FaceName } from "./FaceName";
 
@@ -58,15 +59,20 @@ function buildBlockTextures(
 	// dedicated TNT art is baked. No alias — it would hide the real texture.
 
 	// Virtual shape variants (500+) — direct writes, no intermediate defs.
-	for (let id = 1; id <= maxId; id++) {
+	//
+	// Capped at MAX_SHAPE_VARIANT_SOURCE_ID to match the shape map and the
+	// variant generator. Without the cap, source blocks 101-104 write atlas
+	// tiles into virtual ids 1000-1019, which are the hand-authored wooden,
+	// stone and iron tool item ids — so every tool inherited a gem ore's atlas
+	// tile and rendered as an ore block. All three loops over this data must
+	// agree on the same cap or the overwrite reappears in one of them.
+	for (let id = 1; id <= Math.min(maxId, MAX_SHAPE_VARIANT_SOURCE_ID); id++) {
 		const atlasIndex = id - 1;
 		const col = atlasIndex & 15;
 		const row = atlasIndex >> 4;
-		// Only if source was in range (it always is for 1..maxId)
 		const virtualBase = VIRTUAL_BLOCK_ID_START + (id - 1) * MASON_SHAPE_COUNT;
 		for (let shapeIdx = 0; shapeIdx < MASON_SHAPE_COUNT; shapeIdx++) {
-			const virtualId = virtualBase + shapeIdx;
-			if (virtualId < size) writeDirect(virtualId, col, row);
+			writeDirect(virtualBase + shapeIdx, col, row);
 		}
 	}
 	// Re-apply aliases after virtual loop to ensure they stick
@@ -131,9 +137,16 @@ function getMaxBlockTypeId(): number {
 function getTextureCapacity(maxBlockTypeId: number): number {
 	if (maxBlockTypeId <= 0) return MAX_BLOCK_TEXTURES;
 
+	// Variant allocation stops at the cap, so sizing on the uncapped max would
+	// reserve typed-array space for ids that are never written — and would
+	// stretch back into the tool item range.
+	const variantSourceMax = Math.min(
+		maxBlockTypeId,
+		MAX_SHAPE_VARIANT_SOURCE_ID,
+	);
 	const maxVirtualId =
 		VIRTUAL_BLOCK_ID_START +
-		(maxBlockTypeId - 1) * MASON_SHAPE_COUNT +
+		(variantSourceMax - 1) * MASON_SHAPE_COUNT +
 		(MASON_SHAPE_COUNT - 1);
 
 	return Math.max(MAX_BLOCK_TEXTURES, maxBlockTypeId + 1, maxVirtualId + 1);

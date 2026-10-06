@@ -27,6 +27,14 @@ export type ItemDefinition = {
 	 * tool definitions do not have to repeat it.
 	 */
 	maxDurability?: number;
+	/**
+	 * Equipment slot this item belongs to. Omitted means the item is not
+	 * equippable. Outer armour and chain name their exact slot; accessories name
+	 * their group, since any ring fits any ring slot.
+	 */
+	armorSlot?: ArmorSlot;
+	/** Damage reduction points contributed while worn. */
+	armorValue?: number;
 };
 
 export type SavedInventoryItem = {
@@ -44,4 +52,29 @@ export type SavedInventoryState = {
 	width: number;
 	height: number;
 	slots: (SavedInventoryItem | null)[][];
+};
+
+/**
+ * Which equipment group an item belongs to. Outer armour and the chain
+ * under-layer name their exact slot; accessories name their group, because any
+ * ring fits any ring slot.
+ *
+ * `"chain"` is the special case: one chain item fits any of the four underarmour
+ * slots, rather than needing four near-identical pieces per material.
+ */
+export type ArmorSlot =
+	| ArmorSlotId
+	| "underhead"
+	| "underchest"
+	| "underlegs"
+	| "underfeet"
+	| "chain"
+	| "necklace"
+	| "ring";
+
+export type ArmorSlotId = "head" | "chest" | "legs" | "feet";
+
+export type SavedEquipmentState = {
+	/** Only occupied slots are stored; an absent id means "empty". */
+	slots: { id: string; itemId: number; durability?: number }[];
 };

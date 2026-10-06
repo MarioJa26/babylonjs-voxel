@@ -394,9 +394,12 @@ let farTilesBaseVisible = true;
 
 class WindingMesh {
 	mesh: FarMeshLike | null = null;
-	records = new Float32Array(0);
+	// PERF: pre-seeded for 1024 faces (16 KiB). Starting empty caused a
+	// doubling cascade (256→512→1024 faces) with a full GPU re-upload on
+	// every growth step during the initial streaming burst.
+	records = new Float32Array(4096);
 	count = 0;
-	capacityFaces = 0;
+	capacityFaces = 1024;
 
 	dirtyMin = Number.POSITIVE_INFINITY;
 	dirtyMax = 0;
@@ -755,7 +758,10 @@ class FarTileManagerImpl {
 	private terrainArenas: FaceWordArena[] = [];
 	private terrainStraight: WindingMesh[] = [];
 	private terrainReversed: WindingMesh[] = [];
-	private waterArena = new FaceWordArena(4096);
+	// PERF: pre-seeded for 16k faces (256 KiB). The old 4k start forced a
+	// ×4 growth cascade (full buffer re-create + rebind + full re-upload)
+	// during every initial streaming burst in ocean regions.
+	private waterArena = new FaceWordArena(16384);
 	private waterReversed = new WindingMesh(false);
 
 	// Workspace-wide tile-origin table (shared by every material).
@@ -843,7 +849,10 @@ class FarTileManagerImpl {
 			});
 
 			this.terrainMaterials.push(material);
-			this.terrainArenas.push(new FaceWordArena(8192));
+			// PERF: pre-seeded for 32k faces (512 KiB/level). The old 8k
+			// start forced a ×4 growth cascade (full buffer re-create +
+			// rebind + full re-upload) during every initial streaming burst.
+			this.terrainArenas.push(new FaceWordArena(32768));
 			this.terrainStraight.push(new WindingMesh(true));
 			this.terrainReversed.push(new WindingMesh(false));
 
@@ -853,7 +862,9 @@ class FarTileManagerImpl {
 		}
 
 		this.waterMaterial = createFarTileWaterMaterial();
-		this.ensureOrigins(1024);
+		// PERF: 4k origin slots (32 KiB) up front — a few hundred live
+		// tiles plus churn never trips a mid-stream re-create + full rebind.
+		this.ensureOrigins(4096);
 
 		const pool = ChunkWorkerPool.getInstance();
 		pool.onFarTileGenerated = (data) => this.handleResult(data);
@@ -1830,7 +1841,10 @@ function syncThinInstanceCount(mesh: FarMeshLike, wm: WindingMesh): void {
 	const capacity = wm.capacityFaces;
 	const existing = mesh.thinInstances;
 
-	if (capacity === 0 && count === 0) {
+	// PERF: records are pre-seeded (capacity 1024 at count 0), so the guard
+	// is on count alone — an empty winding side draws nothing and must not
+	// allocate a GPU instance buffer or log a phantom full upload.
+	if (count === 0) {
 		if (existing) {
 			existing.count = 0;
 		}
