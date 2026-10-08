@@ -258,10 +258,15 @@ export function generateFarTile(
 	const heights = lattice.heights;
 	const cellMaxima = lattice.cellMax;
 
+	const lastCell = cellsPerAxis - 1;
+
 	let cellIndex = 0;
 
 	for (let cz = 0, z0 = 0; cz < cellsPerAxis; cz++, z0 += step) {
-		// Index of sample (0, cz) in the one-ring-padded height array.
+		/*
+		 * Sample (0, cz) in the padded height lattice. The interior lattice
+		 * begins at padded coordinate (1, 1).
+		 */
 		let sampleIndex = (cz + 1) * padded + 1;
 
 		for (
@@ -292,17 +297,17 @@ export function generateFarTile(
 			const biome = getBiome(originX + x0 + halfStep, originZ + z0 + halfStep);
 
 			const topBlockId = biome.topBlock;
+
 			let tileX = 14;
 			let tileY = 0;
 
-			if (
-				topBlockId >= 0 &&
-				topBlockId * FaceName.Count + FaceName.Top < BlockFaceTileX.length
-			) {
+			if (topBlockId >= 0) {
 				const textureIndex = topBlockId * FaceName.Count + FaceName.Top;
 
-				tileX = BlockFaceTileX[textureIndex];
-				tileY = BlockFaceTileY[textureIndex];
+				if (textureIndex < BlockFaceTileX.length) {
+					tileX = BlockFaceTileX[textureIndex];
+					tileY = BlockFaceTileY[textureIndex];
+				}
 			}
 
 			opaque.emit(
@@ -320,29 +325,36 @@ export function generateFarTile(
 			);
 
 			/*
-			 * Each neighboring cell maximum is read directly from the padded
-			 * height lattice. This preserves the original behavior, including
-			 * real cross-tile terrain values at the outer boundaries.
+			 * Interior neighbor maxima have already been calculated by
+			 * buildHeightLattice(). Only tile-boundary neighbors require
+			 * reading four corners from the padded height lattice.
 			 */
 
-			// -Z neighbor corners:
-			// (cx,cz-1), (cx+1,cz-1), (cx,cz), (cx+1,cz)
-			const nz00 = heights[sampleIndex - padded];
-			const nz10 = heights[sampleIndex - padded + 1];
-			const nz01 = heights[sampleIndex];
-			const nz11 = heights[sampleIndex + 1];
+			let negativeZMax: number;
 
-			let nzMax = nz00 > nz10 ? nz00 : nz10;
-			const nzBottomMax = nz01 > nz11 ? nz01 : nz11;
-			if (nzBottomMax > nzMax) nzMax = nzBottomMax;
+			if (cz > 0) {
+				negativeZMax = cellMaxima[cellIndex - cellsPerAxis];
+			} else {
+				const rowAbove = sampleIndex - padded;
 
-			if (nzMax < cellMax) {
+				const h00 = heights[rowAbove];
+				const h10 = heights[rowAbove + 1];
+				const h01 = heights[sampleIndex];
+				const h11 = heights[sampleIndex + 1];
+
+				const upperMax = h00 > h10 ? h00 : h10;
+				const lowerMax = h01 > h11 ? h01 : h11;
+
+				negativeZMax = upperMax > lowerMax ? upperMax : lowerMax;
+			}
+
+			if (negativeZMax < cellMax) {
 				opaque.emit(
 					x0,
-					nzMax,
+					negativeZMax,
 					z0,
 					step,
-					cellMax - nzMax,
+					cellMax - negativeZMax,
 					2,
 					1,
 					tileX,
@@ -352,26 +364,31 @@ export function generateFarTile(
 				);
 			}
 
-			// +Z neighbor corners:
-			// (cx,cz+1), (cx+1,cz+1), (cx,cz+2), (cx+1,cz+2)
-			const pzIndex = sampleIndex + padded;
+			let positiveZMax: number;
 
-			const pz00 = heights[pzIndex];
-			const pz10 = heights[pzIndex + 1];
-			const pz01 = heights[pzIndex + padded];
-			const pz11 = heights[pzIndex + padded + 1];
+			if (cz < lastCell) {
+				positiveZMax = cellMaxima[cellIndex + cellsPerAxis];
+			} else {
+				const neighborTopLeft = sampleIndex + padded;
 
-			let pzMax = pz00 > pz10 ? pz00 : pz10;
-			const pzBottomMax = pz01 > pz11 ? pz01 : pz11;
-			if (pzBottomMax > pzMax) pzMax = pzBottomMax;
+				const h00 = heights[neighborTopLeft];
+				const h10 = heights[neighborTopLeft + 1];
+				const h01 = heights[neighborTopLeft + padded];
+				const h11 = heights[neighborTopLeft + padded + 1];
 
-			if (pzMax < cellMax) {
+				const upperMax = h00 > h10 ? h00 : h10;
+				const lowerMax = h01 > h11 ? h01 : h11;
+
+				positiveZMax = upperMax > lowerMax ? upperMax : lowerMax;
+			}
+
+			if (positiveZMax < cellMax) {
 				opaque.emit(
 					x0,
-					pzMax,
+					positiveZMax,
 					z0 + step,
 					step,
-					cellMax - pzMax,
+					cellMax - positiveZMax,
 					2,
 					0,
 					tileX,
@@ -381,25 +398,30 @@ export function generateFarTile(
 				);
 			}
 
-			// -X neighbor corners:
-			// (cx-1,cz), (cx,cz), (cx-1,cz+1), (cx,cz+1)
-			const nxIndex = sampleIndex - 1;
+			let negativeXMax: number;
 
-			const nx00 = heights[nxIndex];
-			const nx10 = heights[nxIndex + 1];
-			const nx01 = heights[nxIndex + padded];
-			const nx11 = heights[nxIndex + padded + 1];
+			if (cx > 0) {
+				negativeXMax = cellMaxima[cellIndex - 1];
+			} else {
+				const neighborTopLeft = sampleIndex - 1;
 
-			let nxMax = nx00 > nx10 ? nx00 : nx10;
-			const nxBottomMax = nx01 > nx11 ? nx01 : nx11;
-			if (nxBottomMax > nxMax) nxMax = nxBottomMax;
+				const h00 = heights[neighborTopLeft];
+				const h10 = heights[neighborTopLeft + 1];
+				const h01 = heights[neighborTopLeft + padded];
+				const h11 = heights[neighborTopLeft + padded + 1];
 
-			if (nxMax < cellMax) {
+				const upperMax = h00 > h10 ? h00 : h10;
+				const lowerMax = h01 > h11 ? h01 : h11;
+
+				negativeXMax = upperMax > lowerMax ? upperMax : lowerMax;
+			}
+
+			if (negativeXMax < cellMax) {
 				opaque.emit(
 					x0,
-					nxMax,
+					negativeXMax,
 					z0,
-					cellMax - nxMax,
+					cellMax - negativeXMax,
 					step,
 					0,
 					1,
@@ -410,25 +432,30 @@ export function generateFarTile(
 				);
 			}
 
-			// +X neighbor corners:
-			// (cx+1,cz), (cx+2,cz), (cx+1,cz+1), (cx+2,cz+1)
-			const pxIndex = sampleIndex + 1;
+			let positiveXMax: number;
 
-			const px00 = heights[pxIndex];
-			const px10 = heights[pxIndex + 1];
-			const px01 = heights[pxIndex + padded];
-			const px11 = heights[pxIndex + padded + 1];
+			if (cx < lastCell) {
+				positiveXMax = cellMaxima[cellIndex + 1];
+			} else {
+				const neighborTopLeft = sampleIndex + 1;
 
-			let pxMax = px00 > px10 ? px00 : px10;
-			const pxBottomMax = px01 > px11 ? px01 : px11;
-			if (pxBottomMax > pxMax) pxMax = pxBottomMax;
+				const h00 = heights[neighborTopLeft];
+				const h10 = heights[neighborTopLeft + 1];
+				const h01 = heights[neighborTopLeft + padded];
+				const h11 = heights[neighborTopLeft + padded + 1];
 
-			if (pxMax < cellMax) {
+				const upperMax = h00 > h10 ? h00 : h10;
+				const lowerMax = h01 > h11 ? h01 : h11;
+
+				positiveXMax = upperMax > lowerMax ? upperMax : lowerMax;
+			}
+
+			if (positiveXMax < cellMax) {
 				opaque.emit(
 					x0 + step,
-					pxMax,
+					positiveXMax,
 					z0,
-					cellMax - pxMax,
+					cellMax - positiveXMax,
 					step,
 					0,
 					0,

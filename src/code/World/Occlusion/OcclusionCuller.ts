@@ -573,7 +573,23 @@ export class OcclusionCuller {
 			const isSurfaceGroup = centerGY >= SEA_LEVEL;
 
 			let inFrustum: boolean;
-			if (hint === FrustumHint.OUTSIDE) {
+			// Fail-open: a group containing the eye always intersects the
+			// frustum. Checked before trusting an OUTSIDE hint so a stale or
+			// misaligned octree node can never hide the chunks around the
+			// camera (the traversal has the same guard, this is belt-and-braces).
+			const maxGXEarly = minGX + groupExtent;
+			const maxGYEarly = minGY + groupExtent;
+			const maxGZEarly = minGZ + groupExtent;
+			const eyeInGroupAABB =
+				camPos.x >= minGX &&
+				camPos.x <= maxGXEarly &&
+				camPos.y >= minGY &&
+				camPos.y <= maxGYEarly &&
+				camPos.z >= minGZ &&
+				camPos.z <= maxGZEarly;
+			if (eyeInGroupAABB) {
+				inFrustum = true;
+			} else if (hint === FrustumHint.OUTSIDE) {
 				// An ancestor octree node proved fully outside all 6 planes
 				// (the eye-in-node fail-open is handled inside the traversal,
 				// so eye-containing groups never arrive with this hint).

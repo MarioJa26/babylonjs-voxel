@@ -254,8 +254,24 @@ export function createSkyMaterial(): ShaderMaterial {
 			{ name: "moonIllum", type: "f32" },
 			{ name: "time", type: "f32" },
 		],
+		// PERF: backFaceCulling:false is required (from inside a convex box
+		// every face shares one orientation, so cullMode "back" would cull all
+		// 12 triangles and the sky would vanish). The cost is that a view ray
+		// intersects the box twice — entry face and exit face — and because the
+		// old depthWrite was false neither pass stored a depth, so BOTH passed
+		// `greater-equal` against the cleared far value (0) and every sky pixel
+		// shaded twice. On a 6.8Mpx surface at a level horizon that is ~6.8M
+		// fragments/frame, half of them provably redundant.
+		//
+		// depthWrite:true makes the exit face depth-reject: it is the farther of
+		// the pair, and under reverse-Z its depth value is smaller, so it fails
+		// the same `greater-equal` test that let it through before. The entry
+		// face still passes. Safe because the sky draws last of all opaque
+		// geometry (renderOrder 300) and the box sits at 0.87x the far plane, so
+		// it can never occlude anything already drawn, nor anything in the
+		// transparent pass that follows (all nearer than the box).
 		backFaceCulling: false,
-		depthWrite: false,
+		depthWrite: true,
 	});
 
 	setShaderUniform(material, "sunDirection", [0, 1, 0]);

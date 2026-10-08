@@ -987,10 +987,7 @@ export class ChunkStreamingController {
 
 		try {
 			while (processed < maxChunks) {
-				if (
-					processed !== 0 &&
-					performance.now() - startMs >= budgetMs
-				) {
+				if (processed !== 0 && performance.now() - startMs >= budgetMs) {
 					break;
 				}
 

@@ -5,6 +5,8 @@ import {
 	disposeStorageBuffer,
 	type EngineContext,
 	getCameraPosition,
+	getViewProjectionMatrix,
+	type Mat4,
 	type Mesh,
 	onBeforeRender,
 	type SceneContext,
@@ -26,7 +28,7 @@ import {
 	createFarTileTerrainMaterial,
 	createFarTileWaterMaterial,
 } from "../Light/FarTileShaderLite";
-import { onGpuWorkDone } from "../Light/liteGpuBuffer.js";
+import { getGpuPressureFactor, onGpuWorkDone } from "../Light/liteGpuBuffer.js";
 import { setMeshBaseVisible } from "../MeshVisibility";
 import {
 	atlasTileSize,
@@ -70,21 +72,101 @@ const MAX_TILE_REQUESTS_PER_UPDATE = 24;
 // without meaningfully growing the resident set.
 const UNLOAD_MARGIN_CHUNKS = 16;
 
+/**
+ * Collision-free key within JavaScript's safe-integer range:
+ *
+ * level: 1 bit at position 52
+ * tx: 26 bits at positions 26-51
+ * tz: 26 bits at positions 0-25
+ *
+ * This supports two levels safely. If more than two far-tile levels are used,
+ * use bigint or string keys instead.
+ */
 const TILE_KEY_AXIS_BITS = 26;
-const TILE_KEY_AXIS_MASK = 0x3ffffff;
-const TILE_KEY_LEVEL_SHIFT = TILE_KEY_AXIS_BITS * 2;
+const TILE_KEY_AXIS_SIZE = 2 ** TILE_KEY_AXIS_BITS;
+const TILE_KEY_AXIS_MASK = TILE_KEY_AXIS_SIZE - 1;
+const TILE_KEY_LEVEL_MULTIPLIER = 2 ** (TILE_KEY_AXIS_BITS * 2);
+const TILE_KEY_X_MULTIPLIER = TILE_KEY_AXIS_SIZE;
 
 function packTileKey(levelIndex: number, tx: number, tz: number): number {
+	const packedX = tx & TILE_KEY_AXIS_MASK;
+	const packedZ = tz & TILE_KEY_AXIS_MASK;
+
 	return (
-		(levelIndex << TILE_KEY_LEVEL_SHIFT) |
-		((tx & TILE_KEY_AXIS_MASK) << TILE_KEY_AXIS_BITS) |
-		(tz & TILE_KEY_AXIS_MASK)
+		levelIndex * TILE_KEY_LEVEL_MULTIPLIER +
+		packedX * TILE_KEY_X_MULTIPLIER +
+		packedZ
 	);
 }
 
 // Bytes per face word record (4 u32).
 const FT_FACE_BYTES = 16;
 const FT_FACE_WORDS = 4;
+
+// Reverse-Z-aware frustum-plane extraction for the far-tile vertex cull.
+// Mirrors OcclusionCuller.cacheFrustumPlanes: column-major VP, WebGPU clip
+// 0 <= z <= w, reverse-Z (depth 1 at near, 0 at far) so the far plane is
+// col2 (z_clip >= 0) and the near plane is col3 - col2 (z_clip <= w).
+// Planes are normalised so the shader sphere test stays in world units.
+function writeFarFrustumPlane(
+	out: Float32Array,
+	off: number,
+	nx: number,
+	ny: number,
+	nz: number,
+	d: number,
+): void {
+	const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+	out[off] = nx / len;
+	out[off + 1] = ny / len;
+	out[off + 2] = nz / len;
+	out[off + 3] = d / len;
+}
+
+function extractFarFrustumPlanes(vp: Mat4, out: Float32Array): void {
+	const m = vp as unknown as ArrayLike<number>;
+	writeFarFrustumPlane(
+		out,
+		0,
+		m[3] + m[0],
+		m[7] + m[4],
+		m[11] + m[8],
+		m[15] + m[12],
+	);
+	writeFarFrustumPlane(
+		out,
+		4,
+		m[3] - m[0],
+		m[7] - m[4],
+		m[11] - m[8],
+		m[15] - m[12],
+	);
+	writeFarFrustumPlane(
+		out,
+		8,
+		m[3] + m[1],
+		m[7] + m[5],
+		m[11] + m[9],
+		m[15] + m[13],
+	);
+	writeFarFrustumPlane(
+		out,
+		12,
+		m[3] - m[1],
+		m[7] - m[5],
+		m[11] - m[9],
+		m[15] - m[13],
+	);
+	writeFarFrustumPlane(out, 16, m[2], m[6], m[10], m[14]);
+	writeFarFrustumPlane(
+		out,
+		20,
+		m[3] - m[2],
+		m[7] - m[6],
+		m[11] - m[10],
+		m[15] - m[14],
+	);
+}
 
 // Compact thin-instance record: one vec4<f32> per winding entry (see the
 // compact-instance patch in @babylonjs/lite). Mirrors lite's
@@ -835,6 +917,15 @@ class FarTileManagerImpl {
 	private lastFogColorB = Number.NaN;
 	private lastFogInvRange = Number.NaN;
 
+	// GPU frustum-cull planes fed to the far-tile vertex shaders (world-space
+	// inward normals, packed 6×vec4). Same extraction as OcclusionCuller's
+	// reverse-Z-aware cacheFrustumPlanes. Updated when the VP matrix changes;
+	// all-zero until the first update means "never cull".
+	private frustumPlanesScratch = new Float32Array(24);
+	private frustumPlanesBuffer: StorageBuffer | null = null;
+	private lastFrustumVP = new Float32Array(16);
+	private frustumPlanesInit = false;
+
 	public init(engine: EngineContext, scene: SceneContext): void {
 		if (!isFarTilesEnabled() || this.engine) {
 			return;
@@ -874,6 +965,25 @@ class FarTileManagerImpl {
 		// PERF: 4k origin slots (32 KiB) up front — a few hundred live
 		// tiles plus churn never trips a mid-stream re-create + full rebind.
 		this.ensureOrigins(4096);
+
+		// GPU frustum-cull plane buffer (6×vec4, 96 B, shared by every
+		// far-tile material). Zeros = never cull until the first VP upload.
+		this.frustumPlanesBuffer = createStorageBuffer(
+			engine,
+			this.frustumPlanesScratch,
+			{
+				label: "farTileFrustumPlanes",
+				cpuShadow: "source",
+			},
+		);
+		for (const m of this.terrainMaterials) {
+			setShaderStorageBuffer(m, "frustumPlanes", this.frustumPlanesBuffer);
+		}
+		setShaderStorageBuffer(
+			this.waterMaterial,
+			"frustumPlanes",
+			this.frustumPlanesBuffer,
+		);
 
 		const pool = ChunkWorkerPool.getInstance();
 		pool.onFarTileGenerated = (data) => this.handleResult(data);
@@ -949,102 +1059,129 @@ class FarTileManagerImpl {
 			wantedTz.length = 0;
 			wantedDist.length = 0;
 
+			// GPU back-pressure: when the device queue is far behind (see
+			// liteGpuBuffer.publishGpuPressure), scheduling more tiles only
+			// appends faces + uploads the GPU cannot retire — the ms climb in
+			// the profiler. Scale the 24/update intake by the pressure factor
+			// (1 = healthy, 0 = saturated) instead of changing distances.
+			// Eviction below still runs so dead tiles free GPU while stalled.
+			const pressureFactor = getGpuPressureFactor();
+			const requestBudget =
+				pressureFactor <= 0
+					? 0
+					: Math.min(
+							MAX_TILE_REQUESTS_PER_UPDATE,
+							Math.max(
+								4,
+								Math.ceil(
+									MAX_TILE_REQUESTS_PER_UPDATE * pressureFactor,
+								),
+							),
+						);
+
 			let wantedCount = 0;
 			let worstIndex = -1;
 			let worstDistance = Number.NEGATIVE_INFINITY;
 
-			for (let levelIndex = 0; levelIndex < levels.length; levelIndex++) {
-				const level = levels[levelIndex];
-				const span = level.tileSizeChunks;
-				const halfSpan = span * 0.5;
+			/*
+			 * Skip the loading-window scan completely when GPU pressure has
+			 * reduced the intake budget to zero. Eviction still runs below.
+			 */
+			if (requestBudget > 0) {
+				for (let levelIndex = 0; levelIndex < levels.length; levelIndex++) {
+					const level = levels[levelIndex];
+					const span = level.tileSizeChunks;
+					const halfSpan = span * 0.5;
 
-				const outer = level.ringOuterChunks;
-				const inner = level.ringInnerChunks;
-				const unloadOuter = outer + UNLOAD_MARGIN_CHUNKS;
+					const outer = level.ringOuterChunks;
+					const inner = level.ringInnerChunks;
+					const unloadOuter = outer + UNLOAD_MARGIN_CHUNKS;
 
-				const txMin = Math.floor((pcx - outer) / span);
-				const txMax = Math.floor((pcx + outer) / span);
-				const tzMin = Math.floor((pcz - outer) / span);
-				const tzMax = Math.floor((pcz + outer) / span);
+					const txMin = Math.floor((pcx - outer) / span);
+					const txMax = Math.floor((pcx + outer) / span);
+					const tzMin = Math.floor((pcz - outer) / span);
+					const tzMax = Math.floor((pcz + outer) / span);
 
-				for (let tx = txMin; tx <= txMax; tx++) {
-					const distanceX = Math.abs(tx * span + halfSpan - pcx);
-
-					/*
-					 * Chebyshev distance can never become smaller than distanceX,
-					 * regardless of tz. Skip the whole column when it cannot
-					 * intersect the level's loading window.
-					 */
-					if (distanceX >= unloadOuter) {
-						continue;
-					}
-
-					for (let tz = tzMin; tz <= tzMax; tz++) {
-						const distanceZ = Math.abs(tz * span + halfSpan - pcz);
-						const distance = distanceX > distanceZ ? distanceX : distanceZ;
-
-						if (distance < inner || distance >= unloadOuter) {
-							continue;
-						}
+					for (let tx = txMin; tx <= txMax; tx++) {
+						const distanceX = Math.abs(tx * span + halfSpan - pcx);
 
 						/*
-						 * Once the bounded candidate list is full, candidates
-						 * farther away than its current worst entry cannot enter
-						 * the nearest-24 set. Avoid key creation and Map/Set
-						 * lookups for those candidates.
-						 *
-						 * Use <= so equal-distance candidates retain the original
-						 * first-encountered behavior.
+						 * Chebyshev distance can never become smaller than
+						 * distanceX, regardless of tz. Skip the whole column
+						 * when it cannot intersect the level's loading window.
 						 */
-						if (
-							wantedCount === MAX_TILE_REQUESTS_PER_UPDATE &&
-							distance >= worstDistance
-						) {
+						if (distanceX >= unloadOuter) {
 							continue;
 						}
 
-						const key = packTileKey(levelIndex, tx, tz);
+						for (let tz = tzMin; tz <= tzMax; tz++) {
+							const distanceZ = Math.abs(tz * span + halfSpan - pcz);
+							const distance =
+								distanceX > distanceZ ? distanceX : distanceZ;
 
-						if (this.tiles.has(key) || this.pendingByKey.has(key)) {
-							continue;
-						}
-
-						if (wantedCount < MAX_TILE_REQUESTS_PER_UPDATE) {
-							const index = wantedCount++;
-
-							wantedKeys[index] = key;
-							wantedLevels[index] = levelIndex;
-							wantedTx[index] = tx;
-							wantedTz[index] = tz;
-							wantedDist[index] = distance;
-
-							if (distance > worstDistance) {
-								worstDistance = distance;
-								worstIndex = index;
+							if (distance < inner || distance >= unloadOuter) {
+								continue;
 							}
 
-							continue;
-						}
+							/*
+							 * Once the bounded candidate list is full, candidates
+							 * farther away than its current worst entry cannot
+							 * enter the nearest-24 set. Avoid key creation and
+							 * Map/Set lookups for those candidates.
+							 *
+							 * Use <= so equal-distance candidates retain the
+							 * original first-encountered behavior.
+							 */
+							if (
+								wantedCount >= requestBudget &&
+								distance >= worstDistance
+							) {
+								continue;
+							}
 
-						/*
-						 * Replace the farthest retained candidate. Finding the
-						 * new farthest item scans at most 24 entries, so this is
-						 * bounded constant work rather than a scan over every
-						 * discovered candidate.
-						 */
-						wantedKeys[worstIndex] = key;
-						wantedLevels[worstIndex] = levelIndex;
-						wantedTx[worstIndex] = tx;
-						wantedTz[worstIndex] = tz;
-						wantedDist[worstIndex] = distance;
+							const key = packTileKey(levelIndex, tx, tz);
 
-						worstIndex = 0;
-						worstDistance = wantedDist[0];
+							if (this.tiles.has(key) || this.pendingByKey.has(key)) {
+								continue;
+							}
 
-						for (let i = 1; i < wantedCount; i++) {
-							if (wantedDist[i] > worstDistance) {
-								worstDistance = wantedDist[i];
-								worstIndex = i;
+							if (wantedCount < requestBudget) {
+								const index = wantedCount++;
+
+								wantedKeys[index] = key;
+								wantedLevels[index] = levelIndex;
+								wantedTx[index] = tx;
+								wantedTz[index] = tz;
+								wantedDist[index] = distance;
+
+								if (distance > worstDistance) {
+									worstDistance = distance;
+									worstIndex = index;
+								}
+
+								continue;
+							}
+
+							/*
+							 * Replace the farthest retained candidate. Finding the
+							 * new farthest item scans at most 24 entries, so this
+							 * is bounded constant work rather than a scan over
+							 * every discovered candidate.
+							 */
+							wantedKeys[worstIndex] = key;
+							wantedLevels[worstIndex] = levelIndex;
+							wantedTx[worstIndex] = tx;
+							wantedTz[worstIndex] = tz;
+							wantedDist[worstIndex] = distance;
+
+							worstIndex = 0;
+							worstDistance = wantedDist[0];
+
+							for (let i = 1; i < wantedCount; i++) {
+								if (wantedDist[i] > worstDistance) {
+									worstDistance = wantedDist[i];
+									worstIndex = i;
+								}
 							}
 						}
 					}
@@ -1508,6 +1645,7 @@ class FarTileManagerImpl {
 				90,
 				arena.buffer,
 				this.originsBuffer,
+				this.frustumPlanesBuffer,
 			);
 		}
 		if (!reversed.mesh) {
@@ -1521,10 +1659,16 @@ class FarTileManagerImpl {
 				90,
 				arena.buffer,
 				this.originsBuffer,
+				this.frustumPlanesBuffer,
 			);
 		}
 		if (arena.bufferRebound) {
-			bindFarTileBuffers(material, arena.buffer, this.originsBuffer);
+			bindFarTileBuffers(
+				material,
+				arena.buffer,
+				this.originsBuffer,
+				this.frustumPlanesBuffer,
+			);
 		}
 		// Engine perf: mesh is materialized above (early return when
 		// arena/material missing); locals let TS narrow without assertions.
@@ -1551,9 +1695,15 @@ class FarTileManagerImpl {
 				95,
 				arena.buffer,
 				this.originsBuffer,
+				this.frustumPlanesBuffer,
 			);
 		} else if (arena.bufferRebound) {
-			bindFarTileBuffers(this.waterMaterial, arena.buffer, this.originsBuffer);
+			bindFarTileBuffers(
+				this.waterMaterial,
+				arena.buffer,
+				this.originsBuffer,
+				this.frustumPlanesBuffer,
+			);
 		}
 		const waterMesh = this.waterReversed.mesh;
 		if (waterMesh) syncThinInstanceCount(waterMesh, this.waterReversed);
@@ -1674,6 +1824,45 @@ class FarTileManagerImpl {
 
 		const camera = this.scene?.camera;
 		const cameraPosition = camera ? getCameraPosition(camera) : null;
+
+		// GPU frustum-cull feed: recompute planes when the VP matrix changes
+		// (translation OR rotation) and push to every far-tile material.
+		// Runs independently of the lighting/fog early-out below — the camera
+		// moves far more often than the sun/fog changes.
+		if (camera && this.engine) {
+			const canvas = this.engine.canvas;
+			const aspect =
+				canvas && canvas.height > 0 ? canvas.width / canvas.height : 1;
+			const vp = getViewProjectionMatrix(camera, aspect);
+			let vpChanged = !this.frustumPlanesInit;
+			if (!vpChanged) {
+				for (let i = 0; i < 16; i++) {
+					if (
+						Math.abs(
+							(vp as unknown as ArrayLike<number>)[i] - this.lastFrustumVP[i],
+						) > 1e-6
+					) {
+						vpChanged = true;
+						break;
+					}
+				}
+			}
+			if (vpChanged) {
+				extractFarFrustumPlanes(vp, this.frustumPlanesScratch);
+				this.lastFrustumVP.set(vp as unknown as ArrayLike<number>);
+				this.frustumPlanesInit = true;
+				// One 96-byte ranged upload feeds every far-tile material
+				// (shared buffer) — negligible vs the face/instance traffic.
+				if (this.frustumPlanesBuffer) {
+					updateStorageBuffer(
+						this.engine,
+						this.frustumPlanesBuffer,
+						this.frustumPlanesScratch,
+						0,
+					);
+				}
+			}
+		}
 
 		const underWater = cameraPosition
 			? isEyeUnderwater(cameraPosition.x, cameraPosition.y, cameraPosition.z)
@@ -1799,12 +1988,18 @@ function attachFarTileMesh(
 	renderOrder: number,
 	arenaBuffer: StorageBuffer,
 	originsBuffer: StorageBuffer,
+	frustumPlanesBuffer?: StorageBuffer | null,
 ): void {
 	const mesh = createQuadInstanceMesh(engine, name, indices);
 	mesh.material = material;
 	mesh.pickable = false;
 	mesh.renderOrder = renderOrder;
-	bindFarTileBuffers(material, arenaBuffer, originsBuffer);
+	bindFarTileBuffers(
+		material,
+		arenaBuffer,
+		originsBuffer,
+		frustumPlanesBuffer ?? undefined,
+	);
 	addToScene(scene, mesh);
 	holder.mesh = mesh;
 	setMeshBaseVisible(mesh, farTilesBaseVisible);

@@ -175,9 +175,34 @@ fn axisBases(axis : u32) -> mat3x3<f32> {
 }
 `;
 
+// GPU frustum cull: far tiles submit every resident face in all 360 degrees
+// (no CPU per-tile culling — one thin-instance draw per level). Collapsing
+// fully-outside faces to a degenerate point discards them before raster, so
+// the behind-camera half pays vertex decode only and skips atlas fetch,
+// fog/sky varyings interpolation and raster entirely. Sphere test with the
+// face half-diagonal + 2-block margin: straddlers are never culled.
+const FRUSTUM_CULL_WGSL = /* wgsl */ `
+fn ftFrustumCulled(center : vec3<f32>, radius : f32) -> bool {
+  let fp0 : vec4<f32> = frustumPlanes[0];
+  if (dot(fp0.xyz, center) + fp0.w < -radius) { return true; }
+  let fp1 : vec4<f32> = frustumPlanes[1];
+  if (dot(fp1.xyz, center) + fp1.w < -radius) { return true; }
+  let fp2 : vec4<f32> = frustumPlanes[2];
+  if (dot(fp2.xyz, center) + fp2.w < -radius) { return true; }
+  let fp3 : vec4<f32> = frustumPlanes[3];
+  if (dot(fp3.xyz, center) + fp3.w < -radius) { return true; }
+  let fp4 : vec4<f32> = frustumPlanes[4];
+  if (dot(fp4.xyz, center) + fp4.w < -radius) { return true; }
+  let fp5 : vec4<f32> = frustumPlanes[5];
+  if (dot(fp5.xyz, center) + fp5.w < -radius) { return true; }
+  return false;
+}
+`;
+
 const terrainVertexWGSL = /* wgsl */ `
 ${FACE_EXPAND_WGSL}
 ${FOG_HELPER_WGSL}
+${FRUSTUM_CULL_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   // Axis-selected planar UV (world-position XY/XZ/ZY divided by
@@ -199,6 +224,18 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
 
   let bases = axisBases(f.axis);
   let worldPos = vec3<f32>(f.x, f.y, f.z) + bases[0] * (f.au * f.w) + bases[1] * (f.av * f.h);
+
+  // Behind-camera / off-screen faces: degenerate before raster (see above).
+  let ftCenter = vec3<f32>(f.x, f.y, f.z) + bases[0] * (f.w * 0.5) + bases[1] * (f.h * 0.5);
+  let ftRadius = length(vec2<f32>(f.w, f.h)) * 0.5 + 2.0;
+  if (ftFrustumCulled(ftCenter, ftRadius)) {
+    out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    out.vUV = vec2<f32>(0.0);
+    out.vTileShade = vec3<f32>(0.0);
+    out.vFogColor = vec3<f32>(0.0);
+    out.vFogFactor = 0.0;
+    return out;
+  }
 
   out.pos = shaderSystem.worldViewProjection * vec4<f32>(worldPos, 1.0);
 
@@ -243,7 +280,6 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
 `;
 
 const terrainFragmentWGSL = /* wgsl */ `
-${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
@@ -253,8 +289,9 @@ struct VSOut {
 };
 
 fn sampleAtlasTile(tile : vec2<f32>, worldUV : vec2<f32>) -> vec3<f32> {
-  let baseUV = vec2<f32>(tile.x * shaderUniforms.atlasTileSize, 1.0 - ((tile.y + 1.0) * shaderUniforms.atlasTileSize));
-  let atlasUV = baseUV + fract(worldUV) * shaderUniforms.atlasTileSize;
+  let tileSize = shaderUniforms.atlasTileSize;
+  let baseUV = vec2<f32>(tile.x * tileSize, 1.0 - ((tile.y + 1.0) * tileSize));
+  let atlasUV = baseUV + fract(worldUV) * tileSize;
   // Explicit LOD 0: the atlas is uploaded with mipMaps:false (single level,
   // see DistantTerrain init), so this samples the identical texel that
   // textureSample would — while staying legal inside the non-uniform fog
@@ -266,7 +303,9 @@ fn sampleAtlasTile(tile : vec2<f32>, worldUV : vec2<f32>) -> vec3<f32> {
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   // Fully-fogged horizon pixels are pure fog colour — skip the atlas fetch
   // and shading entirely. This covers the largest on-screen far-tile area.
-  if (in.vFogFactor <= 0.001) {
+  // Threshold 0.02 (not 0.001): a 2% texture blend is indistinguishable at
+  // horizon distances but skips the fetch on far more pixels.
+  if (in.vFogFactor <= 0.02) {
     return vec4<f32>(in.vFogColor, 1.0);
   }
 
@@ -281,6 +320,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 const waterVertexWGSL = /* wgsl */ `
 ${FACE_EXPAND_WGSL}
 ${FOG_HELPER_WGSL}
+${FRUSTUM_CULL_WGSL}
 
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
@@ -292,19 +332,36 @@ struct VSOut {
 @vertex
 fn mainVertex(
   input : VertexInput,
-  @builtin(instance_index) instanceIndex : u32,
   @builtin(vertex_index) vertexIndex : u32
 ) -> VSOut {
   var out : VSOut;
 
-  // Water faces are always flat top quads — the specialized decode skips
-  // the axis/tile/light words entirely.
+  // Axis 1 uses U = +Z with width and V = +X with height, matching
+  // axisBases(1u) in the terrain path.
   let f = expandWaterFace(u32(input.instData.x), vertexIndex);
 
-  let worldPos =
-    vec3<f32>(f.x, f.y, f.z) +
-    vec3<f32>(0.0, 0.0, 1.0) * (f.au * f.h) +
-    vec3<f32>(1.0, 0.0, 0.0) * (f.av * f.w);
+  let worldPos = vec3<f32>(
+    f.x + f.av * f.h,
+    f.y,
+    f.z + f.au * f.w,
+  );
+
+  // Axis-1 dimensions:
+  // X extent = h
+  // Z extent = w
+  let ftCenterW = vec3<f32>(
+    f.x + f.h * 0.5,
+    f.y,
+    f.z + f.w * 0.5,
+  );
+  let ftRadiusW = length(vec2<f32>(f.w, f.h)) * 0.5 + 2.0;
+  if (ftFrustumCulled(ftCenterW, ftRadiusW)) {
+    out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    out.vPositionW = ftCenterW;
+    out.vFogColor = vec3<f32>(0.0);
+    out.vFogFactor = 0.0;
+    return out;
+  }
 
   out.pos =
     shaderSystem.worldViewProjection *
@@ -386,50 +443,47 @@ struct VSOut {
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   // Fully-fogged horizon pixels are pure fog colour — skip spec math.
-  if (in.vFogFactor <= 0.001) {
+  // Threshold 0.02 (not 0.001): see terrain fragment above.
+  if (in.vFogFactor <= 0.02) {
     return vec4<f32>(in.vFogColor, 1.0);
   }
 
-  let normal = vec3<f32>(0.0, 1.0, 0.0);
+  const normal = vec3<f32>(0.0, 1.0, 0.0);
 
-  let viewDir = normalize(
-    shaderSystem.cameraPosition - in.vPositionW
-  );
+  let viewDelta = shaderSystem.cameraPosition - in.vPositionW;
+
+  let inverseViewLength =
+    inverseSqrt(max(dot(viewDelta, viewDelta), 1e-8));
+
+  let viewDir = viewDelta * inverseViewLength;
 
   let reflectDir =
     reflect(shaderUniforms.lightDirection, normal);
 
-  let RV =
+  let reflectionAmount =
     max(dot(viewDir, reflectDir), 0.0);
 
-  let spec =
+  let specularFactor =
     exp2(
       clamp(
-        64.0 * 1.4427 * (RV - 1.0),
+        92.3328 * (reflectionAmount - 1.0),
         -126.0,
         0.0
       )
     );
 
-  let specular =
-    vec3<f32>(
-      spec * shaderUniforms.sunLightIntensity
-    );
+  let sun = shaderUniforms.sunLightIntensity;
 
   let litWater =
     vec3<f32>(0.0, 0.25, 0.55) *
-    (shaderUniforms.sunLightIntensity * 0.8 + 0.2);
+    (sun * 0.8 + 0.2);
 
   let nightWater =
     vec3<f32>(0.0, 0.06, 0.18);
 
   let finalColor =
-    mix(
-      nightWater,
-      litWater,
-      shaderUniforms.sunLightIntensity
-    ) +
-    specular;
+    mix(nightWater, litWater, sun) +
+    vec3<f32>(specularFactor * sun);
 
   return vec4<f32>(
     mix(
@@ -464,9 +518,13 @@ export function bindFarTileBuffers(
 	material: ShaderMaterial,
 	faceBuffer: StorageBuffer,
 	originsBuffer: StorageBuffer,
+	frustumPlanesBuffer?: StorageBuffer | null,
 ): void {
 	setShaderStorageBuffer(material, "faceData", faceBuffer);
 	setShaderStorageBuffer(material, "tileOrigins", originsBuffer);
+	if (frustumPlanesBuffer) {
+		setShaderStorageBuffer(material, "frustumPlanes", frustumPlanesBuffer);
+	}
 }
 
 export function createFarTileTerrainMaterial(
@@ -491,11 +549,14 @@ export function createFarTileTerrainMaterial(
 			{ name: "fogColor", type: "vec3<f32>" },
 			{ name: "fogInvRange", type: "f32" },
 		],
-		samplers: ["diffuseTexture"],
 		storageBuffers: [
 			{ name: "faceData", type: "array<u32>" },
 			{ name: "tileOrigins", type: "array<vec2<f32>>" },
+			// 6 world-space inward-normal planes fed per VP change by
+			// FarTileManager (all zeros until then = never cull).
+			{ name: "frustumPlanes", type: "array<vec4<f32>, 6>" },
 		],
+		samplers: ["diffuseTexture"],
 		// Per-face winding is restored by the straight/reversed mesh pair
 		// (see module doc), so backface culling works exactly like the old
 		// CPU-expanded path — and coplanar opposite-facing boundary skirts
@@ -531,6 +592,8 @@ export function createFarTileWaterMaterial(
 		storageBuffers: [
 			{ name: "faceData", type: "array<u32>" },
 			{ name: "tileOrigins", type: "array<vec2<f32>>" },
+			// Same 6-plane GPU cull feed as terrain (see above).
+			{ name: "frustumPlanes", type: "array<vec4<f32>, 6>" },
 		],
 		backFaceCulling: true,
 		// Same reasoning as the clip-map water: never publish depth so real

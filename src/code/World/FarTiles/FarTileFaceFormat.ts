@@ -1,28 +1,31 @@
 /**
  * Pure far-tile face format: encoding and decoding.
  *
- * ZERO imports — this module must stay dependency-free so the self-test can
+ * ZERO imports. This module must stay dependency-free so the self-test can
  * compile and run it standalone (see scripts/far-tile-selftest.ts).
  *
  * Face encoding (4 x u32):
- *   w0: x:u10 | (y+Y_OFFSET):u12 | z:u10            tile-local block coords
- *   w1: w:u10(bit0) | h:u10(bit10) | backFace:u1(bit20) | axis:u2(bit21-22)
- *   w2: tileX:u8 | tileY:u8 | light:u8              atlas tile + light
- *   w3: kind:u8                                     0 opaque, 1 water
- *       (bits 8-23 carry the tile-origin slot index, stamped by
- *        FarTileManager on arrival — never set by the worker)
+ *   w0: x:u10 | (y + Y_OFFSET):u12 | z:u10
+ *   w1: w:u10 | h:u10 | backFace:u1 | axis:u2
+ *   w2: tileX:u8 | tileY:u8 | light:u8
+ *   w3: kind:u8
  *
- * Faces are consumed verbatim by the GPU (FarTileShaderLite expands quads in
- * the vertex stage from faceData + tileOrigins storage buffers); there is no
- * CPU expansion step anymore.
+ * Bits 8-23 of w3 carry the tile-origin slot index. The worker leaves those
+ * bits clear and FarTileManager stamps them after receiving the face data.
  *
- * Axis dimension convention:
- *   axis 0 (+/-X): w = Y-extent, h = Z-extent
- *   axis 1 (+/-Y): w = X-extent, h = Z-extent   [water uses w=X, h=Z too]
- *   axis 2 (+/-Z): w = X-extent, h = Y-extent
+ * Faces are consumed verbatim by the GPU. FarTileShaderLite expands each
+ * packed face into a quad in the vertex stage using faceData and tileOrigins.
+ *
+ * Axis dimension convention used by axisBases():
+ *   axis 0 (+/-X): w = Y extent, h = Z extent
+ *   axis 1 (+/-Y): w = Z extent, h = X extent
+ *   axis 2 (+/-Z): w = X extent, h = Y extent
+ *
+ * For square terrain and water faces the axis-1 distinction is invisible,
+ * but non-square axis-1 faces must follow the convention above.
  */
 
-export const FAR_TILE_Y_OFFSET = -(-32) * 32; // MIN_CHUNK_Y * CHUNK_SIZE negated
+export const FAR_TILE_Y_OFFSET = 1024;
 
 export const KIND_OPAQUE = 0;
 export const KIND_WATER = 1;
@@ -30,18 +33,42 @@ export const KIND_WATER = 1;
 export const LIGHT_FULL = 0xf0;
 export const LIGHT_SIDE = 0xc0;
 
-/** Encode one packed face word-pair helper (w1 value). */
+const COORD_MASK = 0x3ff;
+const HEIGHT_MASK = 0xfff;
+const BYTE_MASK = 0xff;
+
+const Y_SHIFT = 10;
+const Z_SHIFT = 22;
+
+const FACE_HEIGHT_SHIFT = 10;
+const BACK_FACE_SHIFT = 20;
+const AXIS_SHIFT = 21;
+
+const TILE_Y_SHIFT = 8;
+const LIGHT_SHIFT = 16;
+
+/**
+ * Encodes the second packed face word.
+ *
+ * Layout:
+ *   bits  0-9:  width
+ *   bits 10-19: height
+ *   bit  20:    backFace
+ *   bits 21-22: axis
+ */
 export function packWord1(
 	w: number,
 	h: number,
 	axis: number,
 	backFace: number,
 ): number {
-	// Layout: bit20 = backFace, bit21-22 = axis. Mask must keep THREE bits
-	// (axis occupies bits 21-22 after the shift) — an &0x3 here silently
-	// truncates axis=2 into axis=0 and scrambles every Z-facing quad.
-	const axisFace = (((axis << 1) | backFace) & 0x7) << 20;
-	return (w & 0x3ff) | ((h & 0x3ff) << 10) | (axisFace & 0x700000);
+	return (
+		((w & COORD_MASK) |
+			((h & COORD_MASK) << FACE_HEIGHT_SHIFT) |
+			((backFace & 1) << BACK_FACE_SHIFT) |
+			((axis & 3) << AXIS_SHIFT)) >>>
+		0
+	);
 }
 
 export interface DecodedFarTileFace {
@@ -58,27 +85,39 @@ export interface DecodedFarTileFace {
 	kind: number;
 }
 
+/**
+ * Decodes one face from a packed four-word face array.
+ *
+ * The caller is responsible for ensuring that faceIndex identifies a complete
+ * record. No bounds check is performed because this function may be used in
+ * validation loops and Uint32Array already returns undefined for invalid
+ * element access.
+ */
 export function decodeFarTileFace(
 	faces: Uint32Array,
 	faceIndex: number,
 ): DecodedFarTileFace {
-	const i = faceIndex * 4;
-	const w0 = faces[i];
-	const w1 = faces[i + 1];
-	const w2 = faces[i + 2];
+	const offset = faceIndex << 2;
+
+	const word0 = faces[offset];
+	const word1 = faces[offset + 1];
+	const word2 = faces[offset + 2];
+	const word3 = faces[offset + 3];
 
 	return {
-		x: w0 & 0x3ff,
-		y: ((w0 >>> 10) & 0xfff) - FAR_TILE_Y_OFFSET,
-		z: (w0 >>> 22) & 0x3ff,
-		w: w1 & 0x3ff,
-		h: (w1 >>> 10) & 0x3ff,
-		// Layout mirrors packWord1: bit20 = backFace, bits21-22 = axis.
-		axis: (w1 >>> 21) & 0x3,
-		backFace: (w1 >>> 20) & 0x1,
-		tileX: w2 & 0xff,
-		tileY: (w2 >>> 8) & 0xff,
-		light: (w2 >>> 16) & 0xff,
-		kind: faces[i + 3] & 0xff,
+		x: word0 & COORD_MASK,
+		y: ((word0 >>> Y_SHIFT) & HEIGHT_MASK) - FAR_TILE_Y_OFFSET,
+		z: (word0 >>> Z_SHIFT) & COORD_MASK,
+
+		w: word1 & COORD_MASK,
+		h: (word1 >>> FACE_HEIGHT_SHIFT) & COORD_MASK,
+		backFace: (word1 >>> BACK_FACE_SHIFT) & 1,
+		axis: (word1 >>> AXIS_SHIFT) & 3,
+
+		tileX: word2 & BYTE_MASK,
+		tileY: (word2 >>> TILE_Y_SHIFT) & BYTE_MASK,
+		light: (word2 >>> LIGHT_SHIFT) & BYTE_MASK,
+
+		kind: word3 & BYTE_MASK,
 	};
 }

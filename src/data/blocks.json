@@ -740,7 +740,7 @@
 	{
 		"id": "TinOre",
 		"name": "tin_ore",
-		"path": "/texture/cobble/cobble07_1k",
+		"path": "/texture/ore/tin_ore_1k/tin_ore_diff_1k",
 		"hardness": 1.4,
 		"preferredTool": "pickaxe",
 		"requiredLevel": 2

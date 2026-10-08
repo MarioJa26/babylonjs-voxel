@@ -511,7 +511,8 @@ export class ChunkWorkerPool {
 			this.taskHeap.length > 0 ||
 			this.lodPrecomputeQueueReadIdx < this.lodPrecomputeQueue.length ||
 			this.relightQueueReadIdx < this.relightQueue.length ||
-			this.distantTerrainTaskQueueReadIdx < this.distantTerrainTaskQueue.length ||
+			this.distantTerrainTaskQueueReadIdx <
+				this.distantTerrainTaskQueue.length ||
 			// Far tiles were missing here, so a far-tile result landing as the
 			// only pending work never re-entered the immediate result-driven pump
 			// and had to wait for the next central tick — adding a full tick of

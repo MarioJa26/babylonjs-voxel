@@ -1,11 +1,9 @@
 /**
- * Minimal GPU storage-buffer helpers for Babylon Lite.
+ * Minimal GPU queue helpers and back-pressure tracking for Babylon Lite.
  *
- * Lite 1.11+ exposes a *managed* storage-buffer API
- *
- * NOTE: we still reach `engine._device` only for `queue.onSubmittedWorkDone()`,
- * which has no public Lite equivalent and is required to safely recycle GPU
- * buffers after in-flight frames complete.
+ * Lite 1.11+ exposes a managed storage-buffer API. Direct device access is
+ * still required for GPUQueue.onSubmittedWorkDone(), which has no public Lite
+ * equivalent.
  */
 import type { EngineContext } from "@babylonjs/lite";
 
@@ -17,77 +15,111 @@ function deviceOf(engine: EngineContext): GPUDevice {
 	return (engine as EngineWithDevice)._device;
 }
 
+/*
+ * Shared promise handlers avoid allocating two new closures for every queue
+ * drain measurement.
+ *
+ * Rejections are intentionally converted to successful completion because
+ * callers use this only as a safe disposal/recycling boundary. Device-loss
+ * handling occurs elsewhere.
+ */
+function ignoreGpuCompletion(): void {
+	// Intentionally empty.
+}
+
 /**
- * Resolve once the GPU has finished all work submitted so far. Used to safely
- * recycle / dispose buffers that a frame may still be reading.
+ * Resolves after the GPU finishes all work submitted before this call.
+ *
+ * The returned promise also resolves if queue completion rejects, preserving
+ * the original behavior during device loss.
  */
 export function onGpuWorkDone(engine: EngineContext): Promise<void> {
 	return deviceOf(engine)
 		.queue.onSubmittedWorkDone()
-		.then(
-			() => {},
-			() => {},
-		);
+		.then(ignoreGpuCompletion, ignoreGpuCompletion);
 }
 
 // ---------------------------------------------------------------------------
 // GPU back-pressure signal
-//
-// How long the device queue takes to drain everything submitted so far. This is
-// the one number that distinguishes "the CPU is slow" from "we are handing the
-// GPU more work than it can retire", and it is measured from the frame loop
-// (PlayerLoopController) because only there do we know a frame boundary.
-//
-// It is published here rather than kept private because the streaming pipeline
-// needs it for flow control: mesh results are produced by workers at a rate set
-// by CPU throughput, but each applied result dirties a merged group whose
-// rebuild enqueues storage + thin-instance uploads. When the queue is far
-// behind, applying results faster only deepens the hole, so ingestion is
-// throttled until the device catches up.
 // ---------------------------------------------------------------------------
 
-/** Queue-drain below this (ms) is considered healthy. */
+/** Queue-drain times at or below this threshold are considered healthy. */
 const GPU_PRESSURE_IDLE_MS = 8;
-/** Queue-drain above this (ms) is considered saturated; ingestion all but stops. */
+
+/** Queue-drain times at or above this threshold are considered saturated. */
 const GPU_PRESSURE_MAX_MS = 120;
 
+/** Reciprocal of the pressure ramp width, precomputed once. */
+const GPU_PRESSURE_RANGE_INVERSE =
+	1 / (GPU_PRESSURE_MAX_MS - GPU_PRESSURE_IDLE_MS);
+
+/** Slow-decay EWMA weights. */
+const GPU_PRESSURE_DECAY_OLD = 0.9;
+const GPU_PRESSURE_DECAY_SAMPLE = 0.1;
+
 let _gpuPressureMs = 0;
+let _gpuPressureFactor = 1;
 
 /**
- * Publish a fresh queue-drain sample. Smoothed with a fast-attack / slow-decay
- * EWMA: we want to back off within a frame or two of a spike, but recover
- * gradually so a single slow frame does not throttle streaming for long.
+ * Recomputes the cached throttle factor after the pressure value changes.
  */
-export function publishGpuPressure(sampleMs: number): void {
-	if (sampleMs < 0 || !Number.isFinite(sampleMs)) return;
-	_gpuPressureMs =
-		sampleMs > _gpuPressureMs
-			? sampleMs
-			: _gpuPressureMs * 0.9 + sampleMs * 0.1;
+function updateGpuPressureFactor(): void {
+	const pressureMs = _gpuPressureMs;
+
+	if (pressureMs <= GPU_PRESSURE_IDLE_MS) {
+		_gpuPressureFactor = 1;
+		return;
+	}
+
+	if (pressureMs >= GPU_PRESSURE_MAX_MS) {
+		_gpuPressureFactor = 0;
+		return;
+	}
+
+	_gpuPressureFactor =
+		(GPU_PRESSURE_MAX_MS - pressureMs) * GPU_PRESSURE_RANGE_INVERSE;
 }
 
-/** Latest smoothed queue-drain time in ms. */
+/**
+ * Publishes a fresh queue-drain sample.
+ *
+ * Pressure has immediate attack and slow EWMA decay:
+ * - A sample above the current pressure is adopted immediately.
+ * - A lower sample contributes 10%, allowing pressure to recover gradually.
+ */
+export function publishGpuPressure(sampleMs: number): void {
+	if (!Number.isFinite(sampleMs) || sampleMs < 0) {
+		return;
+	}
+
+	const currentPressure = _gpuPressureMs;
+
+	_gpuPressureMs =
+		sampleMs > currentPressure
+			? sampleMs
+			: currentPressure * GPU_PRESSURE_DECAY_OLD +
+				sampleMs * GPU_PRESSURE_DECAY_SAMPLE;
+
+	updateGpuPressureFactor();
+}
+
+/** Returns the latest smoothed queue-drain time in milliseconds. */
 export function getGpuPressureMs(): number {
 	return _gpuPressureMs;
 }
 
 /**
- * Throttle factor in [0, 1]: 1 = no pressure (run at full rate), 0 = fully
- * saturated (ingestion should nearly stop).
+ * Returns the cached ingestion throttle in the inclusive range [0, 1].
+ *
+ * 1 means healthy and full-rate ingestion.
+ * 0 means saturated and ingestion should stop or nearly stop.
  */
 export function getGpuPressureFactor(): number {
-	if (_gpuPressureMs <= GPU_PRESSURE_IDLE_MS) return 1;
-	if (_gpuPressureMs >= GPU_PRESSURE_MAX_MS) return 0;
-
-	// Linear ramp between the two thresholds.
-	return (
-		1 -
-		(_gpuPressureMs - GPU_PRESSURE_IDLE_MS) /
-			(GPU_PRESSURE_MAX_MS - GPU_PRESSURE_IDLE_MS)
-	);
+	return _gpuPressureFactor;
 }
 
-/** Reset the signal (scene teardown / device loss). */
+/** Resets pressure tracking during scene teardown or device loss. */
 export function resetGpuPressure(): void {
 	_gpuPressureMs = 0;
+	_gpuPressureFactor = 1;
 }
