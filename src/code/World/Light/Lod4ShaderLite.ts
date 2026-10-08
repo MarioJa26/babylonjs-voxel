@@ -2,18 +2,14 @@
  * Babylon Lite shader for downsampled chunk meshes (LOD4+, lodStep > 1).
  *
  * Companion to Lod3ShaderLite, consuming the "raw units" face encoding:
- * QuadBuffer.emitQuadRawUnits writes whole-block positions/dimensions
- * verbatim with a zero meta byte, so buildPackedVertexWGSL({ rawUnits })
- * strips the entire ×8 scaling machinery (INV_POS decode, posOff
- * corrections, materialType==3 boundary restore, rawDimensions selects,
- * flip bit, diagonal branch, fractional UV offsets).
+ * QuadBuffer.emitQuadRawUnits writes whole-block positions and dimensions
+ * verbatim with a zero meta byte, so buildPackedVertexWGSL({ rawUnits: true })
+ * removes the fixed-point scaling and boundary-correction paths.
  *
- * Differences vs the LOD3 materials:
- *  - vertex source built with { rawUnits: true } (slim vertex stage)
- *  - the tint LUT is baked into the fragment source as a module-scope
- *    private array instead of a storage buffer (one binding fewer)
- * Everything else (dither fade, wetness darkening, fog, vertex-hoisted
- * N·L diffuse) mirrors the LOD3 shaders exactly.
+ * Differences from the LOD3 materials:
+ * - vertex source uses rawUnits: true
+ * - the six-entry tint LUT is baked into the opaque fragment shader
+ * - the water fragment omits the unused tint LUT entirely
  */
 import {
 	createShaderMaterial,
@@ -27,26 +23,95 @@ import {
 import { registerPackedMaterial } from "../Chunk/Meshing/PackedChunkMesh.js";
 import { buildPackedVertexWGSL } from "./PackedChunkShaderWGSL.js";
 
-// Bakes the 6-entry tint LUT into WGSL. `var<private>` (not `const`) so the
-// dynamic bucket index is valid WGSL.
-function tintLutWgsl(lut: Float32Array): string {
-	const rows: string[] = [];
-	for (let i = 0; i < 6; i++) {
-		const r = lut[i * 4];
-		const g = lut[i * 4 + 1];
-		const b = lut[i * 4 + 2];
-		const a = lut[i * 4 + 3];
-		rows.push(`  vec4<f32>(${r}, ${g}, ${b}, ${a}),`);
-	}
-	return (
-		`// Baked from ChunkMesher's LOD_TINT_LUT (passed via opts.tintLUT).\n` +
-		`var<private> tintLUT : array<vec4<f32>, 6> = array<vec4<f32>, 6>(\n` +
-		rows.join("\n") +
-		`\n);\n`
-	);
+interface StorageBufferDeclaration {
+	name: string;
+	type: string;
 }
 
-// Opaque / cutout fragment — tinted diffuse, no water logic.
+interface Lod4RenderOptions {
+	backFaceCulling: boolean;
+	needAlphaBlending?: boolean;
+	blendMode?: "alpha";
+}
+
+const LOD4_VERTEX_OPTIONS = {
+	tangent: false,
+	worldPosition: false,
+	meta: false,
+	tint: true,
+	fog: true,
+
+	// No view-dependent LOD lighting.
+	viewDir: false,
+
+	// Positions and dimensions are already expressed in block units.
+	rawUnits: true,
+
+	// Downsampled sessions disable AO, so omit its decode and varying.
+	ao: false,
+
+	// Hoist wetness, N.L, light mix, and face shade into one flat value.
+	bakeShade: true,
+} as const;
+
+/**
+ * Formats a finite JavaScript number as a WGSL-compatible f32 literal.
+ *
+ * Integer-valued numbers receive a decimal point so they cannot be inferred
+ * as abstract integer literals inside vec4<f32> constructors.
+ */
+function wgslFloat(value: number, fallback: number): string {
+	const finiteValue = Number.isFinite(value) ? value : fallback;
+
+	if (Object.is(finiteValue, -0)) {
+		return "0.0";
+	}
+
+	const text = String(finiteValue);
+
+	if (text.includes(".") || text.includes("e") || text.includes("E")) {
+		return text;
+	}
+
+	return `${text}.0`;
+}
+
+/**
+ * Bakes the six-entry tint LUT into the opaque fragment shader.
+ *
+ * WGSL uses var<private> rather than const because the selected bucket is a
+ * runtime value.
+ */
+function tintLutWgsl(lut: Float32Array): string {
+	let source =
+		"// Baked from ChunkMesher's LOD_TINT_LUT.\n" +
+		"var<private> tintLUT : array<vec4<f32>, 6> = " +
+		"array<vec4<f32>, 6>(\n";
+
+	for (let i = 0; i < 6; i++) {
+		const offset = i << 2;
+
+		source +=
+			" vec4<f32>(" +
+			wgslFloat(lut[offset], 1) +
+			", " +
+			wgslFloat(lut[offset + 1], 1) +
+			", " +
+			wgslFloat(lut[offset + 2], 1) +
+			", " +
+			wgslFloat(lut[offset + 3], 1) +
+			"),\n";
+	}
+
+	return source + ");\n";
+}
+
+/**
+ * Opaque fragment shader: tinted diffuse plus fog.
+ *
+ * There is intentionally no discard. Opaque downsampled faces use opaque
+ * atlas entries, allowing early depth testing for the complete pass.
+ */
 function makeOpaqueFragmentSource(lut: Float32Array): string {
 	return /* wgsl */ `${tintLutWgsl(lut)}
 struct VSOut {
@@ -59,70 +124,81 @@ struct VSOut {
   @location(15) @interpolate(flat) vShade : vec3<f32>,
 };
 
-// PERF: no \`discard\` in this opaque shader, on purpose. See the note in
-// Lod2ShaderLite: a discard anywhere in a fragment shader disables early
-// depth testing for the whole pass, and the alpha guard here is unreachable
-// in practice — this bucket only ever receives faces emitted for solid blocks,
-// whose atlas tiles are opaque, and the shader forces alpha to 1.0 on write.
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-let diffuseColor = textureSampleLevel(
-  diffuseTexture,
-  diffuseTextureSampler,
-  fract(in.vUV),
-  in.vTileLayer,
-  4.0
-);
-let litColor =
-  diffuseColor.rgb *
-  in.vShade *
-  tintLUT[in.vTint].rgb;
-return vec4<f32>(
-  mix(litColor, in.vFogColor, in.vFogFactor),
-  1.0
-);
+  let diffuseColor = textureSampleLevel(
+    diffuseTexture,
+    diffuseTextureSampler,
+    fract(in.vUV),
+    in.vTileLayer,
+    4.0
+  );
+
+  // Defensive clamp prevents malformed packed data from dynamically indexing
+  // beyond the six-entry private array.
+  let tintIndex = min(in.vTint, 5u);
+
+  let litColor =
+    diffuseColor.rgb *
+    in.vShade *
+    tintLUT[tintIndex].rgb;
+
+  return vec4<f32>(
+    mix(
+      litColor,
+      in.vFogColor,
+      in.vFogFactor
+    ),
+    1.0
+  );
 }
 `;
 }
 
-// Water-only fragment — same VSOut/vertex pipeline as opaque but
-// replaces the tinted diffuse with the LOD3 water color so every
-// distant water mesh matches lod3Transparent `waterColor`.
-// lod3: vec3(0.1,0.4,0.7) * min(vShade, vec3(0.6)) -> fog -> alpha
-function makeWaterFragmentSource(lut: Float32Array): string {
-	return /* wgsl */ `${tintLutWgsl(lut)}
+/**
+ * Water fragment shader.
+ *
+ * The texture sample remains necessary for atlas alpha testing, but no tint
+ * LUT is declared because water color does not use it.
+ */
+function makeWaterFragmentSource(): string {
+	return /* wgsl */ `
 struct VSOut {
-@builtin(position) pos : vec4<f32>,
-@location(0) vUV : vec2<f32>,
-@location(1) @interpolate(flat) vTileLayer : u32,
-@location(10) vFogFactor : f32,
-@location(11) vFogColor : vec3<f32>,
-@location(12) @interpolate(flat) vTint : u32,
-@location(15) @interpolate(flat) vShade : vec3<f32>,
+  @builtin(position) pos : vec4<f32>,
+  @location(0) vUV : vec2<f32>,
+  @location(1) @interpolate(flat) vTileLayer : u32,
+  @location(10) vFogFactor : f32,
+  @location(11) vFogColor : vec3<f32>,
+  @location(12) @interpolate(flat) vTint : u32,
+  @location(15) @interpolate(flat) vShade : vec3<f32>,
 };
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-let diffuseColor = textureSampleLevel(
-diffuseTexture,
-diffuseTextureSampler,
-fract(in.vUV),
-in.vTileLayer,
-4.0
-);
+  let diffuseAlpha = textureSampleLevel(
+    diffuseTexture,
+    diffuseTextureSampler,
+    fract(in.vUV),
+    in.vTileLayer,
+    4.0
+  ).a;
 
-if (diffuseColor.a < 0.01) {
-discard;
-}
+  if (diffuseAlpha < 0.01) {
+    discard;
+  }
 
-let waterColor =
-vec3<f32>(0.1, 0.4, 0.7) *
-min(in.vShade, vec3<f32>(0.6));
+  let waterColor =
+    vec3<f32>(0.1, 0.4, 0.7) *
+    min(in.vShade, vec3<f32>(0.6));
 
-return vec4<f32>(
-mix(waterColor, in.vFogColor, in.vFogFactor),
-diffuseColor.a
-);
+  return vec4<f32>(
+    mix(
+      waterColor,
+      in.vFogColor,
+      in.vFogFactor
+    ),
+    diffuseAlpha
+  );
 }
 `;
 }
@@ -137,46 +213,52 @@ export interface Lod4MaterialOptions {
 	faceArenaCount: number;
 }
 
+function normalizedArenaCount(value: number): number {
+	if (!Number.isFinite(value)) {
+		return 1;
+	}
+
+	const integerValue = Math.trunc(value);
+	return integerValue > 0 ? integerValue : 1;
+}
+
+function createStorageBufferDeclarations(
+	arenaCount: number,
+): StorageBufferDeclaration[] {
+	/*
+	 * Allocate the final array once rather than building a temporary face
+	 * array and spreading it into a second array.
+	 */
+	const declarations = new Array<StorageBufferDeclaration>(arenaCount + 1);
+
+	for (let i = 0; i < arenaCount; i++) {
+		declarations[i] = {
+			name: `faceData${i}`,
+			type: "array<u32>",
+		};
+	}
+
+	declarations[arenaCount] = {
+		name: "chunkOffsets",
+		type: "array<vec4<f32>>",
+	};
+
+	return declarations;
+}
+
 function buildCommonMaterial(
 	name: string,
 	opts: Lod4MaterialOptions,
 	fragmentSource: string,
-	extra: {
-		backFaceCulling: boolean;
-		needAlphaBlending?: boolean;
-		blendMode?: "alpha";
-	},
+	renderOptions: Lod4RenderOptions,
 ): ShaderMaterial {
-	const arenaCount = Math.max(1, opts.faceArenaCount | 0);
-	const faceStorageBuffers = [];
-	for (let i = 0; i < arenaCount; i++) {
-		faceStorageBuffers.push({ name: `faceData${i}`, type: "array<u32>" });
-	}
+	const arenaCount = normalizedArenaCount(opts.faceArenaCount);
+
+	const storageBuffers = createStorageBufferDeclarations(arenaCount);
+
 	const material = createShaderMaterial({
 		name,
-		vertexSource: buildPackedVertexWGSL(arenaCount, {
-			tangent: false,
-			worldPosition: false,
-			meta: false,
-			tint: true,
-			fog: true,
-
-			// Free win: no view-dependent LOD lighting now.
-			viewDir: false,
-
-			// Slim raw-units variant — see interface doc.
-			rawUnits: true,
-
-			// Downsampled builds run with session.disableAO=true, so every
-			// face's packed AO byte is zero. Drop the decode + varying.
-			// (The fragment VSOut below must stay in sync.)
-			ao: false,
-
-			// Bake wetness × N·L × lightMix × faceShade into one flat vec3 in
-			// the vertex stage; the fragment below reads only `in.vShade`.
-			// (Keeps the fragment VSOut above in sync.)
-			bakeShade: true,
-		}),
+		vertexSource: buildPackedVertexWGSL(arenaCount, LOD4_VERTEX_OPTIONS),
 		fragmentSource,
 		attributes: ["position"],
 		uniforms: [
@@ -196,12 +278,10 @@ function buildCommonMaterial(
 			{ name: "fogColor", type: "vec3<f32>" },
 		],
 		samplers: [{ name: "diffuseTexture", viewDimension: "2d-array" }],
-		storageBuffers: [
-			// NOTE: no tintLUT binding — baked into the fragment source.
-			...faceStorageBuffers,
-			{ name: "chunkOffsets", type: "array<vec4<f32>>" },
-		],
-		...extra,
+		// NOTE: no tintLUT storage binding — the opaque variant bakes the LUT
+		// into the fragment source, and the water variant does not use it.
+		storageBuffers,
+		...renderOptions,
 	});
 
 	registerPackedMaterial(material);
@@ -237,11 +317,10 @@ export function createLod4TransparentMaterial(
 	return buildCommonMaterial(
 		"lod4TransparentLite",
 		opts,
-		makeWaterFragmentSource(opts.tintLUT),
+		makeWaterFragmentSource(),
 		{
 			backFaceCulling: true,
 			needAlphaBlending: false,
-			blendMode: "alpha",
 		},
 	);
 }

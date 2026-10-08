@@ -1073,9 +1073,7 @@ class FarTileManagerImpl {
 							MAX_TILE_REQUESTS_PER_UPDATE,
 							Math.max(
 								4,
-								Math.ceil(
-									MAX_TILE_REQUESTS_PER_UPDATE * pressureFactor,
-								),
+								Math.ceil(MAX_TILE_REQUESTS_PER_UPDATE * pressureFactor),
 							),
 						);
 
@@ -1116,8 +1114,7 @@ class FarTileManagerImpl {
 
 						for (let tz = tzMin; tz <= tzMax; tz++) {
 							const distanceZ = Math.abs(tz * span + halfSpan - pcz);
-							const distance =
-								distanceX > distanceZ ? distanceX : distanceZ;
+							const distance = distanceX > distanceZ ? distanceX : distanceZ;
 
 							if (distance < inner || distance >= unloadOuter) {
 								continue;
@@ -1132,10 +1129,7 @@ class FarTileManagerImpl {
 							 * Use <= so equal-distance candidates retain the
 							 * original first-encountered behavior.
 							 */
-							if (
-								wantedCount >= requestBudget &&
-								distance >= worstDistance
-							) {
+							if (wantedCount >= requestBudget && distance >= worstDistance) {
 								continue;
 							}
 

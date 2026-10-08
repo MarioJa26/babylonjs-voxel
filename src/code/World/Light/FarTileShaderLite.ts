@@ -5,8 +5,8 @@
  * Faces arrive from FarTileGenerator as 4×u32 words and go into a per-level
  * `faceData` storage buffer VERBATIM (no CPU expansion). Each level mesh is a
  * single shared quad drawn once per face via thin instances (compact stride-16
- * records injected by the lite patch as `instData`; the record content is
- * unused here — `@builtin(instance_index)` selects the face directly).
+ * records injected by the lite patch as `instData`; the face index is read
+ * from `instData.x`, not from `@builtin(instance_index)`).
  *
  * Face encoding (see FarTileFaceFormat.ts):
  *   w0: x:u10 | (y+Y_OFF):u12 | z:u10      tile-local block coords
@@ -70,7 +70,10 @@ fn ftSkyboxColor(viewDirY : f32, nightAmount : f32) -> vec3<f32> {
 const FACE_EXPAND_WGSL = /* wgsl */ `
 const FAR_TILE_Y_OFFSET : f32 = 1024.0;
 
-struct DecodedFace {
+// Terrain faces carry the full decode payload: world corner, dimensions,
+// corner weights, atlas tile, light factor and the axis that drives the
+// basis / UV / shade selection below.
+struct TerrainFace {
   x : f32,
   y : f32,
   z : f32,
@@ -84,6 +87,19 @@ struct DecodedFace {
   axis : u32,
 }
 
+// Water faces are always axis-1 (top) quads, so this record drops the axis,
+// atlas-tile, light and kind fields the terrain record carries — fewer live
+// values for the vertex stage to hold.
+struct WaterFace {
+  x : f32,
+  y : f32,
+  z : f32,
+  w : f32,
+  h : f32,
+  au : f32,
+  av : f32,
+}
+
 fn decodeCornerWeights(vi : u32) -> vec2<f32> {
   // Identity walk [P00,P10,P11,P01]: corner 0:(0,0) 1:(1,0) 2:(1,1) 3:(0,1).
   // au = bit1 XOR bit0, av = bit1 — branchless, no array lookup.
@@ -94,9 +110,9 @@ fn decodeCornerWeights(vi : u32) -> vec2<f32> {
   );
 }
 
-fn expandFace(ii : u32, vi : u32) -> DecodedFace {
-  var d : DecodedFace;
-  let i4 = ii * 4u;
+fn expandFace(faceIndex : u32, vi : u32) -> TerrainFace {
+  var d : TerrainFace;
+  let i4 = faceIndex << 2u;
   let w0 = faceData[i4];
   let w1 = faceData[i4 + 1u];
   let w2 = faceData[i4 + 2u];
@@ -126,12 +142,12 @@ fn expandFace(ii : u32, vi : u32) -> DecodedFace {
   return d;
 }
 
-// Water-only decode: water faces are always axis-1 (top) quads, so the
-// atlas-tile/light word (w2) is never read and the axis is hardcoded —
-// 1 fewer storage load and no tile/light unpack ALU per water vertex.
-fn expandWaterFace(ii : u32, vi : u32) -> DecodedFace {
-  var d : DecodedFace;
-  let i4 = ii * 4u;
+// Water-only decode: the atlas-tile/light word (w2) is never read and the
+// axis is hardcoded to 1 — 1 fewer storage load and no tile/light unpack ALU
+// per water vertex, and a smaller record than TerrainFace.
+fn expandWaterFace(faceIndex : u32, vi : u32) -> WaterFace {
+  var d : WaterFace;
+  let i4 = faceIndex << 2u;
   let w0 = faceData[i4];
   let w1 = faceData[i4 + 1u];
   let w3 = faceData[i4 + 3u];
@@ -144,11 +160,6 @@ fn expandWaterFace(ii : u32, vi : u32) -> DecodedFace {
 
   d.w = f32(w1 & 0x3ffu);
   d.h = f32((w1 >> 10u) & 0x3ffu);
-  d.axis = 1u;
-
-  d.tileX = 0.0;
-  d.tileY = 0.0;
-  d.lightFactor = 1.0;
 
   let corner = decodeCornerWeights(vi);
   d.au = corner.x;
@@ -156,22 +167,29 @@ fn expandWaterFace(ii : u32, vi : u32) -> DecodedFace {
   return d;
 }
 
-// Branchless axis bases from the face axis, mirroring the deleted CPU
+// Branchless axis basis from the face axis, mirroring the deleted CPU
 // AXIS_BASIS and AXIS_NORMAL tables:
 //   axis 0: U=Y(w), V=Z(h), N=+X   axis 1: U=Z(w), V=X(h), N=+Y
 //   axis 2: U=X(w), V=Y(h), N=+Z
 // The old CPU path always emitted +axis normals (backFace flipped WINDING,
 // never the normal), so N·L uses the unsigned axis vector exactly as before.
-fn axisBases(axis : u32) -> mat3x3<f32> {
+// A plain struct of the three vectors is cheaper to hold than a mat3x3 the
+// vertex stage would index column by column.
+struct AxisBasis {
+  u : vec3<f32>,
+  v : vec3<f32>,
+  n : vec3<f32>,
+}
+
+fn axisBases(axis : u32) -> AxisBasis {
   let isX = select(0.0, 1.0, axis == 0u);
   let isY = select(0.0, 1.0, axis == 1u);
   let isZ = 1.0 - max(isX, isY);
-  // Columns are (U, V, N).
-  return mat3x3<f32>(
-    vec3<f32>(isZ, isX, isY),
-    vec3<f32>(isY, isZ, isX),
-    vec3<f32>(isX, isY, isZ),
-  );
+  var b : AxisBasis;
+  b.u = vec3<f32>(isZ, isX, isY);
+  b.v = vec3<f32>(isY, isZ, isX);
+  b.n = vec3<f32>(isX, isY, isZ);
+  return b;
 }
 `;
 
@@ -218,16 +236,18 @@ struct VSOut {
 };
 
 @vertex
-fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32, @builtin(vertex_index) vertexIndex : u32) -> VSOut {
+fn mainVertex(input : VertexInput, @builtin(vertex_index) vertexIndex : u32) -> VSOut {
   var out : VSOut;
   let f = expandFace(u32(input.instData.x), vertexIndex);
 
   let bases = axisBases(f.axis);
-  let worldPos = vec3<f32>(f.x, f.y, f.z) + bases[0] * (f.au * f.w) + bases[1] * (f.av * f.h);
+  let worldPos = vec3<f32>(f.x, f.y, f.z) + bases.u * (f.au * f.w) + bases.v * (f.av * f.h);
 
   // Behind-camera / off-screen faces: degenerate before raster (see above).
-  let ftCenter = vec3<f32>(f.x, f.y, f.z) + bases[0] * (f.w * 0.5) + bases[1] * (f.h * 0.5);
-  let ftRadius = length(vec2<f32>(f.w, f.h)) * 0.5 + 2.0;
+  // halfSize avoids a second * 0.5 for the cull-sphere radius.
+  let halfSize = vec2<f32>(f.w, f.h) * 0.5;
+  let ftCenter = vec3<f32>(f.x, f.y, f.z) + bases.u * halfSize.x + bases.v * halfSize.y;
+  let ftRadius = length(halfSize) + 2.0;
   if (ftFrustumCulled(ftCenter, ftRadius)) {
     out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
     out.vUV = vec2<f32>(0.0);
@@ -251,17 +271,18 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
   // Chunk-matching sun convention: dot(N, +lightDirection). The old CPU
   // path always emitted +axis normals (backFace flipped WINDING, not the
   // normal), so N·L here uses the unsigned axis vector exactly like before.
-  let ndotl = max(0.0, dot(bases[2], shaderUniforms.lightDirection));
+  let ndotl = max(0.0, dot(bases.n, shaderUniforms.lightDirection));
   let sun = shaderUniforms.sunLightIntensity;
   let shade =
     (ndotl * sun * 0.6 + 0.48 * (sun + 0.2)) * mix(0.55, 1.0, f.lightFactor);
   out.vTileShade = vec3<f32>(f.tileX, f.tileY, shade);
 
   let toCamera = shaderSystem.cameraPosition - worldPos;
-  let dist = length(toCamera);
+  let distanceSquared = dot(toCamera, toCamera);
+  let distance = sqrt(distanceSquared);
 
   let infos = shaderUniforms.fogInfos;
-  let fogFactor = clamp((infos.z - dist) * shaderUniforms.fogInvRange, 0.0, 1.0);
+  let fogFactor = clamp((infos.z - distance) * shaderUniforms.fogInvRange, 0.0, 1.0);
 
   let heightFactor = clamp(worldPos.y * 0.003, 0.0, 1.0);
   let atmosphereColor = ftAtmosphereColor(heightFactor);
@@ -269,9 +290,10 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
   let nightAmount = clamp(1.0 - sun, 0.0, 1.0);
   baseFogColor = mix(baseFogColor, vec3<f32>(0.0, 0.0, 0.0), nightAmount);
 
-  let viewDirY = toCamera.y / max(dist, 1e-4);
+  let inverseDistance = inverseSqrt(max(distanceSquared, 1e-8));
+  let viewDirY = toCamera.y * inverseDistance;
   let skyboxColor = ftSkyboxColor(viewDirY, nightAmount);
-  let skyBlend = clamp((dist - 1400.0) * 0.0003333, 0.0, 1.0);
+  let skyBlend = clamp((distance - 1400.0) * 0.0003333, 0.0, 1.0);
 
   out.vFogColor = mix(baseFogColor, skyboxColor, skyBlend);
   out.vFogFactor = fogFactor;
@@ -349,12 +371,14 @@ fn mainVertex(
   // Axis-1 dimensions:
   // X extent = h
   // Z extent = w
+  // halfSize avoids a second * 0.5 for the cull-sphere radius.
+  let halfSizeW = vec2<f32>(f.h, f.w) * 0.5;
   let ftCenterW = vec3<f32>(
-    f.x + f.h * 0.5,
+    f.x + halfSizeW.x,
     f.y,
-    f.z + f.w * 0.5,
+    f.z + halfSizeW.y,
   );
-  let ftRadiusW = length(vec2<f32>(f.w, f.h)) * 0.5 + 2.0;
+  let ftRadiusW = length(halfSizeW) + 2.0;
   if (ftFrustumCulled(ftCenterW, ftRadiusW)) {
     out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
     out.vPositionW = ftCenterW;
@@ -370,13 +394,14 @@ fn mainVertex(
   out.vPositionW = worldPos;
 
   let toCamera = shaderSystem.cameraPosition - worldPos;
-  let dist = length(toCamera);
+  let distanceSquared = dot(toCamera, toCamera);
+  let distance = sqrt(distanceSquared);
 
   let infos = shaderUniforms.fogInfos;
 
   out.vFogFactor =
     clamp(
-      (infos.z - dist) * shaderUniforms.fogInvRange,
+      (infos.z - distance) * shaderUniforms.fogInvRange,
       0.0,
       1.0
     );
@@ -387,6 +412,8 @@ fn mainVertex(
   let atmosphereColor =
     ftAtmosphereColor(heightFactor);
 
+  let sun = shaderUniforms.sunLightIntensity;
+
   var baseFogColor =
     mix(
       shaderUniforms.fogColor,
@@ -395,11 +422,7 @@ fn mainVertex(
     );
 
   let nightAmount =
-    clamp(
-      1.0 - shaderUniforms.sunLightIntensity,
-      0.0,
-      1.0
-    );
+    clamp(1.0 - sun, 0.0, 1.0);
 
   baseFogColor =
     mix(
@@ -408,15 +431,18 @@ fn mainVertex(
       nightAmount
     );
 
+  let inverseDistance =
+    inverseSqrt(max(distanceSquared, 1e-8));
+
   let viewDirY =
-    toCamera.y / max(dist, 1e-4);
+    toCamera.y * inverseDistance;
 
   let skyboxColor =
     ftSkyboxColor(viewDirY, nightAmount);
 
   let skyBlend =
     clamp(
-      (dist - 7000.0) * 0.0003333,
+      (distance - 7000.0) * 0.0003333,
       0.0,
       1.0
     );

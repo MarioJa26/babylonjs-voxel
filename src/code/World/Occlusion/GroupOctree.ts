@@ -54,7 +54,7 @@ export interface OctreeGroupLike {
 
 /** Frustum hint delivered per visited group. Plain enum (not const enum) for isolatedModules safety. */
 export enum FrustumHint {
-	/** Some ancestor (or the leaf test) proved fully outside: caller may skip plane math. */
+	/** Some ancestor (or the leaf, which IS one group cell) proved fully outside: caller may skip plane math. */
 	OUTSIDE = 0,
 	/** Some ancestor proved fully inside: caller may skip plane math (still apply range gate). */
 	INSIDE = 1,
@@ -194,27 +194,6 @@ export function aabbInsidePlanes(
 		if (nx * qx + ny * qy + nz * qz + d < -margin) return false;
 	}
 	return true;
-}
-
-function eyeInsideBox(
-	minX: number,
-	minY: number,
-	minZ: number,
-	maxX: number,
-	maxY: number,
-	maxZ: number,
-	ex: number,
-	ey: number,
-	ez: number,
-): boolean {
-	return (
-		ex >= minX &&
-		ex <= maxX &&
-		ey >= minY &&
-		ey <= maxY &&
-		ez >= minZ &&
-		ez <= maxZ
-	);
 }
 
 // ---------------------------------------------------------------------------
@@ -424,15 +403,65 @@ const _travHints: FrustumHint[] = [];
 const _collectStack: OctreeNode[] = [];
 
 /**
+ * Emits every group below a subtree whose frustum state has already been
+ * decided. Uses the shared module-level stack and performs no allocations.
+ */
+function visitClassifiedSubtree(
+	root: OctreeNode,
+	hint: FrustumHint,
+	visit: (group: OctreeGroupLike, hint: FrustumHint) => void,
+): number {
+	let visited = 0;
+
+	_collectStack.length = 0;
+	_collectStack.push(root);
+
+	while (_collectStack.length > 0) {
+		const node = _collectStack.pop()!;
+
+		if (node.depth === OCTREE_MAX_DEPTH) {
+			const groups = node.groups;
+			const groupCount = groups.length;
+
+			visited += groupCount;
+
+			for (let i = 0; i < groupCount; i++) {
+				visit(groups[i], hint);
+			}
+
+			continue;
+		}
+
+		const children = node.children;
+
+		if (!children) {
+			continue;
+		}
+
+		for (let i = 0; i < 8; i++) {
+			const child = children[i];
+
+			if (child && child.subtreeCount > 0) {
+				_collectStack.push(child);
+			}
+		}
+	}
+
+	return visited;
+}
+
+/**
  * Hierarchical frustum traversal.
  *
  * Yields every stored group exactly once with a hint:
- * - OUTSIDE: an ancestor (or leaf) AABB proved fully outside — caller can
- *   hide without running plane math. Groups containing the eye never arrive
- *   with this hint (eye fail-open forces INTERSECT descent).
- * - INSIDE: an ancestor proved fully inside — caller can accept without plane
- *   math (range gate still applies).
- * - INTERSECT: caller must run its own per-group AABB test.
+ * - OUTSIDE: an ancestor or leaf AABB proved fully outside.
+ * - INSIDE: an ancestor or leaf AABB proved fully inside.
+ * - INTERSECT: the leaf straddles the frustum.
+ *
+ * A leaf is exactly one OCTREE_GROUP_EXTENT cell. Every group stored in that
+ * leaf therefore has the same AABB as the leaf, so no additional per-group
+ * plane classification is necessary. Groups containing the eye never arrive
+ * with OUTSIDE (eye fail-open forces INTERSECT descent).
  */
 export function traverseGroupOctree(
 	packedPlanes: Float32Array,
@@ -443,28 +472,39 @@ export function traverseGroupOctree(
 	visit: (group: OctreeGroupLike, hint: FrustumHint) => void,
 	stats?: OctreeTraverseStats | null,
 ): void {
-	let visited = 0;
-	let culledSub = 0;
-	let insideFast = 0;
+	let visitedGroups = 0;
+	let culledSubtrees = 0;
+	let insideFastPath = 0;
+
+	/*
+	 * Defensive reset in case a callback from an earlier traversal threw.
+	 * The stacks remain shared and allocation-free.
+	 */
+	_travNodes.length = 0;
+	_travHints.length = 0;
+	_collectStack.length = 0;
 
 	for (const root of _roots.values()) {
-		const rMaxX = root.minX + root.size;
-		const rMaxY = root.minY + root.size;
-		const rMaxZ = root.minZ + root.size;
+		if (root.subtreeCount === 0) {
+			continue;
+		}
+
+		const rootMaxX = root.minX + root.size;
+		const rootMaxY = root.minY + root.size;
+		const rootMaxZ = root.minZ + root.size;
 
 		let rootHint: FrustumHint;
+		/*
+		 * Fail open for the node containing the eye. The positive-vertex
+		 * outside test can otherwise reject the volume containing the camera.
+		 */
 		if (
-			eyeInsideBox(
-				root.minX,
-				root.minY,
-				root.minZ,
-				rMaxX,
-				rMaxY,
-				rMaxZ,
-				eyeX,
-				eyeY,
-				eyeZ,
-			)
+			eyeX >= root.minX &&
+			eyeX <= rootMaxX &&
+			eyeY >= root.minY &&
+			eyeY <= rootMaxY &&
+			eyeZ >= root.minZ &&
+			eyeZ <= rootMaxZ
 		) {
 			rootHint = FrustumHint.INTERSECT;
 		} else if (
@@ -472,42 +512,26 @@ export function traverseGroupOctree(
 				root.minX,
 				root.minY,
 				root.minZ,
-				rMaxX,
-				rMaxY,
-				rMaxZ,
+				rootMaxX,
+				rootMaxY,
+				rootMaxZ,
 				packedPlanes,
 				margin,
 			)
 		) {
-			culledSub++;
-			// Still must yield groups so the caller can hide them + keep HUD
-			// stats consistent — but with OUTSIDE hint (no plane math, and the
-			// caller may skip the BFS member scan for the bypass path).
-			_collectStack.length = 0;
-			_collectStack.push(root);
-			while (_collectStack.length > 0) {
-				const n = _collectStack.pop()!;
-				if (n.depth === OCTREE_MAX_DEPTH) {
-					for (let i = 0; i < n.groups.length; i++) {
-						visited++;
-						visit(n.groups[i], FrustumHint.OUTSIDE);
-					}
-				} else if (n.children) {
-					for (let s = 0; s < 8; s++) {
-						const c = n.children[s];
-						if (c && c.subtreeCount > 0) _collectStack.push(c);
-					}
-				}
-			}
+			culledSubtrees++;
+
+			visitedGroups += visitClassifiedSubtree(root, FrustumHint.OUTSIDE, visit);
+
 			continue;
 		} else if (
 			aabbInsidePlanes(
 				root.minX,
 				root.minY,
 				root.minZ,
-				rMaxX,
-				rMaxY,
-				rMaxZ,
+				rootMaxX,
+				rootMaxY,
+				rootMaxZ,
 				packedPlanes,
 				margin,
 			)
@@ -517,8 +541,6 @@ export function traverseGroupOctree(
 			rootHint = FrustumHint.INTERSECT;
 		}
 
-		_travNodes.length = 0;
-		_travHints.length = 0;
 		_travNodes.push(root);
 		_travHints.push(rootHint);
 
@@ -526,153 +548,129 @@ export function traverseGroupOctree(
 			const node = _travNodes.pop()!;
 			const hint = _travHints.pop()!;
 
+			/*
+			 * Leaves are exactly one group cell. All groups in this leaf,
+			 * including different LOD buckets, share the leaf AABB and
+			 * therefore share its already-computed classification.
+			 */
 			if (node.depth === OCTREE_MAX_DEPTH) {
-				for (let i = 0; i < node.groups.length; i++) {
-					const g = node.groups[i];
-					visited++;
-					if (hint === FrustumHint.INSIDE) {
-						insideFast++;
-						visit(g, FrustumHint.INSIDE);
-					} else if (hint === FrustumHint.OUTSIDE) {
-						// Ancestor proved outside and the eye is not inside
-						// this subtree (eye forces INTERSECT) — yield directly.
-						visit(g, FrustumHint.OUTSIDE);
-					} else {
-						// INTERSECT leaf: cheap per-group refine so the caller
-						// only pays plane math for genuinely straddling groups.
-						const gx0 = groupMinX(g.gridX);
-						const gy0 = groupMinY(g.gridY);
-						const gz0 = groupMinZ(g.gridZ);
-						const gx1 = gx0 + OCTREE_GROUP_EXTENT;
-						const gy1 = gy0 + OCTREE_GROUP_EXTENT;
-						const gz1 = gz0 + OCTREE_GROUP_EXTENT;
-						if (eyeInsideBox(gx0, gy0, gz0, gx1, gy1, gz1, eyeX, eyeY, eyeZ)) {
-							visit(g, FrustumHint.INTERSECT);
-						} else if (
-							aabbOutsidePlanes(
-								gx0,
-								gy0,
-								gz0,
-								gx1,
-								gy1,
-								gz1,
-								packedPlanes,
-								margin,
-							)
-						) {
-							visit(g, FrustumHint.OUTSIDE);
-						} else if (
-							aabbInsidePlanes(
-								gx0,
-								gy0,
-								gz0,
-								gx1,
-								gy1,
-								gz1,
-								packedPlanes,
-								margin,
-							)
-						) {
-							insideFast++;
-							visit(g, FrustumHint.INSIDE);
-						} else {
-							visit(g, FrustumHint.INTERSECT);
-						}
-					}
+				const groups = node.groups;
+				const groupCount = groups.length;
+
+				visitedGroups += groupCount;
+
+				if (hint === FrustumHint.INSIDE) {
+					insideFastPath += groupCount;
 				}
+
+				for (let i = 0; i < groupCount; i++) {
+					visit(groups[i], hint);
+				}
+
 				continue;
 			}
 
 			if (!node.children) continue;
 
-			if (hint === FrustumHint.INSIDE || hint === FrustumHint.OUTSIDE) {
-				// Whole subtree decided: collect groups without further plane
-				// tests (INSIDE = accept, OUTSIDE = hide).
-				_collectStack.length = 0;
-				for (let s = 0; s < 8; s++) {
-					const c = node.children[s];
-					if (c && c.subtreeCount > 0) _collectStack.push(c);
-				}
-				while (_collectStack.length > 0) {
-					const n = _collectStack.pop()!;
-					if (n.depth === OCTREE_MAX_DEPTH) {
-						for (let i = 0; i < n.groups.length; i++) {
-							visited++;
-							if (hint === FrustumHint.INSIDE) insideFast++;
-							visit(n.groups[i], hint);
-						}
-					} else if (n.children) {
-						for (let s = 0; s < 8; s++) {
-							const c = n.children[s];
-							if (c && c.subtreeCount > 0) _collectStack.push(c);
-						}
+			/*
+			 * Once an ancestor is fully inside or outside, skip all remaining
+			 * AABB tests and walk directly to its leaves.
+			 */
+			if (hint !== FrustumHint.INTERSECT) {
+				for (let i = 0; i < 8; i++) {
+					const child = node.children[i];
+
+					if (!child || child.subtreeCount === 0) {
+						continue;
+					}
+
+					const emitted = visitClassifiedSubtree(child, hint, visit);
+
+					visitedGroups += emitted;
+
+					if (hint === FrustumHint.INSIDE) {
+						insideFastPath += emitted;
 					}
 				}
+
 				continue;
 			}
 
-			// INTERSECT: classify children.
-			for (let s = 0; s < 8; s++) {
-				const c = node.children[s];
-				if (!c || c.subtreeCount === 0) continue;
-				const cMaxX = c.minX + c.size;
-				const cMaxY = c.minY + c.size;
-				const cMaxZ = c.minZ + c.size;
-				let ch: FrustumHint;
+			/*
+			 * The parent intersects the frustum, so classify each populated
+			 * child exactly once. A depth-3 child is already the final group
+			 * AABB and needs no later per-group refinement.
+			 */
+			for (let i = 0; i < 8; i++) {
+				const child = node.children[i];
+
+				if (!child || child.subtreeCount === 0) {
+					continue;
+				}
+
+				const childMaxX = child.minX + child.size;
+				const childMaxY = child.minY + child.size;
+				const childMaxZ = child.minZ + child.size;
+
+				let childHint: FrustumHint;
+
 				if (
-					eyeInsideBox(
-						c.minX,
-						c.minY,
-						c.minZ,
-						cMaxX,
-						cMaxY,
-						cMaxZ,
-						eyeX,
-						eyeY,
-						eyeZ,
-					)
+					eyeX >= child.minX &&
+					eyeX <= childMaxX &&
+					eyeY >= child.minY &&
+					eyeY <= childMaxY &&
+					eyeZ >= child.minZ &&
+					eyeZ <= childMaxZ
 				) {
-					ch = FrustumHint.INTERSECT;
+					childHint = FrustumHint.INTERSECT;
 				} else if (
 					aabbOutsidePlanes(
-						c.minX,
-						c.minY,
-						c.minZ,
-						cMaxX,
-						cMaxY,
-						cMaxZ,
+						child.minX,
+						child.minY,
+						child.minZ,
+						childMaxX,
+						childMaxY,
+						childMaxZ,
 						packedPlanes,
 						margin,
 					)
 				) {
-					// Push as OUTSIDE leaf-walk: children pushed with OUTSIDE
-					// hint hit the fast yield path below without re-testing.
-					ch = FrustumHint.OUTSIDE;
+					childHint = FrustumHint.OUTSIDE;
+					culledSubtrees++;
 				} else if (
 					aabbInsidePlanes(
-						c.minX,
-						c.minY,
-						c.minZ,
-						cMaxX,
-						cMaxY,
-						cMaxZ,
+						child.minX,
+						child.minY,
+						child.minZ,
+						childMaxX,
+						childMaxY,
+						childMaxZ,
 						packedPlanes,
 						margin,
 					)
 				) {
-					ch = FrustumHint.INSIDE;
+					childHint = FrustumHint.INSIDE;
 				} else {
-					ch = FrustumHint.INTERSECT;
+					childHint = FrustumHint.INTERSECT;
 				}
-				_travNodes.push(c);
-				_travHints.push(ch);
+
+				_travNodes.push(child);
+				_travHints.push(childHint);
 			}
 		}
 	}
 
+	/*
+	 * Leave shared stacks clean even if future changes inspect them outside
+	 * this function.
+	 */
+	_travNodes.length = 0;
+	_travHints.length = 0;
+	_collectStack.length = 0;
+
 	if (stats) {
-		stats.visitedGroups = visited;
-		stats.culledSubtrees = culledSub;
-		stats.insideFastPath = insideFast;
+		stats.visitedGroups = visitedGroups;
+		stats.culledSubtrees = culledSubtrees;
+		stats.insideFastPath = insideFastPath;
 	}
 }
