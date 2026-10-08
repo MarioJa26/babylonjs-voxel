@@ -165,14 +165,24 @@ const _opaqueFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
 const _waterFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
 const _cutoutFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
 
-function invalidateGroupBuildCache(group: MergedMeshGroup): void {
-	const arr = group.membersArray;
-	for (let i = 0, len = arr.length; i < len; i++) {
-		const m = arr[i];
-		m.lastBuiltOpaque = null;
-		m.lastBuiltWater = null;
-		m.lastBuiltCutout = null;
-	}
+/**
+ * Drop one member's cached "already memcpy'd into the layer buffer" flags.
+ *
+ * PERF: this used to loop over every member of the group. A group holds up to
+ * 64 chunks (4x4x4), so a single chunk changing LOD bucket — which happens on
+ * every LOD band crossing and therefore to a whole ring of chunks at once —
+ * nulled all 64 members' caches. The next rebuildGroupData then re-memcpy'd
+ * every member's face data and re-ran the per-face chunkMask OR pass for all
+ * of them instead of just the one that moved.
+ */
+function invalidateGroupMemberBuildCache(
+	group: MergedMeshGroup,
+	member: ChunkMemberData,
+): void {
+	member.lastBuiltOpaque = null;
+	member.lastBuiltWater = null;
+	member.lastBuiltCutout = null;
+	markGroupDirty(group);
 }
 
 // ---------------------------------------------------------------------------
@@ -876,8 +886,15 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 	members.length = writeIndex;
 	group.minLodLevel = minimumLod;
 
-	invalidateGroupBuildCache(group);
-	markGroupDirty(group);
+	// Only the departing member's slot release invalidated its cached copy.
+	// The surviving members keep their lastBuilt* flags, so the rebuild
+	// re-memcpy's only the three released slot ranges instead of every
+	// member's full face data.
+	if (member) {
+		invalidateGroupMemberBuildCache(group, member);
+	} else {
+		markGroupDirty(group);
+	}
 }
 function validateSettledSlotExtents(
 	group: MergedMeshGroup,

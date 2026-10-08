@@ -13,10 +13,12 @@ import MapFog from "@/code/Maps/MapFog";
 import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
 import { GLOBAL_VALUES } from "../../GLOBAL_VALUES";
 import {
+	createLod2CutoutMaterial,
 	createLod2OpaqueMaterial,
 	createLod2TransparentMaterial,
 } from "../../Light/Lod2ShaderLite";
 import {
+	createLod3CutoutMaterial,
 	createLod3OpaqueMaterial,
 	createLod3TransparentMaterial,
 } from "../../Light/Lod3ShaderLite";
@@ -61,10 +63,12 @@ let atlasMaterial: ShaderMaterial | null = null;
 let transparentMaterial: ShaderMaterial | null = null;
 let cutoutMaterial: ShaderMaterial | null = null;
 let lod3OpaqueMaterial: ShaderMaterial | null = null;
+let lod3CutoutMaterial: ShaderMaterial | null = null;
 let lod3TransparentMaterial: ShaderMaterial | null = null;
 let lod4OpaqueMaterial: ShaderMaterial | null = null;
 let lod4TransparentMaterial: ShaderMaterial | null = null;
 let lod2OpaqueMaterial: ShaderMaterial | null = null;
+let lod2CutoutMaterial: ShaderMaterial | null = null;
 let lod2TransparentMaterial: ShaderMaterial | null = null;
 
 let engineRef: EngineContext | null = null;
@@ -101,8 +105,10 @@ function populateMaterialList(): void {
 	if (transparentMaterial) materialList.push(transparentMaterial);
 	if (cutoutMaterial) materialList.push(cutoutMaterial);
 	if (lod2OpaqueMaterial) materialList.push(lod2OpaqueMaterial);
+	if (lod2CutoutMaterial) materialList.push(lod2CutoutMaterial);
 	if (lod2TransparentMaterial) materialList.push(lod2TransparentMaterial);
 	if (lod3OpaqueMaterial) materialList.push(lod3OpaqueMaterial);
+	if (lod3CutoutMaterial) materialList.push(lod3CutoutMaterial);
 	if (lod3TransparentMaterial) materialList.push(lod3TransparentMaterial);
 	if (lod4OpaqueMaterial) materialList.push(lod4OpaqueMaterial);
 	if (lod4TransparentMaterial) materialList.push(lod4TransparentMaterial);
@@ -145,18 +151,27 @@ function getTransparentMaterialForLodBucket(lod: number): ShaderMaterial {
 }
 
 /**
- * Cutout (alpha-test) bucket material per LOD. Near chunks use the cheap
- * dedicated cutout material; LOD2/LOD3/LOD4 reuse their existing transparent
- * materials (no water-only uniforms there, so both meshes look identical to
- * the old single transparent mesh).
+ * Cutout (alpha-test) bucket material per LOD.
+ *
+ * PERF: LOD2/LOD3 used to reuse their blended transparent materials here, so
+ * every distant leaf/glass face was alpha-blended, double-sided and
+ * depth-writing into the same (potentially multisampled) attachment as water.
+ * That costs a read-modify-write per fragment plus ~2x raster, on a bucket
+ * that only needs a threshold test. Both bands now get a dedicated
+ * alpha-tested material instead (lod2CutoutLite / lod3CutoutLite), matching
+ * what LOD0/LOD1 already did with `cutoutMaterial`.
+ *
+ * LOD4 keeps the transparent material: at lodStep 2/4 the reduced mesh makes
+ * the remaining cutout faces cheap enough that the extra material is not worth
+ * it, and it is already the thinnest band.
  */
 function getCutoutMaterialForLodBucket(lod: number): ShaderMaterial {
 	return lod >= 4
 		? lod4TransparentMaterial!
 		: lod >= 3
-			? lod3TransparentMaterial!
+			? lod3CutoutMaterial!
 			: lod >= 2
-				? lod2TransparentMaterial!
+				? lod2CutoutMaterial!
 				: cutoutMaterial!;
 }
 
@@ -377,6 +392,11 @@ export async function initAtlas(): Promise<void> {
 			diffuseTexture: diffuse,
 		});
 
+		lod2CutoutMaterial = createLod2CutoutMaterial({
+			...baseOpts,
+			diffuseTexture: transparentTexture,
+		});
+
 		lod2TransparentMaterial = createLod2TransparentMaterial({
 			...baseOpts,
 			diffuseTexture: transparentTexture,
@@ -385,6 +405,11 @@ export async function initAtlas(): Promise<void> {
 		lod3OpaqueMaterial = createLod3OpaqueMaterial({
 			...baseOpts,
 			diffuseTexture: diffuse,
+		});
+
+		lod3CutoutMaterial = createLod3CutoutMaterial({
+			...baseOpts,
+			diffuseTexture: transparentTexture,
 		});
 
 		lod3TransparentMaterial = createLod3TransparentMaterial({
@@ -789,10 +814,12 @@ export function disposeSharedResources(): void {
 	transparentMaterial = null;
 	cutoutMaterial = null;
 	lod3OpaqueMaterial = null;
+	lod3CutoutMaterial = null;
 	lod3TransparentMaterial = null;
 	lod4OpaqueMaterial = null;
 	lod4TransparentMaterial = null;
 	lod2OpaqueMaterial = null;
+	lod2CutoutMaterial = null;
 	lod2TransparentMaterial = null;
 
 	destroyPackedArenas();

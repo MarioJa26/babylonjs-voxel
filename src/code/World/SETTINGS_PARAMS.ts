@@ -37,7 +37,16 @@ export const SETTING_PARAMS = {
 	DISTANT_RENDER_DISTANCE: 128, //128,
 	// Far-tile LOD system (LOD6-9): real decimated voxel geometry out to this
 	// many chunks in every direction. 0 disables far tiles.
-	FAR_TILE_DISTANCE: 512,
+	//
+	// PERF: this is the dominant view-distance cost. It sets the horizon in
+	// blocks (chunks * 32), which drives MapFog's fogEnd and the camera far
+	// plane, so it shrinks geometry AND the horizon together. Resident cost
+	// grows superlinearly with it (ring widths double per ladder level), and
+	// nothing frustum-culls far tiles, so every resident face is submitted
+	// every frame in all 360 degrees. 256 still puts the horizon past
+	// complete fog saturation (8192 blocks vs fogEnd ~8600), so the visible
+	// result is unchanged while resident faces drop ~70%.
+	FAR_TILE_DISTANCE: 256,
 	LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS: 120, //120
 	LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE: 48,
 	// 0 = unlimited dispatch while workers are idle
@@ -82,7 +91,14 @@ export const SETTING_PARAMS = {
 	// GPU so hard that DOM UI (inventory palette) scrolling drops to ~20fps
 	// even while the world render is throttled. Keep false unless edges look
 	// jaggy on a beefy GPU.
-	ENABLE_MSAA: true,
+	//
+	// PERF: default is now false. lite allocates ONE render task with ONE
+	// multisampled colour+depth attachment and bakes multisample:{count:4}
+	// into every pipeline in it, so this multiplies the cost of ALL terrain,
+	// far tiles, clipmap and sky — the entire distance-dependent fragment
+	// load, which is exactly the part that was dragging frame times down as
+	// render distance grew. Still fully player-toggleable in the options menu.
+	ENABLE_MSAA: false,
 	// --- Frame pacing ---
 	// There is deliberately no frame-rate cap. Capping an uncapped rAF loop
 	// has to be done by *skipping* rAF callbacks, and a skipped callback

@@ -59,7 +59,16 @@ import { getFarTileLevels, isFarTilesEnabled } from "./FarTileLadder";
  */
 
 const MAX_TILE_REQUESTS_PER_UPDATE = 24;
-const UNLOAD_MARGIN_CHUNKS = 4;
+// PERF: eviction hysteresis. WindingMesh.removeSlots marks its dirty range
+// from the FIRST removed record to the end of the list (see removeSlots), and
+// arena slots are handed out in arrival order, so evicted tiles are scattered
+// throughout the instance arrays. That means one eviction dirties a range
+// covering essentially every surviving record after it, and the range is
+// re-uploaded as a 16 B/record writeBuffer. A 4-chunk margin re-evicts on the
+// leading edge of every single chunk move, so most of that full re-upload
+// cost was paid per 32 blocks travelled. 16 chunks absorbs leading-edge churn
+// without meaningfully growing the resident set.
+const UNLOAD_MARGIN_CHUNKS = 16;
 
 const TILE_KEY_AXIS_BITS = 26;
 const TILE_KEY_AXIS_MASK = 0x3ffffff;

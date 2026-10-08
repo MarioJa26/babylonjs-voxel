@@ -32,7 +32,14 @@ const BASE_CHUNK_SIZE = 32;
  *   LOD6:  2x2-chunk tiles,  step 8,  ring +34  -> reach  55 chunks
  *   LOD7:  4x4-chunk tiles,  step 16, ring +66  -> reach 121 chunks
  *   LOD8:  8x8-chunk tiles,  step 32, ring +130 -> reach 251 chunks
- *   LOD9: 16x16-chunk tiles, step 32, ring +261 -> reach 512 chunks
+ *   LOD9: 16x16-chunk tiles, step 64, ring +261 -> reach 512 chunks
+ *
+ * PERF: the outermost ring's voxel step must keep doubling with the ring
+ * width, otherwise cells-per-tile grows with tile size and the horizon
+ * dominates the frame. A 16-chunk tile at step 64 is still an 8x8 lattice,
+ * so LOD9 stays the same 64 cells as every other ring — it covers 4x the
+ * arc with the same per-tile work. At step 32 it was 16x16 = 256 cells and
+ * accounted for ~72% of all resident far-tile faces.
  */
 function buildLadder(farDistance: number): FarTileLevelDef[] {
 	if (farDistance <= 0) return [];
@@ -53,7 +60,7 @@ function buildLadder(farDistance: number): FarTileLevelDef[] {
 		{ size: 2, step: 8 },
 		{ size: 4, step: 16 },
 		{ size: 8, step: 32 },
-		{ size: 16, step: 32 },
+		{ size: 16, step: 64 },
 	];
 
 	for (let i = 0; i < ladders.length; i++) {

@@ -345,6 +345,17 @@ export class ChunkStreamingController {
 	 *  scans every move — see enqueueLoadedChunksForRefresh). */
 	private static readonly OUTER_SCAN_INTERVAL = 4;
 
+	/**
+	 * Wall-clock ceiling for one frame's loaded-refresh drain.
+	 *
+	 * Matches the mesh-ingest budget in ChunkWorkerPool (MESH_INGEST_BUDGET_MS)
+	 * so neither half of the per-frame LOD reconciliation can dominate a frame
+	 * on its own. The count cap (CHUNK_LOAD_BATCH_LIMIT) still applies; this is
+	 * the additional bound that keeps a batch of synchronous mesh applications
+	 * from turning into an arbitrarily long frame.
+	 */
+	private static readonly LOADED_REFRESH_FRAME_BUDGET_MS = 3.5;
+
 	private streamRevision = 0;
 
 	/** Phase-0 instrumentation: per-stage ms of the last updateChunksAround. */
@@ -962,8 +973,27 @@ export class ChunkStreamingController {
 		frameInCaveCache = caveState;
 		let processed = 0;
 
+		// PERF: this drain runs every frame and, for each queued chunk, may take
+		// a synchronous main-thread path — most expensively
+		// tryApplyCachedLodTransitionMesh -> createMeshFromData, which rekeys
+		// the chunk's merged group and dirties it. A pure count cap therefore
+		// allowed one frame to pay for up to maxChunks full mesh applications
+		// with no upper bound on wall-clock. Bounding by BOTH count and elapsed
+		// time keeps the worst-case frame contribution inside the same budget the
+		// mesh drain already uses. `processed !== 0` keeps a minimum of one chunk
+		// per frame so the queue can never stall on budget alone.
+		const startMs = performance.now();
+		const budgetMs = ChunkStreamingController.LOADED_REFRESH_FRAME_BUDGET_MS;
+
 		try {
 			while (processed < maxChunks) {
+				if (
+					processed !== 0 &&
+					performance.now() - startMs >= budgetMs
+				) {
+					break;
+				}
+
 				const chunk = this.dequeueLoadedRefreshChunk();
 				if (chunk === undefined) break;
 

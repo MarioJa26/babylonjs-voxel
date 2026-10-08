@@ -511,7 +511,12 @@ export class ChunkWorkerPool {
 			this.taskHeap.length > 0 ||
 			this.lodPrecomputeQueueReadIdx < this.lodPrecomputeQueue.length ||
 			this.relightQueueReadIdx < this.relightQueue.length ||
-			this.distantTerrainTaskQueueReadIdx < this.distantTerrainTaskQueue.length
+			this.distantTerrainTaskQueueReadIdx < this.distantTerrainTaskQueue.length ||
+			// Far tiles were missing here, so a far-tile result landing as the
+			// only pending work never re-entered the immediate result-driven pump
+			// and had to wait for the next central tick — adding a full tick of
+			// latency to every far-tile refill.
+			this.farTileQueueReadIdx < this.farTileQueue.length
 		);
 	}
 
@@ -3640,6 +3645,25 @@ export class ChunkWorkerPool {
 
 		this.lastPrecomputeScheduleTs = now;
 
+		// PERF: the scan below is a full-radius chunk sweep followed by a full
+		// sort of every candidate — and the per-update enqueue cap is applied
+		// only AFTER that sort, so the cap bounded the queue but never the cost
+		// of producing it. When the queue already holds enough outstanding work
+		// to keep every worker busy for several cycles, rescanning and resorting
+		// buys nothing, so skip it entirely. This is what makes the precompute
+		// cost proportional to how much work there is to do rather than to a
+		// fixed 120 ms tick.
+		const maxEnqueue = Math.max(
+			1,
+			SETTING_PARAMS.LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE | 0,
+		);
+		const queuedPrecompute =
+			this.lodPrecomputeQueue.length - this.lodPrecomputeQueueReadIdx;
+
+		if (queuedPrecompute >= maxEnqueue * 2) {
+			return;
+		}
+
 		const horizontalRadius =
 			SETTING_PARAMS.RENDER_DISTANCE +
 			SETTING_PARAMS.LOD_PRECOMPUTE_HORIZONTAL_OFFSET;
@@ -3713,11 +3737,6 @@ export class ChunkWorkerPool {
 
 		candidateIndices.length = candidateCount;
 		candidateIndices.sort(compareLodCandidateScores);
-
-		const maxEnqueue = Math.max(
-			1,
-			SETTING_PARAMS.LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE | 0,
-		);
 
 		let added = 0;
 

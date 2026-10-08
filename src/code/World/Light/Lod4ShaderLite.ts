@@ -59,25 +59,27 @@ struct VSOut {
   @location(15) @interpolate(flat) vShade : vec3<f32>,
 };
 
+// PERF: no \`discard\` in this opaque shader, on purpose. See the note in
+// Lod2ShaderLite: a discard anywhere in a fragment shader disables early
+// depth testing for the whole pass, and the alpha guard here is unreachable
+// in practice — this bucket only ever receives faces emitted for solid blocks,
+// whose atlas tiles are opaque, and the shader forces alpha to 1.0 on write.
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 let diffuseColor = textureSampleLevel(
-diffuseTexture,
-diffuseTextureSampler,
-fract(in.vUV),
-in.vTileLayer,
-4.0
+  diffuseTexture,
+  diffuseTextureSampler,
+  fract(in.vUV),
+  in.vTileLayer,
+  4.0
 );
-if (diffuseColor.a < 0.01) {
-discard;
-}
 let litColor =
-diffuseColor.rgb *
-in.vShade *
-tintLUT[in.vTint].rgb;
+  diffuseColor.rgb *
+  in.vShade *
+  tintLUT[in.vTint].rgb;
 return vec4<f32>(
-mix(litColor, in.vFogColor, in.vFogFactor),
-1.0
+  mix(litColor, in.vFogColor, in.vFogFactor),
+  1.0
 );
 }
 `;
