@@ -69,7 +69,6 @@ struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
   @location(1) @interpolate(flat) vTileLayer : u32,
-  @location(9) @interpolate(flat) vMeta : u32,
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
   @location(12) @interpolate(flat) vTint : u32,
@@ -223,10 +222,22 @@ const LOD3_OPAQUE_VERTEX_OPTIONS: Lod3VertexOptions = {
 	bakeShade: true,
 };
 
+const LOD3_CUTOUT_VERTEX_OPTIONS: Lod3VertexOptions = {
+	tangent: false,
+	worldPosition: false,
+	// The cutout fragment shader never reads vMeta.
+	meta: false,
+	tint: true,
+	fog: true,
+	viewDir: false,
+	ao: false,
+	bakeShade: true,
+};
+
 const LOD3_TRANSPARENT_VERTEX_OPTIONS: Lod3VertexOptions = {
 	tangent: false,
 	worldPosition: false,
-	// if this bucket is truly water-only:
+	// Transparent faces inspect the water bit in vMeta.
 	meta: true,
 	tint: true,
 	fog: true,
@@ -236,6 +247,18 @@ const LOD3_TRANSPARENT_VERTEX_OPTIONS: Lod3VertexOptions = {
 	boundarySentinel: false,
 };
 
+interface Lod3MaterialRenderOptions {
+	backFaceCulling: boolean;
+	needAlphaBlending?: boolean;
+	blendMode?: "alpha";
+	depthWrite?: boolean;
+}
+
+interface StorageBufferDeclaration {
+	name: string;
+	type: string;
+}
+
 function createLod3Material(
 	name: string,
 	opts: Lod3MaterialOptions,
@@ -243,18 +266,47 @@ function createLod3Material(
 	fragmentSource: string,
 	texture: Lod3MaterialOptions["diffuseTexture"],
 	lutLabel: string,
-	extra: {
-		backFaceCulling: boolean;
-		needAlphaBlending?: boolean;
-		blendMode?: "alpha";
-		depthWrite?: boolean;
-	},
+	renderOptions: Lod3MaterialRenderOptions,
 ): ShaderMaterial {
-	const arenaCount = Math.max(1, opts.faceArenaCount | 0);
-	const faceStorageBuffers = [];
+	/*
+	 * Clamp invalid arena counts to one. Math.trunc avoids the signed 32-bit
+	 * wrap performed by "| 0" for unexpectedly large values.
+	 */
+	const requestedArenaCount = Number.isFinite(opts.faceArenaCount)
+		? Math.trunc(opts.faceArenaCount)
+		: 1;
+
+	const arenaCount = requestedArenaCount > 0 ? requestedArenaCount : 1;
+
+	/*
+	 * Allocate the complete declaration array once instead of creating a
+	 * growable faceStorageBuffers array and then spreading it into another
+	 * array.
+	 *
+	 * Layout:
+	 * 0 tintLUT
+	 * 1..arenaCount faceDataN
+	 * arenaCount + 1 chunkOffsets
+	 */
+	const storageBuffers: StorageBufferDeclaration[] = new Array(arenaCount + 2);
+
+	storageBuffers[0] = {
+		name: "tintLUT",
+		type: "array<vec4<f32>, 6>",
+	};
+
 	for (let i = 0; i < arenaCount; i++) {
-		faceStorageBuffers.push({ name: `faceData${i}`, type: "array<u32>" });
+		storageBuffers[i + 1] = {
+			name: `faceData${i}`,
+			type: "array<u32>",
+		};
 	}
+
+	storageBuffers[arenaCount + 1] = {
+		name: "chunkOffsets",
+		type: "array<vec4<f32>>",
+	};
+
 	const material = createShaderMaterial({
 		name,
 		vertexSource: buildPackedVertexWGSL(arenaCount, vertexOptions),
@@ -277,15 +329,11 @@ function createLod3Material(
 			{ name: "fogColor", type: "vec3<f32>" },
 		],
 		samplers: [{ name: "diffuseTexture", viewDimension: "2d-array" }],
-		storageBuffers: [
-			{ name: "tintLUT", type: "array<vec4<f32>, 6>" },
-			...faceStorageBuffers,
-			{ name: "chunkOffsets", type: "array<vec4<f32>>" },
-		],
-		backFaceCulling: extra.backFaceCulling,
-		needAlphaBlending: extra.needAlphaBlending,
-		blendMode: extra.blendMode,
-		depthWrite: extra.depthWrite,
+		storageBuffers,
+		backFaceCulling: renderOptions.backFaceCulling,
+		needAlphaBlending: renderOptions.needAlphaBlending,
+		blendMode: renderOptions.blendMode,
+		depthWrite: renderOptions.depthWrite,
 	});
 
 	registerPackedMaterial(material);
@@ -301,11 +349,11 @@ function createLod3Material(
 	setShaderUniform(material, "fogInfos", [0, 0, 1000, 0]);
 	setShaderUniform(material, "fogColor", [0.6, 0.7, 0.9]);
 	setShaderUniform(material, "lightDirection", [0, 1, 0]);
-	setShaderStorageBuffer(
-		material,
-		"tintLUT",
-		createStorageBuffer(opts.engine, opts.tintLUT, lutLabel),
-	);
+
+	const tintBuffer = createStorageBuffer(opts.engine, opts.tintLUT, lutLabel);
+
+	setShaderStorageBuffer(material, "tintLUT", tintBuffer);
+
 	return material;
 }
 
@@ -330,7 +378,7 @@ export function createLod3CutoutMaterial(
 	return createLod3Material(
 		"lod3CutoutLite",
 		opts,
-		LOD3_TRANSPARENT_VERTEX_OPTIONS,
+		LOD3_CUTOUT_VERTEX_OPTIONS,
 		lod3CutoutFragmentWGSL,
 		opts.cutoutTexture ?? opts.diffuseTexture,
 		"lod3-cutout-tintLUT",
