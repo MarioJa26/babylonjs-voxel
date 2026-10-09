@@ -522,21 +522,56 @@ function pushDirtyRange(
 	_statDirtyFacesFlush += count;
 
 	const gap = DIRTY_RANGE_MERGE_GAP_FACES;
-	let mergedStart = start;
-	let mergedEnd = start + count;
+	const end = start + count;
+	const length = ranges.length;
+
+	if (length === 0) {
+		ranges.push(acquireRange(start, count));
+		return;
+	}
 
 	/*
-	 * Find the first existing range whose end is close enough to the new
-	 * range's start. The ranges array remains sorted and fully coalesced.
+	 * Fast path for the common rebuild order.
+	 *
+	 * Member slots are normally visited in ascending offset order. In that
+	 * case the new range can only interact with the final existing range:
+	 *
+	 * 1. Merge with the final range when overlapping or close enough.
+	 * 2. Append directly when separated by more than `gap`.
+	 *
+	 * This avoids a binary search and splice for nearly every normal member
+	 * update.
+	 */
+	const tail = ranges[length - 1];
+	const tailEnd = tail.start + tail.count;
+
+	if (start >= tail.start) {
+		if (start <= tailEnd + gap) {
+			if (end > tailEnd) {
+				tail.count = end - tail.start;
+			}
+
+			return;
+		}
+
+		ranges.push(acquireRange(start, count));
+		return;
+	}
+
+	/*
+	 * Out-of-order fallback.
+	 *
+	 * Find the first range whose end, including the permitted merge gap, can
+	 * reach the new range. The array remains sorted and fully coalesced.
 	 */
 	let lo = 0;
-	let hi = ranges.length;
+	let hi = length;
 
 	while (lo < hi) {
 		const mid = (lo + hi) >>> 1;
 		const range = ranges[mid];
 
-		if (range.start + range.count + gap < mergedStart) {
+		if (range.start + range.count + gap < start) {
 			lo = mid + 1;
 		} else {
 			hi = mid;
@@ -544,15 +579,27 @@ function pushDirtyRange(
 	}
 
 	const first = lo;
+
+	/*
+	 * No preceding range can merge with the new range. If the next range is
+	 * also too far away, insert the new range directly.
+	 */
+	if (first === length || ranges[first].start > end + gap) {
+		ranges.splice(first, 0, acquireRange(start, count));
+		return;
+	}
+
+	let mergedStart = start;
+	let mergedEnd = end;
 	let last = first;
 
 	/*
-	 * Merge all overlapping or nearby ranges. Updating mergedEnd during the
-	 * scan also handles transitive merging:
+	 * Absorb every overlapping or nearby range. Updating mergedEnd during the
+	 * scan preserves transitive merging:
 	 *
 	 * new range -> existing A -> existing B
 	 */
-	while (last < ranges.length) {
+	while (last < length) {
 		const range = ranges[last];
 		const rangeStart = range.start;
 
@@ -573,14 +620,8 @@ function pushDirtyRange(
 		last++;
 	}
 
-	if (last === first) {
-		ranges.splice(first, 0, acquireRange(mergedStart, mergedEnd - mergedStart));
-		return;
-	}
-
 	/*
-	 * Reuse the first absorbed range so a merge does not allocate another
-	 * range object.
+	 * Reuse the first absorbed range rather than allocating a replacement.
 	 */
 	const mergedRange = ranges[first];
 	mergedRange.start = mergedStart;

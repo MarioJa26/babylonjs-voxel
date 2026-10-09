@@ -1,20 +1,3 @@
-/**
- * MobLighting: voxel light sampling for thin-instanced mobs.
- *
- * Mirrors DroppedItem lighting:
- * getLightByWorldCoords -> packedLightToLightColor -> instance color
- *
- * Tunables:
- *   SETTING_PARAMS.MOB_LIGHT_UPDATES_PER_FRAME (0 = all)
- *   SETTING_PARAMS.MOB_LIGHT_UPDATE_HZ (0 = every frame)
- *
- * Entries are stored in a circular doubly linked list:
- *   - O(1) registration
- *   - O(1) unregistration
- *   - O(1) base-color lookup
- *   - fair round-robin traversal without array compaction
- */
-
 import type { Vec3 } from "@babylonjs/lite";
 import { onBeforeRender } from "@babylonjs/lite";
 
@@ -56,17 +39,10 @@ type Entry = {
 	baseG: number;
 	baseB: number;
 
-	/**
-	 * Last computed voxel-light multiplier (0-1 RGB), copied out of the
-	 * packedLightToLightColor scratch tuple. Stored separately from the
-	 * base color so stuck projectiles can reuse the host mob's light
-	 * without a second voxel query: arrowTint = arrowBase * cachedLight.
-	 */
 	lightR: number;
 	lightG: number;
 	lightB: number;
 
-	/** Optional owner (local Mob instance or remote mob entry) for O(1) lookup. */
 	owner: object | null;
 
 	lastLX: number;
@@ -74,22 +50,14 @@ type Entry = {
 	lastLZ: number;
 	lastSampleMs: number;
 
-	/**
-	 * Entries remain self-linked after removal. Membership is determined by
-	 * entriesBySlot, not by inspecting these links.
-	 */
 	next: Entry;
 	prev: Entry;
 };
 
 const entriesBySlot = new Map<InstanceSlotHandle, Entry>();
-
-/** Owner (Mob instance / remote mob entry) -> lighting entry. Weak so mob disposal GCs. */
 const entriesByOwner = new WeakMap<object, Entry>();
 
 let entryCount = 0;
-
-/** Next entry to process in the circular list. */
 let cursor: Entry | null = null;
 
 let lastTickMs = Number.NEGATIVE_INFINITY;
@@ -107,12 +75,6 @@ function ensureObserver(): void {
 	});
 }
 
-/**
- * Reads a BaseColor without allocating a temporary tuple.
- *
- * Array.isArray does not narrow readonly tuples reliably in all TypeScript
- * configurations, so the object branch is narrowed explicitly.
- */
 function assignBaseColor(entry: Entry, color: BaseColor): void {
 	if (Array.isArray(color)) {
 		entry.baseR = color[0];
@@ -145,7 +107,45 @@ function baseColorEquals(entry: Entry, color: BaseColor): boolean {
 }
 
 /**
- * Sample and write an entry's lighting.
+ * Writes the entry's current base color multiplied by its cached light.
+ * This performs no voxel query and allocates nothing.
+ */
+function writeCachedColor(entry: Entry): void {
+	entry.pool.writeLitColor(
+		entry.slot,
+		entry.baseR * entry.lightR,
+		entry.baseG * entry.lightG,
+		entry.baseB * entry.lightB,
+	);
+}
+
+/**
+ * Samples voxel lighting at an already-resolved position and writes it.
+ */
+function sampleAndWrite(
+	entry: Entry,
+	sampleX: number,
+	sampleY: number,
+	sampleZ: number,
+	now: number,
+): void {
+	const packedLight = getLightByWorldCoords(sampleX, sampleY, sampleZ);
+	const lightColor = packedLightToLightColor(packedLight);
+
+	entry.lightR = lightColor[0];
+	entry.lightG = lightColor[1];
+	entry.lightB = lightColor[2];
+
+	writeCachedColor(entry);
+
+	entry.lastLX = Math.floor(sampleX);
+	entry.lastLY = Math.floor(sampleY);
+	entry.lastLZ = Math.floor(sampleZ);
+	entry.lastSampleMs = now;
+}
+
+/**
+ * Samples and writes an entry's lighting.
  *
  * Returns true when a light sample was performed and false when the cached
  * voxel remains valid.
@@ -171,24 +171,7 @@ function refreshEntry(entry: Entry, now: number, force: boolean): boolean {
 		return false;
 	}
 
-	const packedLight = getLightByWorldCoords(sampleX, sampleY, sampleZ);
-	const lightColor = packedLightToLightColor(packedLight);
-
-	entry.lightR = lightColor[0];
-	entry.lightG = lightColor[1];
-	entry.lightB = lightColor[2];
-
-	entry.pool.writeLitColor(
-		entry.slot,
-		entry.baseR * lightColor[0],
-		entry.baseG * lightColor[1],
-		entry.baseB * lightColor[2],
-	);
-
-	entry.lastLX = lx;
-	entry.lastLY = ly;
-	entry.lastLZ = lz;
-	entry.lastSampleMs = now;
+	sampleAndWrite(entry, sampleX, sampleY, sampleZ, now);
 
 	return true;
 }
@@ -213,11 +196,11 @@ function tick(now: number): void {
 			: Math.min(configuredBudget, entryCount);
 
 	for (let processed = 0; processed < budget; processed++) {
-		const entry: any = cursor;
+		const entry: Entry = cursor;
 
 		/*
-		 * Advance before invoking external code. If writeLitColor indirectly
-		 * unregisters this entry, cursor already points at another entry.
+		 * Advance before invoking external code. If writeLitColor removes
+		 * the current entry, traversal can continue from the next one.
 		 */
 		cursor = entry.next;
 
@@ -241,10 +224,6 @@ function appendEntry(entry: Entry): void {
 		return;
 	}
 
-	/*
-	 * Append immediately before cursor. Cursor remains the next entry to
-	 * process, while the new entry is placed at the end of the current cycle.
-	 */
 	const tail = currentCursor.prev;
 
 	entry.prev = tail;
@@ -271,10 +250,6 @@ function removeEntry(entry: Entry): void {
 		entryCount--;
 	}
 
-	/*
-	 * Break references to the remaining list. Self-linking also makes an
-	 * accidentally reused removed entry easier to identify while debugging.
-	 */
 	entry.next = entry;
 	entry.prev = entry;
 }
@@ -284,21 +259,19 @@ export function registerMobLight(registration: {
 	slot: InstanceSlotHandle;
 	getPos: () => MobPosition;
 	baseColor: BaseColor;
-	/**
-	 * Optional owner for O(1) reverse lookup (local Mob instance or remote
-	 * mob entry). Lets stuck projectiles reuse this entry's cached light
-	 * without a second voxel query.
-	 */
 	owner?: object | null;
 }): void {
 	ensureObserver();
 
 	const existing = entriesBySlot.get(registration.slot);
+	const newOwner = registration.owner ?? null;
 
 	if (existing !== undefined) {
-		const newOwner = registration.owner ?? null;
-
-		if (existing.owner !== null && existing.owner !== newOwner) {
+		if (
+			existing.owner !== null &&
+			existing.owner !== newOwner &&
+			entriesByOwner.get(existing.owner) === existing
+		) {
 			entriesByOwner.delete(existing.owner);
 		}
 
@@ -311,7 +284,6 @@ export function registerMobLight(registration: {
 		}
 
 		assignBaseColor(existing, registration.baseColor);
-
 		refreshEntry(existing, performance.now(), true);
 		return;
 	}
@@ -323,60 +295,40 @@ export function registerMobLight(registration: {
 	const sampleY = pos.y + LIGHT_Y_OFFSET;
 	const sampleZ = pos.z;
 
-	/*
-	 * Construct first, then self-link. This avoids null placeholders and
-	 * unsafe casts while preserving the circular-list invariant.
-	 */
-	const lightingEntry = {
-		pool: registration.pool,
-		slot: registration.slot,
-		getPos: registration.getPos,
+	const entry = {} as Entry;
 
-		baseR: 0,
-		baseG: 0,
-		baseB: 0,
+	entry.pool = registration.pool;
+	entry.slot = registration.slot;
+	entry.getPos = registration.getPos;
 
-		lightR: 1,
-		lightG: 1,
-		lightB: 1,
+	entry.baseR = 0;
+	entry.baseG = 0;
+	entry.baseB = 0;
 
-		owner: registration.owner ?? null,
+	entry.lightR = 1;
+	entry.lightG = 1;
+	entry.lightB = 1;
 
-		lastLX: Math.floor(sampleX),
-		lastLY: Math.floor(sampleY),
-		lastLZ: Math.floor(sampleZ),
-		lastSampleMs: now,
+	entry.owner = newOwner;
 
-		next: undefined as unknown as Entry,
-		prev: undefined as unknown as Entry,
-	};
+	entry.lastLX = Math.floor(sampleX);
+	entry.lastLY = Math.floor(sampleY);
+	entry.lastLZ = Math.floor(sampleZ);
+	entry.lastSampleMs = now;
 
-	lightingEntry.next = lightingEntry;
-	lightingEntry.prev = lightingEntry;
+	entry.next = entry;
+	entry.prev = entry;
 
-	assignBaseColor(lightingEntry, registration.baseColor);
+	assignBaseColor(entry, registration.baseColor);
+	sampleAndWrite(entry, sampleX, sampleY, sampleZ, now);
 
-	const packedLight = getLightByWorldCoords(sampleX, sampleY, sampleZ);
-	const lightColor = packedLightToLightColor(packedLight);
+	entriesBySlot.set(registration.slot, entry);
 
-	lightingEntry.lightR = lightColor[0];
-	lightingEntry.lightG = lightColor[1];
-	lightingEntry.lightB = lightColor[2];
-
-	registration.pool.writeLitColor(
-		registration.slot,
-		lightingEntry.baseR * lightColor[0],
-		lightingEntry.baseG * lightColor[1],
-		lightingEntry.baseB * lightColor[2],
-	);
-
-	entriesBySlot.set(registration.slot, lightingEntry);
-
-	if (lightingEntry.owner !== null) {
-		entriesByOwner.set(lightingEntry.owner, lightingEntry);
+	if (newOwner !== null) {
+		entriesByOwner.set(newOwner, entry);
 	}
 
-	appendEntry(lightingEntry);
+	appendEntry(entry);
 }
 
 export function unregisterMobLight(slot: InstanceSlotHandle): void {
@@ -389,11 +341,6 @@ export function unregisterMobLight(slot: InstanceSlotHandle): void {
 	entriesBySlot.delete(slot);
 
 	if (entry.owner !== null) {
-		/*
-		 * Only delete when the map still points at this entry. A slot handle
-		 * is never reused across owners, but the guard keeps re-registration
-		 * races from dropping a newer entry's mapping.
-		 */
 		if (entriesByOwner.get(entry.owner) === entry) {
 			entriesByOwner.delete(entry.owner);
 		}
@@ -404,14 +351,6 @@ export function unregisterMobLight(slot: InstanceSlotHandle): void {
 	removeEntry(entry);
 }
 
-/**
- * Cached voxel-light multiplier (0-1 RGB) for an owner passed as
- * `owner` to registerMobLight. Returns null when the owner has no live
- * lighting entry. The caller multiplies its own base color by this value.
- *
- * PERF: optional `out` scratch avoids the per-call `[r,g,b]` tuple alloc
- * on hot paths (e.g. Arrow per-frame host-light queries).
- */
 export function getCachedLightColorForOwner(
 	owner: object,
 	out?: [number, number, number],
@@ -422,19 +361,16 @@ export function getCachedLightColorForOwner(
 		return null;
 	}
 
-	if (out) {
+	if (out !== undefined) {
 		out[0] = entry.lightR;
 		out[1] = entry.lightG;
 		out[2] = entry.lightB;
 		return out;
 	}
+
 	return [entry.lightR, entry.lightG, entry.lightB];
 }
 
-/**
- * Cached voxel-light multiplier (0-1 RGB) for a lighting slot.
- * Returns null when the slot has no live lighting entry.
- */
 export function getCachedLightColor(
 	slot: InstanceSlotHandle,
 	out?: [number, number, number],
@@ -445,12 +381,13 @@ export function getCachedLightColor(
 		return null;
 	}
 
-	if (out) {
+	if (out !== undefined) {
 		out[0] = entry.lightR;
 		out[1] = entry.lightG;
 		out[2] = entry.lightB;
 		return out;
 	}
+
 	return [entry.lightR, entry.lightG, entry.lightB];
 }
 
@@ -467,49 +404,36 @@ export function updateMobBaseColor(
 	assignBaseColor(entry, newBase);
 
 	/*
-	 * Apply gameplay-driven color changes immediately instead of waiting for
-	 * the configured lighting tick.
+	 * Preserve the original behavior by taking a fresh voxel sample instead
+	 * of applying only the cached multiplier.
 	 */
 	refreshEntry(entry, performance.now(), true);
 }
 
-/** Force an immediate refresh of every currently registered mob. */
 export function forceRefreshAll(): void {
 	const initialCount = entryCount;
+	let entry = cursor;
 
-	if (initialCount === 0 || cursor === null) {
+	if (initialCount === 0 || entry === null) {
 		lastTickMs = Number.NEGATIVE_INFINITY;
 		return;
 	}
 
-	/*
-	 * Use a bounded count rather than a sentinel entry. A sentinel can become
-	 * invalid if refreshEntry indirectly unregisters the starting entry.
-	 * Newly registered entries are intentionally left for the next normal
-	 * tick, matching snapshot-style traversal.
-	 */
-	let remaining = initialCount;
-	let entry: Entry | null = cursor;
 	const now = performance.now();
+	let remaining = initialCount;
 
 	while (remaining > 0 && entry !== null && entryCount > 0) {
-		const next: Entry = entry.next;
+		const current: Entry = entry;
+		const next: Entry = current.next;
 
-		/*
-		 * The map check prevents refreshing an entry that was removed by an
-		 * earlier callback during this traversal.
-		 */
-		if (entriesBySlot.get(entry.slot) === entry) {
-			refreshEntry(entry, now, true);
+		if (entriesBySlot.get(current.slot) === current) {
+			refreshEntry(current, now, true);
 		}
 
 		entry = entryCount > 0 ? next : null;
 		remaining--;
 	}
 
-	/*
-	 * A forced refresh must not throttle the next scheduled lighting tick.
-	 */
 	lastTickMs = Number.NEGATIVE_INFINITY;
 }
 

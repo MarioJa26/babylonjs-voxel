@@ -88,6 +88,46 @@ function createEmptyTransferables(): Transferable[] {
 	return [];
 }
 
+/**
+ * Appends an ArrayBuffer-backed view to a preallocated transfer list.
+ *
+ * SharedArrayBuffers are cloneable but not transferable, so they return early.
+ * Duplicate ArrayBuffers are skipped because including the same buffer more
+ * than once in a postMessage transfer list can throw DataCloneError.
+ *
+ * `ArrayBufferView["buffer"]` is `ArrayBufferLike`, i.e. exactly
+ * `ArrayBuffer | SharedArrayBuffer`. Once SharedArrayBuffer is excluded there
+ * is no third case, so no further narrowing is needed at runtime.
+ */
+function appendUniqueTransferable(
+	transferables: Transferable[],
+	count: number,
+	view: ArrayBufferView | null | undefined,
+): number {
+	if (view == null) return count;
+
+	const buffer = view.buffer;
+
+	if (
+		typeof SharedArrayBuffer !== "undefined" &&
+		buffer instanceof SharedArrayBuffer
+	) {
+		return count;
+	}
+
+	// Transfer lists must not contain the same ArrayBuffer more than once.
+	// The list has at most four entries, so a small linear scan is cheaper
+	// than allocating a Set for every generated chunk.
+	for (let i = 0; i < count; i++) {
+		if (transferables[i] === buffer) {
+			return count;
+		}
+	}
+
+	transferables[count] = buffer;
+	return count + 1;
+}
+
 export function handleGenerateTerrain(
 	request: GenerateTerrainRequest,
 	deps: TerrainHandlerDependencies,
@@ -121,50 +161,27 @@ export function handleGenerateTerrain(
 		palette,
 	};
 
-	/*
-	 * At most four buffers can be transferred:
-	 * packed blocks, lighting, palette, and the optional light seed queue.
-	 *
-	 * Pre-sizing avoids backing-store growth as items are appended. The final
-	 * length is trimmed before returning.
-	 */
+	// Maximum possible entries:
+	// packed blocks, light data, palette, and light-seed queue.
 	const transferables = new Array<Transferable>(4);
-	let transferableCount = 0;
+	let count = 0;
 
-	transferableCount = appendTransferable(
-		transferables,
-		transferableCount,
-		packedBlocks,
-		"packedBlocks",
-	);
+	count = appendUniqueTransferable(transferables, count, packedBlocks);
 
-	transferableCount = appendTransferable(
-		transferables,
-		transferableCount,
-		light,
-		"light_array",
-	);
+	count = appendUniqueTransferable(transferables, count, light);
 
-	transferableCount = appendTransferable(
-		transferables,
-		transferableCount,
-		palette,
-		"palette",
-	);
+	count = appendUniqueTransferable(transferables, count, palette);
 
-	if (lightSeedState) {
-		payload.lightSeedQueue = lightSeedState.queue;
+	if (lightSeedState != null) {
+		const lightSeedQueue = lightSeedState.queue;
+
+		payload.lightSeedQueue = lightSeedQueue;
 		payload.lightSeedLength = lightSeedState.length;
 
-		transferableCount = appendTransferable(
-			transferables,
-			transferableCount,
-			lightSeedState.queue,
-			"lightSeedQueue",
-		);
+		count = appendUniqueTransferable(transferables, count, lightSeedQueue);
 	}
 
-	transferables.length = transferableCount;
+	transferables.length = count;
 
 	return {
 		payload,
@@ -242,14 +259,12 @@ export function handleGenerateFarTile(request: GenerateFarTileRequest): {
 		transferables,
 		transferableCount,
 		opaqueFaces,
-		"opaqueFaces",
 	);
 
 	transferableCount = appendTransferable(
 		transferables,
 		transferableCount,
 		waterFaces,
-		"waterFaces",
 	);
 
 	transferables.length = transferableCount;
@@ -278,7 +293,6 @@ function appendTransferable(
 	transferables: Transferable[],
 	index: number,
 	view: ArrayBufferView | null | undefined,
-	label: string,
 ): number {
 	if (view == null) return index;
 
@@ -293,12 +307,6 @@ function appendTransferable(
 		buffer instanceof SharedArrayBuffer
 	) {
 		return index;
-	}
-
-	if (!(buffer instanceof ArrayBuffer)) {
-		throw new Error(
-			`Non-transferable buffer for "${label}". Must be ArrayBuffer-backed before posting.`,
-		);
 	}
 
 	transferables[index] = buffer;
