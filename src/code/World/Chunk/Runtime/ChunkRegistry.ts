@@ -5,18 +5,25 @@ import { packCoords } from "../DataStructures/ChunkCoords";
 export const chunkInstances = new Map<bigint, Chunk>();
 export const chunkByNumericKey = new Map<number, Chunk>();
 
-// PERF: 8 slots thrashed in a streaming world — mobs, collision, raycasts and
-// lighting touch many distinct chunks per frame, so lookups fell through to
-// packChunkKeyFast + Map.get almost every time. 32 still costs one extra
-// 3-compare check per miss in the worst case, but cuts Map traffic for all
-// callers. Must stay a power of two (cursor mask below).
-const FAST_SLOTS = 32;
+// 8 sets × 4 ways = 32 cache entries.
+// A lookup examines only the four entries belonging to its coordinate hash.
+const FAST_SET_COUNT = 8;
+const FAST_WAYS = 4;
+const FAST_SLOTS = FAST_SET_COUNT * FAST_WAYS;
+const FAST_SET_MASK = FAST_SET_COUNT - 1;
+
 const EMPTY_COORDINATE = 0x7fffffff;
+
 const fastX = new Int32Array(FAST_SLOTS).fill(EMPTY_COORDINATE);
 const fastY = new Int32Array(FAST_SLOTS).fill(EMPTY_COORDINATE);
 const fastZ = new Int32Array(FAST_SLOTS).fill(EMPTY_COORDINATE);
 const fastChunks: (Chunk | undefined)[] = new Array(FAST_SLOTS).fill(undefined);
-let fastCursor = 0;
+
+// Distinguishes a cached miss from an unused slot.
+const fastOccupied = new Uint8Array(FAST_SLOTS);
+
+// Round-robin replacement cursor for each set.
+const fastCursors = new Uint8Array(FAST_SET_COUNT);
 
 function inNumericRange(x: number, y: number, z: number): boolean {
 	return (
@@ -29,40 +36,60 @@ function inNumericRange(x: number, y: number, z: number): boolean {
 	);
 }
 
+function getFastSet(x: number, y: number, z: number): number {
+	const hash =
+		Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791);
+
+	return hash & FAST_SET_MASK;
+}
+
+function clearFastSlot(index: number): void {
+	fastOccupied[index] = 0;
+	fastX[index] = EMPTY_COORDINATE;
+	fastY[index] = EMPTY_COORDINATE;
+	fastZ[index] = EMPTY_COORDINATE;
+	fastChunks[index] = undefined;
+}
+
 export function invalidateFastChunkCache(chunk: Chunk): void {
 	for (let i = 0; i < FAST_SLOTS; i++) {
 		if (
-			fastChunks[i] === chunk ||
-			(fastX[i] === chunk.chunkX &&
-				fastY[i] === chunk.chunkY &&
-				fastZ[i] === chunk.chunkZ)
+			fastOccupied[i] !== 0 &&
+			(fastChunks[i] === chunk ||
+				(fastX[i] === chunk.chunkX &&
+					fastY[i] === chunk.chunkY &&
+					fastZ[i] === chunk.chunkZ))
 		) {
-			fastX[i] = EMPTY_COORDINATE;
-			fastY[i] = EMPTY_COORDINATE;
-			fastZ[i] = EMPTY_COORDINATE;
-			fastChunks[i] = undefined;
+			clearFastSlot(i);
 		}
 	}
 }
 
 export function registerChunk(chunk: Chunk): void {
 	chunkInstances.set(chunk.id, chunk);
+
 	if (inNumericRange(chunk.chunkX, chunk.chunkY, chunk.chunkZ)) {
 		chunkByNumericKey.set(
 			packChunkKeyFast(chunk.chunkX, chunk.chunkY, chunk.chunkZ),
 			chunk,
 		);
 	}
+
+	// Clears both stale positive entries and cached misses.
 	invalidateFastChunkCache(chunk);
 }
 
 export function unregisterChunk(chunk: Chunk): void {
 	chunkInstances.delete(chunk.id);
+
 	if (inNumericRange(chunk.chunkX, chunk.chunkY, chunk.chunkZ)) {
 		chunkByNumericKey.delete(
 			packChunkKeyFast(chunk.chunkX, chunk.chunkY, chunk.chunkZ),
 		);
 	}
+
+	// Prevents getChunkFast from returning an unregistered cached chunk.
+	invalidateFastChunkCache(chunk);
 }
 
 export function getChunkFast(
@@ -70,23 +97,34 @@ export function getChunkFast(
 	y: number,
 	z: number,
 ): Chunk | undefined {
-	for (let i = 0; i < FAST_SLOTS; i++) {
-		if (fastX[i] !== x || fastY[i] !== y || fastZ[i] !== z) continue;
+	const set = getFastSet(x, y, z);
+	const setStart = set * FAST_WAYS;
 
-		const cached = fastChunks[i];
+	for (let way = 0; way < FAST_WAYS; way++) {
+		const index = setStart + way;
+
 		if (
-			cached !== undefined &&
-			cached.chunkX === x &&
-			cached.chunkY === y &&
-			cached.chunkZ === z
+			fastOccupied[index] === 0 ||
+			fastX[index] !== x ||
+			fastY[index] !== y ||
+			fastZ[index] !== z
 		) {
+			continue;
+		}
+
+		const cached = fastChunks[index];
+
+		// undefined is a valid cached miss.
+		if (cached === undefined) {
+			return undefined;
+		}
+
+		if (cached.chunkX === x && cached.chunkY === y && cached.chunkZ === z) {
 			return cached;
 		}
 
-		fastX[i] = EMPTY_COORDINATE;
-		fastY[i] = EMPTY_COORDINATE;
-		fastZ[i] = EMPTY_COORDINATE;
-		fastChunks[i] = undefined;
+		// The Chunk object moved or changed coordinates.
+		clearFastSlot(index);
 		break;
 	}
 
@@ -94,11 +132,16 @@ export function getChunkFast(
 		? chunkByNumericKey.get(packChunkKeyFast(x, y, z))
 		: chunkInstances.get(packCoords(x, y, z));
 
-	fastX[fastCursor] = x;
-	fastY[fastCursor] = y;
-	fastZ[fastCursor] = z;
-	fastChunks[fastCursor] = chunk;
-	fastCursor = (fastCursor + 1) & (FAST_SLOTS - 1);
+	const replacementWay = fastCursors[set];
+	const replacementIndex = setStart + replacementWay;
+
+	fastCursors[set] = (replacementWay + 1) & (FAST_WAYS - 1);
+
+	fastX[replacementIndex] = x;
+	fastY[replacementIndex] = y;
+	fastZ[replacementIndex] = z;
+	fastChunks[replacementIndex] = chunk;
+	fastOccupied[replacementIndex] = 1;
 
 	return chunk;
 }
