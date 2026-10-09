@@ -2,9 +2,7 @@
  * Column-ring ordering helpers (streaming re-arch phase 1).
  *
  * Pure functions with no engine dependencies so the ordering policy can be
- * unit-tested and tuned without touching the controller. The controller owns
- * all chunk state; this module only answers "in what column order?" and
- * "is this column ahead of movement?".
+ * unit-tested and tuned without touching the controller.
  */
 
 export type ColumnEntry = {
@@ -15,8 +13,8 @@ export type ColumnEntry = {
 };
 
 /**
- * True when column (x,z) lies in the approach half-space of movement
- * (dx,dz) relative to center (cx,cz). Zero movement → false everywhere.
+ * True when column (x, z) lies in the approach half-space of movement
+ * (dx, dz) relative to center (cx, cz). Zero movement returns false.
  */
 export function isAheadColumn(
 	x: number,
@@ -26,8 +24,7 @@ export function isAheadColumn(
 	dx: number,
 	dz: number,
 ): boolean {
-	if (dx === 0 && dz === 0) return false;
-	return (x - cx) * dx + (z - cz) * dz > 0;
+	return (dx !== 0 || dz !== 0) && (x - cx) * dx + (z - cz) * dz > 0;
 }
 
 /**
@@ -41,38 +38,60 @@ export function buildInitialColumnList(
 	dx: number,
 	dz: number,
 ): ColumnEntry[] {
-	const out: ColumnEntry[] = [];
-	for (let x = cx - radius; x <= cx + radius; x++) {
-		for (let z = cz - radius; z <= cz + radius; z++) {
-			const absX = x - cx < 0 ? cx - x : x - cx;
-			const absZ = z - cz < 0 ? cz - z : z - cz;
-			const hDist = absX > absZ ? absX : absZ;
-			out.push({
+	if (radius < 0) {
+		return [];
+	}
+
+	const diameter = Math.floor(radius * 2) + 1;
+	const out = new Array<ColumnEntry>(diameter * diameter);
+
+	const minX = cx - radius;
+	const maxX = cx + radius;
+	const minZ = cz - radius;
+	const maxZ = cz + radius;
+	const hasMovement = dx !== 0 || dz !== 0;
+
+	let index = 0;
+
+	for (let x = minX; x <= maxX; x++) {
+		const offsetX = x - cx;
+		const absX = Math.abs(offsetX);
+
+		for (let z = minZ; z <= maxZ; z++) {
+			const offsetZ = z - cz;
+
+			out[index++] = {
 				x,
 				z,
-				hDist,
-				ahead: isAheadColumn(x, z, cx, cz, dx, dz),
-			});
+				hDist: Math.max(absX, Math.abs(offsetZ)),
+				ahead: hasMovement && offsetX * dx + offsetZ * dz > 0,
+			};
 		}
 	}
+
 	return out;
 }
 
 /**
- * Order columns for scanning: nearer rings first (visible beats distant),
- * approaching columns first within a ring (fast fly loads ahead first).
- * Implemented as hDist minus a sub-ring bonus so nearer-behind still beats
- * farther-ahead — only the within-ring order flips.
+ * Order columns for scanning:
+ * 1. Nearer rings first.
+ * 2. Approaching columns first within a ring.
+ *
+ * The sub-ring bonus ensures a nearer-behind column still precedes a
+ * farther-ahead column when aheadRingBonus is between 0 and 1.
+ *
+ * Mutates and returns the supplied array.
  */
 export function sortColumnsAheadFirst(
 	columns: ColumnEntry[],
 	aheadRingBonus = 0.5,
 ): ColumnEntry[] {
-	columns.sort(
-		(a, b) =>
-			a.hDist -
-			(a.ahead ? aheadRingBonus : 0) -
-			(b.hDist - (b.ahead ? aheadRingBonus : 0)),
-	);
+	columns.sort((a, b) => {
+		const aPriority = a.hDist - (a.ahead ? aheadRingBonus : 0);
+		const bPriority = b.hDist - (b.ahead ? aheadRingBonus : 0);
+
+		return aPriority - bPriority;
+	});
+
 	return columns;
 }

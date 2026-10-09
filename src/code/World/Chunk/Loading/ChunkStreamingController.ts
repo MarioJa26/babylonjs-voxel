@@ -1659,11 +1659,12 @@ export class ChunkStreamingController {
 	}
 
 	/**
-	 * Column-ordered variant of processInitialShell for COLUMN_STREAMING_ENABLED.
-	 * Same per-coordinate decisions (via processTargetChunkCoordinate — sky
-	 * guard, buried cull, LOD hysteresis all reused), but columns are scanned
-	 * nearer-first with approaching columns first within a ring. Groups all Y
-	 * levels of a column together so columnTop/buried height caches stay hot.
+	 * Column-ordered variant of processInitialShell for
+	 * COLUMN_STREAMING_ENABLED.
+	 *
+	 * Generates Chebyshev rings directly instead of building and sorting an
+	 * intermediate ColumnEntry array. Within each ring, approaching columns are
+	 * scanned before non-approaching columns.
 	 */
 	private processInitialShellColumnOrdered(
 		chunkX: number,
@@ -1671,38 +1672,88 @@ export class ChunkStreamingController {
 		chunkZ: number,
 		lodRuleSet: ChunkLodRuleSet,
 	): void {
-		const r = lodRuleSet.maxHorizontalRadius();
-		const ry = lodRuleSet.maxVerticalRadius();
+		const radius = lodRuleSet.maxHorizontalRadius();
+		const verticalRadius = lodRuleSet.maxVerticalRadius();
 
-		const minY = SETTING_PARAMS.MIN_CHUNK_Y;
-		const maxY = minY + SETTING_PARAMS.MAX_CHUNK_HEIGHT;
+		const worldMinY = SETTING_PARAMS.MIN_CHUNK_Y;
+		const worldMaxYExclusive = worldMinY + SETTING_PARAMS.MAX_CHUNK_HEIGHT;
 
-		const startY = chunkY - ry;
-		const endY = chunkY + ry;
+		// Clamp once rather than checking world bounds for every Y iteration.
+		const startY = Math.max(worldMinY, chunkY - verticalRadius);
+		const endY = Math.min(worldMaxYExclusive - 1, chunkY + verticalRadius);
 
-		const columns = sortColumnsAheadFirst(
-			buildInitialColumnList(
-				chunkX,
-				chunkZ,
-				r,
-				this.lastMoveDx,
-				this.lastMoveDz,
-			),
-		);
+		if (startY > endY || radius < 0) {
+			return;
+		}
 
-		for (let ci = 0; ci < columns.length; ci++) {
-			const col = columns[ci];
+		const moveDx = this.lastMoveDx;
+		const moveDz = this.lastMoveDz;
+		const hasMovement = moveDx !== 0 || moveDz !== 0;
+
+		const processColumn = (x: number, z: number): void => {
 			for (let y = startY; y <= endY; y++) {
-				if (y < minY || y >= maxY) continue;
 				this.processTargetChunkCoordinate(
-					col.x,
+					x,
 					y,
-					col.z,
+					z,
 					chunkX,
 					chunkY,
 					chunkZ,
 					lodRuleSet,
 				);
+			}
+		};
+
+		// Center is the complete ring at distance zero.
+		processColumn(chunkX, chunkZ);
+
+		for (let ring = 1; ring <= radius; ring++) {
+			const minX = chunkX - ring;
+			const maxX = chunkX + ring;
+			const minZ = chunkZ - ring;
+			const maxZ = chunkZ + ring;
+
+			// With no movement, one perimeter pass is sufficient.
+			const passCount = hasMovement ? 2 : 1;
+
+			for (let pass = 0; pass < passCount; pass++) {
+				// First pass handles approaching columns. The second handles the
+				// remaining columns. With no movement, every column is accepted.
+				const requireAhead = hasMovement && pass === 0;
+
+				// North and south edges, including corners.
+				for (let x = minX; x <= maxX; x++) {
+					const relX = x - chunkX;
+
+					const northAhead = relX * moveDx - ring * moveDz > 0;
+
+					if (!hasMovement || northAhead === requireAhead) {
+						processColumn(x, minZ);
+					}
+
+					const southAhead = relX * moveDx + ring * moveDz > 0;
+
+					if (!hasMovement || southAhead === requireAhead) {
+						processColumn(x, maxZ);
+					}
+				}
+
+				// West and east edges, excluding corners already processed above.
+				for (let z = minZ + 1; z < maxZ; z++) {
+					const relZ = z - chunkZ;
+
+					const westAhead = -ring * moveDx + relZ * moveDz > 0;
+
+					if (!hasMovement || westAhead === requireAhead) {
+						processColumn(minX, z);
+					}
+
+					const eastAhead = ring * moveDx + relZ * moveDz > 0;
+
+					if (!hasMovement || eastAhead === requireAhead) {
+						processColumn(maxX, z);
+					}
+				}
 			}
 		}
 	}

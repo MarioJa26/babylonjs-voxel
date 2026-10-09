@@ -3,6 +3,9 @@ import type { Chunk } from "../Chunk";
 
 /**
  * Normalized storage payload required to restore chunk voxel/light state.
+ *
+ * Typed-array fields must reference the persisted data directly rather than
+ * cloned arrays.
  */
 export interface HydrationStoragePayload {
 	blocks: Uint8Array | Uint16Array | null;
@@ -16,7 +19,8 @@ export interface HydrationStoragePayload {
  * Adapter so this helper does not need to know the exact SavedChunkData shape.
  *
  * PERFORMANCE CONTRACT:
- * - getStoragePayload(...) should return references, not clones
+ * - getStoragePayload(...) must return references, not clones.
+ * - Optional restoration hooks should avoid copying large typed arrays.
  */
 export interface ChunkHydrationAdapter {
 	/**
@@ -25,8 +29,7 @@ export interface ChunkHydrationAdapter {
 	getStoragePayload(savedData: SavedChunkData): HydrationStoragePayload;
 
 	/**
-	 * If your SavedChunkData stores serialized LOD cache data, return it here.
-	 * Otherwise return undefined.
+	 * Return serialized LOD cache data when it is stored in SavedChunkData.
 	 */
 	getSerializedLodCache?(
 		savedData: SavedChunkData,
@@ -39,45 +42,45 @@ export interface ChunkHydrationAdapter {
 }
 
 /**
- * Encapsulates all "saved chunk data -> live chunk" logic:
- * - restoring block/light storage into a Chunk
- * - restoring serialized LOD cache if present
+ * Encapsulates all persisted-data-to-live-chunk hydration logic:
+ * - restores block and light storage
+ * - restores serialized LOD cache data when available
  *
- * Mesh data now lives in OPFS (not IDB) and is consulted directly by the
- * chunk-load path via the OPFS mesh cache, so no mesh-lookup adapter methods
- * are needed here.
+ * Mesh data lives in OPFS and is handled by the chunk-load path through the
+ * OPFS mesh cache, so this adapter does not perform mesh lookups.
  */
 export class ChunkHydration {
 	public constructor(private readonly adapter: ChunkHydrationAdapter) {}
 
 	/**
-	 * Hydrate the chunk's voxel/light storage from persisted data.
+	 * Hydrate a chunk's voxel/light storage from persisted data.
 	 *
-	 * IMPORTANT:
-	 * The adapter should return references, not copies.
+	 * The adapter must return references rather than copies.
 	 */
 	public applyHydratedChunkFromSavedData(
 		chunk: Chunk,
 		savedData: SavedChunkData,
 		scheduleRemesh = false,
 	): void {
-		const payload = this.adapter.getStoragePayload(savedData);
+		const adapter = this.adapter;
+		const { blocks, palette, isUniform, uniformBlockId, lightArray } =
+			adapter.getStoragePayload(savedData);
 
 		chunk.loadFromStorage(
-			payload.blocks,
-			payload.palette,
-			payload.isUniform,
-			payload.uniformBlockId,
-			payload.lightArray,
+			blocks,
+			palette,
+			isUniform,
+			uniformBlockId,
+			lightArray,
 			scheduleRemesh,
 			true,
 		);
 
-		const lodCache = this.adapter.getSerializedLodCache?.(savedData);
+		const lodCache = adapter.getSerializedLodCache?.(savedData);
 		if (lodCache !== undefined) {
 			chunk.restoreLODMeshCache(lodCache);
 		}
 
-		this.adapter.onAfterHydrate?.(chunk, savedData);
+		adapter.onAfterHydrate?.(chunk, savedData);
 	}
 }
