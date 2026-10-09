@@ -1,14 +1,8 @@
 /**
  * ItemSimulation — server-authoritative dropped-item physics.
  *
- * Deliberately Babylon-free: runs on the fixed-rate room tick using only
- * synchronous block lookups (ServerWorldStorage.getCachedChunkBlocks), so the
- * server never blocks on LevelDB. Clients render these items as remote
- * interpolated meshes driven by ItemSpawn / ItemUpdateBatch / ItemDespawn.
- *
- * Items fall with gravity, rest on top of solid blocks, and despawn after a
- * lifetime or when they leave the world bounds. The server owns all item
- * positions and lifetimes; clients only render + interpolate.
+ * Babylon-free: runs on the fixed-rate room tick using synchronous cached
+ * block lookups. Clients render remote interpolated items from server events.
  */
 
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
@@ -27,7 +21,7 @@ export interface ServerItem {
 	vx: number;
 	vy: number;
 	vz: number;
-	/** ms the item has been alive (drives the despawn lifetime). */
+	/** Milliseconds the item has been alive. */
 	age: number;
 }
 
@@ -39,21 +33,33 @@ export interface ServerItemEvent {
 const GRAVITY = -18;
 const HALF_SIZE = 0.15;
 const AIR_DAMPING_PER_SEC = 1.8;
-const GROUND_DAMPING_PER_SEC = 8.0;
+const GROUND_DAMPING_PER_SEC = 8;
 const MIN_SPEED = 0.03;
+
 const ITEM_LIFETIME_MS = 5 * 60 * 1000;
 const DESPAWN_Y = -64;
 const WORLD_BOUNDARY = 1_000_000;
+
 const STEP_SIZE = 0.2;
 const COLLISION_EPSILON = 1e-8;
 const AABB_SKIN = 0.001;
 
+/*
+ * This sampler relies on the current 32³ chunk layout.
+ *
+ * Signed right shift provides floor division by 32 for coordinates inside the
+ * signed 32-bit range, including negative coordinates. Item world bounds are
+ * much smaller than that range.
+ */
+const CHUNK_SHIFT = 5;
+const CHUNK_MASK = CHUNK_SIZE - 1;
+
+type ItemAxis = 0 | 1 | 2;
+
 /**
  * Block sampler for one simulation tick.
  *
- * The cache Map and decompressed chunk arrays are reused for the entire tick.
- * Integer-coordinate sampling avoids repeating Math.floor calls when collision
- * code is already iterating over block coordinates.
+ * Chunk arrays and negative cache entries are reused throughout the tick.
  */
 class ItemBlockSampler {
 	private readonly chunkCache = new Map<
@@ -64,21 +70,34 @@ class ItemBlockSampler {
 	constructor(private readonly storage: ServerWorldStorage) {}
 
 	begin(): void {
-		// clear() retains the Map's internal capacity in typical engines,
-		// avoiding construction of a new Map every tick.
+		/*
+		 * Reuse the Map object. Most JavaScript engines retain at least part of
+		 * its internal capacity after clear().
+		 */
 		this.chunkCache.clear();
 	}
 
+	/**
+	 * Sample an integer world-block coordinate.
+	 */
 	sampleBlock(x: number, y: number, z: number): number | null {
-		const cx = Math.floor(x / CHUNK_SIZE);
-		const cy = Math.floor(y / CHUNK_SIZE);
-		const cz = Math.floor(z / CHUNK_SIZE);
-		const key = packChunkKeyFast(cx, cy, cz);
+		/*
+		 * Coordinates passed by collision code are integers and constrained to
+		 * ±WORLD_BOUNDARY, so signed 32-bit bit operations are safe here.
+		 *
+		 * Right shift matches Math.floor(value / 32), including negatives.
+		 */
+		const chunkX = x >> CHUNK_SHIFT;
+		const chunkY = y >> CHUNK_SHIFT;
+		const chunkZ = z >> CHUNK_SHIFT;
+
+		const key = packChunkKeyFast(chunkX, chunkY, chunkZ);
 
 		let blocks = this.chunkCache.get(key);
 
 		if (blocks === undefined) {
-			blocks = this.storage.getCachedChunkBlocks(cx, cy, cz);
+			blocks = this.storage.getCachedChunkBlocks(chunkX, chunkY, chunkZ);
+
 			this.chunkCache.set(key, blocks);
 		}
 
@@ -86,11 +105,18 @@ class ItemBlockSampler {
 			return null;
 		}
 
-		const localX = x - cx * CHUNK_SIZE;
-		const localY = y - cy * CHUNK_SIZE;
-		const localZ = z - cz * CHUNK_SIZE;
+		/*
+		 * Masking produces the correct 0..31 local coordinate for negative and
+		 * positive signed integer coordinates.
+		 */
+		const localX = x & CHUNK_MASK;
+		const localY = y & CHUNK_MASK;
+		const localZ = z & CHUNK_MASK;
 
-		return unpackBlockId(blocks[localX + (localY << 5) + (localZ << 10)]);
+		const index =
+			localX + (localY << CHUNK_SHIFT) + (localZ << (CHUNK_SHIFT * 2));
+
+		return unpackBlockId(blocks[index]);
 	}
 
 	sample(worldX: number, worldY: number, worldZ: number): number | null {
@@ -104,24 +130,22 @@ class ItemBlockSampler {
 
 export class ServerItemSimulation {
 	private readonly items = new Map<number, ServerItem>();
-	private nextId = 1;
 	private readonly sampler: ItemBlockSampler;
 
+	private nextId = 1;
+
 	/**
-	 * Reused across ticks. Consumers must finish reading the returned array
-	 * synchronously before the next tick, matching the original contract.
+	 * Reused across ticks. Consumers must read the returned array synchronously
+	 * before the next tick.
 	 */
 	private readonly eventScratch: ServerItemEvent[] = [];
 
-	constructor(private readonly storage: ServerWorldStorage) {
+	constructor(readonly storage: ServerWorldStorage) {
 		this.sampler = new ItemBlockSampler(storage);
 	}
 
 	/**
-	 * Check whether an AABB overlaps a collidable block.
-	 *
-	 * All loop coordinates are already integers, so sampleBlock avoids three
-	 * redundant Math.floor operations for every visited voxel.
+	 * Check whether an AABB overlaps any collidable block.
 	 */
 	private overlapsAABB(
 		x: number,
@@ -131,17 +155,23 @@ export class ServerItemSimulation {
 		hy: number,
 		hz: number,
 	): boolean {
-		const x0 = Math.floor(x - hx + AABB_SKIN);
-		const x1 = Math.floor(x + hx - AABB_SKIN);
-		const y0 = Math.floor(y - hy + AABB_SKIN);
-		const y1 = Math.floor(y + hy - AABB_SKIN);
-		const z0 = Math.floor(z - hz + AABB_SKIN);
-		const z1 = Math.floor(z + hz - AABB_SKIN);
+		const minX = Math.floor(x - hx + AABB_SKIN);
+		const maxX = Math.floor(x + hx - AABB_SKIN);
+		const minY = Math.floor(y - hy + AABB_SKIN);
+		const maxY = Math.floor(y + hy - AABB_SKIN);
+		const minZ = Math.floor(z - hz + AABB_SKIN);
+		const maxZ = Math.floor(z + hz - AABB_SKIN);
 
-		for (let bx = x0; bx <= x1; bx++) {
-			for (let by = y0; by <= y1; by++) {
-				for (let bz = z0; bz <= z1; bz++) {
-					const id = this.sampler.sampleBlock(bx, by, bz);
+		const sampler = this.sampler;
+
+		/*
+		 * Keep Y as the innermost loop. Dropped-item AABBs normally span one or
+		 * two vertical blocks, and floor/ground collisions are the common case.
+		 */
+		for (let blockX = minX; blockX <= maxX; blockX++) {
+			for (let blockZ = minZ; blockZ <= maxZ; blockZ++) {
+				for (let blockY = minY; blockY <= maxY; blockY++) {
+					const id = sampler.sampleBlock(blockX, blockY, blockZ);
 
 					if (id !== null && id !== BlockType.Water && isCollidableBlock(id)) {
 						return true;
@@ -154,125 +184,77 @@ export class ServerItemSimulation {
 	}
 
 	/**
-	 * Move on the Y axis and return the resulting Y velocity.
+	 * Move an item along one axis and return the resulting velocity.
 	 *
-	 * Returning the velocity removes the need for a temporary mutable velocity
-	 * object while preserving collision behavior.
+	 * Y movement preserves the original downward collision snap behavior.
 	 */
-	private moveY(item: ServerItem, velocity: number, delta: number): number {
+	private moveAxis(
+		item: ServerItem,
+		axis: ItemAxis,
+		velocity: number,
+		delta: number,
+	): number {
 		if (delta === 0) {
 			return velocity;
 		}
 
-		const dir = delta > 0 ? 1 : -1;
+		const direction = delta > 0 ? 1 : -1;
 		let remaining = Math.abs(delta);
 
 		while (remaining > COLLISION_EPSILON) {
 			const step = remaining > STEP_SIZE ? STEP_SIZE : remaining;
-			const nextY = item.y + step * dir;
+
+			const movement = step * direction;
+
+			let nextX = item.x;
+			let nextY = item.y;
+			let nextZ = item.z;
+
+			if (axis === 0) {
+				nextX += movement;
+			} else if (axis === 1) {
+				nextY += movement;
+			} else {
+				nextZ += movement;
+			}
 
 			if (
-				this.overlapsAABB(
-					item.x,
-					nextY,
-					item.z,
-					HALF_SIZE,
-					HALF_SIZE,
-					HALF_SIZE,
-				)
+				this.overlapsAABB(nextX, nextY, nextZ, HALF_SIZE, HALF_SIZE, HALF_SIZE)
 			) {
-				if (dir < 0) {
+				/*
+				 * When falling, place the item's bottom face on the top of the
+				 * collided block when that snapped position is itself clear.
+				 */
+				if (axis === 1 && direction < 0) {
 					const blockTop = Math.floor(nextY - HALF_SIZE) + 1;
-					const snapY = blockTop + HALF_SIZE;
+
+					const snappedY = blockTop + HALF_SIZE;
 
 					if (
 						!this.overlapsAABB(
 							item.x,
-							snapY,
+							snappedY,
 							item.z,
 							HALF_SIZE,
 							HALF_SIZE,
 							HALF_SIZE,
 						)
 					) {
-						item.y = snapY;
+						item.y = snappedY;
 					}
 				}
 
 				return 0;
 			}
 
-			item.y = nextY;
-			remaining -= step;
-		}
-
-		return velocity;
-	}
-
-	/**
-	 * Move on the X axis and return the resulting X velocity.
-	 */
-	private moveX(item: ServerItem, velocity: number, delta: number): number {
-		if (delta === 0) {
-			return velocity;
-		}
-
-		const dir = delta > 0 ? 1 : -1;
-		let remaining = Math.abs(delta);
-
-		while (remaining > COLLISION_EPSILON) {
-			const step = remaining > STEP_SIZE ? STEP_SIZE : remaining;
-			const nextX = item.x + step * dir;
-
-			if (
-				this.overlapsAABB(
-					nextX,
-					item.y,
-					item.z,
-					HALF_SIZE,
-					HALF_SIZE,
-					HALF_SIZE,
-				)
-			) {
-				return 0;
+			if (axis === 0) {
+				item.x = nextX;
+			} else if (axis === 1) {
+				item.y = nextY;
+			} else {
+				item.z = nextZ;
 			}
 
-			item.x = nextX;
-			remaining -= step;
-		}
-
-		return velocity;
-	}
-
-	/**
-	 * Move on the Z axis and return the resulting Z velocity.
-	 */
-	private moveZ(item: ServerItem, velocity: number, delta: number): number {
-		if (delta === 0) {
-			return velocity;
-		}
-
-		const dir = delta > 0 ? 1 : -1;
-		let remaining = Math.abs(delta);
-
-		while (remaining > COLLISION_EPSILON) {
-			const step = remaining > STEP_SIZE ? STEP_SIZE : remaining;
-			const nextZ = item.z + step * dir;
-
-			if (
-				this.overlapsAABB(
-					item.x,
-					item.y,
-					nextZ,
-					HALF_SIZE,
-					HALF_SIZE,
-					HALF_SIZE,
-				)
-			) {
-				return 0;
-			}
-
-			item.z = nextZ;
 			remaining -= step;
 		}
 
@@ -283,7 +265,9 @@ export class ServerItemSimulation {
 		return this.items.size;
 	}
 
-	/** Fill a reusable array with the current items for a join snapshot. */
+	/**
+	 * Fill a reusable array with current items for a join snapshot.
+	 */
 	snapshotInto(target: ServerItem[]): ServerItem[] {
 		target.length = 0;
 
@@ -294,7 +278,9 @@ export class ServerItemSimulation {
 		return target;
 	}
 
-	/** Create a new dropped item and assign it a server instance id. */
+	/**
+	 * Create a dropped item and assign a server instance ID.
+	 */
 	add(
 		itemId: number,
 		stackSize: number,
@@ -322,12 +308,16 @@ export class ServerItemSimulation {
 		return item;
 	}
 
-	/** Remove an item by instance id. Returns true if it existed. */
+	/**
+	 * Remove an item by instance ID.
+	 */
 	remove(id: number): boolean {
 		return this.items.delete(id);
 	}
 
-	/** Look up an item by instance id. */
+	/**
+	 * Look up an item by instance ID.
+	 */
 	get(id: number): ServerItem | undefined {
 		return this.items.get(id);
 	}
@@ -335,34 +325,48 @@ export class ServerItemSimulation {
 	/**
 	 * Advance the simulation and return despawn events for this tick.
 	 *
-	 * The returned array is reused by the next tick, matching the original
-	 * synchronous-consumption contract.
+	 * The returned array is reused by the next tick.
 	 */
 	tick(deltaMs: number): ServerItemEvent[] {
 		const events = this.eventScratch;
 		events.length = 0;
 
 		const dt = deltaMs * 0.001;
+		const gravityDelta = GRAVITY * dt;
+
+		/*
+		 * These values are invariant for every item in the tick. Previously,
+		 * Math.exp was called once per item.
+		 */
+		const airVelocityRetention = Math.exp(-AIR_DAMPING_PER_SEC * dt);
+
+		const groundVelocityRetention = Math.exp(-GROUND_DAMPING_PER_SEC * dt);
+
+		const items = this.items;
 		this.sampler.begin();
 
-		for (const item of this.items.values()) {
+		for (const item of items.values()) {
 			item.age += deltaMs;
 
+			const x = item.x;
+			const y = item.y;
+			const z = item.z;
+
+			/*
+			 * DESPAWN_Y is above the negative world boundary, so a separate
+			 * y < -WORLD_BOUNDARY test is redundant.
+			 */
 			if (
 				item.age >= ITEM_LIFETIME_MS ||
-				item.y < DESPAWN_Y ||
-				item.x < -WORLD_BOUNDARY ||
-				item.x > WORLD_BOUNDARY ||
-				item.y < -WORLD_BOUNDARY ||
-				item.y > WORLD_BOUNDARY ||
-				item.z < -WORLD_BOUNDARY ||
-				item.z > WORLD_BOUNDARY
+				y < DESPAWN_Y ||
+				x < -WORLD_BOUNDARY ||
+				x > WORLD_BOUNDARY ||
+				y > WORLD_BOUNDARY ||
+				z < -WORLD_BOUNDARY ||
+				z > WORLD_BOUNDARY
 			) {
-				this.items.delete(item.id);
+				items.delete(item.id);
 
-				// This allocation is required by the public event shape.
-				// Pooling these objects would retain references to despawned
-				// items and could increase long-lived memory usage.
 				events.push({
 					kind: "despawn",
 					item,
@@ -371,40 +375,43 @@ export class ServerItemSimulation {
 				continue;
 			}
 
-			let vx = item.vx;
-			let vy = item.vy + GRAVITY * dt;
-			let vz = item.vz;
+			let velocityX = item.vx;
+			let velocityY = item.vy + gravityDelta;
+			let velocityZ = item.vz;
 
-			const preVy = vy;
+			const falling = velocityY < 0;
 
-			vy = this.moveY(item, vy, vy * dt);
-			const grounded = vy === 0 && preVy < 0;
+			velocityY = this.moveAxis(item, 1, velocityY, velocityY * dt);
 
-			vx = this.moveX(item, vx, vx * dt);
-			vz = this.moveZ(item, vz, vz * dt);
+			const grounded = falling && velocityY === 0;
 
-			const damping = grounded ? GROUND_DAMPING_PER_SEC : AIR_DAMPING_PER_SEC;
-			const keep = Math.exp(-damping * dt);
+			velocityX = this.moveAxis(item, 0, velocityX, velocityX * dt);
 
-			vx *= keep;
-			vy *= keep;
-			vz *= keep;
+			velocityZ = this.moveAxis(item, 2, velocityZ, velocityZ * dt);
 
-			if (vx > -MIN_SPEED && vx < MIN_SPEED) {
-				vx = 0;
+			const velocityRetention = grounded
+				? groundVelocityRetention
+				: airVelocityRetention;
+
+			velocityX *= velocityRetention;
+			velocityY *= velocityRetention;
+			velocityZ *= velocityRetention;
+
+			if (velocityX > -MIN_SPEED && velocityX < MIN_SPEED) {
+				velocityX = 0;
 			}
 
-			if (vy > -MIN_SPEED && vy < MIN_SPEED) {
-				vy = 0;
+			if (velocityY > -MIN_SPEED && velocityY < MIN_SPEED) {
+				velocityY = 0;
 			}
 
-			if (vz > -MIN_SPEED && vz < MIN_SPEED) {
-				vz = 0;
+			if (velocityZ > -MIN_SPEED && velocityZ < MIN_SPEED) {
+				velocityZ = 0;
 			}
 
-			item.vx = vx;
-			item.vy = vy;
-			item.vz = vz;
+			item.vx = velocityX;
+			item.vy = velocityY;
+			item.vz = velocityZ;
 		}
 
 		return events;

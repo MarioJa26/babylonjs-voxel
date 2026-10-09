@@ -26,10 +26,6 @@ import {
 	UNDERGROUND_SKIP_LOD,
 } from "../LOD/LODUtilities";
 import { createMeshFromData } from "../Meshing/ChunkMesher";
-import {
-	buildInitialColumnList,
-	sortColumnsAheadFirst,
-} from "./ColumnStreamingOrder";
 
 /** Underground (cave) chunks never coarsen: clamp any desired LOD. */
 function clampLodForY(chunkY: number, lod: number): number {

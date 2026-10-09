@@ -1,13 +1,8 @@
 /**
  * ContainerSimulation — server-authoritative Wood Crate inventories.
  *
- * Each crate at a block position owns a fixed 3x6 slot grid (matching the
- * client's BlockInventoryManager defaults). The server is the source of
- * truth: clients render from ContainerState snapshots and push every edit
- * as a ContainerSetSlot delta (last-write-wins per slot). Contents persist
- * across restarts via ServerWorldStorage meta keys (`crate:x,y,z`).
- *
- * Babylon-free: pure data + persistence, driven by VoxelRoom handlers.
+ * Each crate owns a fixed 3x6 slot grid. Live state is held in memory and
+ * persisted through ServerWorldStorage.
  */
 
 import {
@@ -21,13 +16,14 @@ import type {
 
 export const CONTAINER_WIDTH = 3;
 export const CONTAINER_HEIGHT = 6;
-/** Mirrors the VoxelRoom item-drop caps (itemId u16, stack u16 range). */
 export const MAX_CONTAINER_ITEM_ID = 65535;
 export const MAX_CONTAINER_STACK = 1024;
 
+const CONTAINER_SLOT_COUNT = CONTAINER_WIDTH * CONTAINER_HEIGHT;
+
 export interface ContainerSlot {
 	itemId: number;
-	/** 0-sized stacks are normalized to itemId 0 (empty). */
+	/** Zero-sized stacks are normalized to itemId 0. */
 	stackSize: number;
 }
 
@@ -41,39 +37,109 @@ export interface ServerContainer {
 	slots: ContainerSlot[];
 }
 
+interface PendingPersistence {
+	container: ServerContainer;
+	requestedVersion: number;
+	persistedVersion: number;
+	running: boolean;
+}
+
 export function containerKey(x: number, y: number, z: number): string {
 	return `${x},${y},${z}`;
 }
 
+function emptySlot(): ContainerSlot {
+	return {
+		itemId: 0,
+		stackSize: 0,
+	};
+}
+
 function emptySlots(): ContainerSlot[] {
-	const count = CONTAINER_WIDTH * CONTAINER_HEIGHT;
-	const slots = new Array<ContainerSlot>(count);
-	for (let i = 0; i < count; i++) slots[i] = { itemId: 0, stackSize: 0 };
+	const slots = new Array<ContainerSlot>(CONTAINER_SLOT_COUNT);
+
+	for (let i = 0; i < CONTAINER_SLOT_COUNT; i++) {
+		slots[i] = emptySlot();
+	}
+
 	return slots;
 }
 
 function normalizeSlot(itemId: number, stackSize: number): ContainerSlot {
 	if (
 		!Number.isInteger(itemId) ||
-		itemId < 0 ||
+		itemId <= 0 ||
 		itemId > MAX_CONTAINER_ITEM_ID ||
 		!Number.isInteger(stackSize) ||
-		stackSize < 0 ||
-		stackSize > MAX_CONTAINER_STACK ||
-		itemId === 0 ||
-		stackSize === 0
+		stackSize <= 0 ||
+		stackSize > MAX_CONTAINER_STACK
 	) {
-		return { itemId: 0, stackSize: 0 };
+		return emptySlot();
 	}
-	return { itemId, stackSize };
+
+	return {
+		itemId,
+		stackSize,
+	};
+}
+
+function restoreSlots(restored: PersistedContainer | null): ContainerSlot[] {
+	if (restored === null || restored.slots.length !== CONTAINER_SLOT_COUNT) {
+		return emptySlots();
+	}
+
+	const slots = new Array<ContainerSlot>(CONTAINER_SLOT_COUNT);
+	const source = restored.slots;
+
+	for (let i = 0; i < CONTAINER_SLOT_COUNT; i++) {
+		const slot = source[i];
+		slots[i] = normalizeSlot(slot.itemId, slot.stackSize);
+	}
+
+	return slots;
+}
+
+function snapshotContainer(container: ServerContainer): PersistedContainer {
+	const source = container.slots;
+	const slots = new Array<ContainerSlot>(source.length);
+
+	for (let i = 0; i < source.length; i++) {
+		const slot = source[i];
+
+		slots[i] = {
+			itemId: slot.itemId,
+			stackSize: slot.stackSize,
+		};
+	}
+
+	return {
+		version: container.version,
+		width: container.width,
+		height: container.height,
+		slots,
+	};
 }
 
 export class ServerContainerStore {
 	private readonly containers = new Map<string, ServerContainer>();
 
 	/**
-	 * @param seedAsInt Terrain seed folded the same way the chunk workers fold
-	 *   it, used to resolve Maya temple loot caches on first open.
+	 * Prevent duplicate storage reads and duplicate temple rolls when multiple
+	 * clients open the same previously unloaded crate concurrently.
+	 */
+	private readonly pendingOpens = new Map<string, Promise<ServerContainer>>();
+
+	/**
+	 * Per-container persistence state.
+	 *
+	 * Writes for one crate are serialized and intermediate versions are
+	 * coalesced. Different crates can still persist concurrently.
+	 */
+	private readonly pendingPersistence = new Map<string, PendingPersistence>();
+
+	/**
+	 * @param seedAsInt Terrain seed folded the same way as chunk workers,
+	 * used to resolve Maya temple loot caches on first open.
 	 */
 	constructor(
 		private readonly storage: ServerWorldStorage,
@@ -81,24 +147,69 @@ export class ServerContainerStore {
 	) {}
 
 	/**
-	 * Load-through open: memory first, then durable storage, else a fresh
-	 * empty crate. The returned object is live server state — callers must
-	 * not retain it beyond synchronous snapshot/encode.
-	 *
-	 * A crate that turns out to be a Maya temple cache is rolled from the
-	 * shared loot table on first open, then persisted, so every client sees the
-	 * same treasure and it does not re-roll on the next visit.
+	 * Load-through open: memory first, then an in-flight open, then durable
+	 * storage. The returned object is live server state.
 	 */
-	async open(x: number, y: number, z: number): Promise<ServerContainer> {
+	open(x: number, y: number, z: number): Promise<ServerContainer> {
 		const key = containerKey(x, y, z);
 		const live = this.containers.get(key);
-		if (live) return live;
+
+		if (live !== undefined) {
+			return Promise.resolve(live);
+		}
+
+		const pending = this.pendingOpens.get(key);
+
+		if (pending !== undefined) {
+			return pending;
+		}
+
+		const opening = this.loadContainer(key, x, y, z);
+		this.pendingOpens.set(key, opening);
+
+		const removePending = (): void => {
+			if (this.pendingOpens.get(key) === opening) {
+				this.pendingOpens.delete(key);
+			}
+		};
+
+		void opening.then(removePending, removePending);
+
+		return opening;
+	}
+
+	private async loadContainer(
+		key: string,
+		x: number,
+		y: number,
+		z: number,
+	): Promise<ServerContainer> {
+		/*
+		 * Recheck in case another path installed live state before this
+		 * asynchronous operation started.
+		 */
+		const existing = this.containers.get(key);
+
+		if (existing !== undefined) {
+			return existing;
+		}
 
 		let restored: PersistedContainer | null = null;
+
 		try {
 			restored = await this.storage.loadContainer(x, y, z);
-		} catch (error) {
+		} catch (error: unknown) {
 			console.error(`[ContainerStore] load failed for ${key}:`, error);
+		}
+
+		/*
+		 * A crate may have been installed while storage was being read.
+		 * Prefer the current authoritative in-memory object.
+		 */
+		const installedDuringLoad = this.containers.get(key);
+
+		if (installedDuringLoad !== undefined) {
+			return installedDuringLoad;
 		}
 
 		const container: ServerContainer = {
@@ -108,13 +219,10 @@ export class ServerContainerStore {
 			version: restored?.version ?? 0,
 			width: CONTAINER_WIDTH,
 			height: CONTAINER_HEIGHT,
-			slots:
-				restored && restored.slots.length === CONTAINER_WIDTH * CONTAINER_HEIGHT
-					? restored.slots.map((s) => normalizeSlot(s.itemId, s.stackSize))
-					: emptySlots(),
+			slots: restoreSlots(restored),
 		};
 
-		if (!restored && this.seedAsInt !== 0) {
+		if (restored === null && this.seedAsInt !== 0) {
 			this.seedTempleCache(container);
 		}
 
@@ -123,22 +231,49 @@ export class ServerContainerStore {
 	}
 
 	/**
-	 * Populate a first-open crate from the worldgen loot table if it is a Maya
-	 * temple cache. A no-op for player-placed crates, which stay empty.
+	 * Populate a first-open crate when its coordinates identify a generated
+	 * Maya temple cache.
 	 */
 	private seedTempleCache(container: ServerContainer): void {
 		const { x, y, z } = container;
 		const cache = findTempleCacheAt(x, y, z, this.seedAsInt);
-		if (!cache) return;
 
-		const rolled = rollTempleCrate(cache.templeId, this.seedAsInt, cache.tier, x, y, z);
-		for (let i = 0; i < container.slots.length; i++) {
-			const row = Math.floor(i / container.width);
-			const col = i % container.width;
-			const item = rolled.slots[row]?.[col];
-			if (!item) continue;
-			container.slots[i] = normalizeSlot(item.itemId, item.stackSize);
+		if (cache === undefined || cache === null) {
+			return;
 		}
+
+		const rolled = rollTempleCrate(
+			cache.templeId,
+			this.seedAsInt,
+			cache.tier,
+			x,
+			y,
+			z,
+		);
+
+		const slots = container.slots;
+		const rolledRows = rolled.slots;
+
+		for (let row = 0; row < CONTAINER_HEIGHT; row++) {
+			const rolledRow = rolledRows[row];
+
+			if (rolledRow === undefined) {
+				continue;
+			}
+
+			const rowOffset = row * CONTAINER_WIDTH;
+
+			for (let col = 0; col < CONTAINER_WIDTH; col++) {
+				const item = rolledRow[col];
+
+				if (item === undefined || item === null) {
+					continue;
+				}
+
+				slots[rowOffset + col] = normalizeSlot(item.itemId, item.stackSize);
+			}
+		}
+
 		container.version = (container.version + 1) >>> 0;
 		this.persist(container);
 	}
@@ -148,10 +283,7 @@ export class ServerContainerStore {
 	}
 
 	/**
-	 * Apply one validated slot write. Returns the container (with the bumped
-	 * version) or null when the crate is unknown or the cell is out of
-	 * bounds. Persists fire-and-forget — crate edits are human-rate and the
-	 * in-memory state stays authoritative even if a write fails.
+	 * Apply one validated slot write.
 	 */
 	setSlot(
 		x: number,
@@ -163,64 +295,215 @@ export class ServerContainerStore {
 		stackSize: number,
 	): ServerContainer | null {
 		const container = this.containers.get(containerKey(x, y, z));
-		if (!container) return null;
+
+		if (container === undefined) {
+			return null;
+		}
+
 		if (
 			!Number.isInteger(row) ||
 			!Number.isInteger(col) ||
 			row < 0 ||
-			col < 0 ||
 			row >= container.height ||
+			col < 0 ||
 			col >= container.width
 		) {
 			return null;
 		}
 
-		container.slots[row * container.width + col] = normalizeSlot(
-			itemId,
-			stackSize,
-		);
+		const slotIndex = row * container.width + col;
+		const normalized = normalizeSlot(itemId, stackSize);
+		const current = container.slots[slotIndex];
+
+		/*
+		 * A repeated last-write-wins update that does not change state does not
+		 * need a version bump, snapshot allocation, or storage write.
+		 */
+		if (
+			current.itemId === normalized.itemId &&
+			current.stackSize === normalized.stackSize
+		) {
+			return container;
+		}
+
+		container.slots[slotIndex] = normalized;
 		container.version = (container.version + 1) >>> 0;
+
 		this.persist(container);
 		return container;
 	}
 
 	/**
-	 * Remove a crate and return its non-empty contents (for break-scatter).
-	 * Drops the durable record too; a missing crate yields an empty array.
+	 * Remove a crate and return its non-empty contents for break-scatter.
 	 */
 	takeAll(x: number, y: number, z: number): ContainerSlot[] {
 		const key = containerKey(x, y, z);
 		const container = this.containers.get(key);
+
 		this.containers.delete(key);
-		void this.storage.deleteContainer(x, y, z).catch((error) => {
+		this.pendingOpens.delete(key);
+
+		/*
+		 * Remove pending save ownership before deleting. An already-running
+		 * storage operation cannot be cancelled, but the deletion is queued
+		 * after that operation by awaitPendingPersistence().
+		 */
+		const deletion = this.deleteAfterPendingWrites(key, x, y, z);
+
+		void deletion.catch((error: unknown) => {
 			console.error(`[ContainerStore] delete failed for ${key}:`, error);
 		});
-		if (!container) return [];
-		return container.slots.filter((s) => s.itemId !== 0 && s.stackSize > 0);
+
+		if (container === undefined) {
+			return [];
+		}
+
+		const slots = container.slots;
+
+		let nonEmptyCount = 0;
+
+		for (let i = 0; i < slots.length; i++) {
+			const slot = slots[i];
+
+			if (slot.itemId !== 0 && slot.stackSize > 0) {
+				nonEmptyCount++;
+			}
+		}
+
+		if (nonEmptyCount === 0) {
+			return [];
+		}
+
+		const contents = new Array<ContainerSlot>(nonEmptyCount);
+		let outputIndex = 0;
+
+		for (let i = 0; i < slots.length; i++) {
+			const slot = slots[i];
+
+			if (slot.itemId === 0 || slot.stackSize <= 0) {
+				continue;
+			}
+
+			/*
+			 * Return detached slot values so the caller cannot retain mutable
+			 * references into the removed container.
+			 */
+			contents[outputIndex++] = {
+				itemId: slot.itemId,
+				stackSize: slot.stackSize,
+			};
+		}
+
+		return contents;
 	}
 
-	/** Drop in-memory state without touching storage (room teardown). */
+	private async deleteAfterPendingWrites(
+		key: string,
+		x: number,
+		y: number,
+		z: number,
+	): Promise<void> {
+		const state = this.pendingPersistence.get(key);
+
+		/*
+		 * The state remains in the map while its writer loop is active.
+		 * Yield until the current persistence sequence finishes.
+		 */
+		while (state?.running) {
+			await new Promise<void>((resolve) => {
+				setTimeout(resolve, 0);
+			});
+		}
+
+		this.pendingPersistence.delete(key);
+		await this.storage.deleteContainer(x, y, z);
+	}
+
+	/** Drop in-memory state without touching durable storage. */
 	clear(): void {
 		this.containers.clear();
+		this.pendingOpens.clear();
 	}
 
+	/**
+	 * Schedule persistence for the newest container version.
+	 *
+	 * At most one writer loop runs per container. Multiple rapid edits are
+	 * coalesced so storage receives the newest available snapshot rather than
+	 * one concurrent write for every edit.
+	 */
 	private persist(container: ServerContainer): void {
-		const snapshot: PersistedContainer = {
-			version: container.version,
-			width: container.width,
-			height: container.height,
-			slots: container.slots.map((s) => ({
-				itemId: s.itemId,
-				stackSize: s.stackSize,
-			})),
-		};
-		void this.storage
-			.saveContainer(container.x, container.y, container.z, snapshot)
-			.catch((error) => {
-				console.error(
-					`[ContainerStore] save failed for ${containerKey(container.x, container.y, container.z)}:`,
-					error,
-				);
-			});
+		const key = containerKey(container.x, container.y, container.z);
+
+		let state = this.pendingPersistence.get(key);
+
+		if (state === undefined) {
+			state = {
+				container,
+				requestedVersion: container.version,
+				persistedVersion: -1,
+				running: false,
+			};
+
+			this.pendingPersistence.set(key, state);
+		} else {
+			state.container = container;
+			state.requestedVersion = container.version;
+		}
+
+		if (state.running) {
+			return;
+		}
+
+		state.running = true;
+		void this.runPersistenceLoop(key, state);
+	}
+
+	private async runPersistenceLoop(
+		key: string,
+		state: PendingPersistence,
+	): Promise<void> {
+		try {
+			while (state.persistedVersion !== state.requestedVersion) {
+				const container = state.container;
+				const snapshot = snapshotContainer(container);
+				const snapshotVersion = snapshot.version;
+
+				try {
+					await this.storage.saveContainer(
+						container.x,
+						container.y,
+						container.z,
+						snapshot,
+					);
+
+					state.persistedVersion = snapshotVersion;
+				} catch (error: unknown) {
+					console.error(`[ContainerStore] save failed for ${key}:`, error);
+
+					/*
+					 * Preserve fire-and-forget behavior. A later edit starts a
+					 * new persistence attempt instead of spinning on failure.
+					 */
+					return;
+				}
+			}
+		} finally {
+			state.running = false;
+
+			if (
+				state.persistedVersion === state.requestedVersion &&
+				this.pendingPersistence.get(key) === state
+			) {
+				this.pendingPersistence.delete(key);
+			} else if (this.pendingPersistence.get(key) === state) {
+				/*
+				 * An edit may have arrived between the loop condition and the
+				 * running flag update.
+				 */
+				state.running = true;
+				void this.runPersistenceLoop(key, state);
+			}
+		}
 	}
 }

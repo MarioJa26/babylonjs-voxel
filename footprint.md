@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-10-08T23:33:55.816Z
+Generated: 2026-10-09T16:37:40.133Z
 
-> **Summary:** 157 classes · 2395 members · 1177 module-level functions · 100567 LOC
+> **Summary:** 157 classes · 2395 members · 1196 module-level functions · 100820 LOC
 
 ---
 
@@ -6023,7 +6023,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Loading/ChunkHydration.ts` (40 LOC)
+## `World/Chunk/Loading/ChunkHydration.ts` (42 LOC)
 
 ### export class ChunkHydration
 
@@ -6201,7 +6201,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Loading/ChunkStreamingController.ts` (1294 LOC)
+## `World/Chunk/Loading/ChunkStreamingController.ts` (1322 LOC)
 
 **Module-level functions**
 - `function clampLodForY(chunkY: number, lod: number): number`
@@ -6262,7 +6262,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Loading/ColumnStreamingOrder.ts` (52 LOC)
+## `World/Chunk/Loading/ColumnStreamingOrder.ts` (60 LOC)
 
 **Module-level functions**
 - `export function isAheadColumn(x: number, z: number, cx: number, cz: number, dx: number, dz: number): boolean`
@@ -6430,7 +6430,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Meshing/MergedMeshManager.ts` (1422 LOC)
+## `World/Chunk/Meshing/MergedMeshManager.ts` (1516 LOC)
 
 ### export class MergedMeshMeta
 
@@ -6443,10 +6443,24 @@ export function createFastNoise3D(
 **Module-level functions**
 - `function disposeGroupMesh(mesh: Mesh): void`
 - `export function consumeGroupsMutated(): boolean`
+- `function allocSlotHole(offset: number, faces: number): SlotHole`
+- `function releaseSlotHole(hole: SlotHole): void`
+- `function clearSlotHoleArray(array: SlotHole[]): void`
+- `function pushReleasedSlot(state: SlotLayerState, offset: number, faces: number): void`
+- `function releaseSlotLayerState(state: SlotLayerState): void`
+- `function insertOwnedSlotHole(state: SlotLayerState, hole: SlotHole): void`
+- `function pushDirtyRange(ranges: MergedFaceRange[], start: number, count: number): void`
+- `function clipDirtyRanges(ranges: MergedFaceRange[], extentFaces: number): void`
+- `function validateSettledSlotExtents(group: MergedMeshGroup, maximumFaces: number): boolean`
+- `export function getMergedSlotStats()`
+- `export function getMergedMeshFlushStats()`
+- `export function getMergedLayerMemoryStats()`
+- `export function flushDirtyMergedGroups(maxBudgetMs = 5, maxGpuBytes = DEFAULT_GPU_UPLOAD_BUDGET_BYTES): void`
 - `function clearDiscardedGroup(group: MergedMeshGroup): void`
 
 **Types / Interfaces / Enums**
 - interface `ChunkMemberData`
+- interface `SlotResult`
 
 ---
 
@@ -6519,7 +6533,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Runtime/ChunkEditBatching.ts` (138 LOC)
+## `World/Chunk/Runtime/ChunkEditBatching.ts` (141 LOC)
 
 ### class LightMutationBuffer
 
@@ -6533,7 +6547,8 @@ export function createFastNoise3D(
 - `private grow(required: number): void`
 
 **Module-level functions**
-- `function flush(pool: ChunkLightPool | null): void`
+- `function flushPendingMutations(pool: ChunkLightPool | null): void`
+- `function remeshDirtyChunks(): void`
 - `export function beginChunkEditBatch(): void`
 - `export function endChunkEditBatch(pool: ChunkLightPool | null): void`
 - `export function markChunkDirtyForRemesh(chunk: Chunk | null | undefined): void`
@@ -6547,15 +6562,16 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Runtime/ChunkMeshDisposal.ts` (53 LOC)
+## `World/Chunk/Runtime/ChunkMeshDisposal.ts` (62 LOC)
 
 **Module-level functions**
-- `function drain(): void`
-- `function afterWait(): void`
-- `function onWaitError(error: unknown): void`
+- `function disposeBatch(batch: Mesh[]): void`
 - `function schedule(): void`
 - `export function deferMeshDisposal(mesh: Mesh): void`
-- `export function deferChunkMeshes(scene: Parameters<typeof removeFromScene>[0], opaque: Mesh | null, water: Mesh | null, cutout: Mesh | null): void`
+- `export function deferChunkMeshes(scene: Scene, opaque: Mesh | null, water: Mesh | null, cutout: Mesh | null): void`
+
+**Types / Interfaces / Enums**
+- type `Scene`
 
 ---
 
@@ -6567,10 +6583,12 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Runtime/ChunkRegistry.ts` (87 LOC)
+## `World/Chunk/Runtime/ChunkRegistry.ts` (110 LOC)
 
 **Module-level functions**
 - `function inNumericRange(x: number, y: number, z: number): boolean`
+- `function getFastSet(x: number, y: number, z: number): number`
+- `function clearFastSlot(index: number): void`
 - `export function invalidateFastChunkCache(chunk: Chunk): void`
 - `export function registerChunk(chunk: Chunk): void`
 - `export function unregisterChunk(chunk: Chunk): void`
@@ -6578,7 +6596,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Runtime/ChunkSunlight.ts` (106 LOC)
+## `World/Chunk/Runtime/ChunkSunlight.ts` (125 LOC)
 
 **Module-level functions**
 - `export function seedSunlight(chunk: SunlightChunk, aboveChunk: SunlightChunk | undefined, light: Uint8Array, blocks: Uint8Array | Uint16Array | null, palette: Uint16Array | null, isUniform: boolean, uniformBlockId: number, canReadBlocks: boolean)`
@@ -6588,10 +6606,17 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Runtime/NeighborHelpers.ts` (60 LOC)
+## `World/Chunk/Runtime/NeighborHelpers.ts` (112 LOC)
 
 **Module-level functions**
+- `export function scheduleChunkAndNeighborsRemesh(chunk: Chunk, scheduleRemesh: RemeshScheduler, scheduleHealRemesh?: RemeshScheduler): void`
 - `export function hasStableVoxelNeighborsForCachedMesh(chunk: Chunk): boolean`
+- `export function maybeRemeshNeighborsNowStable(chunk: Chunk, scheduleRemesh: RemeshScheduler, scheduleHealRemesh?: RemeshScheduler): void`
+- `function scheduleNeighbor(neighbor: Chunk | undefined | null, scheduleRemesh: RemeshScheduler): void`
+- `function maybeRemeshNeighborIfStable(neighbor: Chunk | undefined | null, scheduleRemesh: RemeshScheduler): void`
+
+**Types / Interfaces / Enums**
+- type `RemeshScheduler`
 
 ---
 
@@ -6613,7 +6638,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Worker/chunk.worker.ts` (372 LOC)
+## `World/Chunk/Worker/chunk.worker.ts` (386 LOC)
 
 **Module-level functions**
 - `function _registerFromBoth(meta: {
@@ -6625,8 +6650,9 @@ export function createFastNoise3D(
 		headerSlot: number;
 	}, voxel: PendingVoxelData): void`
 - `function _handleChannelMessage(event: MessageEvent): void`
-- `function sharedU8(len: number): Uint8Array`
-- `function sharedU16(len: number): Uint16Array`
+- `function sharedU8(length: number): Uint8Array`
+- `function sharedU16(length: number): Uint16Array`
+- `function nextCompressStamp(): number`
 - `function compressBlocks(blocks: Uint8Array)`
 
 **Types / Interfaces / Enums**
@@ -7389,7 +7415,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/MeshVisibility.ts` (36 LOC)
+## `World/MeshVisibility.ts` (37 LOC)
 
 **Module-level functions**
 - `function applyMeshVisibility(mesh: GatedMesh): void`

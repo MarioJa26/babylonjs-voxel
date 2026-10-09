@@ -204,6 +204,18 @@
 	align-self: flex-start;
 }
 
+/* The Options screen is the only menu that grows past its max-height and
+   scrolls. Pin Back to the top of the scrollport so it hovers over the
+   options instead of being scrolled away (opaque surface so content
+   passing underneath doesn't bleed through). */
+#optionsScreen .mc-btn-back {
+	position: sticky;
+	top: 0;
+	z-index: 3;
+	background-color: var(--hud-bg-modal);
+	box-shadow: var(--hud-shadow-soft);
+}
+
 .menu-create-row {
 	display: flex;
 	gap: 8px;
