@@ -34,12 +34,12 @@ export interface ChunkMemberData {
 	lastBuiltOpaque: MeshData | null;
 	lastBuiltWater: MeshData | null;
 	lastBuiltCutout: MeshData | null;
-	lastBuiltOpaqueOffset: number;
-	lastBuiltWaterOffset: number;
-	lastBuiltCutoutOffset: number;
 	// Stable per-layer slot regions (in merged-FACE units). Offsets only move
 	// when the member's own slot class changes — never because a NEIGHBOR
-	// resized — so content-only rebuilds skip the copy entirely.
+	// resized — so content-only rebuilds skip the copy entirely. Every path
+	// that moves a slot nulls the matching lastBuilt* entry, which is what
+	// makes that "offsets only move with invalidation" guarantee enforceable
+	// from a single place.
 	slotOpaqueOffset: number;
 	slotOpaqueFaces: number;
 	slotWaterOffset: number;
@@ -164,26 +164,6 @@ export function consumeGroupsMutated(): boolean {
 const _opaqueFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
 const _waterFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
 const _cutoutFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
-
-/**
- * Drop one member's cached "already memcpy'd into the layer buffer" flags.
- *
- * PERF: this used to loop over every member of the group. A group holds up to
- * 64 chunks (4x4x4), so a single chunk changing LOD bucket — which happens on
- * every LOD band crossing and therefore to a whole ring of chunks at once —
- * nulled all 64 members' caches. The next rebuildGroupData then re-memcpy'd
- * every member's face data and re-ran the per-face chunkMask OR pass for all
- * of them instead of just the one that moved.
- */
-function invalidateGroupMemberBuildCache(
-	group: MergedMeshGroup,
-	member: ChunkMemberData,
-): void {
-	member.lastBuiltOpaque = null;
-	member.lastBuiltWater = null;
-	member.lastBuiltCutout = null;
-	markGroupDirty(group);
-}
 
 // ---------------------------------------------------------------------------
 // Allocation-light constants and scratch state
@@ -312,6 +292,37 @@ function insertOwnedSlotHole(state: SlotLayerState, hole: SlotHole): void {
 	}
 
 	holes.splice(lo, 0, hole);
+}
+
+/**
+ * Drops holes that sit at the very end of the layer's extent.
+ *
+ * `appendedFaces` is the merged mesh's drawn face count, and the draw covers
+ * it in full, so a hole parked against the high-water mark costs real GPU
+ * instances and merged-draw faces for as long as it sits there. Without this,
+ * the only way to reclaim that tail is a full compaction (which resets every
+ * member's slot and forces a whole-layer upload).
+ *
+ * Holes are kept sorted by offset, so only the last element can ever reach
+ * `appendedFaces`. Removing it can expose the one before it, hence the loop.
+ *
+ * Ownership: the trimmed records are returned to the pool.
+ */
+function trimTrailingSlotHoles(state: SlotLayerState): void {
+	const holes = state.holes;
+
+	while (holes.length > 0) {
+		const lastIndex = holes.length - 1;
+		const hole = holes[lastIndex];
+
+		if (hole.offset + hole.faces !== state.appendedFaces) {
+			break;
+		}
+
+		state.appendedFaces = hole.offset;
+		holes.pop();
+		releaseSlotHole(hole);
+	}
 }
 
 /**
@@ -507,26 +518,85 @@ function pushDirtyRange(
 	count: number,
 ): void {
 	if (count <= 0) return;
+
 	_statDirtyFacesFlush += count;
-	const prev = ranges[ranges.length - 1];
+
+	const gap = DIRTY_RANGE_MERGE_GAP_FACES;
+	let mergedStart = start;
+	let mergedEnd = start + count;
 
 	/*
-	 * Merge only into a range that starts at or before this one, so an
-	 * out-of-order member cannot silently extend a range backwards. Slotted
-	 * members are not guaranteed ascending, and a wrong merge here would
-	 * upload (or skip) the wrong arena block.
+	 * Find the first existing range whose end is close enough to the new
+	 * range's start. The ranges array remains sorted and fully coalesced.
 	 */
-	if (prev && start >= prev.start) {
-		const prevEnd = prev.start + prev.count;
+	let lo = 0;
+	let hi = ranges.length;
 
-		if (start <= prevEnd + DIRTY_RANGE_MERGE_GAP_FACES) {
-			const end = Math.max(prevEnd, start + count);
-			prev.count = end - prev.start;
-			return;
+	while (lo < hi) {
+		const mid = (lo + hi) >>> 1;
+		const range = ranges[mid];
+
+		if (range.start + range.count + gap < mergedStart) {
+			lo = mid + 1;
+		} else {
+			hi = mid;
 		}
 	}
 
-	ranges.push(acquireRange(start, count));
+	const first = lo;
+	let last = first;
+
+	/*
+	 * Merge all overlapping or nearby ranges. Updating mergedEnd during the
+	 * scan also handles transitive merging:
+	 *
+	 * new range -> existing A -> existing B
+	 */
+	while (last < ranges.length) {
+		const range = ranges[last];
+		const rangeStart = range.start;
+
+		if (rangeStart > mergedEnd + gap) {
+			break;
+		}
+
+		const rangeEnd = rangeStart + range.count;
+
+		if (rangeStart < mergedStart) {
+			mergedStart = rangeStart;
+		}
+
+		if (rangeEnd > mergedEnd) {
+			mergedEnd = rangeEnd;
+		}
+
+		last++;
+	}
+
+	if (last === first) {
+		ranges.splice(first, 0, acquireRange(mergedStart, mergedEnd - mergedStart));
+		return;
+	}
+
+	/*
+	 * Reuse the first absorbed range so a merge does not allocate another
+	 * range object.
+	 */
+	const mergedRange = ranges[first];
+	mergedRange.start = mergedStart;
+	mergedRange.count = mergedEnd - mergedStart;
+
+	const redundantCount = last - first - 1;
+
+	if (redundantCount <= 0) {
+		return;
+	}
+
+	for (let i = first + 1; i < last; i++) {
+		_rangePool.push(ranges[i]);
+	}
+
+	ranges.splice(first + 1, redundantCount);
 }
 
 /**
@@ -553,6 +623,41 @@ function pushFullDirtyRange(
 	_statDirtyFacesFlush += count;
 	_statFullExtentUploads++;
 	ranges.push(acquireRange(start, count));
+}
+
+/**
+ * Drops pending dirty ranges that fall outside a layer's final slot extent.
+ *
+ * Called after the trailing-hole trims have shrunk `appendedFaces`, which can
+ * leave ranges describing faces the merged draw no longer covers. Ranges are
+ * returned to the pool and survivors are compacted in place; the list stays
+ * sorted because the input was.
+ *
+ * An empty result is a valid outcome and means "nothing to upload" — callers
+ * distinguish that from a missing list (`null`), which means "upload
+ * everything".
+ */
+function clipDirtyRanges(ranges: MergedFaceRange[], extentFaces: number): void {
+	let writeIndex = 0;
+
+	for (let i = 0; i < ranges.length; i++) {
+		const range = ranges[i];
+
+		if (range.start >= extentFaces) {
+			_rangePool.push(range);
+			continue;
+		}
+
+		const rangeEnd = range.start + range.count;
+
+		if (rangeEnd > extentFaces) {
+			range.count = extentFaces - range.start;
+		}
+
+		ranges[writeIndex++] = range;
+	}
+
+	ranges.length = writeIndex;
 }
 
 // Engine perf: rebuild-path helper (chunk-rate, not voxel-rate). Drains one
@@ -778,9 +883,6 @@ export function assignChunkToGroup(
 			lastBuiltOpaque: null,
 			lastBuiltWater: null,
 			lastBuiltCutout: null,
-			lastBuiltOpaqueOffset: -1,
-			lastBuiltWaterOffset: -1,
-			lastBuiltCutoutOffset: -1,
 			slotOpaqueOffset: 0,
 			slotOpaqueFaces: 0,
 			slotWaterOffset: 0,
@@ -886,15 +988,15 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 	members.length = writeIndex;
 	group.minLodLevel = minimumLod;
 
-	// Only the departing member's slot release invalidated its cached copy.
-	// The surviving members keep their lastBuilt* flags, so the rebuild
-	// re-memcpy's only the three released slot ranges instead of every
-	// member's full face data.
-	if (member) {
-		invalidateGroupMemberBuildCache(group, member);
-	} else {
-		markGroupDirty(group);
-	}
+	/*
+	 * Only the departing member's slots changed, and those are already queued
+	 * in each layer's `released` list — the rebuild zero-fills them and pushes
+	 * exactly those ranges, then re-uploads the survivors' untouched slots. The
+	 * departing member is no longer in membersArray, so there is nothing to
+	 * invalidate: clearing its cache would only imply it takes part in the next
+	 * rebuild.
+	 */
+	markGroupDirty(group);
 }
 function validateSettledSlotExtents(
 	group: MergedMeshGroup,
@@ -975,8 +1077,9 @@ export function getMergedMeshFlushStats(): {
 	};
 }
 
-// Diagnostics: CPU bytes held by merged-group layer arrays (3 layers ×
-// A/B/C × capacity×4 B). Compare against getPackedMeshMemoryStats().
+// Diagnostics: CPU bytes held by the three interleaved layer buffers.
+// Each allocated face uses FACE_BYTES bytes. Compare against
+// getPackedMeshMemoryStats().
 export function getMergedLayerMemoryStats(): {
 	groups: number;
 	layerBytes: number;
@@ -987,14 +1090,12 @@ export function getMergedLayerMemoryStats(): {
 		groupCount++;
 		layerBytes +=
 			(g.opaqueCapacityFaces + g.waterCapacityFaces + g.cutoutCapacityFaces) *
-			4 *
-			3;
+			FACE_BYTES;
 	}
 	return { groups: groupCount, layerBytes };
 }
 
 let _mergedFlushRafScheduled = false;
-const _flushSnapshot: MergedMeshGroup[] = [];
 
 /**
  * Burst ceiling on face bytes a single flush may hand to `queue.writeBuffer`.
@@ -1172,8 +1273,33 @@ export function disposeAll(): void {
 	groups.clear();
 	dirtyGroups.clear();
 	octreeClear();
-	_flushSnapshot.length = 0;
 	_allGroupsReuse.length = 0;
+
+	/*
+	 * Reset-and-reuse teardown (reached from disposeSharedResources), so the
+	 * scheduler and diagnostic state go back to their initial values too —
+	 * otherwise a rebuilt world inherits the previous session's timings.
+	 *
+	 * `_requestFlush` and `_onGroupMeshNeedsRebuild` are deliberately kept:
+	 * both are registered exactly once for the process lifetime (pool
+	 * constructor and ChunkMesher module load) and nothing re-registers them,
+	 * so clearing them here would permanently stop merged groups from
+	 * rebuilding or ever being rebuilt into meshes.
+	 */
+	_groupsMutatedSinceSweep = false;
+	_mergedFlushRafScheduled = false;
+
+	_lastMergedFlushMs = 0;
+	_mergedFlushTotalMs = 0;
+	_mergedFlushCount = 0;
+	_lastMergedFlushGpuBytes = 0;
+	_lastMergedFlushExhausted = false;
+
+	_statMembersSeen = 0;
+	_statCopiesPerformed = 0;
+	_statDirtyFacesFlush = 0;
+	_statWasteFacesMax = 0;
+	_statFullExtentUploads = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1241,11 +1367,11 @@ function getValidatedFaceCount(
 ): number {
 	if (!data) return 0;
 	const raw = data.faceCount;
-	const byteLen = data.faceData.length;
-	if (raw >= 0 && raw * 12 === byteLen) {
+	const byteLen = data.faceData.byteLength;
+	if (Number.isInteger(raw) && raw >= 0 && raw * FACE_BYTES === byteLen) {
 		return raw;
 	}
-	const derived = (byteLen / 12) | 0;
+	const derived = Math.floor(byteLen / FACE_BYTES);
 	console.warn(
 		`[MergedMeshManager] chunk #${chunkId} (lod ${lod}) ${kindName} faceCount (${raw}) inconsistent with buffer length (${byteLen} bytes) — using ${derived} instead.`,
 	);
@@ -1304,6 +1430,73 @@ function shrinkGroupLayer(
 		group.cutoutData = next;
 		group.cutoutCapacityFaces = newCapacity;
 	}
+}
+
+/**
+ * Smallest backing array worth handing back when a layer falls empty.
+ *
+ * Water and cutout geometry flickers constantly (tide, wave height, foliage
+ * distance culling), so releasing unconditionally would churn the Uint8 pool
+ * on every blip. Below this size the retention is cheap and the churn is not.
+ */
+const EMPTY_LAYER_RELEASE_MIN_CAPACITY_FACES = 2048;
+
+/**
+ * Drops the backing array of a layer that has no faces left.
+ *
+ * `shrinkGroupLayer` bottoms out at 256 faces, so a layer that emptied out
+ * still held its allocation forever. Releasing it here returns the memory to
+ * the pool and clears the vertex-data view, which makes the rebuild callback
+ * dispose the now-empty mesh (it keys off `cached*` being null).
+ *
+ * Safe to re-acquire later: `ensureLayerMergedCapacity` allocates afresh and
+ * `exposeLayerData` builds a new view when `*VertexData` is null.
+ */
+function releaseEmptyGroupLayer(group: MergedMeshGroup, kind: 0 | 1 | 2): void {
+	if (kind === 0) {
+		if (
+			group.opaqueSlots.appendedFaces !== 0 ||
+			group.opaqueCapacityFaces < EMPTY_LAYER_RELEASE_MIN_CAPACITY_FACES
+		) {
+			return;
+		}
+
+		releasePooledU8(group.opaqueData);
+		group.opaqueData = null;
+		group.opaqueCapacityFaces = 0;
+		group.opaqueVertexData = null;
+		group.cachedOpaque = null;
+		return;
+	}
+
+	if (kind === 1) {
+		if (
+			group.waterSlots.appendedFaces !== 0 ||
+			group.waterCapacityFaces < EMPTY_LAYER_RELEASE_MIN_CAPACITY_FACES
+		) {
+			return;
+		}
+
+		releasePooledU8(group.waterData);
+		group.waterData = null;
+		group.waterCapacityFaces = 0;
+		group.waterVertexData = null;
+		group.cachedWater = null;
+		return;
+	}
+
+	if (
+		group.cutoutSlots.appendedFaces !== 0 ||
+		group.cutoutCapacityFaces < EMPTY_LAYER_RELEASE_MIN_CAPACITY_FACES
+	) {
+		return;
+	}
+
+	releasePooledU8(group.cutoutData);
+	group.cutoutData = null;
+	group.cutoutCapacityFaces = 0;
+	group.cutoutVertexData = null;
+	group.cachedCutout = null;
 }
 
 function maybeShrinkGroupLayers(group: MergedMeshGroup): void {
@@ -1470,7 +1663,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			member.slotOpaqueOffset = 0;
 			member.slotOpaqueFaces = 0;
 			member.lastBuiltOpaque = null;
-			member.lastBuiltOpaqueOffset = -1;
 		}
 	}
 
@@ -1492,7 +1684,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			member.slotWaterOffset = 0;
 			member.slotWaterFaces = 0;
 			member.lastBuiltWater = null;
-			member.lastBuiltWaterOffset = -1;
 		}
 	}
 
@@ -1514,7 +1705,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			member.slotCutoutOffset = 0;
 			member.slotCutoutFaces = 0;
 			member.lastBuiltCutout = null;
-			member.lastBuiltCutoutOffset = -1;
 		}
 	}
 
@@ -1534,7 +1724,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				member.slotOpaqueOffset = 0;
 				member.slotOpaqueFaces = 0;
 				member.lastBuiltOpaque = null;
-				member.lastBuiltOpaqueOffset = -1;
 			}
 		} else {
 			const wantedFaces = slotClassFor(opaqueCount, maximumFaces);
@@ -1557,7 +1746,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				member.slotOpaqueOffset = _slotResult.offset;
 				member.slotOpaqueFaces = _slotResult.faces;
 				member.lastBuiltOpaque = null;
-				member.lastBuiltOpaqueOffset = -1;
 			}
 		}
 
@@ -1574,7 +1762,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				member.slotWaterOffset = 0;
 				member.slotWaterFaces = 0;
 				member.lastBuiltWater = null;
-				member.lastBuiltWaterOffset = -1;
 			}
 		} else {
 			const wantedFaces = slotClassFor(waterCount, maximumFaces);
@@ -1596,7 +1783,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				member.slotWaterOffset = _slotResult.offset;
 				member.slotWaterFaces = _slotResult.faces;
 				member.lastBuiltWater = null;
-				member.lastBuiltWaterOffset = -1;
 			}
 		}
 
@@ -1613,7 +1799,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				member.slotCutoutOffset = 0;
 				member.slotCutoutFaces = 0;
 				member.lastBuiltCutout = null;
-				member.lastBuiltCutoutOffset = -1;
 			}
 		} else {
 			const wantedFaces = slotClassFor(cutoutCount, maximumFaces);
@@ -1633,7 +1818,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				member.slotCutoutOffset = _slotResult.offset;
 				member.slotCutoutFaces = _slotResult.faces;
 				member.lastBuiltCutout = null;
-				member.lastBuiltCutoutOffset = -1;
 			}
 		}
 	}
@@ -1679,6 +1863,8 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		insertOwnedSlotHole(opaqueState, released);
 	}
 
+	trimTrailingSlotHoles(opaqueState);
+
 	if (waterState.appendedFaces > 0) {
 		ensureLayerMergedCapacity(group, 1, waterState.appendedFaces, maximumFaces);
 	} else {
@@ -1696,6 +1882,8 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		pushDirtyRange(waterRanges, released.offset, released.faces);
 		insertOwnedSlotHole(waterState, released);
 	}
+
+	trimTrailingSlotHoles(waterState);
 
 	if (cutoutState.appendedFaces > 0) {
 		ensureLayerMergedCapacity(
@@ -1719,6 +1907,24 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		pushDirtyRange(cutoutRanges, released.offset, released.faces);
 		insertOwnedSlotHole(cutoutState, released);
 	}
+
+	trimTrailingSlotHoles(cutoutState);
+
+	/*
+	 * The trailing trims above can push each layer's extent below ranges that
+	 * were pushed moments ago (the drained released slot's own zero-fill is the
+	 * obvious one). Those ranges describe faces the merged draw no longer
+	 * covers, so drop them — otherwise they upload bytes the mesh does not draw
+	 * and inflate the per-flush range-call count the HUD reports.
+	 *
+	 * Safe to run exactly here: `acquireSlotInto` is the only mutator of
+	 * `appendedFaces` and it ran above, so every range pushed after this point
+	 * (per-member slot ranges, compaction full-extent ranges) is already in
+	 * bounds and needs no clipping.
+	 */
+	clipDirtyRanges(opaqueRanges, opaqueState.appendedFaces);
+	clipDirtyRanges(waterRanges, waterState.appendedFaces);
+	clipDirtyRanges(cutoutRanges, cutoutState.appendedFaces);
 
 	const opaqueData = group.opaqueData;
 	const waterData = group.waterData;
@@ -1785,7 +1991,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			}
 
 			member.lastBuiltOpaque = opaque;
-			member.lastBuiltOpaqueOffset = byteOffset;
 			_statCopiesPerformed++;
 
 			/*
@@ -1850,7 +2055,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			}
 
 			member.lastBuiltWater = water;
-			member.lastBuiltWaterOffset = byteOffset;
 			_statCopiesPerformed++;
 
 			if (!waterCompaction) {
@@ -1908,7 +2112,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			}
 
 			member.lastBuiltCutout = cutout;
-			member.lastBuiltCutoutOffset = byteOffset;
 			_statCopiesPerformed++;
 
 			if (!cutoutCompaction) {
@@ -1940,6 +2143,14 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	}
 
 	maybeShrinkGroupLayers(group);
+
+	/*
+	 * Runs after the shrink pass so an emptied layer is released outright
+	 * instead of being reallocated down to the 256-face shrink floor first.
+	 */
+	releaseEmptyGroupLayer(group, 0);
+	releaseEmptyGroupLayer(group, 1);
+	releaseEmptyGroupLayer(group, 2);
 
 	const finalOpaqueData = group.opaqueData;
 	const finalWaterData = group.waterData;

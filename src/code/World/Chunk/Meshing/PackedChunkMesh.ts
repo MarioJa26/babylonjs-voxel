@@ -1755,7 +1755,7 @@ export function updatePackedChunkMesh(
 			state.faceCount = faceCount;
 			state.instanceLanesValid = faceCount;
 
-			if (dirtyRanges && dirtyRanges.length > 0) {
+			if (dirtyRanges) {
 				packFaceRanges(state, input, dirtyRanges);
 				uploadFaceRanges(oldArenaIndex, oldBase, faceCount, dirtyRanges);
 			} else {
@@ -1805,7 +1805,7 @@ export function updatePackedChunkMesh(
 		) {
 			state.faceCount = faceCount;
 
-			if (dirtyRanges && dirtyRanges.length > 0) {
+			if (dirtyRanges) {
 				packFaceRanges(state, input, dirtyRanges);
 				uploadFaceRanges(oldArenaIndex, oldBase, faceCount, dirtyRanges);
 			} else {
