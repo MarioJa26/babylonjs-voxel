@@ -12,11 +12,11 @@ import {
 	getShapeDefinitions,
 } from "../../Shape/BlockShapes";
 import { getSliceAxis, transformBox } from "../../Shape/BlockShapeTransforms";
+import { getSourceBlockId } from "../../Texture/BlockMaterial";
 import {
 	unpackBlockId,
 	unpackBlockState,
 } from "../DataStructures/BlockEncoding";
-import { getSourceBlockId } from "../../Texture/BlockMaterial";
 import { WATER_BLOCK_ID } from "../Worker/ChunkMesherConstants";
 
 // ---------------------------------------------------------------------------

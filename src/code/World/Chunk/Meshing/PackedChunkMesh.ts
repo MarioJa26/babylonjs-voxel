@@ -108,6 +108,8 @@ const INSTANCE_FLOATS = 4;
 // driver actually receives.
 const INSTANCE_STRIDE_BYTES = INSTANCE_FLOATS * 4;
 const CONSTANT_INSTANCE_VERTEX_COUNT = 4;
+const CONSTANT_INSTANCE_DATA_ELEMENTS =
+	CONSTANT_INSTANCE_VERTEX_COUNT * INSTANCE_FLOATS;
 const FACE_BASE_INSTANCE_INDEX = 0;
 const ARENA_INSTANCE_INDEX = 1;
 const OFFSET_BASE_INSTANCE_INDEX = 2;
@@ -924,27 +926,14 @@ function compactArena(index: number): boolean {
 			const data = state.instanceMatrices;
 			if (!data) continue;
 
-			const capacity = Math.floor(data.length / INSTANCE_FLOATS);
-			const lanes = Math.min(
-				state.instanceLanesValid ?? state.faceCount,
-				capacity,
-			);
-
-			for (
-				let face = 0, lane = FACE_BASE_INSTANCE_INDEX;
-				face < lanes;
-				face++, lane += INSTANCE_FLOATS
-			) {
-				data[lane] = state.faceBase;
-			}
-
-			setThinInstancesRange(
-				entry.mesh,
+			writeConstantInstanceMetadata(
 				data,
-				state.faceCount,
-				0,
-				state.faceCount,
+				state.faceArena,
+				state.faceBase,
+				state.offsetBase,
 			);
+
+			setThinInstancesRange(entry.mesh, data, state.faceCount, 0, 1);
 		}
 
 		console.warn(
@@ -1357,110 +1346,81 @@ function packOffsets(state: PackedMeshState, input: PackedMeshInput): void {
 	}
 }
 
-// Build / reuse the CPU metadata shadow for a mesh: `count` records of 4
-// floats each (INSTANCE_FLOATS), where record i carries
-//   [i*4 + FACE_BASE_INSTANCE_INDEX]    = faceBase
-//   [i*4 + ARENA_INSTANCE_INDEX]        = arena
-//   [i*4 + OFFSET_BASE_INSTANCE_INDEX]  = the group's chunkOffsets base
-// and w stays zero. The shader reads them as `instData` (a patch-package
-// patch to lite gives these meshes a stride-16 vec4 vertex attribute instead
-// of a full 64-byte mat4).
-//
-// PERF: the CPU shadow is RETAINED per-mesh on PackedMeshState and reused
-// across updates. Only its first record is uploaded to the GPU; the remaining
-// records keep the existing allocator/compaction code simple.
-//
-// Capacity GROWS monotonically, so a mesh whose face count fluctuates around
-// a level reuses its buffer instead of zero-filling a fresh array on every
-// rebuild; a hysteresis shrink releases memory after spikes. `start` is the
-// first instance index whose lanes need (re)writing — callers pass
-// `state.faceCount` (the old count) when only the appended instances are new,
-// and 0 when the faceBase/arena/offsetBase lanes themselves changed.
-//
-// Returns null (and logs) when `count` is not a sane non-negative number,
-// would need more than MAX_INSTANCE_DATA_ELEMENTS, or the allocation itself
-// fails (OOM under the cap) — the caller then skips the mesh update instead
-// of attempting a multi-gigabyte allocation (which hard-crashes the tab with
-// "Array buffer allocation failed").
+/**
+ * Writes the compact metadata into the four vertex records consumed by the
+ * shared quad.
+ *
+ * All records are identical because face selection comes from
+ * @builtin(instance_index), not from unique per-instance metadata.
+ */
+function writeConstantInstanceMetadata(
+	data: Float32Array,
+	arena: number,
+	faceBase: number,
+	offsetBase: number,
+): void {
+	for (
+		let index = 0;
+		index < CONSTANT_INSTANCE_DATA_ELEMENTS;
+		index += INSTANCE_FLOATS
+	) {
+		data[index + FACE_BASE_INSTANCE_INDEX] = faceBase;
+		data[index + ARENA_INSTANCE_INDEX] = arena;
+		data[index + OFFSET_BASE_INSTANCE_INDEX] = offsetBase;
+		data[index + 3] = 0;
+	}
+}
+
+/**
+ * Build or update the compact-constant metadata shadow.
+ *
+ * The old implementation allocated count * 4 floats despite the GPU consuming
+ * only four constant records. With 100,000 faces, that retained about 1.6 MiB
+ * for one mesh. This version always retains exactly 16 floats, or 64 bytes.
+ *
+ * The signature is preserved so existing callers remain source-compatible.
+ * `count` is still validated because it controls the actual draw count.
+ * `start` is intentionally unused because metadata is constant across faces.
+ */
 function buildInstanceData(
 	previous: Float32Array | undefined,
 	arena: number,
 	faceBase: number,
 	offsetBase: number,
 	count: number,
-	start: number,
+	_start: number,
 ): Float32Array | null {
 	if (!Number.isInteger(count) || count < 0) {
 		console.warn(
-			`[PackedChunkMesh] refusing instance buffer: invalid face count ` +
-				`${count}.`,
+			`[PackedChunkMesh] refusing instance data: invalid face count ${count}.`,
 		);
 		return null;
 	}
 
-	const requiredLength = count * INSTANCE_FLOATS;
+	const maxFaces = MAX_INSTANCE_DATA_ELEMENTS / INSTANCE_FLOATS;
 
-	if (requiredLength > MAX_INSTANCE_DATA_ELEMENTS) {
+	if (count > maxFaces) {
 		console.warn(
-			`[PackedChunkMesh] refusing instance buffer: ${count} faces ` +
-				`(${requiredLength} elements) exceeds the safe limit of ` +
-				`${MAX_INSTANCE_DATA_ELEMENTS / INSTANCE_FLOATS} faces per mesh. ` +
-				`Mesh update skipped.`,
+			`[PackedChunkMesh] refusing instance data: ${count} faces exceeds ` +
+				`the safe per-mesh limit of ${maxFaces}.`,
 		);
 		return null;
 	}
 
 	let data = previous;
-	let mustInitializeAll = false;
 
-	const needsGrowth = !data || data.length < requiredLength;
-	const shouldShrink =
-		data !== undefined &&
-		data.length > MIN_INSTANCE_DATA_ELEMENTS &&
-		requiredLength * INSTANCE_SHRINK_RATIO <= data.length;
-
-	if (needsGrowth || shouldShrink) {
-		const capacity = instanceCapacityFor(requiredLength);
-
+	if (data === undefined || data.length !== CONSTANT_INSTANCE_DATA_ELEMENTS) {
 		try {
-			data = new Float32Array(capacity);
+			data = new Float32Array(CONSTANT_INSTANCE_DATA_ELEMENTS);
 		} catch {
 			console.warn(
-				`[PackedChunkMesh] instance allocation failed ` +
-					`(${capacity} elements, ${Math.ceil(capacity / 262144)} MiB). ` +
-					`Mesh update skipped.`,
+				"[PackedChunkMesh] compact instance metadata allocation failed.",
 			);
 			return null;
 		}
-
-		mustInitializeAll = true;
 	}
 
-	if (!data) {
-		return null;
-	}
-
-	if (mustInitializeAll) {
-		start = 0;
-	} else if (start < 0) {
-		start = 0;
-	} else if (start > count) {
-		start = count;
-	}
-
-	/*
-	 * All three values are constant across the instances belonging to this
-	 * mesh. The fourth lane remains zero.
-	 */
-	for (
-		let instance = start, index = start * INSTANCE_FLOATS;
-		instance < count;
-		instance++, index += INSTANCE_FLOATS
-	) {
-		data[index + FACE_BASE_INSTANCE_INDEX] = faceBase;
-		data[index + ARENA_INSTANCE_INDEX] = arena;
-		data[index + OFFSET_BASE_INSTANCE_INDEX] = offsetBase;
-	}
+	writeConstantInstanceMetadata(data, arena, faceBase, offsetBase);
 
 	return data;
 }
@@ -1468,6 +1428,13 @@ function buildInstanceData(
 // Low-level replacement for the public setThinInstances(). Packed terrain
 // uses one constant compact record per mesh, so count changes only update the
 // draw count; metadata changes upload one 16-byte record.
+/**
+ * Updates compact thin-instance state.
+ *
+ * `count` is the draw-instance count and is independent of the metadata-buffer
+ * capacity. The GPU metadata buffer always contains four records, one for each
+ * vertex of the shared quad.
+ */
 function setThinInstancesRange(
 	mesh: Mesh,
 	matrices: Float32Array,
@@ -1475,82 +1442,91 @@ function setThinInstancesRange(
 	dirtyStart: number,
 	dirtyEnd: number,
 ): void {
-	const anyMesh = mesh as PackedMesh;
-	const capacity = matrices.length / INSTANCE_FLOATS;
+	if (!Number.isInteger(count) || count < 0) {
+		console.error(`[PackedChunkMesh] invalid thin-instance count ${count}.`);
+		return;
+	}
 
-	if (count > capacity) {
+	if (matrices.length < CONSTANT_INSTANCE_DATA_ELEMENTS) {
 		console.error(
-			`[PackedChunkMesh] thin-instance count (${count}) exceeds ` +
-				`instance buffer capacity (${capacity}) — caller bug.`,
+			`[PackedChunkMesh] compact metadata contains ${matrices.length} ` +
+				`floats; ${CONSTANT_INSTANCE_DATA_ELEMENTS} are required.`,
 		);
 		return;
 	}
 
+	const anyMesh = mesh as PackedMesh;
 	let ti = anyMesh.thinInstances;
 
-	/*
-	 * Every face in a packed mesh shares the same three metadata values:
-	 * faceBase, arena, and offsetBase. The old implementation repeated that
-	 * vec4 once per face, so creating 2,000 meshes caused 2,000 face-sized
-	 * writeBuffer uploads. Compact-constant mode binds four identical records
-	 * for the shared quad's vertices; instance_index still selects the face.
-	 */
-	if (!ti || ti.compactConstant !== true) {
+	if (ti === undefined || ti.compactConstant !== true) {
 		setThinInstances(mesh, matrices, CONSTANT_INSTANCE_VERTEX_COUNT);
+
 		ti = anyMesh.thinInstances;
-		if (!ti) return;
+		if (ti === undefined) return;
 
 		ti.compact = true;
 		ti.compactConstant = true;
+		ti.matrices = matrices;
 		ti._capacity = CONSTANT_INSTANCE_VERTEX_COUNT;
 		ti.count = count;
+
 		ti._dirtyMin = 0;
 		ti._dirtyMax = CONSTANT_INSTANCE_VERTEX_COUNT;
 
-		_instanceUploadBytes +=
-			INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT;
+		const uploadBytes = INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT;
+
+		_instanceUploadBytes += uploadBytes;
 		_instanceUploadCalls++;
 		_instanceFullUploads++;
-		if (
-			INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT >
-			_peakInstanceUploadBytes
-		) {
-			_peakInstanceUploadBytes =
-				INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT;
+
+		if (uploadBytes > _peakInstanceUploadBytes) {
+			_peakInstanceUploadBytes = uploadBytes;
 		}
+
 		return;
 	}
 
-	ti.matrices = matrices;
 	const previousCount = ti.count;
+	const metadataBufferChanged = ti.matrices !== matrices;
+
+	ti.matrices = matrices;
 	ti.count = count;
-	// The GPU capacity is four constant vertex records. `matrices` remains face-sized
-	// on the CPU because the mesh allocator and compaction code reuse it.
 	ti._capacity = CONSTANT_INSTANCE_VERTEX_COUNT;
 
-	const metadataDirty = dirtyStart <= 0 && dirtyEnd > 0;
-	const pendingMetadataUpload =
+	/*
+	 * Metadata is dirty when the requested range includes record zero.
+	 * In compact-constant mode that means all four vertex records must be
+	 * uploaded, but the upload is still only 64 bytes.
+	 */
+	const metadataDirty =
+		metadataBufferChanged || (dirtyStart <= 0 && dirtyEnd > 0);
+
+	const metadataUploadPending =
 		ti._dirtyMin <= 0 && ti._dirtyMax >= CONSTANT_INSTANCE_VERTEX_COUNT;
 
-	if ((metadataDirty || !ti._gpuBuffer) && !pendingMetadataUpload) {
+	if ((metadataDirty || ti._gpuBuffer === null) && !metadataUploadPending) {
 		ti._dirtyMin = 0;
 		ti._dirtyMax = CONSTANT_INSTANCE_VERTEX_COUNT;
 		ti._version++;
 
-		_instanceUploadBytes +=
-			INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT;
+		const uploadBytes = INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT;
+
+		_instanceUploadBytes += uploadBytes;
 		_instanceUploadCalls++;
 		_instanceRangedUploads++;
-		if (
-			INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT >
-			_peakInstanceUploadBytes
-		) {
-			_peakInstanceUploadBytes =
-				INSTANCE_STRIDE_BYTES * CONSTANT_INSTANCE_VERTEX_COUNT;
+
+		if (uploadBytes > _peakInstanceUploadBytes) {
+			_peakInstanceUploadBytes = uploadBytes;
 		}
-	} else if (previousCount !== count && ti._version === ti._gpuVersion) {
-		// A draw-count change needs version tracking for indirect arguments, but
-		// it does not change the constant metadata record.
+
+		return;
+	}
+
+	if (previousCount !== count && ti._version === ti._gpuVersion) {
+		/*
+		 * Count-only update. Increment the version so Lite refreshes draw
+		 * arguments, but leave an empty dirty range to avoid a metadata upload.
+		 */
 		ti._dirtyMin = CONSTANT_INSTANCE_VERTEX_COUNT;
 		ti._dirtyMax = 0;
 		ti._version++;
@@ -1606,18 +1582,15 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 
 	/*
 	 * The provisional instance data used zeros because arena allocation had
-	 * not happened yet. Rewrite its active records with the actual constants.
+	 * not happened yet. Rewrite its records with the actual constants.
 	 * No second typed array is allocated.
 	 */
-	for (
-		let face = 0, index = 0;
-		face < faceCount;
-		face++, index += INSTANCE_FLOATS
-	) {
-		instanceMatrices[index + FACE_BASE_INSTANCE_INDEX] = allocation.base;
-		instanceMatrices[index + ARENA_INSTANCE_INDEX] = allocation.arena;
-		instanceMatrices[index + OFFSET_BASE_INSTANCE_INDEX] = offsetBase;
-	}
+	writeConstantInstanceMetadata(
+		instanceMatrices,
+		allocation.arena,
+		allocation.base,
+		offsetBase,
+	);
 
 	const state: PackedMeshState = {
 		faceArena: allocation.arena,
@@ -1945,18 +1918,15 @@ export function updatePackedChunkMesh(
 	}
 
 	/*
-	 * Patch the retained instance buffer before committing state. This loop
+	 * Patch the retained instance buffer before committing state. This
 	 * performs no allocations.
 	 */
-	for (
-		let face = 0, index = 0;
-		face < faceCount;
-		face++, index += INSTANCE_FLOATS
-	) {
-		candidateMatrices[index + FACE_BASE_INSTANCE_INDEX] = allocation.base;
-		candidateMatrices[index + ARENA_INSTANCE_INDEX] = allocation.arena;
-		candidateMatrices[index + OFFSET_BASE_INSTANCE_INDEX] = state.offsetBase;
-	}
+	writeConstantInstanceMetadata(
+		candidateMatrices,
+		allocation.arena,
+		allocation.base,
+		state.offsetBase,
+	);
 
 	if (!oldBlockFreed) {
 		freeFaces(oldArenaIndex, oldBase, oldCount);

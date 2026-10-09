@@ -182,6 +182,15 @@ export class WasmFastNoise implements NoiseInstance {
 	private memF32: Float32Array | null = null;
 	private memByteLength = 0;
 
+	// PERF: `subarray` allocates a fresh view object on every readBatch call, and
+	// SurfaceDensity runs once per column (1024/chunk) always with the same
+	// scratch pointer and length once ensureScratch has settled. Caching the
+	// view keyed on (ptr, length) removes ~1k short-lived typed arrays per
+	// chunk layer. Falls back to allocating when the geometry changes.
+	private batchView: Float32Array | null = null;
+	private batchViewPtr = -1;
+	private batchViewLen = -1;
+
 	constructor(
 		private kernels: WasmKernelsExports,
 		seed: number,
@@ -194,8 +203,25 @@ export class WasmFastNoise implements NoiseInstance {
 		if (this.memF32 === null || this.memByteLength !== mem.buffer.byteLength) {
 			this.memF32 = new Float32Array(mem.buffer);
 			this.memByteLength = mem.buffer.byteLength;
+			// The cached subarray views point into the old (detached) buffer.
+			this.batchView = null;
+			this.batchViewPtr = -1;
+			this.batchViewLen = -1;
 		}
-		out.set(this.memF32.subarray(ptr >> 2, (ptr >> 2) + out.length));
+		const len = out.length;
+		let view = this.batchView;
+		if (
+			view === null ||
+			this.batchViewPtr !== ptr ||
+			this.batchViewLen !== len
+		) {
+			const base = ptr >> 2;
+			view = this.memF32.subarray(base, base + len);
+			this.batchView = view;
+			this.batchViewPtr = ptr;
+			this.batchViewLen = len;
+		}
+		out.set(view);
 	}
 
 	GetNoise2D(x: number, y: number): number {

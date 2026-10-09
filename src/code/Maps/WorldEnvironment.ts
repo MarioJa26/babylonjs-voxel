@@ -198,25 +198,6 @@ export class WorldEnvironment {
 		addToScene(this.scene, skybox);
 	}
 
-	/**
-	 * Move/resize the sky dome only when the camera or far plane actually
-	 * changed. This avoids unnecessary world-matrix version bumps and mesh
-	 * UBO writes on idle frames.
-	 */
-	/**
-	 * Unit vector toward a body running the daily schedule at `dayFrac`
-	 * (0..1). Shared by the sun (frac = time of day) and the moon
-	 * (frac = time of day + phase).
-	 */
-	private orbitDirection(dayFrac: number, out: [number, number, number]): void {
-		const a = dayFrac * TWO_PI;
-		const e = Math.sin(a) * MAX_SUN_ELEVATION;
-		const c = Math.cos(e);
-		out[0] = c * Math.cos(a);
-		out[1] = Math.sin(e);
-		out[2] = c * Math.sin(a);
-	}
-
 	private syncDome(): void {
 		const skybox = this.skybox;
 		const cam = this.scene.camera;
@@ -249,117 +230,206 @@ export class WorldEnvironment {
 	}
 
 	public update(deltaMs: number): void {
-		// Keep the dome centred on the camera and sized just inside the far
-		// plane. This is still internally cached by syncDome().
 		this.syncDome();
 
 		if (this.isPaused) return;
 
-		// Twinkle clock runs even while the sun is held static so the star
-		// field never freezes on paused-time debug views.
-		if (this.skyMaterial) {
-			this.elapsedSec = (this.elapsedSec + deltaMs / 1000) % TWINKLE_WRAP_SEC;
-			setShaderUniform(this.skyMaterial, "time", this.elapsedSec);
+		const skyMaterial = this.skyMaterial;
+
+		/*
+		 * Twinkle runs independently from the day cycle. Keep this before the
+		 * static-sun early return so stars continue animating when timeScale is 0.
+		 */
+		if (skyMaterial !== null) {
+			let elapsedSec = this.elapsedSec + deltaMs * 0.001;
+
+			/*
+			 * Avoid `%` on almost every frame. The clock normally crosses the
+			 * boundary by much less than one wrap.
+			 */
+			if (elapsedSec >= TWINKLE_WRAP_SEC) {
+				elapsedSec -= TWINKLE_WRAP_SEC;
+
+				// Handle an unusually large delta without allowing an invalid
+				// value to remain outside the expected range.
+				if (elapsedSec >= TWINKLE_WRAP_SEC) {
+					elapsedSec %= TWINKLE_WRAP_SEC;
+				}
+			}
+
+			this.elapsedSec = elapsedSec;
+			setShaderUniform(skyMaterial, "time", elapsedSec);
 		}
 
-		const shouldAdvanceTime = this.timeScale !== 0;
+		const timeScale = this.timeScale;
+		const serverSyncAt = this.serverSyncAt;
+		const shouldAdvanceLocalTime = timeScale !== 0;
+		const shouldAdvanceServerTime =
+			!shouldAdvanceLocalTime && serverSyncAt !== 0 && this.serverDayCycle;
 
-		// Static sun: after the first refresh, or after setTime(), skip all
-		// lighting/material writes.
-		if (!shouldAdvanceTime && !this.forceSunUpdate && this.serverSyncAt === 0)
+		/*
+		 * The sky dome and twinkle clock have already been updated. If neither
+		 * local nor server time is moving, there is no remaining per-frame work
+		 * after the forced initial/static refresh.
+		 */
+		if (
+			!shouldAdvanceLocalTime &&
+			!shouldAdvanceServerTime &&
+			!this.forceSunUpdate
+		) {
 			return;
-
-		const prevTimeOfDay = this.timeOfDay;
-
-		if (shouldAdvanceTime) {
-			this.timeOfDay += deltaMs * this.timeScale;
-			this.timeOfDay %= SETTING_PARAMS.DAY_DURATION_MS;
-		} else if (this.serverSyncAt !== 0 && this.serverDayCycle) {
-			// Interpolate between server WorldTime broadcasts so the sun moves
-			// at the server's day rate instead of stepping every broadcast.
-			// Keep timeOfDay in the client day basis (fraction × DAY_DURATION_MS).
-			const dayFrac =
-				(this.serverTimeOfDay +
-					(performance.now() - this.serverSyncAt) / this.serverDayDurationMs) %
-				1;
-			this.timeOfDay = dayFrac * SETTING_PARAMS.DAY_DURATION_MS;
 		}
 
+		const dayDurationMs = SETTING_PARAMS.DAY_DURATION_MS;
+		const previousTimeOfDay = this.timeOfDay;
+		let timeOfDay = previousTimeOfDay;
+
+		if (shouldAdvanceLocalTime) {
+			timeOfDay += deltaMs * timeScale;
+
+			/*
+			 * Fast path for normal positive progression. Fall back to normalized
+			 * modulo for reverse time or unusually large frame deltas.
+			 */
+			if (timeOfDay >= dayDurationMs) {
+				timeOfDay -= dayDurationMs;
+
+				if (timeOfDay >= dayDurationMs) {
+					timeOfDay %= dayDurationMs;
+				}
+			} else if (timeOfDay < 0) {
+				timeOfDay =
+					((timeOfDay % dayDurationMs) + dayDurationMs) % dayDurationMs;
+			}
+		} else if (shouldAdvanceServerTime) {
+			const elapsedSinceSyncMs = performance.now() - serverSyncAt;
+			let dayFraction =
+				this.serverTimeOfDay + elapsedSinceSyncMs / this.serverDayDurationMs;
+
+			/*
+			 * In normal operation the value advances by much less than one day
+			 * between packets, avoiding modulo in the common case.
+			 */
+			if (dayFraction >= 1) {
+				dayFraction -= 1;
+
+				if (dayFraction >= 1) {
+					dayFraction %= 1;
+				}
+			} else if (dayFraction < 0) {
+				dayFraction = ((dayFraction % 1) + 1) % 1;
+			}
+
+			timeOfDay = dayFraction * dayDurationMs;
+		}
+
+		this.timeOfDay = timeOfDay;
 		this.forceSunUpdate = false;
 
-		const t = this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS;
-		this.orbitDirection(t, this.sunDirectionUniform);
-		const sx = this.sunDirectionUniform[0];
-		const sy = this.sunDirectionUniform[1];
-		const sz = this.sunDirectionUniform[2];
+		const dayFraction = timeOfDay / dayDurationMs;
+		const sunAngle = dayFraction * TWO_PI;
 
-		GLOBAL_VALUES.skyLightDirection.x = -sx;
-		GLOBAL_VALUES.skyLightDirection.y = -sy;
-		GLOBAL_VALUES.skyLightDirection.z = -sz;
+		/*
+		 * Calculate sin/cos once for both the sun direction and intensity.
+		 * The old code evaluated Math.sin(dayFraction * TWO_PI) again when
+		 * computing intensity.
+		 */
+		const sinSunAngle = Math.sin(sunAngle);
+		const cosSunAngle = Math.cos(sunAngle);
+		const sunElevation = sinSunAngle * MAX_SUN_ELEVATION;
+		const sunElevationSin = Math.sin(sunElevation);
+		const sunElevationCos = Math.cos(sunElevation);
 
-		const sunIntensity = Math.max(0.0, Math.sin(t * TWO_PI));
+		const sx = sunElevationCos * cosSunAngle;
+		const sy = sunElevationSin;
+		const sz = sunElevationCos * sinSunAngle;
 
-		if (this.dirLight && sunIntensity !== this.lastSunIntensity) {
-			this.dirLight.intensity = sunIntensity;
+		const globalSunDirection = GLOBAL_VALUES.skyLightDirection;
+		globalSunDirection.x = -sx;
+		globalSunDirection.y = -sy;
+		globalSunDirection.z = -sz;
+
+		const sunIntensity = sinSunAngle > 0 ? sinSunAngle : 0;
+		const dirLight = this.dirLight;
+
+		if (dirLight !== null && sunIntensity !== this.lastSunIntensity) {
+			dirLight.intensity = sunIntensity;
 			this.lastSunIntensity = sunIntensity;
 		}
 
 		if (
-			this.skyMaterial &&
+			skyMaterial !== null &&
 			(sx !== this.lastSunDirX ||
 				sy !== this.lastSunDirY ||
 				sz !== this.lastSunDirZ)
 		) {
-			// Sky disc/gradient must point TOWARD the sun (+sunPos). Chunk
-			// lighting keeps using GLOBAL_VALUES.skyLightDirection (=-sunPos),
-			// which ChunkMesher negates back to +sunPos.
-			this.sunDirectionUniform[0] = sx;
-			this.sunDirectionUniform[1] = sy;
-			this.sunDirectionUniform[2] = sz;
+			const sunUniform = this.sunDirectionUniform;
+			sunUniform[0] = sx;
+			sunUniform[1] = sy;
+			sunUniform[2] = sz;
 
-			setShaderUniform(
-				this.skyMaterial,
-				"sunDirection",
-				this.sunDirectionUniform,
-			);
+			setShaderUniform(skyMaterial, "sunDirection", sunUniform);
 
 			this.lastSunDirX = sx;
 			this.lastSunDirY = sy;
 			this.lastSunDirZ = sz;
 		}
 
-		// Moon runs the sun's schedule shifted by phase: 0 (new) trails the
-		// sun, 0.5 (full) opposes it, so daytime visibility follows phase.
-		// Only smooth elapsed time advances the phase; teleports (debug
-		// setTime / server join jumps) hold it steady. The +1 keeps the
-		// small negative step inside [0, 1) for a single modulo.
-		const dayDelta =
-			(this.timeOfDay - prevTimeOfDay) / SETTING_PARAMS.DAY_DURATION_MS;
+		/*
+		 * Advance lunar phase only for a smooth time step. Large changes are
+		 * treated as teleports, matching the original debug/server-sync behavior.
+		 */
+		const dayDelta = (timeOfDay - previousTimeOfDay) / dayDurationMs;
+
 		if (Math.abs(dayDelta) <= 0.25) {
-			this.moonPhase = (this.moonPhase + 1 + dayDelta / MOON_CYCLE_DAYS) % 1;
+			let moonPhase = this.moonPhase + dayDelta / MOON_CYCLE_DAYS;
+
+			if (moonPhase >= 1) {
+				moonPhase -= 1;
+			} else if (moonPhase < 0) {
+				moonPhase += 1;
+			}
+
+			this.moonPhase = moonPhase;
 		}
 
-		this.orbitDirection((t + this.moonPhase) % 1, this.moonDirectionUniform);
-		const mx = this.moonDirectionUniform[0];
-		const my = this.moonDirectionUniform[1];
-		const mz = this.moonDirectionUniform[2];
-		// 0 = new moon, 1 = full moon. Precomputed here so the shader
-		// doesn't evaluate cos() per pixel.
+		let moonDayFraction = dayFraction + this.moonPhase;
+
+		if (moonDayFraction >= 1) {
+			moonDayFraction -= 1;
+		}
+
+		const moonAngle = moonDayFraction * TWO_PI;
+		const sinMoonAngle = Math.sin(moonAngle);
+		const cosMoonAngle = Math.cos(moonAngle);
+		const moonElevation = sinMoonAngle * MAX_SUN_ELEVATION;
+		const moonElevationSin = Math.sin(moonElevation);
+		const moonElevationCos = Math.cos(moonElevation);
+
+		const mx = moonElevationCos * cosMoonAngle;
+		const my = moonElevationSin;
+		const mz = moonElevationCos * sinMoonAngle;
+
+		/*
+		 * Compute illumination from the phase angle. This remains one cosine per
+		 * update, but it avoids performing the calculation in the fragment shader.
+		 */
 		const moonIllum = 0.5 - 0.5 * Math.cos(this.moonPhase * TWO_PI);
 
 		if (
-			this.skyMaterial &&
+			skyMaterial !== null &&
 			(mx !== this.lastMoonDirX ||
 				my !== this.lastMoonDirY ||
 				mz !== this.lastMoonDirZ ||
 				moonIllum !== this.lastMoonIllum)
 		) {
-			setShaderUniform(
-				this.skyMaterial,
-				"moonDirection",
-				this.moonDirectionUniform,
-			);
-			setShaderUniform(this.skyMaterial, "moonIllum", moonIllum);
+			const moonUniform = this.moonDirectionUniform;
+			moonUniform[0] = mx;
+			moonUniform[1] = my;
+			moonUniform[2] = mz;
+
+			setShaderUniform(skyMaterial, "moonDirection", moonUniform);
+			setShaderUniform(skyMaterial, "moonIllum", moonIllum);
 
 			this.lastMoonDirX = mx;
 			this.lastMoonDirY = my;

@@ -103,6 +103,13 @@ export class CaveNoiseGrid {
 	 * trilinear cell/fraction math only once (the three samplers share the
 	 * same sampleRate, so cell/fraction params are identical for all three).
 	 * Result is written into `out` ([cheese, tunnel, detail]).
+	 *
+	 * The three samplers are built with identical chunkSize/sampleRate/scale, so
+	 * they also share `pointsPerDim`, `pointsPerDimSq` and therefore the flat
+	 * sample index and all eight corner offsets. Deriving them once and reusing
+	 * them across the three interpolations removes 2 of every 3 index
+	 * derivations (2 multiplies + 11 adds + property loads) from the hottest
+	 * per-voxel path in chunk generation.
 	 */
 	public get3(
 		localX: number,
@@ -110,10 +117,44 @@ export class CaveNoiseGrid {
 		localZ: number,
 		out: Float32Array,
 	): void {
+		const cheese = this.cheese;
+		const tunnel = this.tunnel;
+		const detail = this.detail;
+
 		const p = this._cellScratch;
-		this.cheese.getCellParams(localX, localY, localZ, p);
-		out[0] = this.cheese.getFrom(p);
-		out[1] = this.tunnel.getFrom(p);
-		out[2] = this.detail.getFrom(p);
+		const idx = cheese.getCellParamsAndIndex(localX, localY, localZ, p);
+		const fx = p.fx;
+		const fy = p.fy;
+		const fz = p.fz;
+		const ppd = cheese.pointsPerDim;
+		const ppd2 = cheese.pointsPerDimSq;
+
+		out[0] = NoiseSampler.trilinear(
+			cheese.noiseSamples,
+			idx,
+			ppd,
+			ppd2,
+			fx,
+			fy,
+			fz,
+		);
+		out[1] = NoiseSampler.trilinear(
+			tunnel.noiseSamples,
+			idx,
+			ppd,
+			ppd2,
+			fx,
+			fy,
+			fz,
+		);
+		out[2] = NoiseSampler.trilinear(
+			detail.noiseSamples,
+			idx,
+			ppd,
+			ppd2,
+			fx,
+			fy,
+			fz,
+		);
 	}
 }

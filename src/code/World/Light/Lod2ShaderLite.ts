@@ -267,6 +267,7 @@ function createLod2Material(
 	extra: {
 		backFaceCulling: boolean;
 		needAlphaBlending?: boolean;
+		needAlphaTesting?: boolean;
 		blendMode?: "alpha";
 		depthWrite?: boolean;
 	},
@@ -276,12 +277,19 @@ function createLod2Material(
 	for (let i = 0; i < arenaCount; i++) {
 		faceStorageBuffers.push({ name: `faceData${i}`, type: "array<u32>" });
 	}
+	const uniforms: ShaderUniformOption[] = [...baseUniforms()];
+	// Only the cutout fragment shader reads shaderSystem.alphaCutoff. The
+	// ShaderSystemUniforms struct is generated purely from the declared system
+	// uniforms, so the member only exists if declared here.
+	if (extra.needAlphaTesting) {
+		uniforms.push("alphaCutoff");
+	}
 	const material = createShaderMaterial({
 		name,
 		vertexSource: buildPackedVertexWGSL(arenaCount, vertexOptions),
 		fragmentSource,
 		attributes: ["position"],
-		uniforms: baseUniforms(),
+		uniforms,
 		samplers: [{ name: "diffuseTexture", viewDimension: "2d-array" }],
 		storageBuffers: [
 			{ name: "tintLUT", type: "array<vec4<f32>, 6>" },
@@ -290,12 +298,16 @@ function createLod2Material(
 		],
 		backFaceCulling: extra.backFaceCulling,
 		needAlphaBlending: extra.needAlphaBlending,
+		needAlphaTesting: extra.needAlphaTesting,
 		blendMode: extra.blendMode,
 		depthWrite: extra.depthWrite,
 	});
 
 	registerPackedMaterial(material);
 	setShaderTexture(material, "diffuseTexture", texture);
+	if (extra.needAlphaTesting) {
+		setShaderUniform(material, "alphaCutoff", 0.5);
+	}
 	setShaderUniform(material, "atlasTileSize", opts.atlasTileSize);
 	setShaderUniform(material, "atlasMaxTiles", opts.atlasMaxTiles);
 	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles);
@@ -368,7 +380,7 @@ export function createLod2CutoutMaterial(
 		lod2CutoutFragmentWGSL,
 		opts.cutoutTexture ?? opts.diffuseTexture,
 		"lod2-cutout-tintLUT",
-		{ backFaceCulling: true },
+		{ backFaceCulling: true, needAlphaTesting: true },
 	);
 }
 

@@ -324,6 +324,72 @@ function spawnRemoteChainTnt(x: number, y: number, z: number): void {
 	);
 }
 
+interface TntFramePhysics {
+	readonly dt: number;
+	readonly airHorizontalKeep: number;
+	readonly groundHorizontalKeep: number;
+	readonly verticalAirKeep: number;
+}
+
+/**
+ * Shared atlas request for all primed TNT instances.
+ *
+ * Without this cache, several TNT entities spawned before the global atlas is
+ * available can each start an identical texture load and create duplicate GPU
+ * texture resources.
+ */
+let primedTntAtlasPromise: Promise<
+	ReturnType<typeof getDiffuseTexture2D>
+> | null = null;
+
+function getPrimedTntAtlas(): Promise<ReturnType<typeof getDiffuseTexture2D>> {
+	const sharedAtlas = getDiffuseTexture2D();
+
+	if (sharedAtlas) {
+		return Promise.resolve(sharedAtlas);
+	}
+
+	const pending = primedTntAtlasPromise;
+
+	if (pending !== null) {
+		return pending;
+	}
+
+	const loading = loadTexture2D(Map1.engine, "/texture/diffuse_atlas.png", {
+		mipMaps: true,
+		magFilter: "nearest",
+		minFilter: "nearest",
+	});
+
+	primedTntAtlasPromise = loading;
+
+	void loading.then(
+		() => {
+			/*
+			 * Keep future entities on the canonical global-atlas fast path
+			 * when TextureAtlasFactory exposes the newly loaded texture.
+			 *
+			 * Otherwise retaining the resolved promise still prevents another
+			 * duplicate load.
+			 */
+			if (primedTntAtlasPromise === loading && getDiffuseTexture2D()) {
+				primedTntAtlasPromise = null;
+			}
+		},
+		() => {
+			/*
+			 * A failed load must not be cached permanently. A later TNT spawn
+			 * may retry after the texture system has recovered.
+			 */
+			if (primedTntAtlasPromise === loading) {
+				primedTntAtlasPromise = null;
+			}
+		},
+	);
+
+	return loading;
+}
+
 /**
  * Flashing, bouncing primed TNT with a fuse countdown.
  */
@@ -359,6 +425,15 @@ export class PrimedTnt {
 				return;
 			}
 
+			// Identical for every TNT this frame; hoisting removes up to
+			// three Math.exp calls from each physics update.
+			const physics: TntFramePhysics = {
+				dt,
+				airHorizontalKeep: Math.exp(-AIR_DAMPING_PER_SEC * dt),
+				groundHorizontalKeep: Math.exp(-GROUND_DAMPING_PER_SEC * dt),
+				verticalAirKeep: Math.exp(-VERTICAL_AIR_DAMPING_PER_SEC * dt),
+			};
+
 			const snapshot = PrimedTnt.#tickSnapshot;
 			snapshot.length = 0;
 
@@ -369,7 +444,7 @@ export class PrimedTnt {
 			const count = snapshot.length;
 
 			for (let i = 0; i < count; i++) {
-				snapshot[i].#tick(dt);
+				snapshot[i].#tick(physics);
 			}
 
 			// Do not retain disposed instances between frames.
@@ -478,10 +553,12 @@ export class PrimedTnt {
 		velocity.z += z;
 	}
 
-	#tick(dt: number): void {
+	#tick(physics: TntFramePhysics): void {
 		if (this.#disposed) {
 			return;
 		}
+
+		const dt = physics.dt;
 
 		this.#fuse -= dt;
 
@@ -490,8 +567,8 @@ export class PrimedTnt {
 			return;
 		}
 
-		this.#updateFlash(dt);
-		this.#updatePhysics(dt);
+		this.#updateFlash();
+		this.#updatePhysics(physics);
 
 		const position = this.#position;
 
@@ -505,12 +582,13 @@ export class PrimedTnt {
 		const y = position.y;
 		const z = position.z;
 		const remote = this.#remote;
+		const blastRadius = this.#blastRadius;
 
 		this.#dispose();
 
 		if (remote) {
 			explode(x, y, z, {
-				radius: this.#blastRadius,
+				radius: blastRadius,
 				chainIgniter: spawnRemoteChainTnt,
 				syncExplosion: false,
 			});
@@ -519,20 +597,23 @@ export class PrimedTnt {
 		}
 
 		explode(x, y, z, {
-			radius: this.#blastRadius,
+			radius: blastRadius,
 			chainIgniter: igniteChainedTnt,
 		});
 	}
 
-	#updateFlash(dt: number): void {
-		void dt;
+	#updateFlash(): void {
 		// Fuse burn: steady fade toward white, no blinking. uFlash reaches
 		// DETONATION_FLASH (75% white) exactly at detonation. Per-frame
 		// setShaderUniform is a proven path (water time, player uAnim,
 		// crack uCrackStage all update this way).
 		const progress = 1 - this.#fuse / this.#initialFuse;
-		const flash = Math.min(1, Math.max(0, progress)) * DETONATION_FLASH;
-		setShaderUniform(this.#material, "uFlash", flash);
+		const clampedProgress = progress <= 0 ? 0 : progress >= 1 ? 1 : progress;
+		setShaderUniform(
+			this.#material,
+			"uFlash",
+			clampedProgress * DETONATION_FLASH,
+		);
 	}
 
 	#applyAtlasTile(): void {
@@ -550,21 +631,10 @@ export class PrimedTnt {
 	}
 
 	#bindAtlasTexture(): void {
-		const sharedAtlas = getDiffuseTexture2D();
-		if (sharedAtlas) {
-			setShaderTexture(this.#material, "diffuseTexture", sharedAtlas);
-			this.#ensureAddedToScene();
-			return;
-		}
-
 		const mat = this.#material;
 		const epoch = this.#materialEpoch;
-		void loadTexture2D(Map1.engine, "/texture/diffuse_atlas.png", {
-			mipMaps: true,
-			magFilter: "nearest",
-			minFilter: "nearest",
-		})
-			.then((atlas) => {
+		void getPrimedTntAtlas().then(
+			(atlas) => {
 				if (
 					this.#disposed ||
 					!atlas ||
@@ -575,23 +645,26 @@ export class PrimedTnt {
 				}
 				setShaderTexture(this.#material, "diffuseTexture", atlas);
 				this.#ensureAddedToScene();
-			})
-			.catch(() => {
+			},
+			() => {
 				// Mesh stays hidden; physics and detonation are unaffected.
-			});
+			},
+		);
 	}
 
 	#ensureAddedToScene(): void {
-		if (this.#sceneAdded) return;
+		if (this.#sceneAdded || this.#disposed) return;
 		this.#sceneAdded = true;
 		this.#mesh.visible = true;
 		addToScene(Map1.mainScene, this.#mesh);
 	}
 
 	#updateLightingIfNeeded(force = false): void {
-		const lx = this.#position.x | 0;
-		const ly = this.#position.y | 0;
-		const lz = this.#position.z | 0;
+		// Math.floor (not `| 0`) so negative world coordinates sample the
+		// correct lighting cell.
+		const lx = Math.floor(this.#position.x);
+		const ly = Math.floor(this.#position.y);
+		const lz = Math.floor(this.#position.z);
 
 		if (
 			!force &&
@@ -638,10 +711,11 @@ export class PrimedTnt {
 		setShaderVector3(this.#material, "tintColor", this.#tint);
 	}
 
-	#updatePhysics(dt: number): void {
+	#updatePhysics(physics: TntFramePhysics): void {
 		const position = this.#position;
 		const velocity = this.#velocity;
 		const collider = this.#collider;
+		const dt = physics.dt;
 
 		velocity.y += GRAVITY * dt;
 
@@ -664,7 +738,7 @@ export class PrimedTnt {
 			STEP_SIZE,
 		);
 
-		const grounded = position.y === previousY && impactVelocityY < 0;
+		const grounded = impactVelocityY < 0 && position.y === previousY;
 
 		collider.moveAxis(
 			position,
@@ -679,20 +753,16 @@ export class PrimedTnt {
 				-impactVelocityY > BOUNCE_MIN_SPEED
 					? -impactVelocityY * BOUNCE_RESTITUTION
 					: 0;
+		} else {
+			velocity.y *= physics.verticalAirKeep;
 		}
 
-		const horizontalDamping = grounded
-			? GROUND_DAMPING_PER_SEC
-			: AIR_DAMPING_PER_SEC;
-
-		const horizontalKeep = Math.exp(-horizontalDamping * dt);
+		const horizontalKeep = grounded
+			? physics.groundHorizontalKeep
+			: physics.airHorizontalKeep;
 
 		velocity.x *= horizontalKeep;
 		velocity.z *= horizontalKeep;
-
-		if (!grounded) {
-			velocity.y *= Math.exp(-VERTICAL_AIR_DAMPING_PER_SEC * dt);
-		}
 	}
 
 	#dispose(): void {
@@ -706,6 +776,7 @@ export class PrimedTnt {
 		this.#collider.dispose();
 
 		if (this.#sceneAdded) {
+			this.#sceneAdded = false;
 			removeFromScene(Map1.mainScene, this.#mesh);
 		}
 		// Invalidate any in-flight atlas bind, then free GPU resources once

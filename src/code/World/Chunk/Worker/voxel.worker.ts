@@ -385,15 +385,15 @@ function extractBlockBorder(
 			for (let by = 0; by < yCount; by++) {
 				const rowBase = zBase + (lyStart + by) * size;
 
-				if (dx === 0) {
-					// Avoid dense16.subarray(...), which creates a new view.
-					const rowEnd = rowBase + xCount;
-
-					for (let read = rowBase; read < rowEnd; read++) {
-						out[write++] = dense16[read];
-					}
-				} else {
+				if (dx !== 0) {
 					out[write++] = dense16[rowBase + lxStart];
+					continue;
+				}
+
+				const rowEnd = rowBase + xCount;
+
+				for (let read = rowBase; read < rowEnd; read++) {
+					out[write++] = dense16[read];
 				}
 			}
 		}
@@ -420,36 +420,45 @@ function extractBlockBorder(
 			for (let by = 0; by < yCount; by++) {
 				const rowBase = zBase + (lyStart + by) * size;
 
-				if (dx === 0) {
-					let blockIndex = rowBase;
-					const rowEnd = rowBase + xCount;
-
-					while (blockIndex + 1 < rowEnd) {
-						const byte = packed[blockIndex >>> 1];
-						const low = byte & 0x0f;
-						const high = byte >>> 4;
-
-						out[write++] = low < paletteLength ? palette[low] : 0;
-						out[write++] = high < paletteLength ? palette[high] : 0;
-
-						blockIndex += 2;
-					}
-
-					// Retains correct behavior if a non-standard odd chunk
-					// size is ever passed.
-					if (blockIndex < rowEnd) {
-						const byte = packed[blockIndex >>> 1];
-						const paletteIndex =
-							(blockIndex & 1) === 0 ? byte & 0x0f : byte >>> 4;
-
-						out[write++] =
-							paletteIndex < paletteLength ? palette[paletteIndex] : 0;
-					}
-				} else {
+				if (dx !== 0) {
 					const blockIndex = rowBase + lxStart;
 					const byte = packed[blockIndex >>> 1];
 					const paletteIndex =
 						(blockIndex & 1) === 0 ? byte & 0x0f : byte >>> 4;
+
+					out[write++] =
+						paletteIndex < paletteLength ? palette[paletteIndex] : 0;
+
+					continue;
+				}
+
+				let blockIndex = rowBase;
+				const rowEnd = rowBase + xCount;
+
+				// Align to an even block index so each following byte can be
+				// decoded as a low/high pair.
+				if ((blockIndex & 1) !== 0 && blockIndex < rowEnd) {
+					const paletteIndex = packed[blockIndex >>> 1] >>> 4;
+
+					out[write++] =
+						paletteIndex < paletteLength ? palette[paletteIndex] : 0;
+
+					blockIndex++;
+				}
+
+				while (blockIndex + 1 < rowEnd) {
+					const byte = packed[blockIndex >>> 1];
+					const low = byte & 0x0f;
+					const high = byte >>> 4;
+
+					out[write++] = low < paletteLength ? palette[low] : 0;
+					out[write++] = high < paletteLength ? palette[high] : 0;
+
+					blockIndex += 2;
+				}
+
+				if (blockIndex < rowEnd) {
+					const paletteIndex = packed[blockIndex >>> 1] & 0x0f;
 
 					out[write++] =
 						paletteIndex < paletteLength ? palette[paletteIndex] : 0;
@@ -460,6 +469,8 @@ function extractBlockBorder(
 		return out;
 	}
 
+	// No usable palette means blockU8 is interpreted as a dense byte-per-block
+	// array, preserving the existing storage behavior.
 	let write = 0;
 
 	for (let bz = 0; bz < zCount; bz++) {
@@ -468,16 +479,15 @@ function extractBlockBorder(
 		for (let by = 0; by < yCount; by++) {
 			const rowBase = zBase + (lyStart + by) * size;
 
-			if (dx === 0) {
-				// Preserve the original no-palette byte interpretation while
-				// avoiding packed.subarray(...).
-				const rowEnd = rowBase + xCount;
-
-				for (let read = rowBase; read < rowEnd; read++) {
-					out[write++] = packed[read];
-				}
-			} else {
+			if (dx !== 0) {
 				out[write++] = packed[rowBase + lxStart];
+				continue;
+			}
+
+			const rowEnd = rowBase + xCount;
+
+			for (let read = rowBase; read < rowEnd; read++) {
+				out[write++] = packed[read];
 			}
 		}
 	}

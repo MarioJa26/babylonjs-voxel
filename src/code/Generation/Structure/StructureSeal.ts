@@ -155,21 +155,30 @@ export function fillSealColumnMask(
 	let minY = Number.POSITIVE_INFINITY;
 	let maxY = Number.NEGATIVE_INFINITY;
 
-	for (
-		let cx = chunkX - SEAL_SEARCH_RADIUS;
-		cx <= chunkX + SEAL_SEARCH_RADIUS;
-		cx++
-	) {
-		for (
-			let cz = chunkZ - SEAL_SEARCH_RADIUS;
-			cz <= chunkZ + SEAL_SEARCH_RADIUS;
-			cz++
-		) {
-			const resolved = resolveTempleInRegion(cx, cz, chunkSize, seed);
+	// PERF: probe whole REGIONS rather than individual chunks. A temple's centre
+	// is derived from its region, so the 5x5 chunk search window resolves to at
+	// most 2x2 distinct regions -- 21 of the original 25 probes recomputed an
+	// identical answer. Mirrors fillMineshaftSealMask.
+	const regionSize = MAYA_TEMPLE_REGION.regionSize;
+	const minRegionX = Math.floor((chunkX - SEAL_SEARCH_RADIUS) / regionSize);
+	const maxRegionX = Math.floor((chunkX + SEAL_SEARCH_RADIUS) / regionSize);
+	const minRegionZ = Math.floor((chunkZ - SEAL_SEARCH_RADIUS) / regionSize);
+	const maxRegionZ = Math.floor((chunkZ + SEAL_SEARCH_RADIUS) / regionSize);
+
+	for (let rx = minRegionX; rx <= maxRegionX; rx++) {
+		for (let rz = minRegionZ; rz <= maxRegionZ; rz++) {
+			// computeRegion derives the region from the CHUNK it is handed, so
+			// pass a chunk inside this region, not the region index itself.
+			const resolved = resolveTempleInRegion(
+				rx * regionSize,
+				rz * regionSize,
+				chunkSize,
+				seed,
+			);
 			if (!resolved) continue;
 
 			// Cheap box-only path: the full layout (rooms, corridors, ramps,
-			// glyphs) is irrelevant here and this runs up to 25x per chunk.
+			// glyphs) is irrelevant here and this runs for every region in range.
 			const s = computeMayaSealBox(
 				resolved.centerX,
 				resolved.centerZ,
@@ -192,9 +201,13 @@ export function fillSealColumnMask(
 
 			for (let wz = z0; wz <= z1; wz++) {
 				const localZ = wz - chunkMinZ;
-				for (let wx = x0; wx <= x1; wx++) {
-					out[wx - chunkMinX + localZ * chunkSize] = 1;
-				}
+				// PERF: the wx range is contiguous in `out`, so fill the row
+				// instead of storing one element at a time.
+				out.fill(
+					1,
+					x0 - chunkMinX + localZ * chunkSize,
+					x1 - chunkMinX + localZ * chunkSize + 1,
+				);
 			}
 
 			if (s.minY < minY) minY = s.minY;
@@ -202,7 +215,30 @@ export function fillSealColumnMask(
 		}
 	}
 
-	if (minY > maxY) return { hasSeal: false, mask: out, minY: 0, maxY: -1 };
+	if (minY > maxY) return sealMaskScratch(false, 0, -1, out);
 
-	return { hasSeal: true, mask: out, minY, maxY };
+	return sealMaskScratch(true, minY, maxY, out);
+}
+
+// PERF: module-level result scratch. fillSealColumnMask runs once per
+// underground chunk and callers only read the fields before the next call, so
+// one shared object replaces a fresh literal per chunk.
+const _sealResult: SealColumnMask = {
+	hasSeal: false,
+	mask: new Uint8Array(0),
+	minY: 0,
+	maxY: -1,
+};
+
+function sealMaskScratch(
+	hasSeal: boolean,
+	minY: number,
+	maxY: number,
+	mask: Uint8Array,
+): SealColumnMask {
+	_sealResult.hasSeal = hasSeal;
+	_sealResult.mask = mask;
+	_sealResult.minY = minY;
+	_sealResult.maxY = maxY;
+	return _sealResult;
 }

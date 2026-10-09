@@ -164,8 +164,41 @@ export class PlayerHud {
 			valueNode: Text;
 			valueSpan?: HTMLSpanElement;
 			keySpan?: HTMLSpanElement;
+			group: string;
 		};
 	} = {};
+	private static groupContainers: {
+		[key: string]: {
+			container: HTMLDivElement;
+			toggle: HTMLSpanElement;
+			body: HTMLDivElement;
+		};
+	} = {};
+	private static groupOrder: string[] = [];
+
+	private static readonly CATEGORY_LABELS: Record<string, string> = {
+		performance: "Performance",
+		position: "Position",
+		world: "World",
+		chunks: "Chunks",
+		workers: "Workers",
+		stats: "Stats",
+		biome: "Biome",
+		mobs: "Mobs",
+		far: "Far Tiles",
+		profiler: "Profiler",
+	};
+
+	private static readonly DEFAULT_COLLAPSED = new Set([
+		"world",
+		"chunks",
+		"workers",
+		"stats",
+		"biome",
+		"mobs",
+		"far",
+		"profiler",
+	]);
 	private static itemTooltipDiv: HTMLDivElement;
 
 	// Tooltip positioning: one persistent mousemove listener buffers cursor
@@ -1759,6 +1792,64 @@ export class PlayerHud {
 		}
 	}
 
+	private static getOrCreateGroup(
+		panel: HTMLDivElement,
+		category: string,
+	): {
+		container: HTMLDivElement;
+		toggle: HTMLSpanElement;
+		body: HTMLDivElement;
+	} {
+		const existing = PlayerHud.groupContainers[category];
+		if (existing) return existing;
+
+		let textContainer = panel.firstElementChild as HTMLDivElement | null;
+		if (textContainer?.className !== "debug-info-container") {
+			textContainer = document.createElement("div");
+			textContainer.className = "debug-info-container";
+			panel.prepend(textContainer);
+		}
+
+		const groupContainer = document.createElement("div");
+		groupContainer.className = "debug-group";
+
+		const toggle = document.createElement("span");
+		toggle.className = "debug-group-toggle";
+		toggle.textContent = "▼ ";
+
+		const label = document.createElement("span");
+		label.className = "debug-group-label";
+		label.textContent = PlayerHud.CATEGORY_LABELS[category] ?? category;
+
+		const header = document.createElement("div");
+		header.className = "debug-group-header";
+		header.appendChild(toggle);
+		header.appendChild(label);
+
+		const body = document.createElement("div");
+		body.className = "debug-group-body";
+
+		groupContainer.appendChild(header);
+		groupContainer.appendChild(body);
+
+		textContainer.appendChild(groupContainer);
+
+		const collapsed = PlayerHud.DEFAULT_COLLAPSED.has(category);
+		body.style.display = collapsed ? "none" : "block";
+		toggle.textContent = collapsed ? "▶ " : "▼ ";
+
+		header.addEventListener("click", () => {
+			const isHidden = body.style.display === "none";
+			body.style.display = isHidden ? "block" : "none";
+			toggle.textContent = isHidden ? "▼ " : "▶ ";
+		});
+
+		const entry = { container: groupContainer, toggle, body };
+		PlayerHud.groupContainers[category] = entry;
+		PlayerHud.groupOrder.push(category);
+		return entry;
+	}
+
 	public static updateDebugInfo(
 		key: string,
 		value: string | number,
@@ -1777,6 +1868,9 @@ export class PlayerHud {
 			return;
 		}
 
+		const group = category ?? "general";
+		const groupEntry = PlayerHud.getOrCreateGroup(panel, group);
+
 		const container = document.createElement("div");
 		container.className = "debug-row";
 
@@ -1792,21 +1886,14 @@ export class PlayerHud {
 		container.appendChild(keySpan);
 		container.appendChild(valueSpan);
 
-		let textContainer = panel.firstElementChild as HTMLDivElement | null;
-
-		if (textContainer?.className !== "debug-info-container") {
-			textContainer = document.createElement("div");
-			textContainer.className = "debug-info-container";
-			panel.prepend(textContainer);
-		}
-
-		textContainer.appendChild(container);
+		groupEntry.body.appendChild(container);
 
 		PlayerHud.infoRows[key] = {
 			container,
 			valueNode: valueSpan.firstChild as Text,
 			valueSpan,
 			keySpan,
+			group,
 		};
 	}
 

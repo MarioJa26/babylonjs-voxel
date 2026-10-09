@@ -1473,7 +1473,48 @@
 .debug-info-container {
 	display: flex;
 	flex-direction: column;
+	gap: 2px;
+}
+
+.debug-group {
+	display: flex;
+	flex-direction: column;
+}
+
+.debug-group-header {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	cursor: pointer;
+	user-select: none;
+	padding: 2px 0;
+}
+
+.debug-group-header:hover {
+	filter: brightness(1.3);
+}
+
+.debug-group-toggle {
+	font-size: 10px;
+	color: var(--hud-text);
+	width: 14px;
+	flex-shrink: 0;
+}
+
+.debug-group-label {
+	font-weight: bold;
+	font-size: 12px;
+	color: var(--hud-text);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	text-shadow: var(--hud-text-shadow);
+}
+
+.debug-group-body {
+	display: flex;
+	flex-direction: column;
 	gap: 1px;
+	padding-left: 16px;
 }
 
 .debug-row {

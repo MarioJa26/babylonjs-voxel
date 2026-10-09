@@ -113,16 +113,15 @@ export class NetworkManager {
 	private lastSentHeldItemBlockState = -1;
 	// Last state actually sent to the server, quantized to wire values. The
 	// idle-skip compares against this so identical bytes are never re-sent.
-	private lastSentState: {
-		x: number;
-		y: number;
-		z: number;
-		yawByte: number;
-		pitchByte: number;
-	} | null = null;
+	private hasLastSentState = false;
+	private lastSentX = 0;
+	private lastSentY = 0;
+	private lastSentZ = 0;
+	private lastSentYawByte = 0;
+	private lastSentPitchByte = 0;
 	private _scratchVec: Vec3 = vec3Zero();
 	private serverSeed: string | null = null;
-	private _lastPlayerCount = 0;
+	private disposed = false;
 	private _canvas: HTMLCanvasElement | null = null;
 	// Canvas size cache â€” reading clientWidth/clientHeight forces layout, so
 	// they are sampled once per resize instead of on every frame.
@@ -146,34 +145,64 @@ export class NetworkManager {
 		this.chunkProvider = new RemoteChunkProvider(this.client);
 		this.containers = new RemoteContainerManager(this.client);
 		this.stations = new RemoteStationManager(this.client);
+		this.initializeCanvas();
+	}
+
+	private initializeCanvas(): void {
+		if (this._canvas !== null) return;
+
+		const scene = this.player.sceneRef as unknown as {
+			engine?: {
+				getRenderingCanvas?: () => HTMLCanvasElement | null;
+			};
+		};
+
+		const canvas = scene.engine?.getRenderingCanvas?.() ?? null;
+		this._canvas = canvas;
+
+		if (canvas === null) return;
+
+		this._canvasWidth = canvas.clientWidth;
+		this._canvasHeight = canvas.clientHeight;
+		window.addEventListener("resize", this._onCanvasResize);
 	}
 
 	async connect(playerName: string, worldName: string): Promise<void> {
+		this.initializeCanvas();
 		this.client.setCallbacks({
 			onConnected: () => {
+				this.hasLastSentState = false;
 				this.lastSentHeldItemId = -1;
 				this.lastSentHeldItemBlockState = -1;
 				this.sendHeldItemSelection();
 				console.log("[NetworkManager] Connected to server");
 				this.hud.setConnected(true);
 				this.hud.addSystemMessage("Connected to server");
+				this.refreshPlayerNames();
 			},
 			onDisconnected: (code, reason) => {
 				console.log(`[NetworkManager] Disconnected: ${code} ${reason}`);
+				this.hasLastSentState = false;
+				this.sendAccum = 0;
 				this.hud.setConnected(false);
 				this.hud.addSystemMessage(
 					`Disconnected: ${reason ?? "connection closed"}`,
 				);
+				this.refreshPlayerNames();
 			},
 			onPlayerJoin: (player) => {
 				console.log(`[NetworkManager] Player joined: ${player.name}`);
 				this.renderer.onPlayerJoin(player);
 				this.hud.addSystemMessage(`${player.name} joined`);
+				this.refreshPlayerNames();
 			},
 			onPlayerLeave: (sessionId, name) => {
 				console.log(`[NetworkManager] Player left: ${sessionId}`);
-				this.renderer.onPlayerLeave(sessionId);
+				if (sessionId !== "") {
+					this.renderer.onPlayerLeave(sessionId);
+				}
 				this.hud.addSystemMessage(`${name ?? "A player"} left`);
+				this.refreshPlayerNames();
 			},
 			onPlayerSkin: (player) => {
 				if (player.skinPng) {
@@ -264,63 +293,77 @@ export class NetworkManager {
 		workerPool?.setRemoteChunkProvider(this.chunkProvider);
 	}
 
-	/**
-	 * Called every frame from the game loop.
-	 */
 	tick(deltaMs: number): void {
 		const client = this.client;
+
 		if (!client.isConnected) {
-			// Session boundary: any (re)connect starts a fresh authoritative
-			// state, so the first update after the boundary must always send.
-			this.lastSentState = null;
-			this.lastSentHeldItemId = -1;
-			this.lastSentHeldItemBlockState = -1;
+			/*
+			 * Avoid repeatedly writing the same reset values on every disconnected
+			 * frame. Any non-default state means a session boundary still needs to
+			 * be recorded.
+			 */
+			if (
+				this.hasLastSentState ||
+				this.lastSentHeldItemId !== -1 ||
+				this.lastSentHeldItemBlockState !== -1
+			) {
+				this.hasLastSentState = false;
+				this.lastSentHeldItemId = -1;
+				this.lastSentHeldItemBlockState = -1;
+				this.sendAccum = 0;
+			}
+
 			return;
 		}
 
-		this.sendHeldItemSelection();
-		client.updateRemotePlayerInterpolation(deltaMs / 1000);
+		const dtSec = deltaMs * 0.001;
+		if (dtSec > 0) {
+			client.updateRemotePlayerInterpolation(dtSec);
+		}
 
 		const camera = this.player.playerCamera.playerCamera;
 
-		let canvas = this._canvas;
-		if (canvas === null) {
-			canvas =
-				(this.player.sceneRef as any).engine?.getRenderingCanvas() ?? null;
-			this._canvas = canvas;
-			if (canvas) {
-				this._canvasWidth = canvas.clientWidth;
-				this._canvasHeight = canvas.clientHeight;
-				window.addEventListener("resize", this._onCanvasResize);
-			}
+		let viewportWidth = this._canvasWidth;
+		let viewportHeight = this._canvasHeight;
+
+		if (viewportWidth <= 0) {
+			viewportWidth = window.innerWidth;
 		}
 
-		this.renderer.update(
-			camera,
-			this._canvasWidth || window.innerWidth,
-			this._canvasHeight || window.innerHeight,
-		);
-
-		const remotePlayers = client.getRemotePlayers();
-		const playerCount = remotePlayers.size;
-
-		if (playerCount !== this._lastPlayerCount) {
-			this._lastPlayerCount = playerCount;
-
-			const names = new Array<string>(playerCount);
-			let i = 0;
-			for (const player of remotePlayers.values()) {
-				names[i++] = player.name;
-			}
-
-			this.hud.setPlayerNames(names);
+		if (viewportHeight <= 0) {
+			viewportHeight = window.innerHeight;
 		}
 
-		this.sendAccum += deltaMs;
-		if (this.sendAccum >= SEND_INTERVAL_MS) {
-			this.sendAccum -= SEND_INTERVAL_MS;
+		this.renderer.update(camera, viewportWidth, viewportHeight);
+
+		/*
+		 * Keep at most one unsent interval. Subtracting only one interval from a
+		 * large accumulated value causes a state packet on several consecutive
+		 * frames after a stall, even though only the newest state is useful.
+		 */
+		const accumulated = this.sendAccum + deltaMs;
+
+		if (accumulated >= SEND_INTERVAL_MS) {
+			this.sendAccum = accumulated % SEND_INTERVAL_MS;
+			this.sendHeldItemSelection();
 			this.sendPlayerState();
+		} else {
+			this.sendAccum = accumulated;
 		}
+	}
+
+	private refreshPlayerNames(): void {
+		const remotePlayers = this.client.getRemotePlayers();
+		const count = remotePlayers.size;
+		const names = new Array<string>(count);
+
+		let i = 0;
+
+		for (const player of remotePlayers.values()) {
+			names[i++] = player.name;
+		}
+
+		this.hud.setPlayerNames(names);
 	}
 
 	/**
@@ -332,6 +375,16 @@ export class NetworkManager {
 
 	private onToggleChat(open: boolean): void {
 		setIsPaused(open);
+	}
+
+	/**
+	 * Call this when the selected hotbar slot, selected stack size, selected item,
+	 * or selected block state changes.
+	 */
+	onSelectedHeldItemChanged(): void {
+		if (this.client.isConnected) {
+			this.sendHeldItemSelection();
+		}
 	}
 
 	private sendHeldItemSelection(): void {
@@ -350,33 +403,34 @@ export class NetworkManager {
 	}
 
 	private sendPlayerState(): void {
-		const pos = this.player.position;
+		const player = this.player;
+		const pos = player.position;
+		const playerCamera = player.playerCamera;
 
-		const yaw = (this.player.playerCamera.cameraYaw * 180) / Math.PI;
-		const pitch = (-this.player.playerCamera.cameraPitch * 180) / Math.PI;
+		const yaw = playerCamera.cameraYaw * (180 / Math.PI);
+		const pitch = -playerCamera.cameraPitch * (180 / Math.PI);
 
 		const yawByte = NetClient.encodeYawByte(yaw);
 		const pitchByte = NetClient.encodePitchByte(pitch);
 
-		const last = this.lastSentState;
 		if (
-			last &&
-			last.yawByte === yawByte &&
-			last.pitchByte === pitchByte &&
-			Math.abs(pos.x - last.x) < 0.001 &&
-			Math.abs(pos.y - last.y) < 0.001 &&
-			Math.abs(pos.z - last.z) < 0.001
+			this.hasLastSentState &&
+			this.lastSentYawByte === yawByte &&
+			this.lastSentPitchByte === pitchByte &&
+			Math.abs(pos.x - this.lastSentX) < 0.001 &&
+			Math.abs(pos.y - this.lastSentY) < 0.001 &&
+			Math.abs(pos.z - this.lastSentZ) < 0.001
 		) {
 			return;
 		}
 
-		this.lastSentState = {
-			x: pos.x,
-			y: pos.y,
-			z: pos.z,
-			yawByte,
-			pitchByte,
-		};
+		this.lastSentX = pos.x;
+		this.lastSentY = pos.y;
+		this.lastSentZ = pos.z;
+		this.lastSentYawByte = yawByte;
+		this.lastSentPitchByte = pitchByte;
+		this.hasLastSentState = true;
+
 		this.client.sendPlayerState(pos.x, pos.y, pos.z, yaw, pitch, 0);
 	}
 
@@ -391,16 +445,14 @@ export class NetworkManager {
 		blockId: number,
 		blockState = 0,
 	): void => {
-		if (this.client.isConnected) {
-			this.client.sendBlockEdit(
-				x,
-				y,
-				z,
-				blockId,
-				BlockActionType.Place,
-				blockState,
-			);
-		}
+		this.client.sendBlockEdit(
+			x,
+			y,
+			z,
+			blockId,
+			BlockActionType.Place,
+			blockState,
+		);
 	};
 
 	/**
@@ -408,9 +460,7 @@ export class NetworkManager {
 	 * Sends the edit to the server for broadcast.
 	 */
 	onBlockBroken = (x: number, y: number, z: number, blockId: number): void => {
-		if (this.client.isConnected) {
-			this.client.sendBlockEdit(x, y, z, blockId, BlockActionType.Break, 0);
-		}
+		this.client.sendBlockEdit(x, y, z, blockId, BlockActionType.Break, 0);
 	};
 
 	/**
@@ -419,9 +469,7 @@ export class NetworkManager {
 	 * from a single message so far-away blocks are not rejected as TooFar.
 	 */
 	onExplosion = (x: number, y: number, z: number, radius: number): void => {
-		if (this.client.isConnected) {
-			this.client.sendExplosion(x, y, z, radius);
-		}
+		this.client.sendExplosion(x, y, z, radius);
 	};
 
 	/**
@@ -436,9 +484,7 @@ export class NetworkManager {
 		fuse: number,
 		radius: number,
 	): void => {
-		if (this.client.isConnected) {
-			this.client.sendTntIgnite(x, y, z, fuse, radius);
-		}
+		this.client.sendTntIgnite(x, y, z, fuse, radius);
 	};
 
 	/**
@@ -532,9 +578,9 @@ export class NetworkManager {
 
 	private sampleBreakLight(x: number, y: number, z: number): number {
 		let best = getLightByWorldCoords(x, y, z);
-		let bestSky = (best >> 4) & 0xf;
-		let bestBlock = best & 0xf;
-		let bestScore = bestSky + bestBlock;
+		let bestScore = ((best >>> 4) & 0x0f) + (best & 0x0f);
+
+		if (bestScore === 30) return best;
 
 		for (let i = 0; i < 6; i++) {
 			const light = getLightByWorldCoords(
@@ -543,16 +589,14 @@ export class NetworkManager {
 				z + BREAK_LIGHT_OFFSET_Z[i],
 			);
 
-			const sky = (light >> 4) & 0xf;
-			const block = light & 0xf;
-			const score = sky + block;
+			const score = ((light >>> 4) & 0x0f) + (light & 0x0f);
 
-			if (score > bestScore) {
-				best = light;
-				bestSky = sky;
-				bestBlock = block;
-				bestScore = score;
-			}
+			if (score <= bestScore) continue;
+
+			best = light;
+			bestScore = score;
+
+			if (bestScore === 30) break;
 		}
 
 		return best;
@@ -727,14 +771,25 @@ export class NetworkManager {
 	}
 
 	disconnect(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+
+		window.removeEventListener("resize", this._onCanvasResize);
+
+		this._canvas = null;
+		this._canvasWidth = 0;
+		this._canvasHeight = 0;
+
 		ChunkWorkerPool.getInstance()?.setRemoteChunkProvider(null);
+
 		this.client.disconnect();
 		this.containers.dispose();
 		this.stations.dispose();
 		this.renderer.dispose();
 		this.hud.dispose();
-		window.removeEventListener("resize", this._onCanvasResize);
-		this._canvas = null;
+
+		this.hasLastSentState = false;
+		this.sendAccum = 0;
 	}
 
 	/** Show a transient system line in the multiplayer chat HUD. */

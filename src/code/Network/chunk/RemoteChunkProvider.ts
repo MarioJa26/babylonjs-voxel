@@ -347,9 +347,17 @@ export class RemoteChunkProvider {
 	 * The inflated blob is stored directly — the store re-compresses it for
 	 * IndexedDB — so the decode→reserialize round trip of the legacy message
 	 * is skipped and the blob bytes are byte-identical to the server's.
+	 *
+	 * Captures the exact pending entry before the first await. This prevents an
+	 * inflate started in an earlier cache epoch from resolving a newer request
+	 * that happens to use the same chunk coordinates.
 	 */
 	private async handleChunkDataDeflated(entry: DeflatedChunk): Promise<void> {
 		const key = packCoords(entry.chunkX, entry.chunkY, entry.chunkZ);
+		const pending = this.getCurrentPending(key);
+
+		// Drop unsolicited responses before spending CPU on decompression.
+		if (pending === undefined) return;
 		if (!this.acceptFreshVersion(key, entry.version)) return;
 
 		let blob: Uint8Array;
@@ -360,12 +368,17 @@ export class RemoteChunkProvider {
 				`[RemoteChunkProvider] failed to inflate chunk ${key}:`,
 				error,
 			);
-			this.rejectPendingRequest(
+			this.rejectPendingIfCurrent(
 				key,
+				pending,
 				new ChunkProtocolError("Chunk payload failed to decompress"),
 			);
 			return;
 		}
+
+		// clearCache(), timeout, or another response may have removed/replaced
+		// this request while decompression was running.
+		if (!this.isPendingCurrent(key, pending)) return;
 
 		const chunk = this.deserializeCached(
 			blob,
@@ -377,17 +390,15 @@ export class RemoteChunkProvider {
 			console.warn(
 				`[RemoteChunkProvider] corrupt deflated chunk ${key} (dropped)`,
 			);
-			this.rejectPendingRequest(
+			this.rejectPendingIfCurrent(
 				key,
+				pending,
 				new ChunkProtocolError("Chunk payload failed validation"),
 			);
 			return;
 		}
 
-		// A response is only honored (version recorded, data persisted) when
-		// it resolves a current pending request; anything unmatched is
-		// dropped — it is unsolicited or late-connection data.
-		if (!this.resolvePending(key, chunk)) return;
+		if (!this.resolvePendingIfCurrent(key, pending, chunk)) return;
 		this.persistChunk(
 			chunk,
 			frameDeflated(entry.origLen, entry.deflated),
@@ -398,68 +409,77 @@ export class RemoteChunkProvider {
 
 	private readonly windowSize = 4;
 
+	/**
+	 * Only entries associated with a live pending request are decompressed.
+	 * Each asynchronous operation carries the exact PendingChunk identity that
+	 * existed when the packet was received.
+	 */
 	private async handleChunkDataDeflatedBatch(
 		entries: readonly DeflatedChunk[],
 	): Promise<void> {
 		const entryCount = entries.length;
 		if (entryCount === 0) return;
 
-		const versions = this.chunkVersions;
-
 		/*
-		 * Store source indices rather than allocating { entry, key } objects.
-		 * A number array is substantially cheaper than one object per entry.
+		 * Parallel arrays avoid allocating one wrapper object per accepted entry.
+		 * The pending identity is required to prevent async ABA races where an old
+		 * response resolves a newer request for the same key.
 		 */
-		const inflatableIndices = new Array<number>(entryCount);
-		const inflatableKeys = new Array<bigint>(entryCount);
-		let inflatableCount = 0;
+		const sourceIndices = new Array<number>(entryCount);
+		const keys = new Array<bigint>(entryCount);
+		const pendingEntries = new Array<PendingChunk>(entryCount);
+
+		let acceptedCount = 0;
 
 		for (let i = 0; i < entryCount; i++) {
 			const entry = entries[i];
 			const key = packCoords(entry.chunkX, entry.chunkY, entry.chunkZ);
+			const pending = this.getCurrentPending(key);
 
+			// Avoid decompression for unsolicited, timed-out, or stale-epoch data.
+			if (pending === undefined) continue;
 			if (!this.acceptFreshVersion(key, entry.version)) continue;
 
-			inflatableIndices[inflatableCount] = i;
-			inflatableKeys[inflatableCount] = key;
-			inflatableCount++;
+			sourceIndices[acceptedCount] = i;
+			keys[acceptedCount] = key;
+			pendingEntries[acceptedCount] = pending;
+			acceptedCount++;
 		}
 
-		if (inflatableCount === 0) {
+		if (acceptedCount === 0) {
 			this.clearSweepIfEmpty();
 			return;
 		}
 
-		inflatableIndices.length = inflatableCount;
-		inflatableKeys.length = inflatableCount;
+		sourceIndices.length = acceptedCount;
+		keys.length = acceptedCount;
+		pendingEntries.length = acceptedCount;
 
-		const writes = new Array<ChunkWrite>(inflatableCount);
+		const writes = new Array<ChunkWrite>(acceptedCount);
 
 		/*
-		 * Each successful write records its position in inflatableIndices.
-		 * That position gives us both the original entry and its already-packed
-		 * key, avoiding separate writtenKeys and writtenVersions arrays.
+		 * Records positions in the accepted-entry arrays. This avoids separate
+		 * arrays for persisted keys, versions, and source entries.
 		 */
-		const successfulIndices = new Array<number>(inflatableCount);
+		const successfulIndices = new Array<number>(acceptedCount);
 
 		const windowSize = this.windowSize;
 		let writeCount = 0;
 
 		for (
 			let windowStart = 0;
-			windowStart < inflatableCount;
+			windowStart < acceptedCount;
 			windowStart += windowSize
 		) {
-			const windowEnd = Math.min(windowStart + windowSize, inflatableCount);
+			const windowEnd = Math.min(windowStart + windowSize, acceptedCount);
 			const taskCount = windowEnd - windowStart;
 			const tasks = new Array<Promise<InflatedResult>>(taskCount);
 
 			for (let i = windowStart; i < windowEnd; i++) {
-				const sourceIndex = inflatableIndices[i];
-
 				tasks[i - windowStart] = this.inflateAndValidateEntry(
-					entries[sourceIndex],
-					inflatableKeys[i],
+					entries[sourceIndices[i]],
+					keys[i],
+					pendingEntries[i],
 				);
 			}
 
@@ -474,7 +494,7 @@ export class RemoteChunkProvider {
 				writeCount++;
 			}
 
-			if (windowEnd < inflatableCount) {
+			if (windowEnd < acceptedCount) {
 				await yieldToEventLoop();
 			}
 		}
@@ -486,16 +506,21 @@ export class RemoteChunkProvider {
 		writes.length = writeCount;
 		successfulIndices.length = writeCount;
 
+		/*
+		 * Capture the epoch before submitting the write. clearCache() serializes
+		 * its clear operation through the store and increments the epoch.
+		 */
 		const responseEpoch = this.epoch;
+		const versions = this.chunkVersions;
 
 		void this.store.writeChunks(writes).then(
 			() => {
 				if (this.epoch !== responseEpoch) return;
 
 				for (let i = 0; i < writeCount; i++) {
-					const inflatableIndex = successfulIndices[i];
-					const key = inflatableKeys[inflatableIndex];
-					const entry = entries[inflatableIndices[inflatableIndex]];
+					const acceptedIndex = successfulIndices[i];
+					const key = keys[acceptedIndex];
+					const entry = entries[sourceIndices[acceptedIndex]];
 					const currentVersion = versions.get(key);
 
 					if (currentVersion === undefined || entry.version >= currentVersion) {
@@ -511,14 +536,14 @@ export class RemoteChunkProvider {
 	}
 
 	/**
-	 * Inflate + validate one deflated chunk entry and (on success) resolve
-	 * its pending request. Extracted out of the window loop above into a
-	 * real method — called directly instead of via an inline async arrow
-	 * IIFE — so no per-chunk closure object is allocated on this hot path.
+	 * The pending-entry identity is checked after the await and again during
+	 * resolution. A matching coordinate by itself is insufficient because the
+	 * original request may have timed out or been replaced.
 	 */
 	private async inflateAndValidateEntry(
 		entry: DeflatedChunk,
 		key: bigint,
+		expectedPending: PendingChunk,
 	): Promise<InflatedResult> {
 		let blob: Uint8Array;
 
@@ -530,13 +555,16 @@ export class RemoteChunkProvider {
 				error,
 			);
 
-			this.rejectPendingRequest(
+			this.rejectPendingIfCurrent(
 				key,
+				expectedPending,
 				new ChunkProtocolError("Chunk payload failed to decompress"),
 			);
 
 			return null;
 		}
+
+		if (!this.isPendingCurrent(key, expectedPending)) return null;
 
 		const chunk = this.deserializeCached(
 			blob,
@@ -550,15 +578,18 @@ export class RemoteChunkProvider {
 				`[RemoteChunkProvider] corrupt deflated chunk ${key} (dropped)`,
 			);
 
-			this.rejectPendingRequest(
+			this.rejectPendingIfCurrent(
 				key,
+				expectedPending,
 				new ChunkProtocolError("Chunk payload failed validation"),
 			);
 
 			return null;
 		}
 
-		if (!this.resolvePending(key, chunk)) return null;
+		if (!this.resolvePendingIfCurrent(key, expectedPending, chunk)) {
+			return null;
+		}
 
 		return {
 			cx: entry.chunkX,
@@ -567,6 +598,69 @@ export class RemoteChunkProvider {
 			blob: frameDeflated(entry.origLen, entry.deflated),
 			preCompressed: true,
 		};
+	}
+
+	/**
+	 * Returns the pending entry only when it belongs to the current epoch.
+	 *
+	 * This should be checked before starting expensive asynchronous work.
+	 */
+	private getCurrentPending(key: bigint): PendingChunk | undefined {
+		const pending = this.pending.get(key);
+
+		if (pending === undefined || pending.epoch !== this.epoch) {
+			return undefined;
+		}
+
+		return pending;
+	}
+
+	/**
+	 * Tests both epoch and object identity.
+	 *
+	 * Object identity protects against the ABA case:
+	 * 1. request A exists for key K;
+	 * 2. asynchronous inflation begins;
+	 * 3. request A is removed;
+	 * 4. request B is created for K;
+	 * 5. request A's inflation completes.
+	 */
+	private isPendingCurrent(key: bigint, expected: PendingChunk): boolean {
+		return expected.epoch === this.epoch && this.pending.get(key) === expected;
+	}
+
+	/**
+	 * Resolves only the exact request that was associated with the packet before
+	 * asynchronous processing began.
+	 */
+	private resolvePendingIfCurrent(
+		key: bigint,
+		expected: PendingChunk,
+		result: RemoteChunkResult,
+	): boolean {
+		if (!this.isPendingCurrent(key, expected)) return false;
+
+		this.pending.delete(key);
+		expected.resolve(result);
+		return true;
+	}
+
+	/**
+	 * Rejects only the exact request that was associated with the packet before
+	 * asynchronous processing began.
+	 */
+	private rejectPendingIfCurrent(
+		key: bigint,
+		expected: PendingChunk,
+		error: Error,
+	): boolean {
+		if (!this.isPendingCurrent(key, expected)) return false;
+
+		this.pending.delete(key);
+		expected.reject(error);
+		this.clearSweepIfEmpty();
+
+		return true;
 	}
 
 	private handleChunkUnchanged(entry: {

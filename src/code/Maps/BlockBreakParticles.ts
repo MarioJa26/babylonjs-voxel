@@ -1167,17 +1167,16 @@ function flushDeferredRenderables(scene: SceneContext): Promise<void> {
 
 function tick(deltaMs: number): void {
 	const system = billboard;
-	if (!system) return;
+	if (system === null || aliveCount === 0) return;
 
 	const dt = Math.min(MAX_DT, deltaMs * 0.001);
-	if (dt <= 0 || isUiOpen(UiFocus.pauseMenu)) return;
+	if (!(dt > 0) || isUiOpen(UiFocus.pauseMenu)) return;
 
 	clearBillboardSprites(system);
 
 	const gravityDt = GRAVITY * dt;
 
-	// Hoist SoA refs to locals so the 10k-iteration hot loop avoids
-	// module-scope lookups per access.
+	// Cache frequently used references and scratch values for the hot loop.
 	const lpx = px;
 	const lpy = py;
 	const lpz = pz;
@@ -1194,64 +1193,90 @@ function tick(deltaMs: number): void {
 	const lpb = pb;
 	const lpa = pa;
 	const lpgrav = pgrav;
-	const lpFadeStart = pFadeStart;
-	const lpFadeInv = pFadeInv;
-	const lpframe = pframe;
-	const lpflags = pflags;
+	const lFadeStart = pFadeStart;
+	const lFadeInv = pFadeInv;
+	const lframe = pframe;
+	const lflags = pflags;
 
-	for (let i = 0; i < aliveCount; i++) {
+	const position = scratchPos;
+	const sizeWorld = scratchSize;
+	const color = scratchColor;
+	const props = scratchProps;
+
+	let i = 0;
+
+	while (i < aliveCount) {
 		const life = lplife[i];
 		const age = lpage[i] + dt;
 
 		if (age >= life) {
+			/*
+			 * Swap-removal puts an unprocessed particle into slot i, so do not
+			 * increment i here.
+			 */
 			removeParticle(i);
-			i--;
 			continue;
 		}
+
 		lpage[i] = age;
 
-		const flags = lpflags[i];
+		let flags = lflags[i];
 
 		if ((flags & COLLIDE_BIT) !== 0) {
 			if ((flags & SETTLED_BIT) === 0) {
 				collideParticle(i, dt);
+
+				// Collision may have settled the particle.
+				flags = lflags[i];
 			}
 		} else {
-			lpvy[i] += gravityDt * lpgrav[i];
+			const vy = lpvy[i] + gravityDt * lpgrav[i];
+
+			lpvy[i] = vy;
 			lpx[i] += lpvx[i] * dt;
-			lpy[i] += lpvy[i] * dt;
+			lpy[i] += vy * dt;
 			lpz[i] += lpvz[i] * dt;
 		}
 
-		if ((lpflags[i] & SETTLED_BIT) === 0) {
+		if ((flags & SETTLED_BIT) === 0) {
 			const spin = lpspin[i];
+
 			if (spin !== 0) {
 				lpangle[i] += spin * dt;
 			}
 		}
 
 		let alpha = lpa[i];
-		if (age > lpFadeStart[i]) {
-			alpha *= (life - age) * lpFadeInv[i];
+		const fadeStart = lFadeStart[i];
+
+		if (age > fadeStart) {
+			alpha *= (life - age) * lFadeInv[i];
+
+			// Protect the renderer from minor floating-point undershoot.
+			if (alpha <= 0) {
+				i++;
+				continue;
+			}
 		}
 
-		scratchPos[0] = lpx[i];
-		scratchPos[1] = lpy[i];
-		scratchPos[2] = lpz[i];
+		position[0] = lpx[i];
+		position[1] = lpy[i];
+		position[2] = lpz[i];
 
-		const size = lpsize[i];
-		scratchSize[0] = size;
-		scratchSize[1] = size;
+		const particleSize = lpsize[i];
+		sizeWorld[0] = particleSize;
+		sizeWorld[1] = particleSize;
 
-		scratchColor[0] = lpr[i];
-		scratchColor[1] = lpg[i];
-		scratchColor[2] = lpb[i];
-		scratchColor[3] = alpha;
+		color[0] = lpr[i];
+		color[1] = lpg[i];
+		color[2] = lpb[i];
+		color[3] = alpha;
 
-		scratchProps.rotation = lpangle[i];
-		scratchProps.frame = lpframe[i];
+		props.rotation = lpangle[i];
+		props.frame = lframe[i];
 
-		addBillboardSpriteIndex(system, scratchProps);
+		addBillboardSpriteIndex(system, props);
+		i++;
 	}
 }
 
@@ -1413,29 +1438,50 @@ function addParticle(
 	collide: 0 | 1 = 0,
 ): void {
 	if (aliveCount >= POOL_SIZE) return;
+
+	/*
+	 * Reject malformed particles before they enter the dense pool. A NaN life
+	 * never satisfies `age >= life`, so without this guard it would occupy a
+	 * pool slot permanently and send invalid values to the billboard system.
+	 */
+	if (
+		!Number.isFinite(life) ||
+		life <= 0 ||
+		!Number.isFinite(size) ||
+		size <= 0
+	) {
+		return;
+	}
+
 	const i = aliveCount++;
+
 	px[i] = x;
 	py[i] = y;
 	pz[i] = z;
+
 	pvx[i] = vx;
 	pvy[i] = vy;
 	pvz[i] = vz;
+
 	page[i] = 0;
 	plife[i] = life;
-	const fadeStart = life * FADE_START;
-	pFadeStart[i] = fadeStart;
-	// life is always > 0 at spawn sites (min 0.1); guard anyway.
-	pFadeInv[i] = life > 0 ? (1 / life) * FADE_RANGE : 0;
+
+	const fadeDuration = life * FADE_RANGE;
+	pFadeStart[i] = life - fadeDuration;
+	pFadeInv[i] = 1 / fadeDuration;
+
 	psize[i] = size;
 	pangle[i] = angle;
 	pspin[i] = spin;
 	pframe[i] = frame;
+
 	pr[i] = r;
 	pg[i] = g;
 	pb[i] = b;
 	pa[i] = a;
+
 	pgrav[i] = gravityScale;
-	pflags[i] = collide;
+	pflags[i] = collide === 1 ? COLLIDE_BIT : 0;
 }
 
 /** Swap-remove: overwrites slot `i` with the last live particle and shrinks aliveCount. */

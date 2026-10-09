@@ -52,6 +52,13 @@ export class RiverGenerator {
 		]);
 	}
 
+	/**
+	 * False while `isRiver` is the stubbed-out `return false` below. Callers on
+	 * the per-voxel surface path check this once outside their loops instead of
+	 * paying a property load + call + guaranteed-false branch per voxel.
+	 */
+	public readonly isEnabled = false;
+
 	public isRiver(
 		worldX: number,
 		worldY: number,

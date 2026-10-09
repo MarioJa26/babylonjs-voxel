@@ -32,7 +32,7 @@ export class RavineFeature implements IWorldFeature {
 
 	public generate(
 		chunkX: number,
-		_chunkY: number,
+		chunkY: number,
 		chunkZ: number,
 		_biome: Biome,
 		placeBlock: PlaceBlockFn,
@@ -41,21 +41,82 @@ export class RavineFeature implements IWorldFeature {
 		generatingChunkX: number,
 		generatingChunkZ: number,
 	) {
-		const region = computeRegion(
-			chunkX,
-			chunkZ,
+		// PERF: generateStructures invokes every feature 25x per chunk-layer (a
+		// 5x5 window) and the vertical bounds span ~22 chunkY layers, so a naive
+		// implementation re-walks the whole ravine depth for every one of those
+		// ~550 calls and relies on placeBlock() to discard out-of-chunk writes.
+		// Probe whole REGIONS instead of individual chunks: with regionSize 8 a
+		// 5-chunk window spans at most 2x2 regions, so this turns 25 identical
+		// region resolutions into at most 4. Mirrors fillMineshaftSealMask.
+		const regionSize = RAVINE_REGION.regionSize;
+		const minRegionX = Math.floor((chunkX - 2) / regionSize);
+		const maxRegionX = Math.floor((chunkX + 2) / regionSize);
+		const minRegionZ = Math.floor((chunkZ - 2) / regionSize);
+		const maxRegionZ = Math.floor((chunkZ + 2) / regionSize);
+
+		const bounds = chunkWorldBounds(
+			generatingChunkX,
+			generatingChunkZ,
 			chunkSize,
-			seed,
-			RAVINE_REGION,
 		);
-		if (!region) return;
 
-		const {
-			regionHash,
-			centerX: ravineCenterX,
-			centerZ: ravineCenterZ,
-		} = region;
+		// PERF: Clip the carve to the chunk actually being generated. Without
+		// this the Y loop runs the full ravine depth on every layer while
+		// placeBlock() silently drops everything outside the 32-block slice.
+		const chunkMinY = chunkY * chunkSize;
+		const chunkMaxY = chunkMinY + chunkSize - 1;
 
+		for (let rx = minRegionX; rx <= maxRegionX; rx++) {
+			for (let rz = minRegionZ; rz <= maxRegionZ; rz++) {
+				// computeRegion derives the region from the CHUNK it is handed,
+				// so pass a chunk inside this region, not the region index.
+				const region = computeRegion(
+					rx * regionSize,
+					rz * regionSize,
+					chunkSize,
+					seed,
+					RAVINE_REGION,
+				);
+				if (!region) continue;
+
+				this.generateInRegion(
+					region.regionHash,
+					region.centerX,
+					region.centerZ,
+					bounds.minX,
+					bounds.maxX,
+					bounds.minZ,
+					bounds.maxZ,
+					chunkMinY,
+					chunkMaxY,
+					placeBlock,
+					seed,
+				);
+			}
+		}
+	}
+
+	/**
+	 * Carve the ravine owned by one resolved region, clipped to the generating
+	 * chunk's XZ footprint and Y range.
+	 *
+	 * Extracted from generate() so the region loop above stays readable; the
+	 * math is unchanged apart from the Y clipping, which only removes iterations
+	 * whose placeBlock() call would have been dropped anyway.
+	 */
+	private generateInRegion(
+		regionHash: number,
+		ravineCenterX: number,
+		ravineCenterZ: number,
+		boundsMinX: number,
+		boundsMaxX: number,
+		boundsMinZ: number,
+		boundsMaxZ: number,
+		chunkMinY: number,
+		chunkMaxY: number,
+		placeBlock: PlaceBlockFn,
+		seed: number,
+	) {
 		const angle = (Math.abs(getPRNGBySeed(regionHash + 2, seed)) % 628) / 100;
 		const length = 40 + (Math.abs(getPRNGBySeed(regionHash + 3, seed)) % 60);
 		const width = 3 + (Math.abs(getPRNGBySeed(regionHash + 4, seed)) % 4);
@@ -79,29 +140,22 @@ export class RavineFeature implements IWorldFeature {
 			ravineCenterZ + halfLen * Math.abs(dzDir) + width + margin,
 		);
 
-		const bounds = chunkWorldBounds(
-			generatingChunkX,
-			generatingChunkZ,
-			chunkSize,
-		);
 		if (
 			!aabbOverlaps(
 				minX,
 				maxX,
 				minZ,
 				maxZ,
-				bounds.minX,
-				bounds.maxX,
-				bounds.minZ,
-				bounds.maxZ,
+				boundsMinX,
+				boundsMaxX,
+				boundsMinZ,
+				boundsMaxZ,
 			)
 		)
 			return;
 
-		const _maxDepthY = ravineCenterZ + depth;
-
-		for (let x = bounds.minX; x < bounds.maxX; x++) {
-			for (let z = bounds.minZ; z < bounds.maxZ; z++) {
+		for (let x = boundsMinX; x < boundsMaxX; x++) {
+			for (let z = boundsMinZ; z < boundsMaxZ; z++) {
 				const dx = x - ravineCenterX;
 				const dz = z - ravineCenterZ;
 				const projection = dx * dxDir + dz * dzDir;
@@ -109,7 +163,10 @@ export class RavineFeature implements IWorldFeature {
 
 				if (projection < -halfLen || projection > halfLen) continue;
 
-				const localWidth = width * (1 - Math.abs(projection) / length);
+				// PERF: this ratio is needed twice below (taper + depth); it was
+				// recomputed along with Math.abs(projection) in both places.
+				const projFrac = Math.abs(projection) / length;
+				const localWidth = width * (1 - projFrac);
 				if (perpendicular > localWidth) continue;
 
 				const wallJitter =
@@ -120,22 +177,40 @@ export class RavineFeature implements IWorldFeature {
 						100) /
 					1000;
 
-				const ravineDepth =
-					depth * (1 - Math.abs(projection) / length) + wallJitter;
+				const ravineDepth = depth * (1 - projFrac) + wallJitter;
 				const floorY = (ravineCenterZ - ravineDepth * 0.3) | 0;
 
-				for (let y = Math.max(floorY, -1600); y <= 512; y++) {
-					const distFromFloor = y - floorY;
-					const _wallWidth = 0.5 + wallJitter;
-					if (distFromFloor < 0) continue;
+				// PERF: clip to the generating chunk. Iterations outside this
+				// range were previously computed and then dropped by placeBlock().
+				let yLo = Math.max(floorY, -1600, chunkMinY);
+				const yHi = Math.min(floorY + ravineDepth, chunkMaxY);
+				if (yLo > yHi) continue;
+
+				// Split at sea level so the `y < 42` blockId select leaves the
+				// inner loop. Both halves share the same monotone taper test.
+				const seaSplit = yHi < 42 ? yHi + 1 : 42;
+
+				for (; yLo < seaSplit; yLo++) {
+					const distFromFloor = yLo - floorY;
+					// carveWidth shrinks monotonically with y, so once it falls
+					// below `perpendicular` every higher y fails too -> break.
 					if (distFromFloor > ravineDepth) break;
-
-					const carveWidth =
-						localWidth * (1 - distFromFloor / ravineDepth) + 0.5;
-					if (perpendicular > carveWidth) continue;
-
-					const blockId = y < 42 ? 30 : 0;
-					placeBlock(x, y, z, blockId, true);
+					if (
+						perpendicular >
+						localWidth * (1 - distFromFloor / ravineDepth) + 0.5
+					)
+						break;
+					placeBlock(x, yLo, z, 30, true);
+				}
+				for (; yLo <= yHi; yLo++) {
+					const distFromFloor = yLo - floorY;
+					if (distFromFloor > ravineDepth) break;
+					if (
+						perpendicular >
+						localWidth * (1 - distFromFloor / ravineDepth) + 0.5
+					)
+						break;
+					placeBlock(x, yLo, z, 0, true);
 				}
 			}
 		}

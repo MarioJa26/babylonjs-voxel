@@ -4,6 +4,8 @@
  * Registers a binary handler on NetClient and turns MobSpawn,
  * MobUpdateBatch, and MobDespawn messages into shared thin-instance slots.
  */
+
+import { BIRD_HIT_HALF, getBirdInstancePool } from "@/code/Entities/Mobs/Bird";
 import {
 	CHICKEN_HIT_HALF,
 	getChickenInstancePool,
@@ -18,11 +20,11 @@ import {
 	getKrakenInstancePool,
 	KRAKEN_HIT_HALF,
 } from "@/code/Entities/Mobs/Kraken";
-import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
 import {
-	getGuardianInstancePool,
 	GUARDIAN_HIT_HALF,
+	getGuardianInstancePool,
 } from "@/code/Entities/Mobs/MayaGuardian";
+import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
 import type {
 	InstanceSlotHandle,
 	MobInstancePool,
@@ -41,10 +43,9 @@ import {
 	getSkeletonInstancePool,
 	SKELETON_HIT_HALF,
 } from "@/code/Entities/Mobs/Skeleton";
-import { BIRD_HIT_HALF, getBirdInstancePool } from "@/code/Entities/Mobs/Bird";
 import {
-	SONGBIRD_HIT_HALF,
 	getSongbirdInstancePool,
+	SONGBIRD_HIT_HALF,
 } from "@/code/Entities/Mobs/Songbird";
 import {
 	getSquidInstancePool,

@@ -21,9 +21,11 @@ const _cellScratch: NoiseCellParams = {
 };
 
 export class NoiseSampler {
-	private noiseSamples: Float32Array;
+	// PERF: exposed for CaveNoiseGrid.get3, which samples three same-geometry
+	// grids and reuses one set of indices across all three. Read-only there.
+	readonly noiseSamples: Float32Array;
 	private sampleRate: number;
-	private pointsPerDim: number;
+	readonly pointsPerDim: number;
 	private noiseFunction: (x: number, y: number, z: number) => number;
 	/** When present, the underlying FastNoiseLite instance is used to batch the
 	 * entire grid in one FillNoise3DAffine call (SIMD-friendly on the wasm
@@ -38,7 +40,7 @@ export class NoiseSampler {
 	private readonly rateShift: number;
 	private readonly rateMask: number;
 	private readonly invSampleRate: number;
-	private readonly pointsPerDimSq: number;
+	readonly pointsPerDimSq: number;
 
 	constructor(
 		chunkX: number,
@@ -176,31 +178,44 @@ export class NoiseSampler {
 
 	/** Trilinear sample at precomputed cell/fraction params (see getCellParams). */
 	public getFrom(p: NoiseCellParams): number {
-		const ppd = this.pointsPerDim;
-		const ppd2 = this.pointsPerDimSq;
-		const idx = p.cellX + p.cellY * ppd + p.cellZ * ppd2;
+		return NoiseSampler.trilinear(
+			this.noiseSamples,
+			p.cellX + p.cellY * this.pointsPerDim + p.cellZ * this.pointsPerDimSq,
+			this.pointsPerDim,
+			this.pointsPerDimSq,
+			p.fx,
+			p.fy,
+			p.fz,
+		);
+	}
 
-		const i000 = idx;
-		const i100 = idx + 1;
-		const i010 = idx + ppd;
-		const i110 = idx + ppd + 1;
-		const i001 = idx + ppd2;
-		const i101 = idx + ppd2 + 1;
-		const i011 = idx + ppd2 + ppd;
-		const i111 = idx + ppd2 + ppd + 1;
+	/**
+	 * PERF: static trilinear core, hoisted out of `getFrom` so a caller sampling
+	 * several fields from the SAME grid geometry (see CaveNoiseGrid.get3) can
+	 * compute `idx` and its 7 corner offsets once and reuse them, instead of
+	 * repeating the whole index derivation per field.
+	 *
+	 * `fx`/`fy`/`fz` are the per-axis fractions; `fy` indexes the Y row and
+	 * `fz` the Z plane, matching the original nest order.
+	 */
+	public static trilinear(
+		s: Float32Array,
+		idx: number,
+		ppd: number,
+		ppd2: number,
+		fx: number,
+		fy: number,
+		fz: number,
+	): number {
+		const n000 = s[idx]!;
+		const n100 = s[idx + 1]!;
+		const n010 = s[idx + ppd]!;
+		const n110 = s[idx + ppd + 1]!;
+		const n001 = s[idx + ppd2]!;
+		const n101 = s[idx + ppd2 + 1]!;
+		const n011 = s[idx + ppd2 + ppd]!;
+		const n111 = s[idx + ppd2 + ppd + 1]!;
 
-		const s = this.noiseSamples;
-		const n000 = s[i000];
-		const n100 = s[i100];
-		const n001 = s[i001];
-		const n101 = s[i101];
-		const n010 = s[i010];
-		const n110 = s[i110];
-		const n011 = s[i011];
-		const n111 = s[i111];
-
-		const fy = p.fy;
-		const fz = p.fz;
 		const n00 = n000 + (n010 - n000) * fy;
 		const n10 = n100 + (n110 - n100) * fy;
 		const n01 = n001 + (n011 - n001) * fy;
@@ -209,6 +224,25 @@ export class NoiseSampler {
 		const n0 = n00 + (n01 - n00) * fz;
 		const n1 = n10 + (n11 - n10) * fz;
 
-		return n0 + (n1 - n0) * p.fx;
+		return n0 + (n1 - n0) * fx;
+	}
+
+	/**
+	 * PERF: cell/fraction params plus the derived flat sample index, for callers
+	 * that need to sample several same-geometry grids (see CaveNoiseGrid.get3).
+	 * Avoids recomputing `cellX + cellY*ppd + cellZ*ppd2` per field.
+	 */
+	public getCellParamsAndIndex(
+		localX: number,
+		localY: number,
+		localZ: number,
+		out: NoiseCellParams,
+	): number {
+		this.getCellParams(localX, localY, localZ, out);
+		return (
+			out.cellX +
+			out.cellY * this.pointsPerDim +
+			out.cellZ * this.pointsPerDimSq
+		);
 	}
 }

@@ -9,6 +9,7 @@ import {
 	type EngineContext,
 	type SceneContext,
 	type ShaderMaterial,
+	type ShaderUniformOption,
 	setShaderStorageBuffer,
 	setShaderTexture,
 	setShaderUniform,
@@ -250,6 +251,7 @@ const LOD3_TRANSPARENT_VERTEX_OPTIONS: Lod3VertexOptions = {
 interface Lod3MaterialRenderOptions {
 	backFaceCulling: boolean;
 	needAlphaBlending?: boolean;
+	needAlphaTesting?: boolean;
 	blendMode?: "alpha";
 	depthWrite?: boolean;
 }
@@ -307,37 +309,51 @@ function createLod3Material(
 		type: "array<vec4<f32>>",
 	};
 
+	const uniforms: ShaderUniformOption[] = [
+		"world",
+		"worldViewProjection",
+		"cameraPosition",
+		{ name: "atlasTileSize", type: "f32" },
+		{ name: "atlasMaxTiles", type: "f32" },
+		{ name: "atlasMaxTilesU32", type: "u32" },
+		{ name: "lightDirection", type: "vec3<f32>" },
+		{ name: "sunLightIntensity", type: "f32" },
+		{ name: "wetness", type: "f32" },
+		{ name: "lodFadeProgress", type: "f32" },
+		{ name: "lodFadeDirection", type: "f32" },
+		{ name: "lodFadeSeed", type: "f32" },
+		{ name: "fogInfos", type: "vec4<f32>" },
+		{ name: "fogColor", type: "vec3<f32>" },
+	];
+
+	// Only the cutout fragment shader reads shaderSystem.alphaCutoff. The
+	// ShaderSystemUniforms struct is generated purely from the declared system
+	// uniforms, so the member only exists if declared here.
+	if (renderOptions.needAlphaTesting) {
+		uniforms.push("alphaCutoff");
+	}
+
 	const material = createShaderMaterial({
 		name,
 		vertexSource: buildPackedVertexWGSL(arenaCount, vertexOptions),
 		fragmentSource,
 		attributes: ["position"],
-		uniforms: [
-			"world",
-			"worldViewProjection",
-			"cameraPosition",
-			{ name: "atlasTileSize", type: "f32" },
-			{ name: "atlasMaxTiles", type: "f32" },
-			{ name: "atlasMaxTilesU32", type: "u32" },
-			{ name: "lightDirection", type: "vec3<f32>" },
-			{ name: "sunLightIntensity", type: "f32" },
-			{ name: "wetness", type: "f32" },
-			{ name: "lodFadeProgress", type: "f32" },
-			{ name: "lodFadeDirection", type: "f32" },
-			{ name: "lodFadeSeed", type: "f32" },
-			{ name: "fogInfos", type: "vec4<f32>" },
-			{ name: "fogColor", type: "vec3<f32>" },
-		],
+		uniforms,
 		samplers: [{ name: "diffuseTexture", viewDimension: "2d-array" }],
 		storageBuffers,
 		backFaceCulling: renderOptions.backFaceCulling,
 		needAlphaBlending: renderOptions.needAlphaBlending,
+		needAlphaTesting: renderOptions.needAlphaTesting,
 		blendMode: renderOptions.blendMode,
 		depthWrite: renderOptions.depthWrite,
 	});
 
 	registerPackedMaterial(material);
 	setShaderTexture(material, "diffuseTexture", texture);
+
+	if (renderOptions.needAlphaTesting) {
+		setShaderUniform(material, "alphaCutoff", 0.5);
+	}
 	setShaderUniform(material, "atlasTileSize", opts.atlasTileSize);
 	setShaderUniform(material, "atlasMaxTiles", opts.atlasMaxTiles);
 	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles);
@@ -382,7 +398,7 @@ export function createLod3CutoutMaterial(
 		lod3CutoutFragmentWGSL,
 		opts.cutoutTexture ?? opts.diffuseTexture,
 		"lod3-cutout-tintLUT",
-		{ backFaceCulling: true },
+		{ backFaceCulling: true, needAlphaTesting: true },
 	);
 }
 

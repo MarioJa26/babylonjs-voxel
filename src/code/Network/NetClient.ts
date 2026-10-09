@@ -111,6 +111,7 @@ export class NetClient {
 
 	private readonly remotePlayers = new Map<string, RemotePlayer>();
 	private playersByIndex: (RemotePlayer | undefined)[] = [];
+	private readonly activeRemotePlayers: RemotePlayer[] = [];
 
 	private ownIndex = -1;
 	private playerName = "";
@@ -599,6 +600,9 @@ export class NetClient {
 			player.yaw = 0;
 			player.pitch = 0;
 			player.animation = 0;
+
+			// A rejoin must not retain the previous connection's skin or item.
+			player.skinPng = null;
 			player.heldItemId = 0;
 			player.heldItemBlockState = 0;
 
@@ -627,6 +631,7 @@ export class NetClient {
 			};
 
 			this.remotePlayers.set(join.sessionId, player);
+			this.activeRemotePlayers.push(player);
 		}
 
 		this.playersByIndex[join.index] = player;
@@ -648,6 +653,17 @@ export class NetClient {
 		this.remotePlayers.delete(existing.sessionId);
 		this.playersByIndex[index] = undefined;
 		this.warnedUnknownIndices.delete(index);
+
+		const activePlayers = this.activeRemotePlayers;
+		const activeIndex = activePlayers.indexOf(existing);
+
+		if (activeIndex !== -1) {
+			// Removal order is not observable, so swap-removal avoids shifting
+			// every following player.
+			const lastIndex = activePlayers.length - 1;
+			activePlayers[activeIndex] = activePlayers[lastIndex];
+			activePlayers.pop();
+		}
 
 		this.callbacks.onPlayerLeave?.(existing.sessionId, existing.name);
 	}
@@ -1021,12 +1037,15 @@ export class NetClient {
 	}
 
 	updateRemotePlayerInterpolation(dt: number): void {
-		const lerpFactor = 1 - Math.exp(-10 * dt);
-		const players = this.playersByIndex;
+		if (!(dt > 0)) return;
+
+		// Clamp unusually large frame deltas. Values above this threshold already
+		// produce a factor extremely close to 1 and can cause visible snapping.
+		const lerpFactor = 1 - Math.exp(-10 * Math.min(dt, 1));
+		const players = this.activeRemotePlayers;
 
 		for (let i = 0; i < players.length; i++) {
 			const player = players[i];
-			if (player === undefined) continue;
 
 			player.x += (player.targetX - player.x) * lerpFactor;
 			player.y += (player.targetY - player.y) * lerpFactor;
@@ -1040,13 +1059,15 @@ export class NetClient {
 				yawDiff += 360;
 			}
 
-			player.yaw += yawDiff * lerpFactor;
+			let yaw = player.yaw + yawDiff * lerpFactor;
 
-			if (player.yaw >= 360) {
-				player.yaw -= 360;
-			} else if (player.yaw < 0) {
-				player.yaw += 360;
+			if (yaw >= 360) {
+				yaw -= 360;
+			} else if (yaw < 0) {
+				yaw += 360;
 			}
+
+			player.yaw = yaw;
 		}
 	}
 
@@ -1097,6 +1118,7 @@ export class NetClient {
 		}
 
 		this.remotePlayers.clear();
+		this.activeRemotePlayers.length = 0;
 		this.playersByIndex.length = 0;
 		this.warnedUnknownIndices.clear();
 		this.batchScratch.length = 0;

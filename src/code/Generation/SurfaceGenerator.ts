@@ -262,6 +262,11 @@ export class SurfaceGenerator {
 	// get3() — avoids 2 extra getCellParams per voxel vs separate getters.
 	private readonly caveSampleScratch = new Float32Array(3);
 
+	// PERF: caveDensity per localY for the current chunk, filled by
+	// generateTerrain. evaluateCaveCarve accepts a precomputed density so the
+	// per-voxel path doesn't recompute a value that only depends on worldY.
+	private readonly caveDensityByY = new Float32Array(CHUNK_SIZE);
+
 	/**
 	 * Direct-mapped cache of expensive horizontal column prepass data.
 	 *
@@ -1035,9 +1040,36 @@ export class SurfaceGenerator {
 		this.curChunkWorldZ = chunkWorldZ;
 		this.caveGridReady = false;
 
+		// PERF: caveDensity depends only on worldY, so a chunk has exactly
+		// CHUNK_SIZE distinct values. evaluateCaveCarve can take it precomputed
+		// (UndergroundGenerator already does); without this every surface voxel
+		// recomputed a Math.max + clamp01 + division + lerp for a value that only
+		// varies with localY.
+		{
+			const params = this.params;
+			const fullDepthDenom = Math.max(
+				1,
+				params.CAVE_SURFACE_BLEND_UPPER - params.CAVE_FULL_DENSITY_DEPTH,
+			);
+			const table = this.caveDensityByY;
+			for (let ly = 0; ly < CHUNK_SIZE; ly++) {
+				const worldY = chunkWorldY + ly;
+				const t = (worldY - params.CAVE_FULL_DENSITY_DEPTH) / fullDepthDenom;
+				const depthT = t < 0 ? 0 : t > 1 ? 1 : t;
+				table[ly] =
+					params.CAVE_DENSITY_MIN * (1 - depthT) +
+					params.CAVE_DENSITY_MAX * depthT;
+			}
+		}
+
 		const topSunlightMask = _scratchSunlightMask;
 		const topSurfaceYMap = _scratchTopSurfaceYMap;
 		topSurfaceYMap.fill(NO_SURFACE_Y);
+
+		// PERF: isRiver() is currently a stubbed `return false`, so hoisting the
+		// check lets the per-voxel river tests compile away entirely. Re-reading
+		// it per voxel cost a property load + call + branch on every column.
+		const riversEnabled = this.riverGenerator.isEnabled;
 
 		const volcanicLiquidId =
 			currentBiome.id === BIOME_ID.VOLCANIC_WASTELAND ? 24 : 30;
@@ -1180,6 +1212,7 @@ export class SurfaceGenerator {
 
 					const aboveY = topWorldY + 1;
 					const isTunnelAboveChunk =
+						riversEnabled &&
 						aboveY < GenerationParams.SEA_LEVEL + 16 &&
 						this.riverGenerator.isRiver(worldX, aboveY, worldZ, riverNoise);
 
@@ -1188,7 +1221,7 @@ export class SurfaceGenerator {
 					for (let localY = CHUNK_SIZE - 1; localY >= 0; localY--) {
 						const worldY = chunkWorldY + localY;
 
-						if (worldY < GenerationParams.SEA_LEVEL + 16) {
+						if (riversEnabled && worldY < GenerationParams.SEA_LEVEL + 16) {
 							const isTunnel = this.riverGenerator.isRiver(
 								worldX,
 								worldY,
@@ -1273,6 +1306,7 @@ export class SurfaceGenerator {
 				const effectiveDensityAbove = densityAboveChunk - caveModAbove;
 
 				const isTunnelAboveChunk =
+					riversEnabled &&
 					topWorldY + 1 < GenerationParams.SEA_LEVEL + 16 &&
 					this.riverGenerator.isRiver(
 						worldX,
@@ -1287,7 +1321,7 @@ export class SurfaceGenerator {
 				for (let localY = CHUNK_SIZE - 1; localY >= 0; localY--) {
 					const worldY = chunkWorldY + localY;
 
-					if (worldY < GenerationParams.SEA_LEVEL + 16) {
+					if (riversEnabled && worldY < GenerationParams.SEA_LEVEL + 16) {
 						const isTunnel = this.riverGenerator.isRiver(
 							worldX,
 							worldY,
@@ -1705,8 +1739,8 @@ export class SurfaceGenerator {
 		surfaceY: number,
 	): number {
 		const chunkSize = this.chunk_size;
-		const lx = x - this.curChunkWorldX;
 		const ly = y - this.curChunkWorldY;
+		const lx = x - this.curChunkWorldX;
 		const lz = z - this.curChunkWorldZ;
 
 		let cheese: number;
@@ -1734,11 +1768,28 @@ export class SurfaceGenerator {
 			cheese = s[0]!;
 			tunnel = s[1]!;
 			detail = s[2]!;
-		} else {
-			cheese = this.cheeseNoise(x, y, z);
-			tunnel = this.tunnelNoise(x, y, z);
-			detail = this.detailNoise(x, y, z);
+
+			const cave = evaluateCaveCarve(
+				this.params,
+				y,
+				surfaceY,
+				cheese,
+				tunnel,
+				detail,
+				undefined,
+				// PERF: precomputed per-localY by generateTerrain.
+				this.caveDensityByY[ly]!,
+			);
+			if (!cave.shouldCarve) return 0;
+
+			return (
+				cave.carveStrength * getSurfaceCarveBlend(cave.depthBelowSurface) * 40
+			);
 		}
+
+		cheese = this.cheeseNoise(x, y, z);
+		tunnel = this.tunnelNoise(x, y, z);
+		detail = this.detailNoise(x, y, z);
 
 		const cave = evaluateCaveCarve(
 			this.params,
