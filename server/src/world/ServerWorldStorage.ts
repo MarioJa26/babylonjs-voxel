@@ -131,19 +131,47 @@ const MAX_PACKED_VALUE = 65535;
 /** Shape-state bits per voxel (matches BLOCK_STATE_BITS in BlockEncoding). */
 const MAX_BLOCK_STATE_BITS = 63;
 
-/** Set once the shape-aware closed-face LUT has been built in this process. */
+/**
+ * Set only after the shape-aware closed-face LUT has been initialized
+ * successfully. Concurrent callers share the same initialization promise.
+ */
 let closedFaceMaskLUTReady = false;
+let closedFaceMaskLUTPromise: Promise<void> | null = null;
 
 function ensureClosedFaceMaskLUT(): Promise<void> {
 	if (closedFaceMaskLUTReady) return Promise.resolve();
-	closedFaceMaskLUTReady = true;
+
+	const existing = closedFaceMaskLUTPromise;
+	if (existing !== null) return existing;
+
 	// One-time walk of every packed block value (64K entries, cached inside
 	// ChunkFaceMasks). Gives the sky-mask walk exact per-face shape parity
 	// with the client's incremental engine. The shape registry loads
 	// asynchronously — await it or every block degrades to a full cube.
-	return shapeInitPromise.then(() => {
+	const initialization = shapeInitPromise.then(() => {
 		LightGenerator.setClosedFaceMaskLUT(precomputeClosedFaceMasks());
+		closedFaceMaskLUTReady = true;
 	});
+
+	closedFaceMaskLUTPromise = initialization;
+
+	void initialization.then(
+		() => {
+			if (closedFaceMaskLUTPromise === initialization) {
+				closedFaceMaskLUTPromise = null;
+			}
+		},
+		() => {
+			// Permit a later retry: marking the LUT ready before initialization
+			// completed permanently suppressed retries after a failure.
+			if (closedFaceMaskLUTPromise === initialization) {
+				closedFaceMaskLUTPromise = null;
+				closedFaceMaskLUTReady = false;
+			}
+		},
+	);
+
+	return initialization;
 }
 
 /**
@@ -1158,6 +1186,9 @@ export class ServerWorldStorage {
 	 *
 	 * Output uses the LightGenerator convention: 1 = column receives full
 	 * incoming skylight at its top, 0 = blocked.
+	 *
+	 * Two fixed Uint16Array buffers alternate as pending/surviving column
+	 * lists, so no per-layer number[] is allocated and grown with push().
 	 */
 	private async computeSunlightMask(
 		cx: number,
@@ -1168,15 +1199,29 @@ export class ServerWorldStorage {
 	): Promise<Uint8Array> {
 		const CS = CHUNK_SIZE;
 		const CSSQ = CS * CS;
-		const blocked = new Uint8Array(CSSQ); // 1 = a blocking cell found above
-		let pending: number[] = [];
-		for (let i = 0; i < CSSQ; i++) pending.push(i);
-
+		const chunkMask = CS - 1;
 		const MAX_WALK = 16; // chunks above — well past the build ceiling
+		// A cell only passes sunlight if it is open at BOTH its top and bottom
+		// face (shape-aware: a slab stops the column at its closed underside).
+		const verticalFaceMask = FACE_PY | FACE_NY;
 
 		await ensureClosedFaceMaskLUT();
 
-		for (let step = 1; step <= MAX_WALK && pending.length > 0; step++) {
+		// The LUT is stable once built — read it once here instead of per voxel.
+		const closedFaceLUT = LightGenerator.getClosedFaceMaskLUT();
+
+		// Every column starts sunlit and is zeroed the moment a blocking cell
+		// is found above it. Replaces blocked[] plus the final conversion pass.
+		const sunlightMask = new Uint8Array(CSSQ).fill(1);
+
+		// A 32x32 column index fits in u16 (0..1023), so two fixed buffers can
+		// swap roles between layers with no allocation or copying.
+		let pending = new Uint16Array(CSSQ);
+		let nextPending = new Uint16Array(CSSQ);
+		for (let col = 0; col < CSSQ; col++) pending[col] = col;
+		let pendingCount = CSSQ;
+
+		for (let step = 1; step <= MAX_WALK && pendingCount !== 0; step++) {
 			const sy = cy + step;
 			const key = packChunkKeyFast(cx, sy, cz);
 
@@ -1184,8 +1229,13 @@ export class ServerWorldStorage {
 			if (dense === undefined) {
 				const stored = await this.readChunkInternal(cx, sy, cz);
 
-				// Nothing stored above → open sky for every remaining column.
-				if (!stored) break;
+				// Nothing stored above → open sky for every remaining column
+				// (their mask entries are already 1). Cache the miss so another
+				// mask in the same relight pass skips the storage lookup.
+				if (!stored) {
+					denseCache.set(key, null);
+					break;
+				}
 
 				dense = decompressBlocks({
 					data: stored.blocks,
@@ -1201,28 +1251,29 @@ export class ServerWorldStorage {
 				denseCache.set(key, dense);
 			}
 
-			// Cache entries are only populated with real arrays on this path;
-			// a null would mean "no stored chunk", which broke out above.
-			if (!dense) break;
+			// A cached null is a previously observed open-sky gap.
+			if (dense === null) break;
 
-			const stillPending: number[] = [];
-			for (let p = 0; p < pending.length; p++) {
+			let nextCount = 0;
+			for (let p = 0; p < pendingCount; p++) {
 				const col = pending[p];
-				const lx = col & (CS - 1);
+				const lx = col & chunkMask;
 				const lz = col >>> CHUNK_SHIFT;
 
+				// Index of the top voxel in this column; each descent is one
+				// layer lower (x + y * 32 + z * 1024).
+				let voxelIndex =
+					lx +
+					((CS - 1) << CHUNK_SHIFT) +
+					(lz << (CHUNK_SHIFT * 2));
+
 				let isBlocked = false;
-				for (let y = CS - 1; y >= 0; y--) {
-					const packed = dense[lx + (y << CHUNK_SHIFT) + (lz << 10)];
+				for (let y = CS - 1; y >= 0; y--, voxelIndex -= CS) {
+					const packed = dense[voxelIndex];
 					const id = unpackBlockId(packed);
 
-					// Sun passes straight through a cell only if it is open at
-					// BOTH its top and bottom face (shape-aware: a slab stops
-					// the vertical column at its closed underside), and does
-					// not filter full sunlight.
-					const lut = LightGenerator.getClosedFaceMaskLUT();
-					const passesVertically = lut
-						? (lut[packed & 0xffff] & (FACE_PY | FACE_NY)) === 0
+					const passesVertically = closedFaceLUT
+						? (closedFaceLUT[packed & 0xffff] & verticalFaceMask) === 0
 						: LightGenerator.isBlockTransparent(id);
 
 					if (
@@ -1234,18 +1285,19 @@ export class ServerWorldStorage {
 					}
 				}
 
-				if (isBlocked) blocked[col] = 1;
-				else stillPending.push(col);
+				if (isBlocked) sunlightMask[col] = 0;
+				else nextPending[nextCount++] = col;
 			}
 
-			pending = stillPending;
+			// Alternate the fixed buffers instead of reallocating/copying the
+			// surviving column list.
+			const previous = pending;
+			pending = nextPending;
+			nextPending = previous;
+			pendingCount = nextCount;
 		}
 
-		const mask = new Uint8Array(CSSQ);
-		for (let i = 0; i < CSSQ; i++) {
-			mask[i] = blocked[i] === 0 ? 1 : 0;
-		}
-		return mask;
+		return sunlightMask;
 	}
 
 	private queueChunkMutation(
