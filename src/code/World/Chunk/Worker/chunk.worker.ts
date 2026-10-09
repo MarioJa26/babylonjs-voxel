@@ -109,32 +109,54 @@ let generator: WorldGenerator;
 // Block compression
 // ---------------------------------------------------------------------------
 
-// _compressSeen dual-use in compressBlocks:
-//   Pass 1: seen[id] = 1 for each unique block ID encountered.
-//   Pass 2: seen[palette[i]] = i overwrites flags with palette indices
-//           for O(1) nibble lookup in the packing loop.
-//   Safe because palette index 0 sets seen[id] = 0 (falsy), but the
-//   packing loop only reads seen[blocks[i]] for block IDs that were
-//   already confirmed to be in the palette — and index 0 is the correct
-//   nibble value for palette[0].  The zero-fill at the start of each
-//   call clears both passes' state.
-const _compressSeen = new Uint8Array(65536);
-const _compressUniqueIds = new Uint16Array(17);
+const MAX_PALETTE_SIZE = 16;
+const BYTE_VALUE_COUNT = 256;
+
+/*
+ * Generation-stamped lookup tables remove the 65,536-byte membership clear
+ * that used to run on every call.
+ *
+ * compressBlocks takes a Uint8Array, so only 256 block IDs are reachable and
+ * a value belongs to the current call when its stamp equals _compressStamp.
+ */
+const _compressSeenStamp = new Uint32Array(BYTE_VALUE_COUNT);
+const _compressPaletteIndex = new Uint8Array(BYTE_VALUE_COUNT);
+const _compressUniqueIds = new Uint8Array(MAX_PALETTE_SIZE + 1);
+
+let _compressStamp = 0;
 
 // PERF: Allocate compressed-block outputs in SharedArrayBuffers so they are
 // *shared* (not transferred) to the main thread and can be handed directly to
 // the mesh worker without the main-thread SAB copy in Chunk.ensureSharedBacking.
 // Falls back to a plain ArrayBuffer where SharedArrayBuffer is unavailable.
 const _HAS_SAB = typeof SharedArrayBuffer !== "undefined";
-function sharedU8(len: number): Uint8Array {
+function sharedU8(length: number): Uint8Array {
 	return new Uint8Array(
-		_HAS_SAB ? new SharedArrayBuffer(len) : new ArrayBuffer(len),
+		_HAS_SAB ? new SharedArrayBuffer(length) : new ArrayBuffer(length),
 	);
 }
-function sharedU16(len: number): Uint16Array {
+function sharedU16(length: number): Uint16Array {
+	const byteLength = length * Uint16Array.BYTES_PER_ELEMENT;
 	return new Uint16Array(
-		_HAS_SAB ? new SharedArrayBuffer(len * 2) : new ArrayBuffer(len * 2),
+		_HAS_SAB ? new SharedArrayBuffer(byteLength) : new ArrayBuffer(byteLength),
 	);
+}
+
+/*
+ * Advance the compression generation stamp. Uint32 wraparound is ~4 billion
+ * calls away, but stamp 0 is also the initial value of every entry, so the
+ * reset has to be handled rather than assumed unreachable.
+ */
+function nextCompressStamp(): number {
+	let stamp = (_compressStamp + 1) >>> 0;
+
+	if (stamp === 0) {
+		_compressSeenStamp.fill(0);
+		stamp = 1;
+	}
+
+	_compressStamp = stamp;
+	return stamp;
 }
 
 function compressBlocks(blocks: Uint8Array): {
@@ -143,98 +165,125 @@ function compressBlocks(blocks: Uint8Array): {
 	palette: Uint16Array | null;
 	packedBlocks: Uint8Array | Uint16Array | null;
 } {
-	const seen = _compressSeen;
-	seen.fill(0);
-	let uniqueCount = 0;
-	let uniqueIdCount = 0;
-	const firstId = blocks[0];
+	const length = blocks.length;
 
-	for (let i = 0; i < blocks.length; i++) {
+	/*
+	 * Guard the empty input. Production chunks are 32³ entries, so blocks[0]
+	 * would read back undefined and the loops below would produce garbage.
+	 */
+	if (length === 0) {
+		return {
+			isUniform: false,
+			uniformBlockId: 0,
+			palette: sharedU16(0),
+			packedBlocks: sharedU8(0),
+		};
+	}
+
+	const stamp = nextCompressStamp();
+	const seenStamp = _compressSeenStamp;
+	const uniqueIds = _compressUniqueIds;
+
+	let uniqueCount = 0;
+
+	/*
+	 * Bail out on the seventeenth distinct ID: the chunk cannot use a
+	 * four-bit palette, so scanning the remaining voxels cannot change the
+	 * compression decision.
+	 */
+	for (let i = 0; i < length; i++) {
 		const id = blocks[i];
-		if (!seen[id]) {
-			seen[id] = 1;
-			_compressUniqueIds[uniqueIdCount++] = id;
-			uniqueCount++;
-			if (uniqueCount > 16) break;
+
+		if (seenStamp[id] === stamp) continue;
+
+		seenStamp[id] = stamp;
+		uniqueIds[uniqueCount++] = id;
+
+		if (uniqueCount > MAX_PALETTE_SIZE) {
+			/*
+			 * Dense Uint8 chunks already hold the complete packed values —
+			 * packBlockValue puts state above bit 10, so water's level-zero
+			 * source state is the bare ID. Returning the input preserves the
+			 * existing zero-copy path.
+			 */
+			return {
+				isUniform: false,
+				uniformBlockId: 0,
+				palette: null,
+				packedBlocks: blocks,
+			};
 		}
 	}
 
 	if (uniqueCount === 1) {
-		// Water blocks get source state: bit 3 = source marker, bits 0-2 = level 0
-		const packedId = firstId === WATER_BLOCK_ID ? WATER_BLOCK_ID : firstId;
+		const id = uniqueIds[0];
+
 		return {
 			isUniform: true,
-			uniformBlockId: packedId,
+			uniformBlockId: id === WATER_BLOCK_ID ? WATER_BLOCK_ID : id,
 			palette: null,
 			packedBlocks: null,
 		};
 	}
 
-	if (uniqueCount <= 16) {
-		const palette = sharedU16(uniqueCount);
-		let pi = 0;
+	const palette = sharedU16(uniqueCount);
+	const paletteIndex = _compressPaletteIndex;
 
-		// Build palette from tracked unique IDs (avoids scanning all 65536 entries).
-		for (let i = 0; i < uniqueIdCount && pi < uniqueCount; i++) {
-			const rawId = _compressUniqueIds[i];
-			// Water blocks use raw ID — level 0 = source
-			palette[pi++] = rawId === WATER_BLOCK_ID ? WATER_BLOCK_ID : rawId;
-		}
+	/*
+	 * Build the palette and the reverse lookup from the compact unique-ID
+	 * list — only 2 to 16 entries are touched. The lookup is keyed by raw
+	 * block ID so water maps to its palette index rather than the scan
+	 * sentinel.
+	 */
+	for (let i = 0; i < uniqueCount; i++) {
+		const rawId = uniqueIds[i];
 
-		// Overwrite seen[] with palette indices for O(1) lookup in the pack loop.
-		// Key by raw block ID (not palette entry) so water blocks (ID 30) map to
-		// their correct palette index instead of the stale pass-1 sentinel.
-		for (let i = 0; i < uniqueIdCount; i++) {
-			seen[_compressUniqueIds[i]] = i;
-		}
-
-		const len = (blocks.length + 1) >> 1;
-		const packedArray = sharedU8(len);
-
-		// PERF: process pairs to eliminate the per-voxel branch and let V8
-		// auto-vectorise the inner loop.  For 32³ = 32768 voxels this halves
-		// the iteration count (32768 → 16384) and removes the branch predictor
-		// pressure entirely.
-		const len32 = blocks.length >> 1;
-		for (let i = 0; i < len32; i++) {
-			packedArray[i] =
-				(seen[blocks[i * 2]] & 0x0f) | ((seen[blocks[i * 2 + 1]] & 0x0f) << 4);
-		}
-		// Handle a trailing odd element if blocks.length is odd.
-		if (blocks.length & 1) {
-			packedArray[len32] = seen[blocks[blocks.length - 1]] & 0x0f;
-		}
-
-		return {
-			isUniform: false,
-			uniformBlockId: 0,
-			palette,
-			packedBlocks: packedArray,
-		};
+		palette[i] = rawId === WATER_BLOCK_ID ? WATER_BLOCK_ID : rawId;
+		paletteIndex[rawId] = i;
 	}
 
-	// Dense path: >16 unique block types. Convert to Uint16Array and pack
-	// water source state so state survives serialization round-trips.
-	const hasWater = seen[WATER_BLOCK_ID] !== 0;
-	if (hasWater) {
-		const u16 = sharedU16(blocks.length);
-		for (let i = 0; i < blocks.length; i++) {
-			const id = blocks[i];
-			u16[i] = id === WATER_BLOCK_ID ? WATER_BLOCK_ID : id;
-		}
-		return {
-			isUniform: false,
-			uniformBlockId: 0,
-			palette: null,
-			packedBlocks: u16,
-		};
+	const packedBlocks = sharedU8((length + 1) >>> 1);
+
+	/*
+	 * PERF: four voxels per iteration halves the loop-control and index
+	 * arithmetic versus a two-voxel loop. For 32³ = 32768 voxels this is
+	 * 8192 iterations, and length & ~3 keeps the main loop branch-free
+	 * apart from the loop-back edge itself.
+	 */
+	let inputIndex = 0;
+	let outputIndex = 0;
+
+	const unrolledEnd = length & ~3;
+
+	for (; inputIndex < unrolledEnd; inputIndex += 4, outputIndex += 2) {
+		packedBlocks[outputIndex] =
+			paletteIndex[blocks[inputIndex]] |
+			(paletteIndex[blocks[inputIndex + 1]] << 4);
+
+		packedBlocks[outputIndex + 1] =
+			paletteIndex[blocks[inputIndex + 2]] |
+			(paletteIndex[blocks[inputIndex + 3]] << 4);
+	}
+
+	// Trailing complete pair. Skipped for 32³ chunks (length % 4 === 0).
+	if (inputIndex + 1 < length) {
+		packedBlocks[outputIndex++] =
+			paletteIndex[blocks[inputIndex]] |
+			(paletteIndex[blocks[inputIndex + 1]] << 4);
+
+		inputIndex += 2;
+	}
+
+	// Preserve support for odd-length inputs, which only tests produce.
+	if (inputIndex < length) {
+		packedBlocks[outputIndex] = paletteIndex[blocks[inputIndex]];
 	}
 
 	return {
 		isUniform: false,
 		uniformBlockId: 0,
-		palette: null,
-		packedBlocks: blocks,
+		palette,
+		packedBlocks,
 	};
 }
 
