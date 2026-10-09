@@ -24,11 +24,12 @@ export interface ChunkLightPool {
 	nextLightSeq(): number;
 }
 
-const WIDTH = 5;
+const MUTATION_WIDTH = 5;
 const INITIAL_CAPACITY = 40;
 
 class LightMutationBuffer {
 	private data = new Uint32Array(INITIAL_CAPACITY);
+
 	length = 0;
 
 	push(
@@ -38,16 +39,19 @@ class LightMutationBuffer {
 		oldPacked: number,
 		newPacked: number,
 	): void {
-		const required = this.length + WIDTH;
-		if (required > this.data.length) this.grow(required);
+		const offset = this.length;
+		const required = offset + MUTATION_WIDTH;
 
-		let offset = this.length;
-		this.data[offset++] = x;
-		this.data[offset++] = y;
-		this.data[offset++] = z;
-		this.data[offset++] = oldPacked;
-		this.data[offset++] = newPacked;
-		this.length = offset;
+		if (required > this.data.length) {
+			this.grow(required);
+		}
+
+		this.data[offset] = x;
+		this.data[offset + 1] = y;
+		this.data[offset + 2] = z;
+		this.data[offset + 3] = oldPacked;
+		this.data[offset + 4] = newPacked;
+		this.length = required;
 	}
 
 	payload(): Uint32Array {
@@ -57,26 +61,33 @@ class LightMutationBuffer {
 	}
 
 	private grow(required: number): void {
-		let capacity = this.data.length || INITIAL_CAPACITY;
-		while (capacity < required) capacity *= 2;
+		let capacity = this.data.length;
+
+		do {
+			capacity *= 2;
+		} while (capacity < required);
+
 		const expanded = new Uint32Array(capacity);
 		expanded.set(this.data);
 		this.data = expanded;
 	}
 }
 
-const dirtyChunks = new Set<Chunk>();
-const pendingMutations = new Map<Chunk, LightMutationBuffer>();
+let dirtyChunks = new Set<Chunk>();
+let pendingMutations = new Map<Chunk, LightMutationBuffer>();
 let batchDepth = 0;
 
-function flush(pool: ChunkLightPool | null): void {
-	if (pool === null) {
-		pendingMutations.clear();
-		return;
-	}
+function flushPendingMutations(pool: ChunkLightPool | null): void {
+	if (pendingMutations.size === 0) return;
 
-	for (const [chunk, mutations] of pendingMutations) {
-		if (mutations.length === 0) continue;
+	// Detach the current work before invoking external methods. Reentrant
+	// mutations are collected in the new map for the next batch.
+	const mutationsToFlush = pendingMutations;
+	pendingMutations = new Map();
+
+	if (pool === null) return;
+
+	for (const [chunk, mutations] of mutationsToFlush) {
 		pool.postLightMutateBatch({
 			chunkId: chunk.id,
 			headerSlot: chunk.lightHeaderSlot,
@@ -84,7 +95,22 @@ function flush(pool: ChunkLightPool | null): void {
 			seq: pool.nextLightSeq(),
 		});
 	}
-	pendingMutations.clear();
+}
+
+function remeshDirtyChunks(): void {
+	if (dirtyChunks.size === 0) return;
+
+	// Detach before calling chunk methods because they may synchronously mark
+	// other chunks dirty.
+	const chunksToRemesh = dirtyChunks;
+	dirtyChunks = new Set();
+
+	for (const chunk of chunksToRemesh) {
+		if (!chunk.isLoaded) continue;
+
+		chunk.clearCachedLODMeshes();
+		chunk.scheduleRemesh(true);
+	}
 }
 
 export function beginChunkEditBatch(): void {
@@ -92,30 +118,26 @@ export function beginChunkEditBatch(): void {
 }
 
 export function endChunkEditBatch(pool: ChunkLightPool | null): void {
-	const depth = --batchDepth;
-	if (depth > 0) return;
-	if (depth < 0) {
-		batchDepth = 0;
-		return;
-	}
+	// Preserve the original underflow behavior without temporarily making
+	// batchDepth negative.
+	if (batchDepth === 0) return;
 
-	flush(pool);
-	if (dirtyChunks.size === 0) return;
+	batchDepth--;
 
-	for (const chunk of dirtyChunks) {
-		if (!chunk.isLoaded) continue;
-		chunk.clearCachedLODMeshes();
-		chunk.scheduleRemesh(true);
-	}
-	dirtyChunks.clear();
+	if (batchDepth !== 0) return;
+
+	flushPendingMutations(pool);
+	remeshDirtyChunks();
 }
 
 export function markChunkDirtyForRemesh(chunk: Chunk | null | undefined): void {
-	if (chunk === null || chunk === undefined) return;
-	if (batchDepth > 0) {
+	if (chunk == null) return;
+
+	if (batchDepth !== 0) {
 		dirtyChunks.add(chunk);
 		return;
 	}
+
 	chunk.clearCachedLODMeshes();
 	chunk.scheduleRemesh(true);
 }
@@ -129,17 +151,20 @@ export function recordLightMutation(
 	oldPacked: number,
 	newPacked: number,
 ): void {
-	if (batchDepth > 0) {
+	if (batchDepth !== 0) {
 		let mutations = pendingMutations.get(chunk);
+
 		if (mutations === undefined) {
 			mutations = new LightMutationBuffer();
 			pendingMutations.set(chunk, mutations);
 		}
+
 		mutations.push(x, y, z, oldPacked, newPacked);
 		return;
 	}
 
 	if (pool === null) return;
+
 	pool.postLightMutate({
 		chunkId: chunk.id,
 		headerSlot: chunk.lightHeaderSlot,

@@ -2,61 +2,78 @@ import { disposeMeshGpu, type Mesh, removeFromScene } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
 import { onGpuWorkDone } from "../../Light/liteGpuBuffer.js";
 
-const pending: Mesh[] = [];
+type Scene = Parameters<typeof removeFromScene>[0];
+
+let pending: Mesh[] = [];
 let scheduled = false;
 
-function drain(): void {
-	while (pending.length !== 0) {
-		const mesh = pending.pop();
-		if (mesh !== undefined) disposeMeshGpu(mesh);
+function disposeBatch(batch: Mesh[]): void {
+	for (let i = batch.length - 1; i >= 0; i--) {
+		disposeMeshGpu(batch[i]);
 	}
-}
-
-function afterWait(): void {
-	scheduled = false;
-	drain();
-	if (pending.length !== 0) schedule();
-}
-
-function onWaitError(error: unknown): void {
-	console.warn("Deferred mesh disposal waited on GPU work but failed", error);
 }
 
 function schedule(): void {
-	if (scheduled) return;
+	if (scheduled || pending.length === 0) return;
 
 	const engine = Map1.engine;
+
 	if (!engine) {
-		drain();
+		const batch = pending;
+		pending = [];
+		disposeBatch(batch);
 		return;
 	}
 
+	// Detach the current batch. Meshes deferred while the GPU wait is pending
+	// remain in `pending` and receive their own subsequent fence.
+	const batch = pending;
+	pending = [];
 	scheduled = true;
-	void onGpuWorkDone(engine).catch(onWaitError).finally(afterWait);
+
+	void onGpuWorkDone(engine)
+		.catch((error: unknown) => {
+			console.warn(
+				"Deferred mesh disposal waited on GPU work but failed",
+				error,
+			);
+		})
+		.finally(() => {
+			disposeBatch(batch);
+			scheduled = false;
+
+			if (pending.length !== 0) {
+				schedule();
+			}
+		});
 }
 
 export function deferMeshDisposal(mesh: Mesh): void {
-	if (!mesh) return;
 	pending.push(mesh);
-	if (!scheduled) schedule();
+	schedule();
 }
 
 export function deferChunkMeshes(
-	scene: Parameters<typeof removeFromScene>[0],
+	scene: Scene,
 	opaque: Mesh | null,
 	water: Mesh | null,
 	cutout: Mesh | null,
 ): void {
 	if (opaque !== null) {
 		removeFromScene(scene, opaque);
-		deferMeshDisposal(opaque);
+		pending.push(opaque);
 	}
+
 	if (water !== null) {
 		removeFromScene(scene, water);
-		deferMeshDisposal(water);
+		pending.push(water);
 	}
+
 	if (cutout !== null) {
 		removeFromScene(scene, cutout);
-		deferMeshDisposal(cutout);
+		pending.push(cutout);
 	}
+
+	// Schedule once after all chunk meshes have been queued.
+	schedule();
 }
