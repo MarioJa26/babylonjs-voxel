@@ -542,6 +542,7 @@ export abstract class FlyingMob {
 			this.#prevZ = pos.z;
 		}
 
+		Map1.mobRegistry?.updateMobPosition(this);
 		this.syncToInstances();
 	}
 }

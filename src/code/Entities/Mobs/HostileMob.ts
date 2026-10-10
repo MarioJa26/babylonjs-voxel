@@ -659,6 +659,7 @@ export abstract class HostileMob {
 			}
 		}
 
+		Map1.mobRegistry?.updateMobPosition(this);
 		this.syncToInstances();
 	}
 

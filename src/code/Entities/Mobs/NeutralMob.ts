@@ -833,6 +833,7 @@ export abstract class NeutralMob {
 			}
 		}
 
+		Map1.mobRegistry?.updateMobPosition(this);
 		this.syncToInstances();
 	}
 

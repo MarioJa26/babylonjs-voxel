@@ -3,26 +3,30 @@ import type { SavedChunkEntityData } from "@/code/World/WorldStorage";
 
 export interface Mob {
 	position: Vec3;
-	/** Facing angle around Y (radians); rotates with wandering AI. */
+
+	/** Facing angle around Y in radians; rotates with wandering AI. */
 	readonly facingYaw: number;
-	/** Half-extents of the mob's hit box (matches its visual body). */
+
+	/** Half-extents of the mob's hit box, matching its visual body. */
 	readonly hitHalfExtents: Vec3;
+
 	hp: number;
 	maxHp: number;
 	readonly mobType: string;
 
 	/**
-	 * False for player-spawned mobs (spawn eggs): they are exempt from the
-	 * mob cap, which only limits naturally spawned mobs. Set before the mob
-	 * is added to the MobRegistry and treated as immutable afterwards.
+	 * False for player-spawned mobs. Set before registration and treated as
+	 * immutable while the mob remains in the registry.
 	 */
 	countsTowardMobCap: boolean;
 
 	takeDamage(amount: number, impactPosition?: Vec3): void;
 	setPlayerPosition(pos: Vec3): void;
 	dispose(): void;
-	/** True once disposed — stuck projectiles stop following after this. */
+
+	/** True once disposed; stuck projectiles stop following after this. */
 	readonly isDisposed: boolean;
+
 	serializeForChunkReload(): SavedChunkEntityData | null;
 }
 
@@ -34,110 +38,168 @@ export type MobSpawnConfig = {
 	spawnBlockId: number;
 	despawnable?: boolean;
 	spawnYOffset?: number;
+
 	/**
-	 * True for night spawners (zombies/skeletons): natural spawning only
-	 * runs at night and skips the daylight skylight gate. Spawn eggs
-	 * ignore this and work any time.
+	 * Natural spawning only runs at night and skips the daylight skylight
+	 * gate. Spawn eggs ignore this setting.
 	 */
 	nightSpawn?: boolean;
+
 	/**
-	 * True for day-only spawners (birds): natural spawning only runs
-	 * during the day, and nightfall despawns them quietly. Spawn eggs
-	 * ignore this and work any time.
+	 * Natural spawning only runs during the day. Spawn eggs ignore this
+	 * setting.
 	 */
 	daySpawn?: boolean;
+
 	/**
-	 * True for mid-air spawners (bird flocks): the spawn finder picks an
-	 * air cell above the player instead of scanning for ground.
+	 * The spawn finder selects a mid-air cell rather than scanning ground.
 	 */
 	airSpawn?: boolean;
+
 	/**
-	 * Flock size range for group spawners (birds): one spawn event
-	 * creates this many members around a shared waypoint.
+	 * Number of members created by a group-spawn event.
 	 */
-	flockSize?: { min: number; max: number };
+	flockSize?: {
+		min: number;
+		max: number;
+	};
 };
 
 const SPATIAL_CELL_SIZE = 8;
+const INVERSE_SPATIAL_CELL_SIZE = 1 / SPATIAL_CELL_SIZE;
 
-function spatialHash(x: number, y: number, z: number): number {
-	return (x * 73856093) ^ (y * 19349663) ^ (z * 83492791);
+type SpatialCell = Set<Mob>;
+type SpatialZMap = Map<number, SpatialCell>;
+type SpatialYMap = Map<number, SpatialZMap>;
+type SpatialGrid = Map<number, SpatialYMap>;
+
+type CellPosition = {
+	x: number;
+	y: number;
+	z: number;
+};
+
+function toCellCoordinate(worldCoordinate: number): number {
+	return Math.floor(worldCoordinate * INVERSE_SPATIAL_CELL_SIZE);
+}
+
+function incrementCount(counts: Map<string, number>, mobType: string): void {
+	counts.set(mobType, (counts.get(mobType) ?? 0) + 1);
+}
+
+function decrementCount(counts: Map<string, number>, mobType: string): void {
+	const count = counts.get(mobType);
+
+	if (count === undefined) {
+		return;
+	}
+
+	if (count <= 1) {
+		counts.delete(mobType);
+		return;
+	}
+
+	counts.set(mobType, count - 1);
 }
 
 export class MobRegistry {
 	#configs = new Map<string, MobSpawnConfig>();
 	#allMobs = new Set<Mob>();
-	// Cap accounting tracks only naturally spawned mobs; spawn-egg mobs
-	// (countsTowardMobCap === false) never block natural spawning.
+
+	/** Includes both natural and player-spawned mobs. */
 	#countsByType = new Map<string, number>();
+
+	/** Includes only mobs that count toward natural spawn caps. */
 	#naturalCountsByType = new Map<string, number>();
 	#naturalTotal = 0;
-	#spatialGrid = new Map<number, Set<Mob>>();
+
+	/**
+	 * Collision-free spatial hierarchy:
+	 *
+	 * cell X -> cell Y -> cell Z -> mobs
+	 */
+	#spatialGrid: SpatialGrid = new Map();
+
+	/**
+	 * Tracks the cell in which each mob is currently indexed.
+	 *
+	 * This makes removal reliable even when the mob's current position differs
+	 * from the position at which it was inserted.
+	 */
+	#indexedCells = new Map<Mob, CellPosition>();
 
 	register(config: MobSpawnConfig): void {
 		this.#configs.set(config.mobType, config);
 	}
 
 	addMob(mob: Mob): void {
-		if (this.#allMobs.has(mob)) return;
+		if (this.#allMobs.has(mob)) {
+			return;
+		}
 
 		this.#allMobs.add(mob);
-		this.#countsByType.set(
-			mob.mobType,
-			(this.#countsByType.get(mob.mobType) || 0) + 1,
-		);
+		incrementCount(this.#countsByType, mob.mobType);
 
 		if (mob.countsTowardMobCap) {
 			this.#naturalTotal++;
-			this.#naturalCountsByType.set(
-				mob.mobType,
-				(this.#naturalCountsByType.get(mob.mobType) || 0) + 1,
-			);
+
+			incrementCount(this.#naturalCountsByType, mob.mobType);
 		}
 
-		const cx = Math.floor(mob.position.x / SPATIAL_CELL_SIZE);
-		const cy = Math.floor(mob.position.y / SPATIAL_CELL_SIZE);
-		const cz = Math.floor(mob.position.z / SPATIAL_CELL_SIZE);
-		const key = spatialHash(cx, cy, cz);
-		let cell = this.#spatialGrid.get(key);
-		if (!cell) {
-			cell = new Set<Mob>();
-			this.#spatialGrid.set(key, cell);
-		}
-		cell.add(mob);
+		this.#insertIntoCurrentCell(mob);
 	}
 
 	removeMob(mob: Mob): void {
-		if (!this.#allMobs.delete(mob)) return;
-
-		const currentCount = this.#countsByType.get(mob.mobType) || 0;
-		if (currentCount <= 1) {
-			this.#countsByType.delete(mob.mobType);
-		} else {
-			this.#countsByType.set(mob.mobType, currentCount - 1);
+		if (!this.#allMobs.delete(mob)) {
+			return;
 		}
+
+		decrementCount(this.#countsByType, mob.mobType);
 
 		if (mob.countsTowardMobCap) {
-			this.#naturalTotal = Math.max(0, this.#naturalTotal - 1);
-
-			const naturalCount = this.#naturalCountsByType.get(mob.mobType) || 0;
-			if (naturalCount <= 1) {
-				this.#naturalCountsByType.delete(mob.mobType);
-			} else {
-				this.#naturalCountsByType.set(mob.mobType, naturalCount - 1);
+			if (this.#naturalTotal > 0) {
+				this.#naturalTotal--;
 			}
+
+			decrementCount(this.#naturalCountsByType, mob.mobType);
 		}
 
-		const cx = Math.floor(mob.position.x / SPATIAL_CELL_SIZE);
-		const cy = Math.floor(mob.position.y / SPATIAL_CELL_SIZE);
-		const cz = Math.floor(mob.position.z / SPATIAL_CELL_SIZE);
-		const key = spatialHash(cx, cy, cz);
-		const cell = this.#spatialGrid.get(key);
-		if (cell) {
-			cell.delete(mob);
-			if (cell.size === 0) {
-				this.#spatialGrid.delete(key);
-			}
+		const indexedCell = this.#indexedCells.get(mob);
+
+		if (indexedCell !== undefined) {
+			this.#removeFromCell(mob, indexedCell.x, indexedCell.y, indexedCell.z);
+		}
+	}
+
+	/**
+	 * Update a mob's spatial membership after its position changes.
+	 *
+	 * Calls that remain inside the same spatial cell perform no map mutation,
+	 * so this may safely be called after every movement update.
+	 */
+	updateMobPosition(mob: Mob): void {
+		const previous = this.#indexedCells.get(mob);
+
+		if (previous === undefined) {
+			return;
+		}
+
+		const nextX = toCellCoordinate(mob.position.x);
+		const nextY = toCellCoordinate(mob.position.y);
+		const nextZ = toCellCoordinate(mob.position.z);
+
+		if (previous.x === nextX && previous.y === nextY && previous.z === nextZ) {
+			return;
+		}
+
+		this.#removeFromCell(mob, previous.x, previous.y, previous.z);
+
+		/*
+		 * External movement logic could theoretically unregister the mob while
+		 * its position is being changed. Do not reinsert an unregistered mob.
+		 */
+		if (this.#allMobs.has(mob)) {
+			this.#insertIntoCell(mob, nextX, nextY, nextZ);
 		}
 	}
 
@@ -150,28 +212,45 @@ export class MobRegistry {
 		maxZ: number,
 	): Mob[] {
 		const result: Mob[] = [];
-		const minCX = Math.floor(minX / SPATIAL_CELL_SIZE);
-		const minCY = Math.floor(minY / SPATIAL_CELL_SIZE);
-		const minCZ = Math.floor(minZ / SPATIAL_CELL_SIZE);
-		const maxCX = Math.floor(maxX / SPATIAL_CELL_SIZE);
-		const maxCY = Math.floor(maxY / SPATIAL_CELL_SIZE);
-		const maxCZ = Math.floor(maxZ / SPATIAL_CELL_SIZE);
 
-		for (let cx = minCX; cx <= maxCX; cx++) {
-			for (let cy = minCY; cy <= maxCY; cy++) {
-				for (let cz = minCZ; cz <= maxCZ; cz++) {
-					const key = spatialHash(cx, cy, cz);
-					const cell = this.#spatialGrid.get(key);
-					if (cell) {
-						for (const mob of cell) {
-							if (!mob.isDisposed) {
-								result.push(mob);
-							}
+		const minCellX = toCellCoordinate(minX);
+		const minCellY = toCellCoordinate(minY);
+		const minCellZ = toCellCoordinate(minZ);
+
+		const maxCellX = toCellCoordinate(maxX);
+		const maxCellY = toCellCoordinate(maxY);
+		const maxCellZ = toCellCoordinate(maxZ);
+
+		for (let cellX = minCellX; cellX <= maxCellX; cellX++) {
+			const yMap = this.#spatialGrid.get(cellX);
+
+			if (yMap === undefined) {
+				continue;
+			}
+
+			for (let cellY = minCellY; cellY <= maxCellY; cellY++) {
+				const zMap = yMap.get(cellY);
+
+				if (zMap === undefined) {
+					continue;
+				}
+
+				for (let cellZ = minCellZ; cellZ <= maxCellZ; cellZ++) {
+					const cell = zMap.get(cellZ);
+
+					if (cell === undefined) {
+						continue;
+					}
+
+					for (const mob of cell) {
+						if (!mob.isDisposed) {
+							result.push(mob);
 						}
 					}
 				}
 			}
 		}
+
 		return result;
 	}
 
@@ -188,20 +267,37 @@ export class MobRegistry {
 	}
 
 	getCountByType(mobType: string): number {
-		return this.#countsByType.get(mobType) || 0;
+		return this.#countsByType.get(mobType) ?? 0;
 	}
 
 	getTotalCount(): number {
 		return this.#allMobs.size;
 	}
 
-	/** Number of mobs that count toward the mob cap (naturally spawned). */
+	/** Number of mobs that count toward the natural mob cap. */
 	getNaturalTotal(): number {
 		return this.#naturalTotal;
 	}
 
 	disposeAll(): void {
-		for (const mob of [...this.#allMobs]) {
+		/*
+		 * Avoid allocating `[...this.#allMobs]`. Fetching one mob at a time is
+		 * also safe when Mob.dispose() calls removeMob().
+		 */
+		while (this.#allMobs.size > 0) {
+			const result = this.#allMobs.values().next();
+
+			if (result.done) {
+				break;
+			}
+
+			const mob = result.value;
+
+			/*
+			 * Delete first to guarantee forward progress even if this mob's
+			 * dispose implementation does not unregister itself.
+			 */
+			this.#allMobs.delete(mob);
 			mob.dispose();
 		}
 
@@ -209,31 +305,59 @@ export class MobRegistry {
 		this.#countsByType.clear();
 		this.#naturalCountsByType.clear();
 		this.#naturalTotal = 0;
+
+		this.#spatialGrid.clear();
+		this.#indexedCells.clear();
 	}
 
 	pickSpawnType(): MobSpawnConfig | null {
-		if (this.#configs.size === 0) return null;
-
 		let totalWeight = 0;
-		const eligible: MobSpawnConfig[] = [];
+		let fallback: MobSpawnConfig | null = null;
 
+		/*
+		 * First pass calculates the total without allocating an eligible
+		 * configuration array.
+		 */
 		for (const config of this.#configs.values()) {
-			const naturalCount = this.#naturalCountsByType.get(config.mobType) || 0;
-			if (naturalCount < config.maxCount) {
-				eligible.push(config);
-				totalWeight += config.spawnWeight;
+			const naturalCount = this.#naturalCountsByType.get(config.mobType) ?? 0;
+
+			if (naturalCount >= config.maxCount || config.spawnWeight <= 0) {
+				continue;
+			}
+
+			totalWeight += config.spawnWeight;
+			fallback = config;
+		}
+
+		if (fallback === null || totalWeight <= 0) {
+			return null;
+		}
+
+		let roll = Math.random() * totalWeight;
+
+		/*
+		 * Second pass performs weighted selection using constant temporary
+		 * memory.
+		 */
+		for (const config of this.#configs.values()) {
+			const naturalCount = this.#naturalCountsByType.get(config.mobType) ?? 0;
+
+			if (naturalCount >= config.maxCount || config.spawnWeight <= 0) {
+				continue;
+			}
+
+			roll -= config.spawnWeight;
+
+			if (roll <= 0) {
+				return config;
 			}
 		}
 
-		if (eligible.length === 0) return null;
-
-		let roll = Math.random() * totalWeight;
-		for (const config of eligible) {
-			roll -= config.spawnWeight;
-			if (roll <= 0) return config;
-		}
-
-		return eligible[eligible.length - 1];
+		/*
+		 * Floating-point accumulation can theoretically leave a tiny positive
+		 * remainder after the second pass.
+		 */
+		return fallback;
 	}
 
 	getDebugStats(): {
@@ -248,6 +372,7 @@ export class MobRegistry {
 		}[];
 	} {
 		let cap = 0;
+
 		const perType: {
 			type: string;
 			count: number;
@@ -257,10 +382,11 @@ export class MobRegistry {
 
 		for (const config of this.#configs.values()) {
 			cap += config.maxCount;
+
 			perType.push({
 				type: config.mobType,
-				count: this.#countsByType.get(config.mobType) || 0,
-				natural: this.#naturalCountsByType.get(config.mobType) || 0,
+				count: this.#countsByType.get(config.mobType) ?? 0,
+				natural: this.#naturalCountsByType.get(config.mobType) ?? 0,
 				max: config.maxCount,
 			});
 		}
@@ -271,5 +397,85 @@ export class MobRegistry {
 			cap,
 			perType,
 		};
+	}
+
+	#insertIntoCurrentCell(mob: Mob): void {
+		this.#insertIntoCell(
+			mob,
+			toCellCoordinate(mob.position.x),
+			toCellCoordinate(mob.position.y),
+			toCellCoordinate(mob.position.z),
+		);
+	}
+
+	#insertIntoCell(mob: Mob, cellX: number, cellY: number, cellZ: number): void {
+		let yMap = this.#spatialGrid.get(cellX);
+
+		if (yMap === undefined) {
+			yMap = new Map();
+			this.#spatialGrid.set(cellX, yMap);
+		}
+
+		let zMap = yMap.get(cellY);
+
+		if (zMap === undefined) {
+			zMap = new Map();
+			yMap.set(cellY, zMap);
+		}
+
+		let cell = zMap.get(cellZ);
+
+		if (cell === undefined) {
+			cell = new Set();
+			zMap.set(cellZ, cell);
+		}
+
+		cell.add(mob);
+
+		this.#indexedCells.set(mob, {
+			x: cellX,
+			y: cellY,
+			z: cellZ,
+		});
+	}
+
+	#removeFromCell(mob: Mob, cellX: number, cellY: number, cellZ: number): void {
+		this.#indexedCells.delete(mob);
+
+		const yMap = this.#spatialGrid.get(cellX);
+
+		if (yMap === undefined) {
+			return;
+		}
+
+		const zMap = yMap.get(cellY);
+
+		if (zMap === undefined) {
+			return;
+		}
+
+		const cell = zMap.get(cellZ);
+
+		if (cell === undefined) {
+			return;
+		}
+
+		cell.delete(mob);
+
+		if (cell.size !== 0) {
+			return;
+		}
+
+		zMap.delete(cellZ);
+
+		if (zMap.size !== 0) {
+			return;
+		}
+
+		yMap.delete(cellY);
+
+		if (yMap.size === 0) {
+			this.#spatialGrid.delete(cellX);
+		}
 	}
 }

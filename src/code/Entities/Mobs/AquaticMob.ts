@@ -609,6 +609,7 @@ export abstract class AquaticMob {
 			}
 		}
 
+		Map1.mobRegistry?.updateMobPosition(this);
 		this.#updateAnimationPhase(dt, pos);
 		this.syncToInstances();
 	}
