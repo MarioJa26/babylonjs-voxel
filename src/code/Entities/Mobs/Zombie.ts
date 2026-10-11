@@ -7,7 +7,7 @@ import { MOB_WEAPON_ZOMBIE_CLAWS } from "../WeaponStats";
 import { HostileMob } from "./HostileMob";
 import { dropMobItemsForType } from "./MobDrops";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
-import { registerMobLight, unregisterMobLight } from "./MobLighting";
+import { registerMobLight, releaseMobRenderSlot } from "./MobLighting";
 import type { MobPartSpec } from "./MobMesh";
 import {
 	MOB_ZOMBIE_SKIN_PATH,
@@ -161,7 +161,10 @@ export class Zombie extends HostileMob {
 	readonly CHUNK_ENTITY_TYPE = ZOMBIE_CHUNK_ENTITY_TYPE;
 	static #chunkLoaderRegistered = false;
 	static #chunkReloadScene: SceneContext | null = null;
-	#bodySlot: InstanceSlotHandle;
+	// Null until the instance slot is acquired; the null state is what
+	// makes constructor rollback (catch { dispose(); throw }) safe when
+	// acquisition itself throws.
+	#bodySlot: InstanceSlotHandle | null = null;
 	/** Pool currently owning #bodySlot (normal or attack-pose). */
 	#lanePool: MobInstancePool;
 
@@ -181,24 +184,39 @@ export class Zombie extends HostileMob {
 
 		this.setPosition(x, y, z);
 		this.#lanePool = getBodyPool();
-		this.#bodySlot = this.#lanePool.acquire(this);
-		this.#lanePool.writeColor(this.#bodySlot, 1, 1, 1, 0);
-		this.syncToInstances();
-		this.finalizeRegistration();
-		registerMobLight({
-			pool: this.#lanePool,
-			slot: this.#bodySlot,
-			getPos: () => this.position,
-			baseColor: [1, 1, 1],
-			owner: this,
-		});
+
+		// Rollback-safe initialization: if any step below throws, dispose()
+		// releases whatever was acquired so far (it is idempotent and
+		// null-safe) and the error propagates to the caller.
+		try {
+			this.#bodySlot = this.#lanePool.acquire(this);
+			this.#lanePool.writeColor(this.#bodySlot, 1, 1, 1, 0);
+			this.syncToInstances();
+			this.finalizeRegistration();
+			registerMobLight({
+				pool: this.#lanePool,
+				slot: this.#bodySlot,
+				getPos: () => this.position,
+				baseColor: [1, 1, 1],
+				owner: this,
+			});
+		} catch (error) {
+			this.dispose();
+			throw error;
+		}
 	}
 
 	protected override syncToInstances(): void {
+		const slot = this.#bodySlot;
+
+		if (slot === null) {
+			return;
+		}
+
 		const pos = this.position;
 		const pool = this.#lanePool;
-		pool.writeMatrix(this.#bodySlot, pos.x, pos.y, pos.z, this.facingYaw);
-		pool.writeWalkPhase(this.#bodySlot, this.walkPhase);
+		pool.writeMatrix(slot, pos.x, pos.y, pos.z, this.facingYaw);
+		pool.writeWalkPhase(slot, this.walkPhase);
 	}
 
 	/**
@@ -211,8 +229,9 @@ export class Zombie extends HostileMob {
 		const want = attacking ? getAttackBodyPool() : getBodyPool();
 		if (want === this.#lanePool) return;
 
-		unregisterMobLight(this.#bodySlot);
-		this.#lanePool.release(this.#bodySlot);
+		// Ordered release (lighting before slot) via the shared helper.
+		releaseMobRenderSlot(this.#bodySlot);
+		this.#bodySlot = null;
 		this.#lanePool = want;
 		this.#bodySlot = want.acquire(this);
 		want.writeColor(this.#bodySlot, 1, 1, 1, 0);
@@ -263,8 +282,9 @@ export class Zombie extends HostileMob {
 
 	dispose(): void {
 		if (this.isDisposed) return;
-		unregisterMobLight(this.#bodySlot);
-		this.#lanePool.release(this.#bodySlot);
+		// Ordered release (lighting before slot) via the shared helper.
+		releaseMobRenderSlot(this.#bodySlot);
+		this.#bodySlot = null;
 		super.dispose();
 	}
 }

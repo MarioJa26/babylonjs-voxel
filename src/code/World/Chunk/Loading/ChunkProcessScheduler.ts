@@ -121,7 +121,6 @@ export class ChunkProcessScheduler {
 		return this._ioTimedOut.count;
 	}
 
-
 	private isProcessing = false;
 	private inFlightProcessState: InFlightProcessState | null = null;
 	private readonly _state: InFlightProcessState =
@@ -381,13 +380,12 @@ export class ChunkProcessScheduler {
 							}
 						}
 
-					if (this._saveScratch.length > 0) {
-						try {
-							await this.withIoTimeout(
-								"WorldStorage.saveChunks (unload batch)",
-								WorldStorage.saveChunks(this._saveScratch),
-							);
-
+						if (this._saveScratch.length > 0) {
+							try {
+								await this.withIoTimeout(
+									"WorldStorage.saveChunks (unload batch)",
+									WorldStorage.saveChunks(this._saveScratch),
+								);
 
 								this.beginSlice(state);
 
@@ -433,18 +431,17 @@ export class ChunkProcessScheduler {
 								continue;
 							}
 
-						try {
-							await this.withIoTimeout(
-								"unloadChunkBoundEntitiesForChunk",
-								this.adapter.unloadChunkBoundEntitiesForChunk(chunk),
-							);
-						} catch (error) {
-							console.warn("Failed to unload chunk entities", error);
-							unloadQueueSet.add(chunk);
-							state.unloadBatchIndex++;
-							continue;
-						}
-
+							try {
+								await this.withIoTimeout(
+									"unloadChunkBoundEntitiesForChunk",
+									this.adapter.unloadChunkBoundEntitiesForChunk(chunk),
+								);
+							} catch (error) {
+								console.warn("Failed to unload chunk entities", error);
+								unloadQueueSet.add(chunk);
+								state.unloadBatchIndex++;
+								continue;
+							}
 
 							this.beginSlice(state);
 

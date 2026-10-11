@@ -5,6 +5,7 @@ import {
 	loadTexture2D,
 	type Mesh,
 	onBeforeRender,
+	type SceneContext,
 	setShaderTexture,
 	setThinInstances,
 	type Texture2D,
@@ -59,14 +60,22 @@ type PackedThinInstances = {
 /**
  * Mutable slot reference handed to a mob.
  *
- * The pool rewrites `index` when compacting lanes, so callers never need to
- * store raw thin-instance indices.
+ * Lifecycle contract: `id` is immutable and unique per pool for the pool's
+ * lifetime; `index` is rewritten by the pool when compacting lanes (and set
+ * to -1 on release), so it must never be used as an external identity.
+ * External registrations (e.g. lighting) must key on handle identity or
+ * `id`, and must be removed before `release` runs — see
+ * `releaseMobRenderSlot` in MobLighting.ts for the enforced order.
  */
 export type InstanceSlotHandle = {
 	pool: MobInstancePool;
+	/** Immutable slot identity, unique within the pool. */
+	readonly id: number;
 	/** Active lane, or -1 once released. */
 	index: number;
 };
+
+let nextSlotId = 1;
 
 const MAT4_FLOATS = 16;
 const COLOR_FLOATS = 4;
@@ -155,6 +164,7 @@ export class MobInstancePool {
 
 	#capacity: number;
 	#count = 0;
+	#disposed = false;
 
 	#dirtyMin = Number.POSITIVE_INFINITY;
 	#dirtyMax = Number.NEGATIVE_INFINITY;
@@ -263,6 +273,10 @@ export class MobInstancePool {
 	 * The caller must initialize its matrix before the next render.
 	 */
 	acquire(owner: MobOwner | null): InstanceSlotHandle {
+		if (this.#disposed) {
+			throw new Error("[mobs] acquire on a disposed instance pool");
+		}
+
 		if (this.#count === this.#capacity) {
 			this.#grow();
 		}
@@ -270,6 +284,7 @@ export class MobInstancePool {
 		const index = this.#count;
 		const holder: InstanceSlotHandle = {
 			pool: this,
+			id: nextSlotId++,
 			index,
 		};
 
@@ -324,6 +339,40 @@ export class MobInstancePool {
 		 * uploaded. Only the GPU draw count changes.
 		 */
 		this.#markCountDirty();
+	}
+
+	/**
+	 * CPU-side teardown for world/scene reloads: drops the pool from the
+	 * sync loop and pick resolution, and invalidates every outstanding lane
+	 * so late writes and double-releases no-op instead of touching reused
+	 * lanes. Idempotent.
+	 *
+	 * The GPU mesh/material lifetime follows scene teardown (Lite has no
+	 * per-mesh dispose wired through this class); callers must dispose all
+	 * mobs holding lanes before disposing their pool.
+	 */
+	dispose(): void {
+		if (this.#disposed) {
+			return;
+		}
+
+		this.#disposed = true;
+
+		for (const holder of this.#laneHolders) {
+			if (holder !== null) {
+				holder.index = -1;
+			}
+		}
+
+		this.#laneHolders.fill(null);
+		this.#laneOwners.fill(null);
+		this.#count = 0;
+
+		livePools.delete(this);
+
+		if (poolByMesh.get(this.mesh) === this) {
+			poolByMesh.delete(this.mesh);
+		}
 	}
 
 	/**
@@ -686,17 +735,21 @@ export class MobInstancePool {
 const livePools = new Set<MobInstancePool>();
 const poolByMesh = new Map<Mesh, MobInstancePool>();
 
-let syncObserverRegistered = false;
+let syncObservedScene: SceneContext | null = null;
 
 function registerPool(pool: MobInstancePool): void {
 	livePools.add(pool);
 	poolByMesh.set(pool.mesh, pool);
 
-	if (syncObserverRegistered) {
+	// Scene-tracked, not a boolean flag: Map1.mainScene is reassigned on
+	// every world load, and a stuck flag would leave the new scene with no
+	// sync observer (frozen instances). Lite offers no unsubscription, so
+	// the previous scene keeps a harmless observer over the shared sets.
+	if (syncObservedScene === Map1.mainScene) {
 		return;
 	}
 
-	syncObserverRegistered = true;
+	syncObservedScene = Map1.mainScene;
 
 	onBeforeRender(Map1.mainScene, () => {
 		for (const livePool of livePools) {

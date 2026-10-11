@@ -394,7 +394,9 @@ export class LevelDbChunkStore implements ChunkStorage {
 	 * through unchanged. Falling back keeps those readable instead of turning
 	 * them into a hard read failure.
 	 */
-	private async decodeStoredValue(value: unknown): Promise<Uint8Array | undefined> {
+	private async decodeStoredValue(
+		value: unknown,
+	): Promise<Uint8Array | undefined> {
 		if (value == null) return undefined;
 
 		let raw: Uint8Array;
@@ -404,11 +406,7 @@ export class LevelDbChunkStore implements ChunkStorage {
 		} else if (value instanceof ArrayBuffer) {
 			raw = new Uint8Array(value);
 		} else if (ArrayBuffer.isView(value)) {
-			raw = new Uint8Array(
-				value.buffer,
-				value.byteOffset,
-				value.byteLength,
-			);
+			raw = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
 		} else {
 			// Unknown backing type (e.g. a JSON-decoded string). Nothing sensible
 			// to decode; treat as absent rather than guessing at a layout.

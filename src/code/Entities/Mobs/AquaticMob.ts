@@ -1,40 +1,21 @@
-import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
+import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
-import {
-	playLandingDust,
-	playMobDamage,
-} from "@/code/Maps/BlockBreakParticles";
+import { playLandingDust } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
-import type { Player } from "@/code/Player/Player";
 import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
 import {
 	getBlockByWorldCoords,
-	registerChunkBoundEntity,
 	resolveBlockAtWorldCoords,
-	unregisterChunkBoundEntity,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
-import {
-	_voxelResolveScratch,
-	Axis,
-	createVoxelColliderBlockSampler,
-	UNLOADED_SOLID_RESOLVE,
-	VoxelAabbCollider,
-} from "@/code/World/Collision/VoxelAabbCollider";
-import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
-import {
-	computeFenceNeighborMask,
-	getFenceDynamicShape,
-	isFenceBlockId,
-} from "@/code/World/Shape/FenceConnect";
+import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
-import type { SavedChunkEntityData } from "@/code/World/WorldStorage";
 import { FALL_DAMAGE_PER_BLOCK, FALL_DAMAGE_THRESHOLD } from "../MobConfig";
+import { BaseMob, MobTickSet } from "./BaseMob";
 
 const GRAVITY = -18;
 const STEP_SIZE = 0.2;
-const EPSILON = 0.001;
 
 const WALK_STRIDE_FACTOR = 2.0;
 
@@ -70,18 +51,9 @@ const enum WaterSampleResult {
  * Remains in water, swims using depth control and damping, and does not seek
  * shore. If stranded on land, it despawns after a short delay.
  */
-export abstract class AquaticMob {
+export abstract class AquaticMob extends BaseMob {
 	abstract readonly mobType: string;
 	abstract readonly CHUNK_ENTITY_TYPE: string;
-
-	countsTowardMobCap = true;
-
-	#hp: number;
-	#maxHp: number;
-
-	#position = vec3Zero();
-	#velocity = vec3Zero();
-	#hitHalfExtents: Vec3;
 
 	/*
 	 * Reused hot-path vectors. These replace per-call allocations in
@@ -91,22 +63,6 @@ export abstract class AquaticMob {
 	#groundProbeExtents = vec3Zero();
 	#wanderTargetScratch = vec3Zero();
 	#nudgeScratch = vec3Zero();
-
-	#collider: VoxelAabbCollider;
-	#scene: SceneContext;
-
-	#facingAngle = 0;
-	#isDisposed = false;
-	#chunkBindingHandle?: symbol;
-
-	#wanderSpeed: number;
-	#halfHeight: number;
-
-	/*
-	 * Retained for subclasses or future behavior even though the base wander
-	 * logic currently does not read it.
-	 */
-	#playerPosition: Vec3 | null = null;
 
 	#inWaterCached = false;
 	#headSubmergedCached = false;
@@ -118,13 +74,6 @@ export abstract class AquaticMob {
 	#swimTimer = 0;
 	#strandedTimer = 0;
 	#idleTime = 0;
-
-	#walkPhase = 0;
-	#prevX = Number.NaN;
-	#prevZ = Number.NaN;
-
-	/** Y position where the current fall started; NaN when grounded or in water. */
-	#fallStartY = Number.NaN;
 
 	abstract configureChunkLoader(scene: SceneContext): void;
 	abstract getWanderSpeed(): number;
@@ -170,218 +119,72 @@ export abstract class AquaticMob {
 		return 25;
 	}
 
-	protected onDamaged(): void {}
+	static readonly ticks = new MobTickSet<AquaticMob>(AquaticMob.tickAll);
 
-	protected triggerPanic(_duration: number): void {}
-
-	static #observerRegistered = false;
-	static readonly #allMobs = new Set<AquaticMob>();
-
-	static #ensureObserver(): void {
-		if (AquaticMob.#observerRegistered) {
+	private static tickAll(deltaMs: number): void {
+		if (deltaMs <= 0 || isUiOpen()) {
 			return;
 		}
 
-		AquaticMob.#observerRegistered = true;
+		const dt = deltaMs * 0.001;
 
-		onBeforeRender(Map1.mainScene, (deltaMs: number) => {
-			if (deltaMs <= 0 || isUiOpen()) {
-				return;
-			}
+		AquaticMob.ticks.drain();
 
-			const dt = deltaMs * 0.001;
+		frameProfiler.begin("aquaticMobs");
 
-			frameProfiler.begin("aquaticMobs");
-
-			try {
-				for (const mob of AquaticMob.#allMobs) {
-					if (mob.#isDisposed) {
-						continue;
-					}
-
-					const pos = mob.#position;
-
-					/*
-					 * Chunk.SIZE is 32, so arithmetic shifts produce the same
-					 * chunk coordinate as floor division, including for
-					 * negative coordinates.
-					 */
-					const chunk = getChunk(
-						Math.floor(pos.x) >> CHUNK_SHIFT,
-						Math.floor(pos.y) >> CHUNK_SHIFT,
-						Math.floor(pos.z) >> CHUNK_SHIFT,
-					);
-
-					if (!chunk || !chunk.isLoaded || chunk.lodLevel > 1) {
-						continue;
-					}
-
-					mob.tick(dt);
+		try {
+			for (const mob of AquaticMob.ticks) {
+				if (mob.isDisposed) {
+					continue;
 				}
-			} finally {
-				frameProfiler.end("aquaticMobs");
+
+				const pos = mob.bodyPosition;
+
+				/*
+				 * Chunk.SIZE is 32, so arithmetic shifts produce the same
+				 * chunk coordinate as floor division, including for
+				 * negative coordinates.
+				 */
+				const chunk = getChunk(
+					Math.floor(pos.x) >> CHUNK_SHIFT,
+					Math.floor(pos.y) >> CHUNK_SHIFT,
+					Math.floor(pos.z) >> CHUNK_SHIFT,
+				);
+
+				if (!chunk || !chunk.isLoaded || chunk.lodLevel > 1) {
+					continue;
+				}
+
+				mob.tick(dt);
 			}
-		});
+		} finally {
+			frameProfiler.end("aquaticMobs");
+		}
 	}
 
 	static disposeAll(): void {
-		/*
-		 * Deleting the current Set entry during iteration is valid. No array
-		 * snapshot is required.
-		 */
-		for (const mob of AquaticMob.#allMobs) {
-			mob.dispose();
-		}
+		AquaticMob.ticks.disposeAll();
 	}
 
 	protected constructor(hp: number, scene: SceneContext, halfSize: Vec3) {
-		this.#hp = hp;
-		this.#maxHp = hp;
-		this.#scene = scene;
-
-		this.#hitHalfExtents = {
-			x: halfSize.x,
-			y: halfSize.y,
-			z: halfSize.z,
-		};
-
-		this.#wanderSpeed = this.getWanderSpeed();
-		this.#halfHeight = halfSize.y;
-
-		this.#collider = new VoxelAabbCollider(
-			halfSize,
-			createVoxelColliderBlockSampler(
-				(wx, wy, wz) => {
-					const result = resolveBlockAtWorldCoords(wx, wy, wz);
-
-					// Same held-up-by-streaming-terrain behavior as the
-					// player / dropped item / NeutralMob samplers: a
-					// streaming seam presents as a solid cobble until the
-					// chunk loads, then snaps down to the real surface.
-					if (result.unloaded) return UNLOADED_SOLID_RESOLVE;
-
-					if (!isCollidableBlock(result.blockId)) {
-						return null;
-					}
-
-					_voxelResolveScratch.blockId = result.blockId;
-					_voxelResolveScratch.blockState = result.blockState;
-
-					return _voxelResolveScratch;
-				},
-				{
-					getFenceDynamicShape,
-					getShapeForBlockId,
-					isFenceBlockId,
-					computeFenceNeighborMask,
-				},
-			),
-			EPSILON,
-		);
+		super(hp, scene, halfSize);
 	}
 
-	protected setPosition(x: number, y: number, z: number): void {
-		setVec3(this.#position, x, y, z);
+	protected override stageForTick(): void {
+		AquaticMob.ticks.stage(this);
 	}
 
-	get facingYaw(): number {
-		return this.#facingAngle;
+	protected override unstageFromTick(): void {
+		AquaticMob.ticks.remove(this);
 	}
 
-	protected get walkPhase(): number {
-		return this.#walkPhase;
-	}
-
-	get hitHalfExtents(): Vec3 {
-		return this.#hitHalfExtents;
-	}
-
-	protected finalizeRegistration(): void {
-		this.configureChunkLoader(this.#scene);
-
-		this.#chunkBindingHandle = registerChunkBoundEntity({
-			getWorldPosition: () => this.#position,
-			unload: () => this.dispose(),
-			isAlive: () => !this.#isDisposed,
-			serializeForChunkReload: () => this.#serializeForChunkReload(),
-		});
-
-		AquaticMob.#allMobs.add(this);
-		AquaticMob.#ensureObserver();
-	}
-
-	protected get scene(): SceneContext {
-		return this.#scene;
-	}
-
-	get position(): Vec3 {
-		return this.#position;
-	}
-
-	get hp(): number {
-		return this.#hp;
-	}
-
-	set hp(value: number) {
-		this.#hp = Math.max(0, Math.min(value, this.#maxHp));
-	}
-
-	get maxHp(): number {
-		return this.#maxHp;
-	}
-
-	setPlayerPosition(pos: Vec3): void {
-		this.#playerPosition = pos;
-	}
-
-	takeDamage(amount: number, impactPosition?: Vec3): void {
-		this.#hp -= amount;
-
-		// Blood particles at the hit point when available, otherwise at the mob's
-		// body center for fall/environmental damage.
-		const bloodPosition = impactPosition ?? this.#position;
-		playMobDamage(bloodPosition.x, bloodPosition.y, bloodPosition.z, amount);
-
-		if (this.#hp <= 0) {
-			this.#hp = 0;
-			this.onDeath();
-			this.dispose();
-			return;
-		}
-
-		this.onDamaged();
-	}
-
-	serializeForChunkReload(): SavedChunkEntityData | null {
-		return this.#serializeForChunkReload();
-	}
-
-	use(_player: Player): void {}
-
-	dispose(): void {
-		if (this.#isDisposed) {
-			return;
-		}
-
-		this.#isDisposed = true;
-
-		unregisterChunkBoundEntity(this.#chunkBindingHandle);
-		this.#chunkBindingHandle = undefined;
-
-		AquaticMob.#allMobs.delete(this);
-		Map1.mobRegistry?.removeMob(this);
-
-		this.#collider.dispose();
+	override dispose(): void {
+		super.dispose();
 
 		/*
 		 * Drop retained references that are no longer needed after disposal.
 		 */
-		this.#playerPosition = null;
 		this.#wanderTarget = null;
-	}
-
-	get isDisposed(): boolean {
-		return this.#isDisposed;
 	}
 
 	/**
@@ -397,8 +200,8 @@ export abstract class AquaticMob {
 		const worldZ = Math.floor(pos.z);
 
 		const centerY = Math.floor(pos.y);
-		const feetY = Math.floor(pos.y - this.#halfHeight + 0.05);
-		const headY = Math.floor(pos.y + this.#halfHeight - 0.05);
+		const feetY = Math.floor(pos.y - this.halfHeight + 0.05);
+		const headY = Math.floor(pos.y + this.halfHeight - 0.05);
 
 		const chunkX = worldX >> CHUNK_SHIFT;
 		const chunkZ = worldZ >> CHUNK_SHIFT;
@@ -514,15 +317,15 @@ export abstract class AquaticMob {
 	}
 
 	tick(dt: number): void {
-		if (this.#isDisposed) {
+		if (this.isDisposed) {
 			return;
 		}
 
-		const pos = this.#position;
+		const pos = this.bodyPosition;
 		const startY = pos.y;
 		const waterState = this.#sampleWaterState(pos);
 
-		const velocity = this.#velocity;
+		const velocity = this.bodyVelocity;
 		// Don't freeze on NotReady — treat as dry so mobs keep falling
 		// when the block under them is mined and the chunk below is still
 		// streaming. Otherwise they hover 1 block above the hole.
@@ -539,11 +342,29 @@ export abstract class AquaticMob {
 			return;
 		}
 
-		this.#collider.moveAxis(pos, velocity, Axis.X, velocity.x * dt, STEP_SIZE);
+		this.bodyCollider.moveAxis(
+			pos,
+			velocity,
+			Axis.X,
+			velocity.x * dt,
+			STEP_SIZE,
+		);
 
-		this.#collider.moveAxis(pos, velocity, Axis.Y, velocity.y * dt, STEP_SIZE);
+		this.bodyCollider.moveAxis(
+			pos,
+			velocity,
+			Axis.Y,
+			velocity.y * dt,
+			STEP_SIZE,
+		);
 
-		this.#collider.moveAxis(pos, velocity, Axis.Z, velocity.z * dt, STEP_SIZE);
+		this.bodyCollider.moveAxis(
+			pos,
+			velocity,
+			Axis.Z,
+			velocity.z * dt,
+			STEP_SIZE,
+		);
 
 		if (!inWater) {
 			this.#applyLandDamping(dt, pos, velocity);
@@ -552,7 +373,7 @@ export abstract class AquaticMob {
 			let grounded = this.#isGrounded(pos);
 			{
 				const cx = Math.floor(pos.x);
-				const cy = Math.floor(pos.y - this.#halfHeight - 0.05);
+				const cy = Math.floor(pos.y - this.halfHeight - 0.05);
 				const cz = Math.floor(pos.z);
 				// PERF: single voxel fetch — reuse result for both checks.
 				const belowCollidable = isCollidableBlock(
@@ -566,12 +387,12 @@ export abstract class AquaticMob {
 				}
 			}
 			if (grounded) {
-				if (!Number.isNaN(this.#fallStartY)) {
-					const fallDistance = this.#fallStartY - pos.y;
+				if (!Number.isNaN(this.fallStartY)) {
+					const fallDistance = this.fallStartY - pos.y;
 					if (fallDistance > 0.5) {
 						playLandingDust(
 							pos.x,
-							pos.y - this.#halfHeight,
+							pos.y - this.halfHeight,
 							pos.z,
 							fallDistance,
 						);
@@ -580,21 +401,21 @@ export abstract class AquaticMob {
 						this.takeDamage(
 							(fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK,
 						);
-						if (this.#isDisposed) return;
+						if (this.isDisposed) return;
 					}
-					this.#fallStartY = Number.NaN;
+					this.fallStartY = Number.NaN;
 				}
-			} else if (Number.isNaN(this.#fallStartY)) {
-				this.#fallStartY = startY;
+			} else if (Number.isNaN(this.fallStartY)) {
+				this.fallStartY = startY;
 			}
 		} else {
 			// Water breaks the fall — reset tracking
-			this.#fallStartY = Number.NaN;
+			this.fallStartY = Number.NaN;
 		}
 
 		if (!inWater) {
 			const cx2 = Math.floor(pos.x);
-			const cy2 = Math.floor(pos.y - this.#halfHeight - 0.05);
+			const cy2 = Math.floor(pos.y - this.halfHeight - 0.05);
 			const cz2 = Math.floor(pos.z);
 			if (!isCollidableBlock(getBlockByWorldCoords(cx2, cy2, cz2))) {
 				if (velocity.y > -2) velocity.y -= 2 * dt;
@@ -604,7 +425,7 @@ export abstract class AquaticMob {
 					nudge.x = pos.x;
 					nudge.y = pos.y - 0.03;
 					nudge.z = pos.z;
-					if (!this.#collider.overlaps(nudge)) pos.y -= 0.03;
+					if (!this.bodyCollider.overlaps(nudge)) pos.y -= 0.03;
 				}
 			}
 		}
@@ -634,14 +455,14 @@ export abstract class AquaticMob {
 		if (this.#swimTimer <= 0) {
 			this.#swimTimer = 0.5 + Math.random() * 0.8;
 
-			this.#facingAngle += Math.random() * 2.0 - 1.0;
+			this.facingAngle += Math.random() * 2.0 - 1.0;
 		}
 
-		const flopSpeed = this.#wanderSpeed * 0.3;
+		const flopSpeed = this.wanderSpeed * 0.3;
 
-		velocity.x = Math.sin(this.#facingAngle) * flopSpeed;
+		velocity.x = Math.sin(this.facingAngle) * flopSpeed;
 
-		velocity.z = Math.cos(this.#facingAngle) * flopSpeed;
+		velocity.z = Math.cos(this.facingAngle) * flopSpeed;
 
 		return true;
 	}
@@ -812,10 +633,10 @@ export abstract class AquaticMob {
 				const dz = target.z - pos.z;
 
 				if (dx * dx + dz * dz > 0.0001) {
-					this.#facingAngle = Math.atan2(dx, dz);
+					this.facingAngle = Math.atan2(dx, dz);
 				}
 			} else {
-				this.#facingAngle += Math.random() * 2.4 - 1.2;
+				this.facingAngle += Math.random() * 2.4 - 1.2;
 
 				if (nearTarget) {
 					this.#wanderTarget = null;
@@ -829,20 +650,20 @@ export abstract class AquaticMob {
 			this.#chooseTargetDepth();
 		}
 
-		const swimSpeed = this.#wanderSpeed * SWIM_SPEED_FACTOR;
+		const swimSpeed = this.wanderSpeed * SWIM_SPEED_FACTOR;
 
 		const horizontalKeep = Math.max(0, 1 - WATER_HORIZONTAL_DAMPING * dt);
 
-		velocity.x = Math.sin(this.#facingAngle) * swimSpeed * horizontalKeep;
+		velocity.x = Math.sin(this.facingAngle) * swimSpeed * horizontalKeep;
 
-		velocity.z = Math.cos(this.#facingAngle) * swimSpeed * horizontalKeep;
+		velocity.z = Math.cos(this.facingAngle) * swimSpeed * horizontalKeep;
 
 		const currentTarget = this.#wanderTarget;
 
 		const targetY =
 			currentTarget !== null
 				? currentTarget.y
-				: this.#waterSurfaceY - (this.#targetDepth ?? 1) - this.#halfHeight;
+				: this.#waterSurfaceY - (this.#targetDepth ?? 1) - this.halfHeight;
 
 		const depthError = targetY - pos.y;
 
@@ -905,72 +726,41 @@ export abstract class AquaticMob {
 	#updateAnimationPhase(dt: number, pos: Vec3): void {
 		const currentX = pos.x;
 		const currentZ = pos.z;
-		const previousX = this.#prevX;
+		const previousX = this.prevX;
 
 		if (Number.isNaN(previousX)) {
-			this.#prevX = currentX;
-			this.#prevZ = currentZ;
-			this.#walkPhase += dt;
+			this.prevX = currentX;
+			this.prevZ = currentZ;
+			this.walkPhase += dt;
 			return;
 		}
 
 		const dx = currentX - previousX;
-		const dz = currentZ - this.#prevZ;
+		const dz = currentZ - this.prevZ;
 		const distanceSq = dx * dx + dz * dz;
 
 		if (distanceSq > MIN_MOVEMENT_DISTANCE_SQ) {
-			this.#walkPhase += Math.sqrt(distanceSq) * WALK_STRIDE_FACTOR + dt * 2.0;
+			this.walkPhase += Math.sqrt(distanceSq) * WALK_STRIDE_FACTOR + dt * 2.0;
 		} else {
-			this.#walkPhase += dt;
+			this.walkPhase += dt;
 		}
 
-		this.#prevX = currentX;
-		this.#prevZ = currentZ;
+		this.prevX = currentX;
+		this.prevZ = currentZ;
 	}
 
 	#isGrounded(pos: Vec3): boolean {
 		const cx = Math.floor(pos.x);
-		const cy = Math.floor(pos.y - this.#halfHeight - 0.02);
+		const cy = Math.floor(pos.y - this.halfHeight - 0.02);
 		const cz = Math.floor(pos.z);
 		if (!isCollidableBlock(getBlockByWorldCoords(cx, cy, cz))) return false;
 		const probe = this.#groundProbe;
-		const footY = pos.y - this.#halfHeight;
+		const footY = pos.y - this.halfHeight;
 		probe.x = pos.x;
 		probe.y = footY - 0.04;
 		probe.z = pos.z;
 		const ext = this.#groundProbeExtents;
-		setVec3(
-			ext,
-			this.#hitHalfExtents.x * 0.7,
-			0.04,
-			this.#hitHalfExtents.z * 0.7,
-		);
-		return this.#collider.overlapsBox(probe, ext);
-	}
-
-	#serializeForChunkReload(): SavedChunkEntityData | null {
-		if (this.#isDisposed) {
-			return null;
-		}
-
-		const pos = this.#position;
-		const extra = this.getExtraPayload();
-
-		return {
-			type: this.CHUNK_ENTITY_TYPE,
-			payload: {
-				position: {
-					x: pos.x,
-					y: pos.y,
-					z: pos.z,
-				},
-				hp: this.#hp,
-				...extra,
-			},
-		};
-	}
-
-	protected getExtraPayload(): Record<string, unknown> {
-		return {};
+		setVec3(ext, this.hitExtents.x * 0.7, 0.04, this.hitExtents.z * 0.7);
+		return this.bodyCollider.overlapsBox(probe, ext);
 	}
 }

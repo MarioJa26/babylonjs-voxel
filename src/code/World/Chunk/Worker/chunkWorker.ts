@@ -297,7 +297,7 @@ export class ChunkWorker {
 		onMessageMesh: (event: MessageEvent<MeshWorkerResponse>) => void,
 	) {
 		this.workerIndex = workerIndex;
-this.onTerrainMessage = onMessageTerrain;
+		this.onTerrainMessage = onMessageTerrain;
 
 		// Voxel mesh worker – assign directly to avoid per-worker closure (was 50 kB / frame)
 		this.voxelWorker = new Worker(

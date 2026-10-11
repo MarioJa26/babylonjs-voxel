@@ -101,8 +101,11 @@ function completedWork(s: StreamingSnapshot): number {
 }
 
 function describeMemory(): string {
-	const mem = (performance as unknown as { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } })
-		.memory;
+	const mem = (
+		performance as unknown as {
+			memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number };
+		}
+	).memory;
 	if (!mem) return "n/a";
 	const mib = (b: number) => (b / 1048576).toFixed(0);
 	return `${mib(mem.usedJSHeapSize)}/${mib(mem.jsHeapSizeLimit)} MiB`;
@@ -210,10 +213,7 @@ export class StreamingWatchdog {
 		];
 
 		if (s.remoteEnabled) {
-			if (
-				s.remotePendingCap > 0 &&
-				s.remotePending >= s.remotePendingCap
-			) {
+			if (s.remotePendingCap > 0 && s.remotePending >= s.remotePendingCap) {
 				lines.push(
 					`  REMOTE PUMP IS SHUT: pending=${s.remotePending} has hit the ` +
 						`MAX_OUTSTANDING_REMOTE cap (${s.remotePendingCap}). Every pump ` +

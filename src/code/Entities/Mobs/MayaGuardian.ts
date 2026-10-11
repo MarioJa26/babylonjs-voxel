@@ -7,7 +7,7 @@ import { MOB_WEAPON_GUARDIAN_MAUL } from "../WeaponStats";
 import { HostileMob } from "./HostileMob";
 import { dropMobItemsForType } from "./MobDrops";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
-import { registerMobLight, unregisterMobLight } from "./MobLighting";
+import { registerMobLight, releaseMobRenderSlot } from "./MobLighting";
 import type { MobPartSpec } from "./MobMesh";
 import {
 	MOB_SKELETON_SKIN_PATH,
@@ -138,7 +138,10 @@ export class MayaGuardian extends HostileMob {
 	readonly CHUNK_ENTITY_TYPE = MAYA_GUARDIAN_CHUNK_ENTITY_TYPE;
 	static #chunkLoaderRegistered = false;
 	static #chunkReloadScene: SceneContext | null = null;
-	#bodySlot: InstanceSlotHandle;
+	// Null until the instance slot is acquired; the null state is what
+	// makes constructor rollback (catch { dispose(); throw }) safe when
+	// acquisition itself throws.
+	#bodySlot: InstanceSlotHandle | null = null;
 
 	constructor(
 		x: number,
@@ -155,24 +158,38 @@ export class MayaGuardian extends HostileMob {
 		);
 
 		this.setPosition(x, y, z);
-		this.#bodySlot = getBodyPool().acquire(this);
-		getBodyPool().writeColor(this.#bodySlot, 1, 1, 1, 0);
-		this.syncToInstances();
-		this.finalizeRegistration();
-		registerMobLight({
-			pool: getBodyPool(),
-			slot: this.#bodySlot,
-			getPos: () => this.position,
-			baseColor: [1, 0.72, 0.36],
-			owner: this,
-		});
+		// Rollback-safe initialization: if any step below throws, dispose()
+		// releases whatever was acquired so far (it is idempotent and
+		// null-safe) and the error propagates to the caller.
+		try {
+			this.#bodySlot = getBodyPool().acquire(this);
+			getBodyPool().writeColor(this.#bodySlot, 1, 1, 1, 0);
+			this.syncToInstances();
+			this.finalizeRegistration();
+			registerMobLight({
+				pool: getBodyPool(),
+				slot: this.#bodySlot,
+				getPos: () => this.position,
+				baseColor: [1, 0.72, 0.36],
+				owner: this,
+			});
+		} catch (error) {
+			this.dispose();
+			throw error;
+		}
 	}
 
 	protected override syncToInstances(): void {
 		const pos = this.position;
 		const pool = getBodyPool();
-		pool.writeMatrix(this.#bodySlot, pos.x, pos.y, pos.z, this.facingYaw);
-		pool.writeWalkPhase(this.#bodySlot, this.walkPhase);
+		const slot = this.#bodySlot;
+
+		if (slot === null) {
+			return;
+		}
+
+		pool.writeMatrix(slot, pos.x, pos.y, pos.z, this.facingYaw);
+		pool.writeWalkPhase(slot, this.walkPhase);
 	}
 
 	configureChunkLoader(scene: SceneContext): void {
@@ -244,8 +261,9 @@ export class MayaGuardian extends HostileMob {
 
 	dispose(): void {
 		if (this.isDisposed) return;
-		unregisterMobLight(this.#bodySlot);
-		getBodyPool().release(this.#bodySlot);
+		// Ordered release (lighting before slot) via the shared helper.
+		releaseMobRenderSlot(this.#bodySlot);
+		this.#bodySlot = null;
 		super.dispose();
 	}
 }

@@ -2243,7 +2243,7 @@ export class ChunkWorkerPool {
 		const configured = SETTING_PARAMS.CHUNK_WORKER_POOL_SIZE | 0;
 		if (Number.isFinite(configured) && configured > 0) return configured;
 
-/*
+		/*
 		 * Size from PHYSICAL cores, not hardwareConcurrency.
 		 *
 		 * hardwareConcurrency reports logical processors, which is 2x physical
@@ -3197,7 +3197,10 @@ export class ChunkWorkerPool {
 		const stale: Array<{ chunk: Chunk; key: bigint }> = [];
 
 		for (const [key, entry] of this.remotePendingChunks) {
-			if (nowMs - entry.dispatchedAtMs > ChunkWorkerPool.REMOTE_PENDING_STALE_MS) {
+			if (
+				nowMs - entry.dispatchedAtMs >
+				ChunkWorkerPool.REMOTE_PENDING_STALE_MS
+			) {
 				stale.push({ chunk: entry.chunk, key });
 			}
 		}
@@ -3273,9 +3276,7 @@ export class ChunkWorkerPool {
 
 		this.remotePumpScheduled = true;
 
-		const toCheck = this.selectColumnBatch(
-			ChunkWorkerPool.REMOTE_BATCH_SIZE,
-		);
+		const toCheck = this.selectColumnBatch(ChunkWorkerPool.REMOTE_BATCH_SIZE);
 
 		if (toCheck.length === 0) {
 			this.remotePumpScheduled = false;
@@ -3909,34 +3910,33 @@ export class ChunkWorkerPool {
 						this.remoteNoBlobRetries.delete(key);
 						this.queueLocalTerrainGeneration(chunk);
 					})
-				.catch((error) => {
-					/*
-					 * STALLFIX: this used to do `chunk.isLoaded = true`, which
-					 * lies about a chunk that has no voxel data at all. The result
-					 * is a chunk that reports loaded (so collision/raycast treat it
-					 * as authoritative terrain and read uniform air) while
-					 * rendering nothing and never having had the server's blocks —
-					 * exactly "missing chunk, no voxel data". A failed cache read is
-					 * recoverable, so retry the server request instead.
-					 */
-					console.warn(
-						`[RemoteGen] cached-blob read failed for ${key}; re-requesting from server:`,
-						error,
-					);
+					.catch((error) => {
+						/*
+						 * STALLFIX: this used to do `chunk.isLoaded = true`, which
+						 * lies about a chunk that has no voxel data at all. The result
+						 * is a chunk that reports loaded (so collision/raycast treat it
+						 * as authoritative terrain and read uniform air) while
+						 * rendering nothing and never having had the server's blocks —
+						 * exactly "missing chunk, no voxel data". A failed cache read is
+						 * recoverable, so retry the server request instead.
+						 */
+						console.warn(
+							`[RemoteGen] cached-blob read failed for ${key}; re-requesting from server:`,
+							error,
+						);
 
-					if (
-						!this.remotePendingChunks.has(key) &&
-						!this.remoteTaskQueueSet.has(chunk)
-					) {
-						this.remoteTaskQueue.unshift(chunk);
-						this.remoteTaskQueueSet.add(chunk);
-						chunk.isTerrainScheduled = true;
-					}
-				})
-				.finally(() => {
-					this.pumpRemoteGeneration();
-				});
-
+						if (
+							!this.remotePendingChunks.has(key) &&
+							!this.remoteTaskQueueSet.has(chunk)
+						) {
+							this.remoteTaskQueue.unshift(chunk);
+							this.remoteTaskQueueSet.add(chunk);
+							chunk.isTerrainScheduled = true;
+						}
+					})
+					.finally(() => {
+						this.pumpRemoteGeneration();
+					});
 
 				return;
 			}

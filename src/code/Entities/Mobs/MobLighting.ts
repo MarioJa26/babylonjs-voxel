@@ -1,4 +1,4 @@
-import type { Vec3 } from "@babylonjs/lite";
+import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { onBeforeRender } from "@babylonjs/lite";
 
 import { Map1 } from "@/code/Maps/Map1";
@@ -61,14 +61,18 @@ let entryCount = 0;
 let cursor: Entry | null = null;
 
 let lastTickMs = Number.NEGATIVE_INFINITY;
-let observerRegistered = false;
+let observedScene: SceneContext | null = null;
 
 function ensureObserver(): void {
-	if (observerRegistered) {
+	// Scene-tracked, not a boolean flag: Map1.mainScene is reassigned on
+	// every world load, and a stuck flag would leave the new scene with no
+	// lighting observer. The previous scene keeps a harmless observer over
+	// the shared entry list (emptied by mob disposal).
+	if (observedScene === Map1.mainScene) {
 		return;
 	}
 
-	observerRegistered = true;
+	observedScene = Map1.mainScene;
 
 	onBeforeRender(Map1.mainScene, () => {
 		tick(performance.now());
@@ -329,6 +333,30 @@ export function registerMobLight(registration: {
 	}
 
 	appendEntry(entry);
+}
+
+/**
+ * Single enforcement point for render-slot teardown. Lighting entries are
+ * keyed by handle identity (stable across pool compaction), but the lookup
+ * must still happen before `release` mutates `slot.index` to -1: after
+ * release the handle no longer describes a live lane, so unregistering late
+ * risks leaving a stale entry that keeps writing lit colors into a lane now
+ * owned by a different mob.
+ *
+ * Recommended full disposal order: mark disposed → leave simulation and
+ * registry → `releaseMobRenderSlot` (this: lighting, then slot) → unregister
+ * chunk binding → dispose collision resources → clear external references.
+ * Null-safe and idempotent: both halves no-op when already torn down, which
+ * is what makes partially-constructed (`try { acquire… } catch { dispose }`)
+ * rollback safe.
+ */
+export function releaseMobRenderSlot(slot: InstanceSlotHandle | null): void {
+	if (slot === null) {
+		return;
+	}
+
+	unregisterMobLight(slot);
+	slot.pool.release(slot);
 }
 
 export function unregisterMobLight(slot: InstanceSlotHandle): void {

@@ -1099,7 +1099,10 @@ export class ChunkStreamingController {
 	 */
 	public sweepOrphanedChunks(): number {
 		const nowMs = performance.now();
-		if (nowMs - this._lastOrphanSweepMs < ChunkStreamingController.ORPHAN_SWEEP_INTERVAL_MS) {
+		if (
+			nowMs - this._lastOrphanSweepMs <
+			ChunkStreamingController.ORPHAN_SWEEP_INTERVAL_MS
+		) {
 			return this._lastOrphanSweepRescued;
 		}
 		this._lastOrphanSweepMs = nowMs;
@@ -1863,7 +1866,10 @@ export class ChunkStreamingController {
 			// handful of those are ever handed back out by
 			// ensureChunkQueuedForLoad. Uncapped, the pool grew by hundreds of
 			// entries per pass for the life of the session.
-			if (this._freeRequests.length < ChunkStreamingController.FREE_REQUEST_POOL_MAX) {
+			if (
+				this._freeRequests.length <
+				ChunkStreamingController.FREE_REQUEST_POOL_MAX
+			) {
 				this._freeRequests.push(r);
 			}
 		}

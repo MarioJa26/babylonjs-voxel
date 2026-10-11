@@ -85,7 +85,6 @@ export class Player {
 	#pauseMenu!: PauseMenu;
 	#inputController: PlayerInputController;
 	#pickInFlight = false;
-	#interactionsDisposed = false;
 	// E-hold vacuum: while the use key is held, tryPickupItem() repeats on
 	// a throttle so holding E collects every nearby drop. Block
 	// interactions (doors, TNT, mounts) stay single-press only.
@@ -407,7 +406,7 @@ export class Player {
 
 	/** KEY_USE ('e') — interact with the usable target under the crosshair. */
 	public use(): void {
-		if (this.#pickInFlight || this.#interactionsDisposed) return;
+		if (this.#pickInFlight) return;
 
 		// While riding a boat, E always dismounts (the wheel toggles drive
 		// mode, so re-pressing E on the wheel remounts on the next press).
@@ -560,23 +559,13 @@ export class Player {
 	}
 
 	/**
-	 * Kept for API compatibility.
-	 *
-	 * The previous implementation allocated a GPU picker but never used it for
-	 * picking. This now simply disables future interactions after disposal.
-	 */
-	public disposePicker(): void {
-		this.#interactionsDisposed = true;
-	}
-
-	/**
 	 * Pick up a single nearby dropped item (crosshair target first, then
 	 * nearest). True when something was collected. Item-only on purpose:
 	 * the E-hold repeater calls this so holding E vacuums drops without
 	 * re-triggering doors, TNT, or mounts every tick.
 	 */
 	public tryPickupItem(): boolean {
-		if (this.#pickInFlight || this.#interactionsDisposed) return false;
+		if (this.#pickInFlight) return false;
 
 		this.#pickInFlight = true;
 
@@ -602,7 +591,7 @@ export class Player {
 	 * their one-shot use() behavior (including block interactions).
 	 */
 	public updateUseHeld(): void {
-		if (!this.#useHeld || this.#interactionsDisposed || isUiOpen()) return;
+		if (!this.#useHeld || isUiOpen()) return;
 
 		const now = performance.now();
 		if (now - this.#lastUseRepeatMs < Player.USE_REPEAT_INTERVAL_MS) return;

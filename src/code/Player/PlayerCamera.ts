@@ -7,6 +7,18 @@ function clamp(value: number, min: number, max: number): number {
 	return value < min ? min : value > max ? max : value;
 }
 
+/** Atomic camera snapshot. See `writeFrameState`. */
+export interface CameraFrameState {
+	x: number;
+	y: number;
+	z: number;
+	yaw: number;
+	pitch: number;
+	forwardX: number;
+	forwardY: number;
+	forwardZ: number;
+}
+
 /**
  * Lite native port of PlayerCamera.
  * Third-person follow camera. Drives a Lite `FreeCamera`'s
@@ -37,6 +49,13 @@ export class PlayerCamera {
 	readonly #minZoom = 0.01;
 	readonly #maxZoom = 10000;
 	readonly #zoomSpeed = 5;
+
+	// Eye height used at exactly #minZoom. A separate concept from the body
+	// visibility boundary below: [minZoom] uses the low first-person eye,
+	// (minZoom..bodyVisible] uses the full eye height but still counts as
+	// first person, and (bodyVisible..] is third person. Intentional.
+	readonly #minZoomEyeHeight = 0.66;
+	readonly #bodyVisibleDistance = 0.5;
 
 	// Cached unit forward vector. Updated only when yaw/pitch changes.
 	#forwardX = 0;
@@ -75,7 +94,8 @@ export class PlayerCamera {
 	 */
 	public moveWithPlayer(characterPosition: Vec3, deltaSeconds?: number): void {
 		const distance = this.#followDistance;
-		const eyeHeight = distance > this.#minZoom ? this.#eyeHeight : 0.66;
+		const eyeHeight =
+			distance > this.#minZoom ? this.#eyeHeight : this.#minZoomEyeHeight;
 		const targetY = characterPosition.y + eyeHeight;
 
 		let cameraY: number;
@@ -190,7 +210,8 @@ export class PlayerCamera {
 
 	/**
 	 * Returns a shared scratch vector containing the camera's forward
-	 * direction. Do not retain or mutate it.
+	 * direction. Do not retain or mutate it; prefer `writeForwardDirection`
+	 * for hot paths.
 	 */
 	public getForwardDirection(): Vec3 {
 		const result = this.#forwardScratch;
@@ -202,9 +223,37 @@ export class PlayerCamera {
 		return result;
 	}
 
+	/**
+	 * Non-allocating forward-direction read. `out` may be caller-owned
+	 * storage; nothing is retained.
+	 */
+	public writeForwardDirection(out: Vec3): void {
+		out.x = this.#forwardX;
+		out.y = this.#forwardY;
+		out.z = this.#forwardZ;
+	}
+
 	/** True when zoomed out far enough to see the player body. */
 	public get isThirdPerson(): boolean {
-		return this.#followDistance > 0.5;
+		return this.#followDistance > this.#bodyVisibleDistance;
+	}
+
+	/**
+	 * Atomic camera snapshot: position, yaw/pitch, and the cached forward
+	 * vector are captured together so callers cannot observe a half-updated
+	 * camera (e.g. new position with a stale yaw).
+	 */
+	public writeFrameState(out: CameraFrameState): void {
+		const position = this.#playerCamera.position;
+
+		out.x = position.x;
+		out.y = position.y;
+		out.z = position.z;
+		out.yaw = this.#cameraYaw;
+		out.pitch = this.#cameraPitch;
+		out.forwardX = this.#forwardX;
+		out.forwardY = this.#forwardY;
+		out.forwardZ = this.#forwardZ;
 	}
 
 	public get playerCamera(): FreeCamera {
@@ -235,7 +284,10 @@ export class PlayerCamera {
 
 	/**
 	 * Returns a shared scratch vector containing the camera position.
-	 * Do not retain or mutate it.
+	 * Do not retain or mutate it; prefer `writePosition` for hot paths.
+	 *
+	 * Note: successive reads alias — `const a = camera.position; const b =
+	 * camera.position;` leaves `a === b`.
 	 */
 	public get position(): Vec3 {
 		const position = this.#playerCamera.position;
@@ -246,6 +298,31 @@ export class PlayerCamera {
 		result.z = position.z;
 
 		return result;
+	}
+
+	/**
+	 * Non-allocating camera-position read. `out` may be caller-owned
+	 * storage; nothing is retained.
+	 */
+	public writePosition(out: Vec3): void {
+		const position = this.#playerCamera.position;
+
+		out.x = position.x;
+		out.y = position.y;
+		out.z = position.z;
+	}
+
+	/** Scalar camera-position reads for when only one axis is needed. */
+	public get x(): number {
+		return this.#playerCamera.position.x;
+	}
+
+	public get y(): number {
+		return this.#playerCamera.position.y;
+	}
+
+	public get z(): number {
+		return this.#playerCamera.position.z;
 	}
 
 	public set position(position: Vec3) {

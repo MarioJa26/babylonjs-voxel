@@ -6,7 +6,7 @@ import { getMobStats, MobTypeId } from "../MobConfig";
 import { AquaticMob } from "./AquaticMob";
 import { dropMobFoodForType } from "./MobDrops";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
-import { registerMobLight, unregisterMobLight } from "./MobLighting";
+import { registerMobLight, releaseMobRenderSlot } from "./MobLighting";
 import type { MobPartSpec } from "./MobMesh";
 import {
 	FISH_BODY_UV,
@@ -124,7 +124,10 @@ export class Fish extends AquaticMob {
 	readonly CHUNK_ENTITY_TYPE = FISH_CHUNK_ENTITY_TYPE;
 	static #chunkLoaderRegistered = false;
 	static #chunkReloadScene: SceneContext | null = null;
-	#bodySlot: InstanceSlotHandle;
+	// Null until the instance slot is acquired; the null state is what
+	// makes constructor rollback (catch { dispose(); throw }) safe when
+	// acquisition itself throws.
+	#bodySlot: InstanceSlotHandle | null = null;
 	#color: Color3;
 
 	constructor(
@@ -138,30 +141,44 @@ export class Fish extends AquaticMob {
 		super(hp ?? FISH_DEFAULT_HP, scene, FISH_BODY_HALF_SIZE);
 		this.#color = color ?? randomFishColor();
 		this.setPosition(x, y, z);
-		this.#bodySlot = getBodyPool().acquire(this);
-		getBodyPool().writeColor(
-			this.#bodySlot,
-			this.#color.r,
-			this.#color.g,
-			this.#color.b,
-			0,
-		);
-		this.syncToInstances();
-		this.finalizeRegistration();
-		registerMobLight({
-			pool: getBodyPool(),
-			slot: this.#bodySlot,
-			getPos: () => this.position,
-			baseColor: [this.#color.r, this.#color.g, this.#color.b],
-			owner: this,
-		});
+		// Rollback-safe initialization: if any step below throws, dispose()
+		// releases whatever was acquired so far (it is idempotent and
+		// null-safe) and the error propagates to the caller.
+		try {
+			this.#bodySlot = getBodyPool().acquire(this);
+			getBodyPool().writeColor(
+				this.#bodySlot,
+				this.#color.r,
+				this.#color.g,
+				this.#color.b,
+				0,
+			);
+			this.syncToInstances();
+			this.finalizeRegistration();
+			registerMobLight({
+				pool: getBodyPool(),
+				slot: this.#bodySlot,
+				getPos: () => this.position,
+				baseColor: [this.#color.r, this.#color.g, this.#color.b],
+				owner: this,
+			});
+		} catch (error) {
+			this.dispose();
+			throw error;
+		}
 	}
 
 	protected override syncToInstances(): void {
 		const pos = this.position;
 		const pool = getBodyPool();
-		pool.writeMatrix(this.#bodySlot, pos.x, pos.y, pos.z, this.facingYaw);
-		pool.writeWalkPhase(this.#bodySlot, this.walkPhase);
+		const slot = this.#bodySlot;
+
+		if (slot === null) {
+			return;
+		}
+
+		pool.writeMatrix(slot, pos.x, pos.y, pos.z, this.facingYaw);
+		pool.writeWalkPhase(slot, this.walkPhase);
 	}
 
 	configureChunkLoader(scene: SceneContext): void {
@@ -218,8 +235,9 @@ export class Fish extends AquaticMob {
 
 	dispose(): void {
 		if (this.isDisposed) return;
-		unregisterMobLight(this.#bodySlot);
-		getBodyPool().release(this.#bodySlot);
+		// Ordered release (lighting before slot) via the shared helper.
+		releaseMobRenderSlot(this.#bodySlot);
+		this.#bodySlot = null;
 		super.dispose();
 	}
 }

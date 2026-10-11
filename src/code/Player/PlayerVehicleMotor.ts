@@ -1535,19 +1535,10 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#displayCapsule = this.createCharacterMesh();
 		const start = vec3(0, 165, 0);
 		this.#characterController = new SimpleCharacterController(start);
-		this.configureCharacterController();
 		copyVec3(this.voxelPosition, start);
 		setVec3(this.voxelVelocity, 0, 0, 0);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
 		this.#camera.target = start;
-	}
-
-	private configureCharacterController(): void {
-		this.#characterController.keepDistance = 0.08;
-		this.#characterController.keepContactTolerance = 0.12;
-		this.#characterController.maxCastIterations = 20;
-		this.#characterController.penetrationRecoverySpeed = 3.0;
-		this.#characterController.maxSlopeCosine = Math.cos((50 * Math.PI) / 180);
 	}
 
 	private createCharacterMesh(): Mesh {

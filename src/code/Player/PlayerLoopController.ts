@@ -71,13 +71,105 @@ import {
 } from "./Hud/BlockHighlight/BlockRaycaster";
 import { PlayerHud } from "./Hud/PlayerHud";
 import { updateHeldItemView } from "./Inventory/HeldItemView";
-import type { PlayerCamera } from "./PlayerCamera";
+import type { CameraFrameState, PlayerCamera } from "./PlayerCamera";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
 
 // Shared scratch is safe because debug-HUD formatting is synchronous and
 // neither helper retains these arrays.
 const _topDispatchIndices = new Int32Array(4);
 const _topDispatchCounts = new Float64Array(4);
+
+/**
+ * Authoritative per-frame player snapshot, captured once after vehicle
+ * physics and camera synchronization. All downstream systems (underwater,
+ * picking, particles, footsteps, HUD, mesh selection) read this instead of
+ * re-querying live position/camera objects at slightly different points in
+ * the frame.
+ */
+export interface PlayerFrameState {
+	deltaMs: number;
+	dtSec: number;
+
+	playerX: number;
+	playerY: number;
+	playerZ: number;
+
+	cameraX: number;
+	cameraY: number;
+	cameraZ: number;
+	cameraYaw: number;
+	cameraPitch: number;
+	forwardX: number;
+	forwardY: number;
+	forwardZ: number;
+
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+
+	velocityX: number;
+	velocityY: number;
+	velocityZ: number;
+	horizontalSpeedSq: number;
+
+	uiOpen: boolean;
+	underwater: boolean;
+
+	/** Bumped when the player moved (>= pick epsilon) since last capture. */
+	movementVersion: number;
+	/** Bumped when yaw/pitch moved (>= pick epsilon) since last capture. */
+	cameraVersion: number;
+	/** Bumped when the player chunk changed since last capture. */
+	chunkVersion: number;
+}
+
+const _playerFrameState: PlayerFrameState = {
+	deltaMs: 0,
+	dtSec: 0,
+
+	playerX: 0,
+	playerY: 0,
+	playerZ: 0,
+
+	cameraX: 0,
+	cameraY: 0,
+	cameraZ: 0,
+	cameraYaw: 0,
+	cameraPitch: 0,
+	forwardX: 0,
+	forwardY: 0,
+	forwardZ: 1,
+
+	chunkX: 0,
+	chunkY: 0,
+	chunkZ: 0,
+
+	velocityX: 0,
+	velocityY: 0,
+	velocityZ: 0,
+	horizontalSpeedSq: 0,
+
+	uiOpen: false,
+	underwater: false,
+
+	movementVersion: 0,
+	cameraVersion: 0,
+	chunkVersion: 0,
+};
+
+// Scratch targets for the camera/boat reads inside #captureFrameState and
+// tick(). Consumed synchronously within the frame; never retained.
+const _captureCameraScratch: CameraFrameState = {
+	x: 0,
+	y: 0,
+	z: 0,
+	yaw: 0,
+	pitch: 0,
+	forwardX: 0,
+	forwardY: 0,
+	forwardZ: 1,
+};
+const _boatsPlayerScratch: Vec3 = { x: 0, y: 0, z: 0 };
 
 const MOB_TYPE_NAMES: Record<number, string> = {
 	[MobTypeId.Chicken]: "Chicken",
@@ -97,23 +189,46 @@ export class PlayerLoopController {
 	// path never touches spawn state.
 	#offSpawnPrepared: (() => void) | null = null;
 
-	// ---- active-mesh selection position tracking (separate from loading) ----
-	#amLastCx = 0;
-	#amLastCy = 0;
-	#amLastCz = 0;
+	// ---- active-mesh selection tracking (chunk via frame version, camera
+	// via epsilon compare against the frame snapshot) ----
+	#lastMeshChunkVersion = -1;
 	#prevCameraYaw = 0;
 	#prevCameraPitch = 0;
 	#rebuildActiveMeshes = false;
+	// Mouse-derived floats can keep the camera "moving" by tiny amounts, so
+	// mesh freezing uses an epsilon instead of exact comparison. Yaw is
+	// unbounded (never normalized), so a plain absolute delta needs no
+	// angle-wrap handling.
+	static readonly CAMERA_STILL_EPSILON = 0.0001;
 
 	// ---- pick-target raycast gating (skip the 64-voxel DDA when still) ----
-	#pickLastX = NaN;
-	#pickLastY = NaN;
-	#pickLastZ = NaN;
-	#pickLastYaw = NaN;
-	#pickLastPitch = NaN;
+	#lastPickMovementVersion = -1;
+	#lastPickCameraVersion = -1;
 	#pickCachedHit: BlockRaycastHit | null = null;
 	#pickStillFrames = 0;
 	static readonly PICK_STILL_REFRESH_FRAMES = 6;
+	// Same epsilon the legacy float-compare gating used; the frame snapshot
+	// versions are computed with it in #captureFrameState.
+	static readonly PICK_MOVE_EPSILON = 0.001;
+
+	// ---- frame-snapshot version tracking (see PlayerFrameState) ----
+	#lastFramePlayerX = NaN;
+	#lastFramePlayerY = NaN;
+	#lastFramePlayerZ = NaN;
+	#lastFrameYaw = NaN;
+	#lastFramePitch = NaN;
+	#lastFrameChunkX = NaN;
+	#lastFrameChunkY = NaN;
+	#lastFrameChunkZ = NaN;
+	#movementVersion = 0;
+	#cameraVersion = 0;
+	#chunkVersion = 0;
+
+	// ---- lifecycle ----
+	// Lite's onBeforeRender returns void (no unsubscribe), and #commitFrame
+	// queues a microtask every frame, so disposal is signalled by flag and
+	// late callbacks become no-ops instead of touching torn-down state.
+	#disposed = false;
 
 	// ---- cave state ----
 	#lastCaveState = false;
@@ -170,7 +285,9 @@ export class PlayerLoopController {
 			onAudibleStep: (() => void) | null;
 			velocity: Vec3;
 			inputDirection: Vec3;
-			update(dt: number): void;
+			// Units are MILLISECONDS (the motor converts at its boundary);
+			// seconds are derived once per frame as frame.dtSec.
+			update(deltaMs: number): void;
 			updateCameraAndVisuals(deltaMs?: number): void;
 		},
 		private readonly playerStats: PlayerStats,
@@ -359,67 +476,82 @@ export class PlayerLoopController {
 			vehicle.isSprinting = false;
 		}
 
-		const camPos = this.playerCamera.position;
-		const isUnderwater = isEyeUnderwater(camPos.x, camPos.y, camPos.z);
+		// Phase 1 — player physics and camera. Movement input is event-driven
+		// (key handlers maintain inputDirection), so updateControls() below
+		// only consumes action state and the pick result; it does not produce
+		// motion input for this frame and therefore stays after physics.
+		frameProfiler.begin("physics");
+		vehicle.update(deltaMs);
+		vehicle.updateCameraAndVisuals(deltaMs);
+		frameProfiler.end("physics");
 
-		if (isUnderwater) {
+		// Phase 2 — single authoritative snapshot. Everything below reads
+		// `frame` instead of re-querying the live (mutable) position/velocity/
+		// camera objects, so no system can observe a half-advanced frame.
+		const frame = this.#captureFrameState(deltaMs);
+
+		// Phase 3 — environment consequences of the finalized state. The
+		// underwater check now sees this frame's camera position rather than
+		// the previous frame's.
+		if (frame.underwater) {
 			if (
-				!stats.consumeStamina(8 * dtSec) &&
+				!stats.consumeStamina(8 * frame.dtSec) &&
 				stats.gamemode !== Gamemodes.Creative
 			) {
-				stats.takeDamage(10 * dtSec);
+				stats.takeDamage(10 * frame.dtSec);
 			}
 		}
 
-		const uiOpen = isUiOpen();
-		const playerPos = this.getPlayerPosition();
-
-		frameProfiler.begin("pick");
-		const pickHit = uiOpen ? null : this.pickTargetGated(playerPos);
-		frameProfiler.end("pick");
-
-		this.playerHud.crossHair.setTargetHit(pickHit);
-
-		frameProfiler.begin("boats");
-		CustomBoat.tickAllActiveBoats(this.scene, deltaMs, playerPos);
-		frameProfiler.end("boats");
-
-		frameProfiler.begin("physics");
-		vehicle.update(deltaMs);
-
-		this.updateSprintParticles(uiOpen, playerPos);
-		this.updateFootsteps(uiOpen, playerPos, dtSec);
-
 		stats.update(
-			dtSec,
+			frame.dtSec,
 			vehicle.isSprinting,
-			isUnderwater
+			frame.underwater
 				? 0
 				: vehicle.isClimbing
 					? stats.climbingStaminaRegenMultiplier
 					: 1,
 		);
 
-		vehicle.updateCameraAndVisuals(deltaMs);
-		frameProfiler.end("physics");
+		// Phase 4 — presentation from the snapshot. Particles and footsteps
+		// share the precomputed squared speed (sqrt only when footsteps need
+		// it), and both see the post-physics position together with the
+		// post-physics velocity instead of mixing old position with new
+		// velocity.
+		frameProfiler.begin("boats");
+		_boatsPlayerScratch.x = frame.playerX;
+		_boatsPlayerScratch.y = frame.playerY;
+		_boatsPlayerScratch.z = frame.playerZ;
+		CustomBoat.tickAllActiveBoats(this.scene, deltaMs, _boatsPlayerScratch);
+		frameProfiler.end("boats");
+
+		this.updateSprintParticles(frame.uiOpen, frame);
+		this.updateFootsteps(frame.uiOpen, frame);
+
+		// Pick runs on the finalized camera: the gate and the raycaster
+		// agree on one view ray. (The raycaster still derives its ray from
+		// the Lite camera directly — threading explicit ray inputs through
+		// pickTarget would touch all of its call sites; this ordering closes
+		// the gate-vs-raycast skew without that ripple.)
+		frameProfiler.begin("pick");
+		const pickHit = frame.uiOpen ? null : this.pickTargetGated(frame);
+		frameProfiler.end("pick");
+
+		this.playerHud.crossHair.setTargetHit(pickHit);
 
 		frameProfiler.begin("controls");
-		this.updateControls(uiOpen, pickHit);
-		updateHeldItemView(this.playerHud.player, dtSec);
+		this.updateControls(frame.uiOpen, pickHit);
+		updateHeldItemView(this.playerHud.player, frame.dtSec);
 		frameProfiler.end("controls");
 
-		if (this.updateCaveState(playerPos.y)) {
+		if (this.updateCaveState(frame.playerY)) {
 			this.#loadLastCx = -99999;
 		}
 
-		const cx = worldToChunkCoord(playerPos.x);
-		const cy = worldToChunkCoord(playerPos.y);
-		const cz = worldToChunkCoord(playerPos.z);
-
 		// Chunk streaming / distant terrain run in #streamTick (installed when
-		// the spawn is prepared) — see #installStreaming.
+		// the spawn is prepared, with its own position read — a separate hook
+		// phase by design) — see #installStreaming.
 
-		this.#updateActiveMeshSelection(cx, cy, cz);
+		this.#updateActiveMeshSelection(frame);
 
 		frameProfiler.begin("occlusion");
 		this.#occlusionCuller.update(this.#lastOcclusionStats);
@@ -456,7 +588,7 @@ export class PlayerLoopController {
 		this.#mainThreadMs = this.#mainThreadMs * 0.9 + frameMs * 0.1;
 
 		frameProfiler.begin("hud");
-		this.updateDebugHud(deltaMs, cx, cy, cz, isSpike);
+		this.updateDebugHud(deltaMs, frame, isSpike);
 		frameProfiler.end("hud");
 
 		this.#freezeActiveMeshes();
@@ -486,6 +618,10 @@ export class PlayerLoopController {
 	 */
 	#commitFrame(deltaMs: number, frameStart: number): void {
 		queueMicrotask(() => {
+			if (this.#disposed) {
+				return;
+			}
+
 			if (this.#pendingGpuLagMs > 0) {
 				frameProfiler.noteSectionValue("gpuLag", this.#pendingGpuLagMs);
 				this.#pendingGpuLagMs = 0;
@@ -496,6 +632,7 @@ export class PlayerLoopController {
 	}
 
 	public dispose(): void {
+		this.#disposed = true;
 		window.removeEventListener("keydown", this.#profilerKeyDown);
 		resetGpuPressure();
 		if (this.#offSpawnPrepared) {
@@ -508,20 +645,104 @@ export class PlayerLoopController {
 		}
 	}
 
-	pickTargetGated(playerPos: {
-		x: number;
-		y: number;
-		z: number;
-	}): BlockRaycastHit | null {
-		const yaw = this.playerCamera.cameraYaw;
-		const pitch = this.playerCamera.cameraPitch;
+	/**
+	 * Capture the authoritative per-frame snapshot into the shared
+	 * `_playerFrameState` object (no allocation). Must run after
+	 * `vehicle.update` + `vehicle.updateCameraAndVisuals`.
+	 *
+	 * `getPlayerPosition()` and `vehicle.velocity` return live mutable
+	 * references — their components are copied to scalars here so later
+	 * readers cannot observe a position from before physics alongside a
+	 * velocity from after it (or vice versa).
+	 */
+	#captureFrameState(deltaMs: number): PlayerFrameState {
+		const state = _playerFrameState;
+		const playerPos = this.getPlayerPosition();
+		const velocity = this.playerVehicle.velocity;
 
+		this.playerCamera.writeFrameState(_captureCameraScratch);
+
+		const playerX = playerPos.x;
+		const playerY = playerPos.y;
+		const playerZ = playerPos.z;
+		const cameraYaw = _captureCameraScratch.yaw;
+		const cameraPitch = _captureCameraScratch.pitch;
+
+		state.deltaMs = deltaMs;
+		state.dtSec = deltaMs * 0.001;
+
+		state.playerX = playerX;
+		state.playerY = playerY;
+		state.playerZ = playerZ;
+
+		state.cameraX = _captureCameraScratch.x;
+		state.cameraY = _captureCameraScratch.y;
+		state.cameraZ = _captureCameraScratch.z;
+		state.cameraYaw = cameraYaw;
+		state.cameraPitch = cameraPitch;
+		state.forwardX = _captureCameraScratch.forwardX;
+		state.forwardY = _captureCameraScratch.forwardY;
+		state.forwardZ = _captureCameraScratch.forwardZ;
+
+		state.chunkX = worldToChunkCoord(playerX);
+		state.chunkY = worldToChunkCoord(playerY);
+		state.chunkZ = worldToChunkCoord(playerZ);
+
+		state.velocityX = velocity.x;
+		state.velocityY = velocity.y;
+		state.velocityZ = velocity.z;
+		state.horizontalSpeedSq = velocity.x * velocity.x + velocity.z * velocity.z;
+
+		state.uiOpen = isUiOpen();
+		state.underwater = isEyeUnderwater(
+			state.cameraX,
+			state.cameraY,
+			state.cameraZ,
+		);
+
+		// Version counters use the same 0.001 epsilon the legacy pick gating
+		// compared floats with, so still-detection behavior is unchanged.
+		const epsilon = PlayerLoopController.PICK_MOVE_EPSILON;
+		if (
+			Math.abs(playerX - this.#lastFramePlayerX) >= epsilon ||
+			Math.abs(playerY - this.#lastFramePlayerY) >= epsilon ||
+			Math.abs(playerZ - this.#lastFramePlayerZ) >= epsilon
+		) {
+			this.#movementVersion++;
+		}
+		if (
+			Math.abs(cameraYaw - this.#lastFrameYaw) >= epsilon ||
+			Math.abs(cameraPitch - this.#lastFramePitch) >= epsilon
+		) {
+			this.#cameraVersion++;
+		}
+		if (
+			state.chunkX !== this.#lastFrameChunkX ||
+			state.chunkY !== this.#lastFrameChunkY ||
+			state.chunkZ !== this.#lastFrameChunkZ
+		) {
+			this.#chunkVersion++;
+		}
+		this.#lastFramePlayerX = playerX;
+		this.#lastFramePlayerY = playerY;
+		this.#lastFramePlayerZ = playerZ;
+		this.#lastFrameYaw = cameraYaw;
+		this.#lastFramePitch = cameraPitch;
+		this.#lastFrameChunkX = state.chunkX;
+		this.#lastFrameChunkY = state.chunkY;
+		this.#lastFrameChunkZ = state.chunkZ;
+
+		state.movementVersion = this.#movementVersion;
+		state.cameraVersion = this.#cameraVersion;
+		state.chunkVersion = this.#chunkVersion;
+
+		return state;
+	}
+
+	pickTargetGated(frame: PlayerFrameState): BlockRaycastHit | null {
 		const still =
-			Math.abs(playerPos.x - this.#pickLastX) < 0.001 &&
-			Math.abs(playerPos.y - this.#pickLastY) < 0.001 &&
-			Math.abs(playerPos.z - this.#pickLastZ) < 0.001 &&
-			Math.abs(yaw - this.#pickLastYaw) < 0.001 &&
-			Math.abs(pitch - this.#pickLastPitch) < 0.001;
+			frame.movementVersion === this.#lastPickMovementVersion &&
+			frame.cameraVersion === this.#lastPickCameraVersion;
 
 		if (
 			still &&
@@ -531,11 +752,8 @@ export class PlayerLoopController {
 			return this.#pickCachedHit;
 		}
 
-		this.#pickLastX = playerPos.x;
-		this.#pickLastY = playerPos.y;
-		this.#pickLastZ = playerPos.z;
-		this.#pickLastYaw = yaw;
-		this.#pickLastPitch = pitch;
+		this.#lastPickMovementVersion = frame.movementVersion;
+		this.#lastPickCameraVersion = frame.cameraVersion;
 		this.#pickStillFrames = 0;
 		this.#pickCachedHit = pickTarget(this.playerHud.player);
 
@@ -572,28 +790,25 @@ export class PlayerLoopController {
 		).update(hit);
 	}
 
-	updateSprintParticles(
-		uiOpen: boolean,
-		playerPos: { x: number; y: number; z: number },
-	): void {
+	updateSprintParticles(uiOpen: boolean, frame: PlayerFrameState): void {
 		const vehicle = this.playerVehicle;
 
 		if (uiOpen || !vehicle.isSprinting || vehicle.isFlying) {
 			return;
 		}
 
-		const vel = vehicle.velocity;
-		if (vel.x * vel.x + vel.z * vel.z < 4) {
+		// Sprint dust needs ~2 m/s; compare squared to skip the sqrt.
+		if (frame.horizontalSpeedSq < 4) {
 			return;
 		}
 
 		playSprint(
 			this.#sprintEmitter,
-			playerPos.x,
-			playerPos.y - 0.85,
-			playerPos.z,
-			vel.x,
-			vel.z,
+			frame.playerX,
+			frame.playerY - 0.85,
+			frame.playerZ,
+			frame.velocityX,
+			frame.velocityZ,
 		);
 	}
 
@@ -602,11 +817,7 @@ export class PlayerLoopController {
 	 * footstep (or a splash when wading) every ~2m walked / ~2.6m sprinted.
 	 * Riding, flying, climbing, and UI-open states stay silent.
 	 */
-	updateFootsteps(
-		uiOpen: boolean,
-		playerPos: { x: number; y: number; z: number },
-		dtSec: number,
-	): void {
+	updateFootsteps(uiOpen: boolean, frame: PlayerFrameState): void {
 		const vehicle = this.playerVehicle;
 
 		if (
@@ -620,15 +831,18 @@ export class PlayerLoopController {
 			return;
 		}
 
-		const vel = vehicle.velocity;
-		const horizontalSpeed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+		const speedSq = frame.horizontalSpeedSq;
 
-		if (horizontalSpeed < 1.2 || dtSec <= 0) {
+		// 1.2 m/s threshold, squared; the sqrt runs only when a step can
+		// actually accumulate.
+		if (speedSq < 1.2 * 1.2 || frame.dtSec <= 0) {
 			this.#strideDistance = 0;
 			return;
 		}
 
-		this.#strideDistance += horizontalSpeed * dtSec;
+		const horizontalSpeed = Math.sqrt(speedSq);
+
+		this.#strideDistance += horizontalSpeed * frame.dtSec;
 
 		const stride = vehicle.isSprinting ? 2.6 : 2.0;
 		if (this.#strideDistance < stride) {
@@ -643,9 +857,9 @@ export class PlayerLoopController {
 
 		// Feet sit ~0.85 below the body origin (cf. sprint dust); scan down
 		// for the first solid block so slabs and half-steps resolve.
-		const blockX = Math.floor(playerPos.x);
-		const blockZ = Math.floor(playerPos.z);
-		const feetBlockY = Math.floor(playerPos.y - 0.85);
+		const blockX = Math.floor(frame.playerX);
+		const blockZ = Math.floor(frame.playerZ);
+		const feetBlockY = Math.floor(frame.playerY - 0.85);
 
 		for (let d = 0; d <= 2; d++) {
 			const blockId = getBlockByWorldCoords(blockX, feetBlockY - d, blockZ);
@@ -727,12 +941,21 @@ export class PlayerLoopController {
 		this.#loadLastCx = worldToChunkCoord(pos.x);
 		this.#loadLastCy = worldToChunkCoord(pos.y);
 		this.#loadLastCz = worldToChunkCoord(pos.z);
+		// NOTE: Lite's onBeforeRender returns void, so this hook cannot be
+		// unregistered on dispose. The callback therefore checks #disposed
+		// and no-ops instead of reaching into torn-down player state.
 		onBeforeRender(this.scene, () => {
+			if (this.#disposed) {
+				return;
+			}
 			this.streamTick();
 		});
 	}
 
 	streamTick(): void {
+		if (this.#disposed) {
+			return;
+		}
 		frameProfiler.begin("streaming");
 		const pos = this.getPlayerPosition();
 		updateDistantTerrain(pos.x, pos.z);
@@ -752,24 +975,21 @@ export class PlayerLoopController {
 	#cameraStillFrames = 0;
 	static readonly FREEZE_DELAY_FRAMES = 4;
 
-	#updateActiveMeshSelection(cx: number, cy: number, cz: number): void {
-		const yaw = this.playerCamera.cameraYaw;
-		const pitch = this.playerCamera.cameraPitch;
-
-		const chunkChanged =
-			cx !== this.#amLastCx || cy !== this.#amLastCy || cz !== this.#amLastCz;
+	#updateActiveMeshSelection(frame: PlayerFrameState): void {
+		const chunkChanged = frame.chunkVersion !== this.#lastMeshChunkVersion;
 		const cameraMoved =
-			yaw !== this.#prevCameraYaw || pitch !== this.#prevCameraPitch;
+			Math.abs(frame.cameraYaw - this.#prevCameraYaw) >
+				PlayerLoopController.CAMERA_STILL_EPSILON ||
+			Math.abs(frame.cameraPitch - this.#prevCameraPitch) >
+				PlayerLoopController.CAMERA_STILL_EPSILON;
 
 		if (chunkChanged) {
-			this.#amLastCx = cx;
-			this.#amLastCy = cy;
-			this.#amLastCz = cz;
+			this.#lastMeshChunkVersion = frame.chunkVersion;
 		}
 
 		if (cameraMoved) {
-			this.#prevCameraYaw = yaw;
-			this.#prevCameraPitch = pitch;
+			this.#prevCameraYaw = frame.cameraYaw;
+			this.#prevCameraPitch = frame.cameraPitch;
 		}
 
 		if (chunkChanged || cameraMoved) {
@@ -800,9 +1020,7 @@ export class PlayerLoopController {
 
 	updateDebugHud(
 		deltaMs: number,
-		chunkX: number,
-		chunkY: number,
-		chunkZ: number,
+		frame: PlayerFrameState,
 		spike = false,
 	): void {
 		this.playerHud.updateStats();
@@ -822,13 +1040,12 @@ export class PlayerLoopController {
 
 		this.#lastDebugHudUpdateMs = now;
 
-		const playerPos = this.getPlayerPosition();
-		const cam = this.playerCamera;
-		const cameraPos = cam.position;
-		const cameraYaw = cam.cameraYaw;
-		const cameraPitch = cam.cameraPitch;
-		const floorX = Math.floor(playerPos.x);
-		const floorZ = Math.floor(playerPos.z);
+		// Reads the post-physics snapshot — the same state the simulation
+		// acted on — instead of re-querying live camera/position objects.
+		const cameraYaw = frame.cameraYaw;
+		const cameraPitch = frame.cameraPitch;
+		const floorX = Math.floor(frame.playerX);
+		const floorZ = Math.floor(frame.playerZ);
 
 		PlayerHud.updateDebugInfo(
 			"FPS",
@@ -940,17 +1157,17 @@ export class PlayerLoopController {
 
 		PlayerHud.updateDebugInfo(
 			"Player Pos",
-			`${playerPos.x.toFixed(2)}, ${playerPos.y.toFixed(2)}, ${playerPos.z.toFixed(2)}`,
+			`${frame.playerX.toFixed(2)}, ${frame.playerY.toFixed(2)}, ${frame.playerZ.toFixed(2)}`,
 			"position",
 		);
 		PlayerHud.updateDebugInfo(
 			"Chunk Pos",
-			`${chunkX}, ${chunkY}, ${chunkZ}`,
+			`${frame.chunkX}, ${frame.chunkY}, ${frame.chunkZ}`,
 			"position",
 		);
 		PlayerHud.updateDebugInfo(
 			"Camera Pos",
-			`${cameraPos.x.toFixed(2)}, ${cameraPos.y.toFixed(2)}, ${cameraPos.z.toFixed(2)}`,
+			`${frame.cameraX.toFixed(2)}, ${frame.cameraY.toFixed(2)}, ${frame.cameraZ.toFixed(2)}`,
 			"position",
 		);
 		PlayerHud.updateDebugInfo(

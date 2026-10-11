@@ -1,37 +1,17 @@
-import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
+import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
-import { playMobDamage } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
-import type { Player } from "@/code/Player/Player";
 import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
-import {
-	getBlockByWorldCoords,
-	registerChunkBoundEntity,
-	resolveBlockAtWorldCoords,
-	unregisterChunkBoundEntity,
-} from "@/code/World/Chunk/ChunkLoadingSystem";
-import {
-	_voxelResolveScratch,
-	Axis,
-	createVoxelColliderBlockSampler,
-	UNLOADED_SOLID_RESOLVE,
-	VoxelAabbCollider,
-} from "@/code/World/Collision/VoxelAabbCollider";
+import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
-import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
-import {
-	computeFenceNeighborMask,
-	getFenceDynamicShape,
-	isFenceBlockId,
-} from "@/code/World/Shape/FenceConnect";
-import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
-import type { SavedChunkEntityData } from "@/code/World/WorldStorage";
+import { BlockType } from "@/code/World/Texture/BlockType";
 import { DEFAULT_FLEE_RADIUS_SQ, isNightTimeFraction } from "../MobConfig";
+import { BaseMob, MobTickSet } from "./BaseMob";
 
 const STEP_SIZE = 0.2;
-const EPSILON = 0.001;
 
 /** Steering responsiveness: higher snaps harder onto the waypoint line. */
 const STEER_DAMPING = 2.5;
@@ -73,25 +53,10 @@ function isNightNow(): boolean {
  * Birds are never persistent: serializeForChunkReload always returns null,
  * so unloaded chunks simply dispose them instead of reloading them later.
  */
-export abstract class FlyingMob {
+export abstract class FlyingMob extends BaseMob {
 	abstract readonly mobType: string;
 
-	/** Spawn eggs set this to false before registry insertion (cap-exempt). */
-	countsTowardMobCap = true;
-
-	#hp: number;
-	#maxHp: number;
-	#position = vec3Zero();
-	#hitHalfExtents: Vec3;
-	#velocity = vec3Zero();
-	#collider: VoxelAabbCollider;
-	#scene: SceneContext;
-	#facingAngle = 0;
-	#playerPosition: Vec3 | null = null;
-	#isDisposed = false;
-	#chunkBindingHandle?: symbol;
 	#fleeTimer = 0;
-	#wanderSpeed: number;
 
 	#waypoint = vec3Zero();
 	#hasWaypoint = false;
@@ -101,13 +66,10 @@ export abstract class FlyingMob {
 	// of routing. Cleared by panic so damage always flushes a perched bird.
 	#holdTimer = 0;
 
-	// Flap phase (radians) advanced by distance flown and decayed when
-	// still. Written to the instance color alpha channel by
-	// syncToInstances(); the wing shader triple-times it.
-	#flapPhase = 0;
-	#prevX = Number.NaN;
+	// Note: flap phase lives in the shared BaseMob.walkPhase field (advanced
+	// by 3D distance flown, decayed when still); only the Y tracker below
+	// is flyer-specific.
 	#prevY = Number.NaN;
-	#prevZ = Number.NaN;
 
 	abstract getWanderSpeed(): number;
 	abstract onDeath(): void;
@@ -155,51 +117,44 @@ export abstract class FlyingMob {
 		return this.#holdTimer > 0;
 	}
 
-	static #observerRegistered = false;
-	static readonly #allMobs = new Set<FlyingMob>();
+	static readonly ticks = new MobTickSet<FlyingMob>(FlyingMob.tickAll);
 
-	static #ensureObserver(): void {
-		if (FlyingMob.#observerRegistered) return;
+	private static tickAll(deltaMs: number): void {
+		const dt = deltaMs * 0.001;
+		if (dt <= 0 || isUiOpen()) return;
 
-		FlyingMob.#observerRegistered = true;
+		// PERF: night flag hoisted out of the per-bird tick — was
+		// Map1.environment + division per bird per frame.
+		const night = isNightNow();
 
-		onBeforeRender(Map1.mainScene, (deltaMs: number) => {
-			const dt = deltaMs * 0.001;
-			if (dt <= 0 || isUiOpen()) return;
+		FlyingMob.ticks.drain();
 
-			// PERF: night flag hoisted out of the per-bird tick — was
-			// Map1.environment + division per bird per frame.
-			const night = isNightNow();
+		frameProfiler.begin("birds");
+		for (const mob of FlyingMob.ticks) {
+			const pos = mob.bodyPosition;
+			const chunk = getChunk(
+				Math.floor(pos.x / Chunk.SIZE),
+				Math.floor(pos.y / Chunk.SIZE),
+				Math.floor(pos.z / Chunk.SIZE),
+			);
 
-			frameProfiler.begin("birds");
-			for (const mob of FlyingMob.#allMobs) {
-				const pos = mob.#position;
-				const chunk = getChunk(
-					Math.floor(pos.x / Chunk.SIZE),
-					Math.floor(pos.y / Chunk.SIZE),
-					Math.floor(pos.z / Chunk.SIZE),
-				);
-
-				// Same streaming gate as walkers/swimmers: never tick on
-				// missing voxel data or far LOD.
-				if (
-					!chunk?.isLoaded ||
-					!chunk?.hasVoxelData ||
-					(chunk?.lodLevel ?? 2) > 1
-				) {
-					continue;
-				}
-
-				mob.tick(dt, night);
+			// Same streaming gate as walkers/swimmers: never tick on
+			// missing voxel data or far LOD.
+			if (
+				!chunk?.isLoaded ||
+				!chunk?.hasVoxelData ||
+				(chunk?.lodLevel ?? 2) > 1
+			) {
+				continue;
 			}
-			frameProfiler.end("birds");
-		});
+
+			mob.tick(dt, night);
+		}
+		frameProfiler.end("birds");
 	}
 
 	static disposeAll(): void {
-		for (const mob of FlyingMob.#allMobs) {
-			mob.dispose();
-		}
+		FlyingMob.ticks.disposeAll();
 	}
 
 	protected constructor(
@@ -210,142 +165,33 @@ export abstract class FlyingMob {
 		// steer in full 3D, so they never need a feet offset.
 		_feetHeight?: number,
 	) {
-		this.#hp = hp;
-		this.#maxHp = hp;
-		this.#scene = scene;
-		this.#hitHalfExtents = { x: halfSize.x, y: halfSize.y, z: halfSize.z };
-		this.#wanderSpeed = this.getWanderSpeed();
-
-		this.#collider = new VoxelAabbCollider(
-			halfSize,
-			createVoxelColliderBlockSampler(
-				(wx, wy, wz) => {
-					const r = resolveBlockAtWorldCoords(wx, wy, wz);
-					if (r.unloaded) return UNLOADED_SOLID_RESOLVE;
-					if (!isCollidableBlock(r.blockId)) return null;
-
-					_voxelResolveScratch.blockId = r.blockId;
-					_voxelResolveScratch.blockState = r.blockState;
-					return _voxelResolveScratch;
-				},
-				{
-					getFenceDynamicShape,
-					getShapeForBlockId,
-					isFenceBlockId,
-					computeFenceNeighborMask,
-				},
-			),
-			EPSILON,
-		);
+		super(hp, scene, halfSize, _feetHeight);
 	}
 
-	/** Spawn position for subclasses that own their instance slots. */
-	protected setPosition(x: number, y: number, z: number): void {
-		setVec3(this.#position, x, y, z);
+	protected override stageForTick(): void {
+		FlyingMob.ticks.stage(this);
 	}
 
-	get facingYaw(): number {
-		return this.#facingAngle;
-	}
-
-	/** Current flap phase (radians) for wing animation. */
-	protected get walkPhase(): number {
-		return this.#flapPhase;
-	}
-
-	get hitHalfExtents(): Vec3 {
-		return this.#hitHalfExtents;
-	}
-
-	/** Register chunk binding + tick loop after instance slots are claimed. */
-	protected finalizeRegistration(): void {
-		this.#chunkBindingHandle = registerChunkBoundEntity({
-			getWorldPosition: () => this.#position,
-			unload: () => this.dispose(),
-			isAlive: () => !this.#isDisposed,
-			serializeForChunkReload: () => this.#serializeForChunkReload(),
-		});
-
-		FlyingMob.#allMobs.add(this);
-		FlyingMob.#ensureObserver();
-	}
-
-	protected get scene(): SceneContext {
-		return this.#scene;
-	}
-
-	get position(): Vec3 {
-		return this.#position;
-	}
-
-	get hp(): number {
-		return this.#hp;
-	}
-
-	set hp(value: number) {
-		this.#hp = Math.max(0, Math.min(value, this.#maxHp));
-	}
-
-	get maxHp(): number {
-		return this.#maxHp;
-	}
-
-	setPlayerPosition(pos: Vec3): void {
-		this.#playerPosition = pos;
-	}
-
-	takeDamage(amount: number, impactPosition?: Vec3): void {
-		this.#hp -= amount;
-
-		const bloodPosition = impactPosition ?? this.#position;
-		playMobDamage(bloodPosition.x, bloodPosition.y, bloodPosition.z, amount);
-
-		if (this.#hp <= 0) {
-			this.onDeath();
-			this.dispose();
-		} else {
-			this.onDamaged();
-		}
+	protected override unstageFromTick(): void {
+		FlyingMob.ticks.remove(this);
 	}
 
 	/**
-	 * Birds never persist: chunk unload disposes them via the binding above
-	 * and reload finds nothing, so fly-overs that leave reach are gone for
-	 * good instead of popping back in.
+	 * Flyers never persist: chunk unload disposes them via the binding and
+	 * reload finds nothing, so fly-overs that leave reach are gone for good
+	 * instead of popping back in.
 	 */
-	serializeForChunkReload(): SavedChunkEntityData | null {
-		return this.#serializeForChunkReload();
+	protected override persistsToChunk(): boolean {
+		return false;
 	}
 
-	use(_player: Player): void {
-		// Placeholder
-	}
-
-	dispose(): void {
-		if (this.#isDisposed) return;
-
-		this.#isDisposed = true;
-
-		unregisterChunkBoundEntity(this.#chunkBindingHandle);
-		this.#chunkBindingHandle = undefined;
-
-		FlyingMob.#allMobs.delete(this);
-		Map1.mobRegistry?.removeMob(this);
-
-		this.#collider.dispose();
-	}
-
-	get isDisposed(): boolean {
-		return this.#isDisposed;
-	}
-
-	#serializeForChunkReload(): SavedChunkEntityData | null {
-		return null;
+	override configureChunkLoader(_scene: SceneContext): void {
+		// No-op: flyers have no chunk entity type to register.
 	}
 
 	tick(dt: number, night: boolean): void {
-		if (this.#isDisposed) {
-			FlyingMob.#allMobs.delete(this);
+		if (this.isDisposed) {
+			FlyingMob.ticks.remove(this);
 			return;
 		}
 
@@ -356,9 +202,9 @@ export abstract class FlyingMob {
 			return;
 		}
 
-		const pos = this.#position;
-		const velocity = this.#velocity;
-		let speed = this.#wanderSpeed;
+		const pos = this.bodyPosition;
+		const velocity = this.bodyVelocity;
+		let speed = this.wanderSpeed;
 
 		// Panic: fast burst directly away from the player, ignoring routes.
 		let panicking = false;
@@ -366,7 +212,7 @@ export abstract class FlyingMob {
 			this.#fleeTimer = Math.max(0, this.#fleeTimer - dt);
 			panicking = this.#fleeTimer > 0;
 		} else {
-			const playerPosition = this.#playerPosition;
+			const playerPosition = this.playerPosition;
 			const panicRadiusSq = this.getPanicRadiusSq();
 			if (playerPosition !== null && panicRadiusSq > 0) {
 				const dx = pos.x - playerPosition.x;
@@ -379,14 +225,14 @@ export abstract class FlyingMob {
 			}
 		}
 
-		if (panicking && this.#playerPosition !== null) {
+		if (panicking && this.playerPosition !== null) {
 			this.#holdTimer = 0;
-			const away = this.#playerPosition;
+			const away = this.playerPosition;
 			const dx = pos.x - away.x;
 			const dy = pos.y - away.y + 1.5;
 			const dz = pos.z - away.z;
 			const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-			const panicSpeed = this.#wanderSpeed * PANIC_SPEED_MULT;
+			const panicSpeed = this.wanderSpeed * PANIC_SPEED_MULT;
 			velocity.x = (dx / dist) * panicSpeed;
 			velocity.y = (dy / dist) * panicSpeed;
 			velocity.z = (dz / dist) * panicSpeed;
@@ -460,7 +306,7 @@ export abstract class FlyingMob {
 		// Face travel direction (banking is yaw-only, like walkers).
 		const hSpeedSq = velocity.x * velocity.x + velocity.z * velocity.z;
 		if (hSpeedSq > 0.09) {
-			this.#facingAngle = Math.atan2(velocity.x, velocity.z);
+			this.facingAngle = Math.atan2(velocity.x, velocity.z);
 		}
 
 		// Move per axis through the voxel collider so terrain slides
@@ -473,7 +319,7 @@ export abstract class FlyingMob {
 			const deltaX = velocity.x * dt;
 			if (deltaX !== 0) {
 				const before = pos.x;
-				this.#collider.moveAxis(pos, velocity, Axis.X, deltaX, STEP_SIZE);
+				this.bodyCollider.moveAxis(pos, velocity, Axis.X, deltaX, STEP_SIZE);
 				if (
 					Math.abs(deltaX) > 0.001 &&
 					Math.abs(pos.x - before) < Math.abs(deltaX) * BLOCKED_MOVE_FRACTION
@@ -485,14 +331,14 @@ export abstract class FlyingMob {
 		{
 			const deltaY = velocity.y * dt;
 			if (deltaY !== 0) {
-				this.#collider.moveAxis(pos, velocity, Axis.Y, deltaY, STEP_SIZE);
+				this.bodyCollider.moveAxis(pos, velocity, Axis.Y, deltaY, STEP_SIZE);
 			}
 		}
 		{
 			const deltaZ = velocity.z * dt;
 			if (deltaZ !== 0) {
 				const before = pos.z;
-				this.#collider.moveAxis(pos, velocity, Axis.Z, deltaZ, STEP_SIZE);
+				this.bodyCollider.moveAxis(pos, velocity, Axis.Z, deltaZ, STEP_SIZE);
 				if (
 					Math.abs(deltaZ) > 0.001 &&
 					Math.abs(pos.z - before) < Math.abs(deltaZ) * BLOCKED_MOVE_FRACTION
@@ -516,33 +362,32 @@ export abstract class FlyingMob {
 		}
 
 		// Flap phase advances with 3D distance flown, decays when still.
-		if (Number.isNaN(this.#prevX)) {
-			this.#prevX = pos.x;
+		if (Number.isNaN(this.prevX)) {
+			this.prevX = pos.x;
 			this.#prevY = pos.y;
-			this.#prevZ = pos.z;
+			this.prevZ = pos.z;
 		} else {
-			const traveledX = pos.x - this.#prevX;
+			const traveledX = pos.x - this.prevX;
 			const traveledY = pos.y - this.#prevY;
-			const traveledZ = pos.z - this.#prevZ;
+			const traveledZ = pos.z - this.prevZ;
 			const traveledSq =
 				traveledX * traveledX + traveledY * traveledY + traveledZ * traveledZ;
 
 			if (traveledSq > 0.0001) {
-				this.#flapPhase += Math.sqrt(traveledSq) * FLAP_STRIDE_FACTOR;
-			} else if (this.#flapPhase !== 0) {
-				this.#flapPhase *= Math.max(0, 1 - FLAP_PHASE_DECAY * dt);
+				this.walkPhase += Math.sqrt(traveledSq) * FLAP_STRIDE_FACTOR;
+			} else if (this.walkPhase !== 0) {
+				this.walkPhase *= Math.max(0, 1 - FLAP_PHASE_DECAY * dt);
 
-				if (this.#flapPhase < 0.01) {
-					this.#flapPhase = 0;
+				if (this.walkPhase < 0.01) {
+					this.walkPhase = 0;
 				}
 			}
 
-			this.#prevX = pos.x;
+			this.prevX = pos.x;
 			this.#prevY = pos.y;
-			this.#prevZ = pos.z;
+			this.prevZ = pos.z;
 		}
 
-		Map1.mobRegistry?.updateMobPosition(this);
-		this.syncToInstances();
+		this.commitTick();
 	}
 }

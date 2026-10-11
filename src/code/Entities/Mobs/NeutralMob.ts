@@ -1,47 +1,24 @@
-import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
+import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
-import { setVec3, vec3Zero } from "@/code/Lib/Math";
-import {
-	playLandingDust,
-	playMobDamage,
-} from "@/code/Maps/BlockBreakParticles";
-import { Map1 } from "@/code/Maps/Map1";
-import type { Player } from "@/code/Player/Player";
+import { playLandingDust } from "@/code/Maps/BlockBreakParticles";
 import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
 import {
 	getBlockByWorldCoords,
-	registerChunkBoundEntity,
 	resolveBlockAtWorldCoords,
-	unregisterChunkBoundEntity,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
-import {
-	_voxelResolveScratch,
-	Axis,
-	createVoxelColliderBlockSampler,
-	UNLOADED_SOLID_RESOLVE,
-	VoxelAabbCollider,
-	voxelStepUp,
-} from "@/code/World/Collision/VoxelAabbCollider";
+import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import {
 	findLandSurface,
 	findPathInto,
 	PathNodeKind,
 	type PathWaypoint,
 } from "@/code/World/Pathfinding/Pathfinding";
-import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
-import {
-	computeFenceNeighborMask,
-	getFenceDynamicShape,
-	isFenceBlockId,
-} from "@/code/World/Shape/FenceConnect";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
-import type { SavedChunkEntityData } from "@/code/World/WorldStorage";
 import { FALL_DAMAGE_PER_BLOCK, FALL_DAMAGE_THRESHOLD } from "../MobConfig";
+import { BaseMob, MobTickSet } from "./BaseMob";
 
 const GRAVITY = -18;
-const STEP_SIZE = 0.2;
-const EPSILON = 0.001;
 const PANIC_SPEED = 5.0;
 const PANIC_RADIUS = 5;
 const PANIC_RADIUS_SQ = PANIC_RADIUS * PANIC_RADIUS;
@@ -82,35 +59,14 @@ const enum NeutralMobState {
 	Wander,
 }
 
-export abstract class NeutralMob {
+export abstract class NeutralMob extends BaseMob {
 	abstract readonly mobType: string;
 	abstract readonly CHUNK_ENTITY_TYPE: string;
 
-	/** Spawn eggs set this to false before registry insertion (cap-exempt). */
-	countsTowardMobCap = true;
-
-	#hp: number;
-	#maxHp: number;
-	#position = vec3Zero();
-	#hitHalfExtents: Vec3;
-	#velocity = vec3Zero();
-	#collider: VoxelAabbCollider;
 	#state: NeutralMobState = NeutralMobState.Idle;
 	#stateTimer = 0;
-	#facingAngle = 0;
-	#scene: SceneContext;
-	#playerPosition: Vec3 | null = null;
-	#isDisposed = false;
-	#chunkBindingHandle?: symbol;
 	#fleeTimer = 0;
 	#breathTimer = BREATH_MAX;
-	#wanderSpeed: number;
-	#halfHeight: number;
-	#feetHeight: number;
-
-	#tmpProbe = vec3Zero();
-	#tmpGroundExtents = vec3Zero();
-	#tmpFallNudge = vec3Zero();
 
 	// PERF: cliff-guard result cache (see #hasLethalDropAhead). A moving mob
 	// re-probes the same column for ~30 frames while a full scan costs up to
@@ -131,16 +87,6 @@ export abstract class NeutralMob {
 	#headSubmergedCached = false;
 	#waterSurfaceY = 0;
 
-	// Walk-swing phase (radians) advanced by horizontal distance traveled and
-	// decayed while idle so legs ease back to rest. Written to the instance
-	// color alpha channel by syncToInstances().
-	#walkPhase = 0;
-	#prevX = Number.NaN;
-	#prevZ = Number.NaN;
-
-	/** Y position where the current fall started; NaN when grounded or in water. */
-	#fallStartY = Number.NaN;
-
 	abstract configureChunkLoader(scene: SceneContext): void;
 	abstract getWanderSpeed(): number;
 	abstract onDeath(): void;
@@ -159,8 +105,6 @@ export abstract class NeutralMob {
 	 * Called when the mob takes damage. Override to trigger a panic response
 	 * (e.g. sheep flee for a few seconds when hit).
 	 */
-	protected onDamaged(): void {}
-
 	/**
 	 * Trigger a panic response: flee from the player for `duration` seconds.
 	 * Safe to call from onDamaged() or any other context.
@@ -169,8 +113,7 @@ export abstract class NeutralMob {
 		this.#fleeTimer = Math.max(this.#fleeTimer, duration);
 	}
 
-	static #observerRegistered = false;
-	static readonly #allMobs = new Set<NeutralMob>();
+	static readonly ticks = new MobTickSet<NeutralMob>(NeutralMob.tickAll);
 
 	// PERF: Pathfinding searches are budgeted globally (1500 expansions per
 	// 40ms in Pathfinding.ts). When several mobs search on the same frame they
@@ -186,51 +129,45 @@ export abstract class NeutralMob {
 		return true;
 	}
 
-	static #ensureObserver(): void {
-		if (NeutralMob.#observerRegistered) return;
+	private static tickAll(deltaMs: number): void {
+		const dt = deltaMs * 0.001;
+		if (dt <= 0 || isUiOpen()) return;
 
-		NeutralMob.#observerRegistered = true;
+		NeutralMob.#pathSlotsRemaining = NeutralMob.PATH_SLOTS_PER_TICK;
 
-		onBeforeRender(Map1.mainScene, (deltaMs: number) => {
-			const dt = deltaMs * 0.001;
-			if (dt <= 0 || isUiOpen()) return;
+		NeutralMob.ticks.drain();
 
-			NeutralMob.#pathSlotsRemaining = NeutralMob.PATH_SLOTS_PER_TICK;
+		frameProfiler.begin("mobs");
+		for (const mob of NeutralMob.ticks) {
+			const pos = mob.bodyPosition;
+			const chunk = getChunk(
+				Math.floor(pos.x / Chunk.SIZE),
+				Math.floor(pos.y / Chunk.SIZE),
+				Math.floor(pos.z / Chunk.SIZE),
+			);
 
-			frameProfiler.begin("mobs");
-			for (const mob of NeutralMob.#allMobs) {
-				const pos = mob.#position;
-				const chunk = getChunk(
-					Math.floor(pos.x / Chunk.SIZE),
-					Math.floor(pos.y / Chunk.SIZE),
-					Math.floor(pos.z / Chunk.SIZE),
-				);
-
-				// Match AquaticMob: skip when the chunk isn't loaded yet or
-				// has no voxel data, not just when it's missing or far-LOD.
-				// The collision sampler returns null for unloaded cells, so
-				// ticking on missing data would make the mob accumulate
-				// downward velocity forever (apparent freeze on the streaming
-				// seam). Far mobs are also stopped by the lodLevel > 1 gate.
-				if (
-					!chunk ||
-					!chunk.isLoaded ||
-					!chunk.hasVoxelData ||
-					chunk.lodLevel > 1
-				) {
-					continue;
-				}
-
-				mob.tick(dt);
+			// Match AquaticMob: skip when the chunk isn't loaded yet or
+			// has no voxel data, not just when it's missing or far-LOD.
+			// The collision sampler returns null for unloaded cells, so
+			// ticking on missing data would make the mob accumulate
+			// downward velocity forever (apparent freeze on the streaming
+			// seam). Far mobs are also stopped by the lodLevel > 1 gate.
+			if (
+				!chunk ||
+				!chunk.isLoaded ||
+				!chunk.hasVoxelData ||
+				chunk.lodLevel > 1
+			) {
+				continue;
 			}
-			frameProfiler.end("mobs");
-		});
+
+			mob.tick(dt);
+		}
+		frameProfiler.end("mobs");
 	}
 
 	static disposeAll(): void {
-		for (const mob of NeutralMob.#allMobs) {
-			mob.dispose();
-		}
+		NeutralMob.ticks.disposeAll();
 	}
 
 	protected constructor(
@@ -239,151 +176,24 @@ export abstract class NeutralMob {
 		halfSize: Vec3,
 		feetHeight?: number,
 	) {
-		this.#hp = hp;
-		this.#maxHp = hp;
-		this.#scene = scene;
-		this.#hitHalfExtents = { x: halfSize.x, y: halfSize.y, z: halfSize.z };
-		this.#wanderSpeed = this.getWanderSpeed();
-		this.#halfHeight = halfSize.y;
-		this.#feetHeight = feetHeight ?? halfSize.y;
+		super(hp, scene, halfSize, feetHeight);
 		this.#requiredHeadroom = Math.max(1, Math.ceil(halfSize.y * 2));
-
-		this.#collider = new VoxelAabbCollider(
-			halfSize,
-			createVoxelColliderBlockSampler(
-				(wx, wy, wz) => {
-					// Streaming-unloaded cells now rest on a cobble
-					// sentinel so mobs don't fall through seams the way
-					// they did when this returned null (the observer
-					// gate previously let ticks run on not-yet-loaded
-					// chunks, leaving the mob accumulating fall
-					// velocity forever). Once the chunk streams in the
-					// collider snaps down to the real surface.
-					const r = resolveBlockAtWorldCoords(wx, wy, wz);
-					if (r.unloaded) return UNLOADED_SOLID_RESOLVE;
-					if (!isCollidableBlock(r.blockId)) return null;
-
-					// Shared scratch — consumed immediately by the sampler.
-					_voxelResolveScratch.blockId = r.blockId;
-					_voxelResolveScratch.blockState = r.blockState;
-					return _voxelResolveScratch;
-				},
-				{
-					getFenceDynamicShape,
-					getShapeForBlockId,
-					isFenceBlockId,
-					computeFenceNeighborMask,
-				},
-			),
-			EPSILON,
-		);
 	}
 
-	/** Spawn position for subclasses that own their instance slots. */
-	protected setPosition(x: number, y: number, z: number): void {
-		setVec3(this.#position, x, y, z);
+	protected override stageForTick(): void {
+		NeutralMob.ticks.stage(this);
 	}
 
-	get facingYaw(): number {
-		return this.#facingAngle;
-	}
-
-	/** Current walk-swing phase (radians) for leg animation. */
-	protected get walkPhase(): number {
-		return this.#walkPhase;
-	}
-
-	get hitHalfExtents(): Vec3 {
-		return this.#hitHalfExtents;
-	}
-
-	/** Register chunk binding + tick loop after instance slots are claimed. */
-	protected finalizeRegistration(): void {
-		this.configureChunkLoader(this.#scene);
-
-		this.#chunkBindingHandle = registerChunkBoundEntity({
-			getWorldPosition: () => this.#position,
-			unload: () => this.dispose(),
-			isAlive: () => !this.#isDisposed,
-			serializeForChunkReload: () => this.#serializeForChunkReload(),
-		});
-
-		NeutralMob.#allMobs.add(this);
-		NeutralMob.#ensureObserver();
-	}
-
-	protected get scene(): SceneContext {
-		return this.#scene;
-	}
-
-	get position(): Vec3 {
-		return this.#position;
-	}
-
-	get hp(): number {
-		return this.#hp;
-	}
-
-	set hp(value: number) {
-		this.#hp = Math.max(0, Math.min(value, this.#maxHp));
-	}
-
-	get maxHp(): number {
-		return this.#maxHp;
-	}
-
-	setPlayerPosition(pos: Vec3): void {
-		this.#playerPosition = pos;
-	}
-
-	takeDamage(amount: number, impactPosition?: Vec3): void {
-		this.#hp -= amount;
-
-		// Blood particles at the hit point when available, otherwise at the mob's
-		// body center for fall/environmental damage.
-		const bloodPosition = impactPosition ?? this.#position;
-		playMobDamage(bloodPosition.x, bloodPosition.y, bloodPosition.z, amount);
-
-		if (this.#hp <= 0) {
-			this.onDeath();
-			this.dispose();
-		} else {
-			this.onDamaged();
-		}
-	}
-
-	serializeForChunkReload(): SavedChunkEntityData | null {
-		return this.#serializeForChunkReload();
-	}
-
-	use(_player: Player): void {
-		// Placeholder
-	}
-
-	dispose(): void {
-		if (this.#isDisposed) return;
-
-		this.#isDisposed = true;
-
-		unregisterChunkBoundEntity(this.#chunkBindingHandle);
-		this.#chunkBindingHandle = undefined;
-
-		NeutralMob.#allMobs.delete(this);
-		Map1.mobRegistry?.removeMob(this);
-
-		this.#collider.dispose();
-	}
-
-	get isDisposed(): boolean {
-		return this.#isDisposed;
+	protected override unstageFromTick(): void {
+		NeutralMob.ticks.remove(this);
 	}
 
 	#updateWaterState(pos: Vec3): boolean {
 		const x = Math.floor(pos.x);
 		const z = Math.floor(pos.z);
-		const feetY = Math.floor(pos.y - this.#halfHeight + 0.05);
+		const feetY = Math.floor(pos.y - this.halfHeight + 0.05);
 		const centerY = Math.floor(pos.y);
-		const headY = Math.floor(pos.y + this.#halfHeight - 0.05);
+		const headY = Math.floor(pos.y + this.halfHeight - 0.05);
 
 		const chunkCX = x >> 5;
 		const chunkCY = feetY >> 5;
@@ -438,24 +248,6 @@ export abstract class NeutralMob {
 	}
 
 	/**
-	 * Returns whether the block directly beneath the visual center of the mob is
-	 * collidable.
-	 *
-	 * Keeping this lookup in one helper prevents the grounded check, post-movement
-	 * failsafe, and absolute fall failsafe from independently rebuilding the same
-	 * coordinates.
-	 */
-	#hasCentralSupport(pos: Vec3, yOffset = 0.05): boolean {
-		return isCollidableBlock(
-			getBlockByWorldCoords(
-				Math.floor(pos.x),
-				Math.floor(pos.y - this.#feetHeight - yOffset),
-				Math.floor(pos.z),
-			),
-		);
-	}
-
-	/**
 	 * Executes one simulation step.
 	 *
 	 * This version avoids hot-path vector allocations, performs the central
@@ -463,19 +255,19 @@ export abstract class NeutralMob {
 	 * consolidates several repeated path-state checks.
 	 */
 	tick(dt: number): void {
-		if (this.#isDisposed) {
-			NeutralMob.#allMobs.delete(this);
+		if (this.isDisposed) {
+			NeutralMob.ticks.remove(this);
 			return;
 		}
 
-		const pos = this.#position;
-		const velocity = this.#velocity;
+		const pos = this.bodyPosition;
+		const velocity = this.bodyVelocity;
 		const startY = pos.y;
 
-		let currentSpeed = this.#wanderSpeed;
+		let currentSpeed = this.wanderSpeed;
 		let fleeing = false;
 
-		const playerPosition = this.#playerPosition;
+		const playerPosition = this.playerPosition;
 
 		if (playerPosition !== null) {
 			const dx = pos.x - playerPosition.x;
@@ -502,7 +294,7 @@ export abstract class NeutralMob {
 				const horizontalDistSq = dx * dx + dz * dz;
 
 				if (horizontalDistSq > 0.01) {
-					this.#facingAngle = Math.atan2(dx, dz);
+					this.facingAngle = Math.atan2(dx, dz);
 				}
 			}
 		}
@@ -591,8 +383,8 @@ export abstract class NeutralMob {
 				 * The old temporary sinFacing and cosFacing variables were set on
 				 * every tick even though most branches never used them.
 				 */
-				velocity.x = Math.sin(this.#facingAngle) * currentSpeed;
-				velocity.z = Math.cos(this.#facingAngle) * currentSpeed;
+				velocity.x = Math.sin(this.facingAngle) * currentSpeed;
+				velocity.z = Math.cos(this.facingAngle) * currentSpeed;
 			}
 		}
 
@@ -606,7 +398,7 @@ export abstract class NeutralMob {
 			velocity.y += WATER_GRAVITY * dt;
 
 			const targetCenterY =
-				this.#waterSurfaceY - this.#halfHeight + WATER_SURFACE_OFFSET;
+				this.#waterSurfaceY - this.halfHeight + WATER_SURFACE_OFFSET;
 			const surfaceError = targetCenterY - pos.y;
 
 			if (headSubmerged) {
@@ -635,8 +427,8 @@ export abstract class NeutralMob {
 			}
 
 			const swimSpeedCap = hasActivePath
-				? this.#wanderSpeed * 0.9
-				: this.#wanderSpeed * SWIM_SPEED_FACTOR;
+				? this.wanderSpeed * 0.9
+				: this.wanderSpeed * SWIM_SPEED_FACTOR;
 			const horizontalSpeedSq =
 				velocity.x * velocity.x + velocity.z * velocity.z;
 			const swimSpeedCapSq = swimSpeedCap * swimSpeedCap;
@@ -657,7 +449,7 @@ export abstract class NeutralMob {
 			if (this.#breathTimer <= 0) {
 				this.takeDamage(DROWN_DAMAGE);
 
-				if (this.#isDisposed) {
+				if (this.isDisposed) {
 					return;
 				}
 
@@ -671,7 +463,7 @@ export abstract class NeutralMob {
 		 * The pre-movement grounded result is needed only to determine whether a
 		 * step-up may be attempted. Water pathing also permits stepping onto shore.
 		 */
-		const wasGrounded = this.#isGrounded(pos);
+		const wasGrounded = this.isGrounded(pos);
 		const canStepUp = wasGrounded || (inWater && hasActivePath);
 
 		let moveX = velocity.x * dt;
@@ -695,7 +487,7 @@ export abstract class NeutralMob {
 			velocity.z = 0;
 			moveX = 0;
 			moveZ = 0;
-			this.#facingAngle += Math.PI * (0.5 + Math.random() * 0.5);
+			this.facingAngle += Math.PI * (0.5 + Math.random() * 0.5);
 			if (this.#path.length !== 0) {
 				this.#path.length = 0;
 				this.#pathIndex = 0;
@@ -707,24 +499,24 @@ export abstract class NeutralMob {
 		}
 
 		if (moveX !== 0) {
-			this.#moveAxis(pos, Axis.X, moveX, canStepUp);
+			this.moveAxis(pos, Axis.X, moveX, canStepUp);
 		}
 
 		if (moveY !== 0) {
-			this.#moveAxis(pos, Axis.Y, moveY, canStepUp);
+			this.moveAxis(pos, Axis.Y, moveY, canStepUp);
 		}
 
 		if (moveZ !== 0) {
-			this.#moveAxis(pos, Axis.Z, moveZ, canStepUp);
+			this.moveAxis(pos, Axis.Z, moveZ, canStepUp);
 		}
 
-		let grounded = this.#isGrounded(pos);
+		let grounded = this.isGrounded(pos);
 
 		/*
 		 * Perform the post-movement central-support lookup once and reuse it for
 		 * both grounded correction and the final fall failsafe.
 		 */
-		const hasCentralSupport = inWater || this.#hasCentralSupport(pos);
+		const hasCentralSupport = inWater || this.hasCentralSupport(pos);
 
 		if (!hasCentralSupport) {
 			grounded = false;
@@ -743,13 +535,13 @@ export abstract class NeutralMob {
 			 * Entering water breaks the fall and prevents delayed landing damage
 			 * after the mob exits.
 			 */
-			this.#fallStartY = Number.NaN;
+			this.fallStartY = Number.NaN;
 		} else if (grounded) {
-			if (!Number.isNaN(this.#fallStartY)) {
-				const fallDistance = this.#fallStartY - pos.y;
+			if (!Number.isNaN(this.fallStartY)) {
+				const fallDistance = this.fallStartY - pos.y;
 
 				if (fallDistance > 0.5) {
-					playLandingDust(pos.x, pos.y - this.#halfHeight, pos.z, fallDistance);
+					playLandingDust(pos.x, pos.y - this.halfHeight, pos.z, fallDistance);
 				}
 
 				if (fallDistance > FALL_DAMAGE_THRESHOLD) {
@@ -757,15 +549,15 @@ export abstract class NeutralMob {
 						(fallDistance - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_BLOCK,
 					);
 
-					if (this.#isDisposed) {
+					if (this.isDisposed) {
 						return;
 					}
 				}
 
-				this.#fallStartY = Number.NaN;
+				this.fallStartY = Number.NaN;
 			}
-		} else if (Number.isNaN(this.#fallStartY)) {
-			this.#fallStartY = startY;
+		} else if (Number.isNaN(this.fallStartY)) {
+			this.fallStartY = startY;
 		}
 
 		const damping = inWater ? WATER_HORIZONTAL_DAMPING : grounded ? 8 : 1.8;
@@ -787,26 +579,26 @@ export abstract class NeutralMob {
 		 * initializes the previous coordinates without treating spawn placement
 		 * as movement.
 		 */
-		if (Number.isNaN(this.#prevX)) {
-			this.#prevX = pos.x;
-			this.#prevZ = pos.z;
+		if (Number.isNaN(this.prevX)) {
+			this.prevX = pos.x;
+			this.prevZ = pos.z;
 		} else {
-			const traveledX = pos.x - this.#prevX;
-			const traveledZ = pos.z - this.#prevZ;
+			const traveledX = pos.x - this.prevX;
+			const traveledZ = pos.z - this.prevZ;
 			const traveledSq = traveledX * traveledX + traveledZ * traveledZ;
 
 			if (traveledSq > 0.0001) {
-				this.#walkPhase += Math.sqrt(traveledSq) * WALK_STRIDE_FACTOR;
-			} else if (this.#walkPhase !== 0) {
-				this.#walkPhase *= Math.max(0, 1 - WALK_PHASE_DECAY * dt);
+				this.walkPhase += Math.sqrt(traveledSq) * WALK_STRIDE_FACTOR;
+			} else if (this.walkPhase !== 0) {
+				this.walkPhase *= Math.max(0, 1 - WALK_PHASE_DECAY * dt);
 
-				if (this.#walkPhase < 0.01) {
-					this.#walkPhase = 0;
+				if (this.walkPhase < 0.01) {
+					this.walkPhase = 0;
 				}
 			}
 
-			this.#prevX = pos.x;
-			this.#prevZ = pos.z;
+			this.prevX = pos.x;
+			this.prevZ = pos.z;
 		}
 
 		/*
@@ -821,98 +613,19 @@ export abstract class NeutralMob {
 			}
 
 			if (Math.abs(velocity.y) < 0.1) {
-				const nudge = this.#tmpFallNudge;
+				const nudge = this.tmpFallNudge;
 
 				nudge.x = pos.x;
 				nudge.y = pos.y - 0.03;
 				nudge.z = pos.z;
 
-				if (!this.#collider.overlaps(nudge)) {
+				if (!this.bodyCollider.overlaps(nudge)) {
 					pos.y -= 0.03;
 				}
 			}
 		}
 
-		Map1.mobRegistry?.updateMobPosition(this);
-		this.syncToInstances();
-	}
-
-	#serializeForChunkReload(): SavedChunkEntityData | null {
-		if (this.#isDisposed) return null;
-
-		const pos = this.#position;
-		const extra = this.getExtraPayload();
-
-		return {
-			type: this.CHUNK_ENTITY_TYPE,
-			payload: {
-				position: { x: pos.x, y: pos.y, z: pos.z },
-				hp: this.#hp,
-				...extra,
-			},
-		};
-	}
-
-	protected getExtraPayload(): Record<string, unknown> {
-		return {};
-	}
-
-	#moveAxis(pos: Vec3, axis: Axis, delta: number, canStepUp: boolean): void {
-		if (
-			axis !== Axis.Y &&
-			canStepUp &&
-			(this.#velocity.x !== 0 || this.#velocity.z !== 0)
-		) {
-			const savedX = pos.x;
-			const savedY = pos.y;
-			const savedZ = pos.z;
-
-			if (this.#attemptStepUp(pos, axis, delta)) return;
-
-			setVec3(pos, savedX, savedY, savedZ);
-		}
-
-		this.#collider.moveAxis(pos, this.#velocity, axis, delta, STEP_SIZE);
-	}
-
-	// PERF: bound once per mob. voxelStepUp's onStep used to allocate a fresh
-	// closure per axis attempt — up to 2 per physics substep while walking.
-	readonly #onStepUp = (): void => {
-		this.#velocity.y = 0;
-	};
-
-	#attemptStepUp(pos: Vec3, axis: Axis.X | Axis.Z, delta: number): boolean {
-		return voxelStepUp(this.#collider, pos, axis, delta, 1.0, this.#onStepUp);
-	}
-
-	#isGrounded(pos: Vec3): boolean {
-		// Central support check: mining the block directly under the mob must
-		// make it fall, even if neighboring blocks would still support the
-		// wide collider. This matches the server's single-column scanDown.
-		const cx = Math.floor(pos.x);
-		const cy = Math.floor(pos.y - this.#feetHeight - 0.02);
-		const cz = Math.floor(pos.z);
-		if (!isCollidableBlock(getBlockByWorldCoords(cx, cy, cz))) return false;
-		// Narrow foot probe so a single missing block under the center makes the
-		// mob fall, matching the server's single-column scanDown and the player's
-		// 0.7× footProbe. The old full-AABB overlap let wide mobs (Sheep z=0.52)
-		// stay grounded on neighboring blocks after the center was mined.
-		// Use feetHeight (visual bottom) — for Sheep feet is 0.23 below the
-		// collider, so probing at halfHeight misses the ground and makes the
-		// mob hover one block above it.
-		const probe = this.#tmpProbe;
-		const footY = pos.y - this.#feetHeight;
-		probe.x = pos.x;
-		probe.y = footY - 0.04;
-		probe.z = pos.z;
-		const ext = this.#tmpGroundExtents;
-		setVec3(
-			ext,
-			this.#hitHalfExtents.x * 0.7,
-			0.04,
-			this.#hitHalfExtents.z * 0.7,
-		);
-		return this.#collider.overlapsBox(probe, ext);
+		this.commitTick();
 	}
 
 	/**
@@ -941,7 +654,7 @@ export abstract class NeutralMob {
 		const lookAhead = stepLen + 0.5;
 		const px = Math.floor(pos.x + (moveX / stepLen) * lookAhead);
 		const pz = Math.floor(pos.z + (moveZ / stepLen) * lookAhead);
-		const feetY = Math.floor(pos.y - this.#feetHeight);
+		const feetY = Math.floor(pos.y - this.feetHeight);
 
 		const cx = Math.floor(px / Chunk.SIZE);
 		const cz = Math.floor(pz / Chunk.SIZE);
@@ -1039,7 +752,7 @@ export abstract class NeutralMob {
 						this.#stateTimer = this.#path.length * 0.5 + 1;
 
 						const first = this.#path[0];
-						this.#facingAngle = Math.atan2(
+						this.facingAngle = Math.atan2(
 							first.x + 0.5 - pos.x,
 							first.z + 0.5 - pos.z,
 						);
@@ -1080,7 +793,7 @@ export abstract class NeutralMob {
 				this.#pathIndex = 0;
 
 				const first = this.#path[0];
-				this.#facingAngle = Math.atan2(
+				this.facingAngle = Math.atan2(
 					first.x + 0.5 - pos.x,
 					first.z + 0.5 - pos.z,
 				);
@@ -1091,8 +804,8 @@ export abstract class NeutralMob {
 
 		this.#state = NeutralMobState.Idle;
 		this.#stateTimer = 1 + Math.random() * 2;
-		this.#velocity.x = 0;
-		this.#velocity.z = 0;
+		this.bodyVelocity.x = 0;
+		this.bodyVelocity.z = 0;
 		this.#path.length = 0;
 		this.#pathIndex = 0;
 	}
@@ -1101,17 +814,18 @@ export abstract class NeutralMob {
 		this.#waterWanderTimer -= dt;
 
 		const hSpeedSq =
-			this.#velocity.x * this.#velocity.x + this.#velocity.z * this.#velocity.z;
+			this.bodyVelocity.x * this.bodyVelocity.x +
+			this.bodyVelocity.z * this.bodyVelocity.z;
 
 		if (this.#waterWanderTimer <= 0 || hSpeedSq < 0.0025) {
 			this.#waterWanderTimer = 0.75 + Math.random() * 1.25;
-			this.#facingAngle += -1.5 + Math.random() * 3.0;
+			this.facingAngle += -1.5 + Math.random() * 3.0;
 		}
 
-		const swimSpeed = this.#wanderSpeed * SWIM_SPEED_FACTOR;
+		const swimSpeed = this.wanderSpeed * SWIM_SPEED_FACTOR;
 
-		this.#velocity.x = Math.sin(this.#facingAngle) * swimSpeed;
-		this.#velocity.z = Math.cos(this.#facingAngle) * swimSpeed;
+		this.bodyVelocity.x = Math.sin(this.facingAngle) * swimSpeed;
+		this.bodyVelocity.z = Math.cos(this.facingAngle) * swimSpeed;
 	}
 
 	#advanceOnPath(speed: number, dt: number, pos: Vec3, inWater: boolean): void {
@@ -1136,10 +850,10 @@ export abstract class NeutralMob {
 		if (this.#pathIndex >= this.#path.length) {
 			this.#path.length = 0;
 			this.#pathIndex = 0;
-			this.#velocity.x = 0;
-			this.#velocity.z = 0;
+			this.bodyVelocity.x = 0;
+			this.bodyVelocity.z = 0;
 
-			if (this.#inWaterCached || !this.#isGrounded(pos)) {
+			if (this.#inWaterCached || !this.isGrounded(pos)) {
 				this.#state = NeutralMobState.Wander;
 				this.#shoreSearchTimer = 0;
 			} else {
@@ -1155,7 +869,7 @@ export abstract class NeutralMob {
 		if (wp.kind === PathNodeKind.Water) {
 			const targetY = wp.groundY + 0.45;
 			const dy = targetY - pos.y;
-			this.#velocity.y += Math.max(-1, Math.min(1, dy)) * 4.0 * dt;
+			this.bodyVelocity.y += Math.max(-1, Math.min(1, dy)) * 4.0 * dt;
 		}
 
 		const dx = wp.x + 0.5 - pos.x;
@@ -1163,15 +877,15 @@ export abstract class NeutralMob {
 		const distSq = dx * dx + dz * dz;
 
 		if (distSq < 0.0001) {
-			this.#velocity.x = 0;
-			this.#velocity.z = 0;
+			this.bodyVelocity.x = 0;
+			this.bodyVelocity.z = 0;
 			return;
 		}
 
 		const invDist = 1 / Math.sqrt(distSq);
 
-		this.#velocity.x = dx * invDist * speed;
-		this.#velocity.z = dz * invDist * speed;
-		this.#facingAngle = Math.atan2(dx, dz);
+		this.bodyVelocity.x = dx * invDist * speed;
+		this.bodyVelocity.z = dz * invDist * speed;
+		this.facingAngle = Math.atan2(dx, dz);
 	}
 }

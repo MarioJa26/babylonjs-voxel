@@ -6,7 +6,7 @@ import { getMobStats, LEAF_BLOCK_IDS, MobTypeId } from "../MobConfig";
 import { FlyingMob } from "./FlyingMob";
 import { dropMobItemsForType } from "./MobDrops";
 import { type InstanceSlotHandle, MobInstancePool } from "./MobInstancePool";
-import { registerMobLight, unregisterMobLight } from "./MobLighting";
+import { registerMobLight, releaseMobRenderSlot } from "./MobLighting";
 import type { MobPartSpec } from "./MobMesh";
 import {
 	MOB_SONGBIRD_SKIN_PATH,
@@ -170,7 +170,10 @@ export class Songbird extends FlyingMob {
 	/** True while sitting on the ground (hopping between rests). */
 	#grounded = false;
 
-	#bodySlot: InstanceSlotHandle;
+	// Null until the instance slot is acquired; the null state is what
+	// makes constructor rollback (catch { dispose(); throw }) safe when
+	// acquisition itself throws.
+	#bodySlot: InstanceSlotHandle | null = null;
 
 	constructor(
 		x: number,
@@ -191,24 +194,38 @@ export class Songbird extends FlyingMob {
 		// hop around or take off once the opening rest expires.
 		this.#grounded = true;
 		this.holdStill(1.5 + Math.random() * 2);
-		this.#bodySlot = getBodyPool().acquire(this);
-		getBodyPool().writeColor(this.#bodySlot, 1, 1, 1, 0);
-		this.syncToInstances();
-		this.finalizeRegistration();
-		registerMobLight({
-			pool: getBodyPool(),
-			slot: this.#bodySlot,
-			getPos: () => this.position,
-			baseColor: [1, 1, 1],
-			owner: this,
-		});
+		// Rollback-safe initialization: if any step below throws, dispose()
+		// releases whatever was acquired so far (it is idempotent and
+		// null-safe) and the error propagates to the caller.
+		try {
+			this.#bodySlot = getBodyPool().acquire(this);
+			getBodyPool().writeColor(this.#bodySlot, 1, 1, 1, 0);
+			this.syncToInstances();
+			this.finalizeRegistration();
+			registerMobLight({
+				pool: getBodyPool(),
+				slot: this.#bodySlot,
+				getPos: () => this.position,
+				baseColor: [1, 1, 1],
+				owner: this,
+			});
+		} catch (error) {
+			this.dispose();
+			throw error;
+		}
 	}
 
 	protected override syncToInstances(): void {
 		const pos = this.position;
 		const pool = getBodyPool();
-		pool.writeMatrix(this.#bodySlot, pos.x, pos.y, pos.z, this.facingYaw);
-		pool.writeWalkPhase(this.#bodySlot, this.walkPhase);
+		const slot = this.#bodySlot;
+
+		if (slot === null) {
+			return;
+		}
+
+		pool.writeMatrix(slot, pos.x, pos.y, pos.z, this.facingYaw);
+		pool.writeWalkPhase(slot, this.walkPhase);
 	}
 
 	getWanderSpeed(): number {
@@ -356,8 +373,9 @@ export class Songbird extends FlyingMob {
 
 	dispose(): void {
 		if (this.isDisposed) return;
-		unregisterMobLight(this.#bodySlot);
-		getBodyPool().release(this.#bodySlot);
+		// Ordered release (lighting before slot) via the shared helper.
+		releaseMobRenderSlot(this.#bodySlot);
+		this.#bodySlot = null;
 		super.dispose();
 	}
 }

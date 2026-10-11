@@ -32,7 +32,7 @@ import type {
 import {
 	getCachedLightColor,
 	registerMobLight,
-	unregisterMobLight,
+	releaseMobRenderSlot,
 } from "@/code/Entities/Mobs/MobLighting";
 import {
 	getSheepInstancePool,
@@ -635,14 +635,23 @@ export class RemoteMobManager {
 		/*
 		 * baseColor remains a new tuple because MobLighting may retain it.
 		 * Only one tuple is allocated, including for sheep and fish.
+		 *
+		 * Rollback-safe: a throwing registration must not leak the lane or
+		 * leave an entry that points at one.
 		 */
-		registerMobLight({
-			pool,
-			slot,
-			getPos: entry.getLightPosition,
-			baseColor: [colorR, colorG, colorB],
-			owner: entry,
-		});
+		try {
+			registerMobLight({
+				pool,
+				slot,
+				getPos: entry.getLightPosition,
+				baseColor: [colorR, colorG, colorB],
+				owner: entry,
+			});
+		} catch (error) {
+			this.mobs.delete(id);
+			releaseMobRenderSlot(slot);
+			throw error;
+		}
 	}
 
 	private updateMob(
@@ -677,8 +686,8 @@ export class RemoteMobManager {
 			return;
 		}
 
-		unregisterMobLight(mob.slot);
-		mob.pool.release(mob.slot);
+		// Ordered release (lighting before slot) via the shared helper.
+		releaseMobRenderSlot(mob.slot);
 		mob.pool = want;
 		mob.slot = want.acquire(null);
 		mob.inAttackPool = attacking;
@@ -723,8 +732,8 @@ export class RemoteMobManager {
 		}
 
 		this.mobs.delete(id);
-		unregisterMobLight(mob.slot);
-		mob.pool.release(mob.slot);
+		// Ordered release (lighting before slot) via the shared helper.
+		releaseMobRenderSlot(mob.slot);
 	}
 
 	/**
@@ -898,8 +907,8 @@ export class RemoteMobManager {
 		for (let result = iterator.next(); !result.done; result = iterator.next()) {
 			const mob = result.value;
 
-			unregisterMobLight(mob.slot);
-			mob.pool.release(mob.slot);
+			// Ordered release (lighting before slot) via the shared helper.
+			releaseMobRenderSlot(mob.slot);
 		}
 
 		this.mobs.clear();
