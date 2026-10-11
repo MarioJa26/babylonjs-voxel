@@ -380,6 +380,48 @@ export class LevelDbChunkStore implements ChunkStorage {
 		}
 	}
 
+	/**
+	 * Decode a value read back from the Node/LevelDB backend.
+	 *
+	 * The Node write path stores framed values (raw-marker or
+	 * deflate-marker), so a raw read is NOT a usable blob until it is decoded.
+	 * The IndexedDB backend gets this for free because its read paths already
+	 * call decompressBlob; the LevelDB ones did not, because before compression
+	 * landed on this path they stored and returned the serialized blob verbatim.
+	 *
+	 * A decode failure falls back to the stored bytes: they may be a legacy
+	 * value written before compression existed, which decompressBlob passes
+	 * through unchanged. Falling back keeps those readable instead of turning
+	 * them into a hard read failure.
+	 */
+	private async decodeStoredValue(value: unknown): Promise<Uint8Array | undefined> {
+		if (value == null) return undefined;
+
+		let raw: Uint8Array;
+
+		if (value instanceof Uint8Array) {
+			raw = value;
+		} else if (value instanceof ArrayBuffer) {
+			raw = new Uint8Array(value);
+		} else if (ArrayBuffer.isView(value)) {
+			raw = new Uint8Array(
+				value.buffer,
+				value.byteOffset,
+				value.byteLength,
+			);
+		} else {
+			// Unknown backing type (e.g. a JSON-decoded string). Nothing sensible
+			// to decode; treat as absent rather than guessing at a layout.
+			return undefined;
+		}
+
+		try {
+			return await decompressBlob(raw);
+		} catch {
+			return raw;
+		}
+	}
+
 	async readChunk(
 		cx: number,
 		cy: number,
@@ -421,10 +463,11 @@ export class LevelDbChunkStore implements ChunkStorage {
 		 * Delay allocating the string until the operation actually reaches
 		 * the database. Cache hits and pending deletes allocate no key string.
 		 */
-		const value = await db.get(key ?? chunkKey(cx, cy, cz));
-		if (value == null || pendingDeletes.has(nk)) return undefined;
+		const data = await this.decodeStoredValue(
+			await db.get(key ?? chunkKey(cx, cy, cz)),
+		);
 
-		const data = value instanceof Uint8Array ? value : new Uint8Array(value);
+		if (data === undefined || pendingDeletes.has(nk)) return undefined;
 
 		this.addToCache(nk, data);
 		return data;
@@ -1671,17 +1714,24 @@ export class LevelDbChunkStore implements ChunkStorage {
 		try {
 			const values: Array<unknown> = await db.getMany(keys);
 
-			for (let i = 0; i < length; i++) {
-				const value = values[i];
-				if (value == null) continue;
+			/*
+			 * Decode in bounded waves, matching the IndexedDB batch read path.
+			 * Every value must go through decodeStoredValue — the Node backend
+			 * stores framed bytes, so handing them straight back produced blob
+			 * headers read out of deflate bytes (the "Invalid typed array
+			 * length" failures seen on the server's batch read path).
+			 */
+			await mapInWaves(
+				keys.map((_, index) => index),
+				CODEC_WAVE_SIZE,
+				async (index) => {
+					const decoded = await this.decodeStoredValue(values[index]);
 
-				results.set(
-					keys[i],
-					value instanceof Uint8Array
-						? value
-						: new Uint8Array(value as ArrayBuffer),
-				);
-			}
+					if (decoded !== undefined) {
+						results.set(keys[index], decoded);
+					}
+				},
+			);
 		} catch (error) {
 			console.warn(`[LevelDb] _getMany failed for ${length} keys:`, error);
 		}

@@ -1,10 +1,16 @@
 import { createFreeCamera, type FreeCamera, type Vec3 } from "@babylonjs/lite";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 
+const DEG_TO_RAD = Math.PI / 180;
+
+function clamp(value: number, min: number, max: number): number {
+	return value < min ? min : value > max ? max : value;
+}
+
 /**
  * Lite native port of PlayerCamera.
  * Third-person follow camera. Drives a Lite `FreeCamera`'s
- * `position`/`target` ObservableVec3 directly.
+ * `position` and `target` ObservableVec3 directly.
  */
 export class PlayerCamera {
 	#playerCamera: FreeCamera;
@@ -13,134 +19,155 @@ export class PlayerCamera {
 	#eyeHeight = 1.8;
 
 	// Smoothed vertical eye height in world units.
-	// Lazily initialized so the first move/snap is exact.
-	#smoothedEyeY: number = this.#eyeHeight;
+	// Lazily synchronized by moveWithPlayer/snapToPlayer.
+	#smoothedEyeY = this.#eyeHeight;
 	readonly #verticalSmoothSpeed = 36;
 
 	#cameraPitch = 0;
 	#cameraYaw = 0;
 	readonly #maxPitch = Math.PI / 2 - 0.003;
+
 	public mouseSensitivity = 0.003;
 
-	// Explosion screen shake. 0 = steady, 1 = full trauma. Decays in
-	// moveWithPlayer; offset scales with trauma² for a punchy falloff.
+	// Explosion screen shake. 0 = steady, 1 = full trauma.
 	#trauma = 0;
 	readonly #traumaDecayPerSec = 1.4;
 	readonly #traumaMaxOffset = 0.45;
 
 	readonly #minZoom = 0.01;
 	readonly #maxZoom = 10000;
-	readonly #zoomSpeed = 5.0;
+	readonly #zoomSpeed = 5;
 
 	// Cached unit forward vector. Updated only when yaw/pitch changes.
 	#forwardX = 0;
 	#forwardY = 0;
 	#forwardZ = 1;
 
+	/** Base, unzoomed FOV in degrees. */
+	#baseFov = SETTING_PARAMS.CAMERA_FOV;
+
+	// Shared scratch objects. Callers must consume their values immediately.
+	readonly #forwardScratch: Vec3 = { x: 0, y: 0, z: 0 };
+	readonly #positionScratch: Vec3 = { x: 0, y: 0, z: 0 };
+
 	constructor() {
+		const eyeHeight = this.#eyeHeight;
+
 		this.#playerCamera = createFreeCamera(
-			{ x: 0, y: this.#eyeHeight, z: 0 },
-			{ x: 0, y: this.#eyeHeight, z: 1 },
+			{ x: 0, y: eyeHeight, z: 0 },
+			{ x: 0, y: eyeHeight, z: 1 },
 		);
 
-		this.#playerCamera.fov = SETTING_PARAMS.CAMERA_FOV * (Math.PI / 180);
+		this.#playerCamera.fov = this.#baseFov * DEG_TO_RAD;
 		this.#playerCamera.nearPlane = 0.1;
-		// Must exceed the far-tile horizon (FAR_TILE_DISTANCE chunks) so the
-		// full 512-chunk render distance stays inside the frustum.
+
+		// Must exceed the far-tile horizon so the full render distance
+		// remains inside the camera frustum.
 		this.#playerCamera.farPlane = 20000;
 	}
 
 	/**
-	 * Follow `characterPosition`. When `deltaSeconds` is provided the vertical
-	 * eye height is exponentially eased toward the player, so block steps do not
-	 * jerk the view. Horizontal tracking stays exact. Omitted/zero delta snaps
-	 * immediately, which is used for teleports.
+	 * Follow `characterPosition`.
+	 *
+	 * With a positive `deltaSeconds`, vertical movement is exponentially
+	 * smoothed while horizontal tracking remains exact. An omitted, zero, or
+	 * negative delta snaps immediately, which is useful for teleports.
 	 */
 	public moveWithPlayer(characterPosition: Vec3, deltaSeconds?: number): void {
-		const eye = this.#followDistance > this.#minZoom ? this.#eyeHeight : 0.66;
-		const targetY = characterPosition.y + eye;
+		const distance = this.#followDistance;
+		const eyeHeight = distance > this.#minZoom ? this.#eyeHeight : 0.66;
+		const targetY = characterPosition.y + eyeHeight;
 
-		let cameraY = targetY;
+		let cameraY: number;
 
 		if (deltaSeconds !== undefined && deltaSeconds > 0) {
-			this.#smoothedEyeY +=
-				(targetY - this.#smoothedEyeY) *
-				(1 - Math.exp(-this.#verticalSmoothSpeed * deltaSeconds));
+			const smoothing = 1 - Math.exp(-this.#verticalSmoothSpeed * deltaSeconds);
 
-			cameraY = this.#smoothedEyeY;
+			cameraY = this.#smoothedEyeY + (targetY - this.#smoothedEyeY) * smoothing;
+
+			this.#smoothedEyeY = cameraY;
 		} else {
+			cameraY = targetY;
 			this.#smoothedEyeY = targetY;
 		}
-
-		const distance = this.#followDistance;
 
 		let shakeX = 0;
 		let shakeY = 0;
 		let shakeZ = 0;
-		if (this.#trauma > 0) {
+
+		let trauma = this.#trauma;
+
+		if (trauma > 0) {
 			if (deltaSeconds !== undefined && deltaSeconds > 0) {
-				this.#trauma = Math.max(
-					0,
-					this.#trauma - this.#traumaDecayPerSec * deltaSeconds,
-				);
+				trauma -= this.#traumaDecayPerSec * deltaSeconds;
+
+				if (trauma <= 0) {
+					trauma = 0;
+					this.#trauma = 0;
+				} else {
+					this.#trauma = trauma;
+				}
 			}
-			const s = this.#trauma * this.#trauma * this.#traumaMaxOffset;
-			shakeX = (Math.random() * 2 - 1) * s;
-			shakeY = (Math.random() * 2 - 1) * s;
-			shakeZ = (Math.random() * 2 - 1) * s;
+
+			if (trauma > 0) {
+				const shakeScale = trauma * trauma * this.#traumaMaxOffset;
+
+				shakeX = (Math.random() * 2 - 1) * shakeScale;
+				shakeY = (Math.random() * 2 - 1) * shakeScale;
+				shakeZ = (Math.random() * 2 - 1) * shakeScale;
+			}
 		}
 
+		const characterX = characterPosition.x;
+		const characterZ = characterPosition.z;
+
 		this.#playerCamera.position.set(
-			characterPosition.x - this.#forwardX * distance + shakeX,
+			characterX - this.#forwardX * distance + shakeX,
 			cameraY - this.#forwardY * distance + shakeY,
-			characterPosition.z - this.#forwardZ * distance + shakeZ,
+			characterZ - this.#forwardZ * distance + shakeZ,
 		);
 
 		this.#playerCamera.target.set(
-			characterPosition.x + shakeX * 0.5,
+			characterX + shakeX * 0.5,
 			cameraY + shakeY * 0.5,
-			characterPosition.z + shakeZ * 0.5,
+			characterZ + shakeZ * 0.5,
 		);
 	}
 
 	/**
-	 * Add explosion shake trauma (0..1, clamps). Near blasts pass ~1,
-	 * distant ones scale down by the caller.
+	 * Add explosion-shake trauma.
+	 * The accumulated value is clamped to the range 0..1.
 	 */
 	public addTrauma(amount: number): void {
-		this.#trauma = Math.min(1, Math.max(0, this.#trauma + amount));
+		this.#trauma = clamp(this.#trauma + amount, 0, 1);
 	}
 
-	/** Snap the camera straight to a position, for respawn / save restore / locks. */
+	/** Snap the camera to the player for respawns, restores, or locks. */
 	public snapToPlayer(characterPosition: Vec3): void {
 		this.moveWithPlayer(characterPosition, 0);
 	}
 
 	public handleMouseMovement(deltaX: number, deltaY: number): void {
 		this.#cameraYaw += deltaX * this.mouseSensitivity;
-		this.#cameraPitch += deltaY * this.mouseSensitivity;
-
-		if (this.#cameraPitch > this.#maxPitch) {
-			this.#cameraPitch = this.#maxPitch;
-		} else if (this.#cameraPitch < -this.#maxPitch) {
-			this.#cameraPitch = -this.#maxPitch;
-		}
+		this.#cameraPitch = clamp(
+			this.#cameraPitch + deltaY * this.mouseSensitivity,
+			-this.#maxPitch,
+			this.#maxPitch,
+		);
 
 		this.#updateForwardCache();
 	}
 
 	public zoomIn(): void {
-		this.#followDistance = Math.max(
-			this.#minZoom,
-			this.#followDistance - this.#zoomSpeed,
-		);
+		const nextDistance = this.#followDistance - this.#zoomSpeed;
+		this.#followDistance =
+			nextDistance < this.#minZoom ? this.#minZoom : nextDistance;
 	}
 
 	public zoomOut(): void {
-		this.#followDistance = Math.min(
-			this.#maxZoom,
-			this.#followDistance + this.#zoomSpeed,
-		);
+		const nextDistance = this.#followDistance + this.#zoomSpeed;
+		this.#followDistance =
+			nextDistance > this.#maxZoom ? this.#maxZoom : nextDistance;
 	}
 
 	public get cameraYaw(): number {
@@ -157,30 +184,25 @@ export class PlayerCamera {
 	}
 
 	public set cameraPitch(value: number) {
-		if (value > this.#maxPitch) {
-			value = this.#maxPitch;
-		} else if (value < -this.#maxPitch) {
-			value = -this.#maxPitch;
-		}
-		this.#cameraPitch = value;
+		this.#cameraPitch = clamp(value, -this.#maxPitch, this.#maxPitch);
 		this.#updateForwardCache();
 	}
 
-	/** Full 3D unit vector pointing in the direction the camera is looking. */
-	// PERF: shared scratch — callers consume immediately; avoids a fresh
-	// {x,y,z} literal per call (currently throttled debug-HUD only, but this
-	// is a getter future hot paths will reach for).
-	#getForwardScratch: Vec3 = { x: 0, y: 0, z: 0 };
-
+	/**
+	 * Returns a shared scratch vector containing the camera's forward
+	 * direction. Do not retain or mutate it.
+	 */
 	public getForwardDirection(): Vec3 {
-		const s = this.#getForwardScratch;
-		s.x = this.#forwardX;
-		s.y = this.#forwardY;
-		s.z = this.#forwardZ;
-		return s;
+		const result = this.#forwardScratch;
+
+		result.x = this.#forwardX;
+		result.y = this.#forwardY;
+		result.z = this.#forwardZ;
+
+		return result;
 	}
 
-	/** True when zoomed out far enough to see the player body, meaning third-person. */
+	/** True when zoomed out far enough to see the player body. */
 	public get isThirdPerson(): boolean {
 		return this.#followDistance > 0.5;
 	}
@@ -191,38 +213,39 @@ export class PlayerCamera {
 
 	public set fov(value: number) {
 		this.#baseFov = value;
-		this.#playerCamera.fov = value * (Math.PI / 180);
+		this.#playerCamera.fov = value * DEG_TO_RAD;
 	}
 
-	/** Base (unzoomed) FOV in degrees. Updated by the fov setter. */
-	#baseFov = SETTING_PARAMS.CAMERA_FOV;
-
 	/**
-	 * Apply a bow-draw zoom effect. At full draw (progress = 1) the FOV narrows
-	 * to ~87% of the base FOV, mimicking Minecraft's bow-aim zoom.
+	 * Apply a bow-draw zoom effect.
+	 *
 	 * @param drawProgress 0 = no zoom, 1 = full draw zoom.
 	 */
 	public setBowZoom(drawProgress: number): void {
-		const t = drawProgress < 0 ? 0 : drawProgress > 1 ? 1 : drawProgress;
-		// Ease-out curve so most of the zoom happens in the first half of the draw
-		const zoomFactor = 1 - 0.22 * (t * t);
-		this.#playerCamera.fov = this.#baseFov * zoomFactor * (Math.PI / 180);
+		const progress = clamp(drawProgress, 0, 1);
+		const zoomFactor = 1 - 0.22 * progress * progress;
+
+		this.#playerCamera.fov = this.#baseFov * zoomFactor * DEG_TO_RAD;
 	}
 
-	/** Restore the camera to the base FOV (no zoom). */
+	/** Restore the camera to its base FOV. */
 	public clearBowZoom(): void {
-		this.#playerCamera.fov = this.#baseFov * (Math.PI / 180);
+		this.#playerCamera.fov = this.#baseFov * DEG_TO_RAD;
 	}
 
-	#positionScratch: Vec3 = { x: 0, y: 0, z: 0 };
-
+	/**
+	 * Returns a shared scratch vector containing the camera position.
+	 * Do not retain or mutate it.
+	 */
 	public get position(): Vec3 {
 		const position = this.#playerCamera.position;
-		const s = this.#positionScratch;
-		s.x = position.x;
-		s.y = position.y;
-		s.z = position.z;
-		return s;
+		const result = this.#positionScratch;
+
+		result.x = position.x;
+		result.y = position.y;
+		result.z = position.z;
+
+		return result;
 	}
 
 	public set position(position: Vec3) {
@@ -234,10 +257,12 @@ export class PlayerCamera {
 	}
 
 	#updateForwardCache(): void {
-		const cosPitch = Math.cos(this.#cameraPitch);
+		const pitch = this.#cameraPitch;
+		const yaw = this.#cameraYaw;
+		const cosPitch = Math.cos(pitch);
 
-		this.#forwardX = Math.sin(this.#cameraYaw) * cosPitch;
-		this.#forwardY = -Math.sin(this.#cameraPitch);
-		this.#forwardZ = Math.cos(this.#cameraYaw) * cosPitch;
+		this.#forwardX = Math.sin(yaw) * cosPitch;
+		this.#forwardY = -Math.sin(pitch);
+		this.#forwardZ = Math.cos(yaw) * cosPitch;
 	}
 }

@@ -1,0 +1,55 @@
+# ─────────────────────────────────────────────────────────────
+# b102 dedicated server configuration
+# ─────────────────────────────────────────────────────────────
+#
+# key = value, one per line. # starts a comment.
+
+server-port = 2567
+server-name = B102 Server
+server-motd = A Server
+max-players = 24
+seed = b102:overworld
+gamemode = creative
+difficulty = normal
+max-reach = 6
+
+tick-rate = 20
+day-duration = 1200000
+day-cycle = true
+wasm-enabled = true
+
+world-storage-path = server-data
+chunk-cache-size = 16384
+
+
+# ─────────────────────────────────────────────────────────────
+# Chunk generation workers
+# ─────────────────────────────────────────────────────────────
+#
+# chunk-worker-threads = 0
+#
+# 0 (default) sizes the pool from DETECTED PHYSICAL CORES, minus one
+# reserved for the server's main thread (tick, mob/water simulation,
+# blob deflate, storage write pump).
+#
+# It deliberately does NOT use the logical thread count. On an SMT
+# machine — essentially all modern x86 CPUs — logical threads are 2x
+# physical cores, and over-allocating a CPU-bound pool is SLOWER than
+# sizing it correctly: once a core saturates, a sibling thread on it
+# contends for the same execution resources rather than adding
+# throughput. A 6-core machine reporting 12 threads would otherwise
+# get 11 workers competing with itself.
+#
+# CO-LOCATING THE SERVER WITH THE CLIENT? Leave roughly half the
+# physical cores for the client. On a 6-core box:
+#
+#     chunk-worker-threads = 3
+#
+# The client sizes itself the same way (minus one for its main
+# thread), so the two pools together stay under the physical core
+# count instead of each assuming it owns the whole machine.
+#
+# Server startup logs the resolved value, the logical count and the
+# detected physical count — check that line first if chunk delivery
+# feels slow.
+chunk-worker-threads = 0

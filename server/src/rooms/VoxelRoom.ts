@@ -138,6 +138,7 @@ import { BlockType } from "@/code/World/Texture/BlockType.ts";
 import heldItemDefinitions from "../../../public/data/items.json";
 import { getServerConfig } from "../config/ServerConfig.ts";
 import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
+import { TaskPriority } from "../workers/ChunkWorkerPool.ts";
 import {
 	CONTAINER_HEIGHT,
 	CONTAINER_WIDTH,
@@ -284,6 +285,20 @@ const MAX_TNT_FUSE = 10;
 const MAX_PROTOCOL_VIOLATIONS = 16;
 const FLUSH_CONCURRENCY = 8;
 const CHUNK_BATCH_BYTE_LIMIT = 256 * 1024;
+/**
+ * Chunks per generation sub-batch when streaming a chunk request.
+ *
+ * A request's response used to wait for every missing chunk in it, making the
+ * whole request one head-of-line blocking window. Generating in groups and
+ * sending each group as soon as it completes bounds the wait to one group.
+ */
+const CHUNK_GEN_STREAM_GROUP = 8;
+/**
+ * How many sub-batches generate concurrently. Higher than the group size so
+ * several workers stay fed, low enough that in-flight generated chunks (and
+ * their deflate buffers) stay bounded per client.
+ */
+const CHUNK_GEN_STREAM_GROUP_CONCURRENCY = 8;
 const MAX_POOLED_EDIT_ENTRIES = 8192;
 const PREWARM_HORIZONTAL_RADIUS = 3;
 const PREWARM_MIN_CHUNK_Y = -5;
@@ -657,7 +672,11 @@ export class VoxelRoom extends Room {
 
 		this.chunkGen = new ChunkGenerationService();
 		this.seed = this.config.seed;
-		this.chunkGen.setSeed(this.seed, this.config.wasmEnabled);
+		this.chunkGen.setSeed(
+			this.seed,
+			this.config.wasmEnabled,
+			this.config.chunkWorkerThreads,
+		);
 		console.log(
 			`[VoxelRoom] terrain seed: ${this.seed} (from server.properties), wasm: ${this.config.wasmEnabled}`,
 		);
@@ -1288,7 +1307,18 @@ export class VoxelRoom extends Room {
 				missing.push({ chunkX: c.cx, chunkY: c.cy, chunkZ: c.cz });
 		}
 		if (missing.length === 0) return;
-		await this.chunkGen.generateChunksBatch(missing);
+
+		/*
+		 * BACKGROUND tier.
+		 *
+		 * This runs at room creation, before any player exists, and used to be
+		 * enqueued into the same FIFO as player chunk requests — so a player
+		 * joining while it drained queued behind all 637 chunks. Background work
+		 * is by definition replaceable, so it goes to its own tier: idle capacity
+		 * is still used, but it yields immediately to anything a player is
+		 * actually waiting on.
+		 */
+		await this.chunkGen.generateChunksBatch(missing, TaskPriority.Background);
 	}
 
 	private startTickLoop(): void {
@@ -3251,46 +3281,94 @@ export class VoxelRoom extends Room {
 
 			if (missingCount === 0) return;
 
-			try {
-				const generated =
-					await this.chunkGen.generateChunksBatch(missingCoords);
-				if (!this.isClientActive(client)) return;
+			/*
+			 * STREAMING PARTIAL RESULTS.
+			 *
+			 * This used to await generateChunksBatch() for the WHOLE missing set
+			 * and send once at the end, which made the batch size the exact
+			 * head-of-line blocking window: with the client asking for 32-128
+			 * chunks per request, a single slow chunk stalled the response for
+			 * every other chunk in the batch — including the ones directly under
+			 * the player. The client saw nothing for the whole generation window
+			 * and its 30 s request timeout then fired against chunks that were
+			 * nearly ready, adding retries and making the world slower still.
+			 *
+			 * Instead, generate in small sub-batches and send each as soon as it
+			 * completes. Blocking is bounded by one sub-batch rather than the
+			 * whole request.
+			 *
+			 * Overlap is safe and already accounted for:
+			 *   - batch handlers do not await each other, so concurrent
+			 *     generateChunksBatch calls share work via ChunkGenerationService's
+			 *     dedupMap (same coordinates resolve to the same promise, so a
+			 *     chunk is generated once even if two sub-batches ask for it);
+			 *   - the client correlates responses by packed coordinate key and
+			 *     tolerates out-of-order arrival, so nothing depends on ordering.
+			 *
+			 * Sub-batches are copies because `missingCoords` belongs to the
+			 * pooled workspace and is cleared in the finally below.
+			 */
+			const groupLimit = CHUNK_GEN_STREAM_GROUP;
+			const groupCount = Math.ceil(missingCount / groupLimit);
+			const groups = new Array<MissingCoord[]>(groupCount);
 
-				await this.sendChunkDataBatch(client, generated);
-			} catch (batchError) {
-				if (!this.isClientActive(client)) return;
+			for (let g = 0; g < groupCount; g++) {
+				const start = g * groupLimit;
+				const end = Math.min(start + groupLimit, missingCount);
+				groups[g] = missingCoords.slice(start, end);
+			}
 
-				console.warn(
-					`[VoxelRoom] Batch generation failed; retrying ${missingCount} chunks individually`,
-					batchError,
-				);
+			await runWithConcurrency(
+				groups,
+				CHUNK_GEN_STREAM_GROUP_CONCURRENCY,
+				async (group): Promise<void> => {
+					if (!this.isClientActive(client)) return;
 
-				await runWithConcurrency(
-					missingCoords,
-					4,
-					async (coord): Promise<void> => {
+					try {
+						const generated =
+							await this.chunkGen.generateChunksBatch(group);
+
 						if (!this.isClientActive(client)) return;
 
-						try {
-							const data = await this.chunkGen.generateChunk(
-								coord.chunkX,
-								coord.chunkY,
-								coord.chunkZ,
-							);
-							if (!this.isClientActive(client)) return;
+						// Send immediately — this is the whole point: the client
+						// gets these chunks without waiting for the other groups.
+						await this.sendChunkDataBatch(client, generated);
+					} catch (groupError) {
+						if (!this.isClientActive(client)) return;
 
-							await this.sendChunkDataBatch(client, [data]);
-						} catch (singleError) {
-							if (!this.isClientActive(client)) return;
+						console.warn(
+							`[VoxelRoom] Sub-batch generation failed; retrying ${group.length} chunks individually`,
+							groupError,
+						);
 
-							console.error(
-								`[VoxelRoom] Single chunk gen failed: ${coord.chunkX},${coord.chunkY},${coord.chunkZ}`,
-								singleError,
-							);
-						}
-					},
-				);
-			}
+						await runWithConcurrency(
+							group,
+							4,
+							async (coord): Promise<void> => {
+								if (!this.isClientActive(client)) return;
+
+								try {
+									const data = await this.chunkGen.generateChunk(
+										coord.chunkX,
+										coord.chunkY,
+										coord.chunkZ,
+									);
+									if (!this.isClientActive(client)) return;
+
+									await this.sendChunkDataBatch(client, [data]);
+								} catch (singleError) {
+									if (!this.isClientActive(client)) return;
+
+									console.error(
+										`[VoxelRoom] Single chunk gen failed: ${coord.chunkX},${coord.chunkY},${coord.chunkZ}`,
+										singleError,
+									);
+								}
+							},
+						);
+					}
+				},
+			);
 		} catch (error) {
 			if (!this.isClientActive(client)) return;
 

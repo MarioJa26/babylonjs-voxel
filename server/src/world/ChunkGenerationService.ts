@@ -9,7 +9,10 @@
  */
 
 import { packChunkKeyFast } from "@/code/World/Storage/ChunkKey.ts";
-import { ChunkWorkerPool } from "../workers/ChunkWorkerPool.ts";
+import {
+	ChunkWorkerPool,
+	TaskPriority,
+} from "../workers/ChunkWorkerPool.ts";
 import type { ServerWorldStorage } from "./ServerWorldStorage.ts";
 
 export interface ChunkData {
@@ -122,6 +125,7 @@ export class ChunkGenerationService {
 
 	private seed = "default";
 	private wasmEnabled = true;
+	private poolSizeOverride = 0;
 	private initialized = false;
 	private terminating = false;
 
@@ -137,8 +141,13 @@ export class ChunkGenerationService {
 
 	/**
 	 * Configure terrain generation before initialization starts.
+	 *
+	 * `poolSizeOverride` > 0 pins the worker thread count. 0 sizes it from
+	 * detected PHYSICAL cores (see workers/PhysicalCores.ts) — never from
+	 * `cpus().length`, which reports hardware threads and oversubscribes every
+	 * SMT machine.
 	 */
-	setSeed(seed: string, wasmEnabled = true): void {
+	setSeed(seed: string, wasmEnabled = true, poolSizeOverride = 0): void {
 		if (this.initialized || this.initPromise !== null) {
 			throw new Error(
 				"Chunk generation configuration cannot change after initialization has started",
@@ -147,6 +156,7 @@ export class ChunkGenerationService {
 
 		this.seed = seed;
 		this.wasmEnabled = wasmEnabled;
+		this.poolSizeOverride = poolSizeOverride;
 	}
 
 	/**
@@ -171,7 +181,11 @@ export class ChunkGenerationService {
 			return existing;
 		}
 
-		const initialization = this.pool.initialize(this.seed, this.wasmEnabled);
+		const initialization = this.pool.initialize(
+			this.seed,
+			this.wasmEnabled,
+			this.poolSizeOverride,
+		);
 
 		this.initPromise = initialization;
 
@@ -204,11 +218,16 @@ export class ChunkGenerationService {
 	/**
 	 * Generate one chunk, sharing any generation already in progress for the
 	 * same packed coordinate key.
+	 *
+	 * `priority` selects the worker-queue tier. Interactive (default) means a
+	 * player is waiting for this chunk right now; Background is for spawn
+	 * prewarm, which must never delay a player.
 	 */
 	generateChunk(
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
+		priority: TaskPriority = TaskPriority.Interactive,
 	): Promise<ChunkData> {
 		const key = packChunkKeyFast(chunkX, chunkY, chunkZ);
 		const existing = this.dedupMap.get(key);
@@ -217,7 +236,12 @@ export class ChunkGenerationService {
 			return existing;
 		}
 
-		const generation = this.generateAndPersist(chunkX, chunkY, chunkZ);
+		const generation = this.generateAndPersist(
+			chunkX,
+			chunkY,
+			chunkZ,
+			priority,
+		);
 
 		this.dedupMap.set(key, generation);
 
@@ -240,20 +264,92 @@ export class ChunkGenerationService {
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
+		priority: TaskPriority,
 	): Promise<ChunkData> {
 		await this.ensurePool();
 
-		const raw = await this.pool.dispatch(chunkX, chunkY, chunkZ);
+		const raw = await this.pool.dispatch(chunkX, chunkY, chunkZ, priority);
 
 		const data = toChunkData(chunkX, chunkY, chunkZ, raw);
 
 		/*
-		 * Persistence completes before the caller receives the chunk and before
-		 * the owning dedup entry is removed.
+		 * PERSISTENCE IS OFF THE DELIVERY CRITICAL PATH.
+		 *
+		 * This used to `await this.persistChunk(data)` before returning, which
+		 * put a full storage round-trip (serialize 32-98 KB, enqueue, LevelDB
+		 * batch commit) inside the time-to-first-byte for every chunk the client
+		 * is waiting on. Storage is not the throughput bottleneck, so paying for
+		 * it before responding only added latency to every chunk.
+		 *
+		 * Fire-and-forget is safe because the dedupMap entry for this key is
+		 * owned by the returned promise and removed on settlement, so a
+		 * concurrent request cannot slip past the write. A failure is logged and
+		 * the chunk is simply regenerated on next request — losing a cached copy
+		 * is strictly better than making the player wait for it.
 		 */
-		await this.persistChunk(data);
+		this.schedulePersist(data);
 
 		return data;
+	}
+
+	private schedulePersist(data: ChunkData): void {
+		const storage = this.storage;
+
+		if (storage === null) {
+			return;
+		}
+
+		/*
+		 * Background writes must stay BOUNDED.
+		 *
+		 * Delivery no longer waits on persistence, which means writes now run
+		 * concurrently with generation and with each other. Unbounded, a cold
+		 * join launches one serialize+compress per chunk with nothing holding
+		 * it back — and since writeChunkUnlocked now compresses, that is real
+		 * CPU (deflate over 32-98 KB) on the same box as the generation workers
+		 * and the game client. An unbounded write firehout starves exactly the
+		 * work that makes chunks appear.
+		 *
+		 * A small FIFO with a fixed number of concurrent writers bounds both
+		 * memory and CPU while keeping writes strictly behind the chunks the
+		 * client is actually waiting for.
+		 */
+		this.persistQueue.push(data);
+		this.drainPersistQueue();
+	}
+
+	private readonly persistQueue: ChunkData[] = [];
+	private persistWriters = 0;
+	private static readonly PERSIST_CONCURRENCY = 2;
+
+	private drainPersistQueue(): void {
+		while (
+			this.persistWriters < ChunkGenerationService.PERSIST_CONCURRENCY &&
+			this.persistQueue.length > 0
+		) {
+			const data = this.persistQueue.shift()!;
+			const storage = this.storage;
+
+			if (storage === null) {
+				continue;
+			}
+
+			this.persistWriters++;
+
+			void storage
+				.writeChunk(data)
+				.catch((error: unknown) => {
+					console.warn(
+						`[ChunkGeneration] background persist failed for ` +
+							`${data.chunkX},${data.chunkY},${data.chunkZ}:`,
+						error,
+					);
+				})
+				.finally(() => {
+					this.persistWriters--;
+					this.drainPersistQueue();
+				});
+		}
 	}
 
 	/**
@@ -268,6 +364,7 @@ export class ChunkGenerationService {
 	 */
 	async generateChunksBatch(
 		coords: readonly ChunkCoord[],
+		priority: TaskPriority = TaskPriority.Interactive,
 	): Promise<ChunkData[]> {
 		const coordinateCount = coords.length;
 
@@ -359,7 +456,7 @@ export class ChunkGenerationService {
 			 * dispatchOwnedBatch catches generation and persistence failures,
 			 * rejects all owned deferred promises, and removes their dedup keys.
 			 */
-			void this.dispatchOwnedBatch(owned);
+			void this.dispatchOwnedBatch(owned, priority);
 		}
 
 		/*
@@ -385,7 +482,10 @@ export class ChunkGenerationService {
 	/**
 	 * Generate, persist, and settle every chunk owned by one batch.
 	 */
-	private async dispatchOwnedBatch(owned: OwnedBatchEntry[]): Promise<void> {
+	private async dispatchOwnedBatch(
+		owned: OwnedBatchEntry[],
+		priority: TaskPriority,
+	): Promise<void> {
 		const ownedCount = owned.length;
 
 		try {
@@ -399,7 +499,7 @@ export class ChunkGenerationService {
 			 * This avoids allocating one additional coordinate object per
 			 * owned chunk.
 			 */
-			const rawResults = await this.pool.dispatchAll(owned);
+			const rawResults = await this.pool.dispatchAll(owned, priority);
 
 			if (rawResults.length !== ownedCount) {
 				throw new Error(
@@ -421,9 +521,21 @@ export class ChunkGenerationService {
 			}
 
 			/*
-			 * Keep dedup entries active until storage catches up.
+			 * PERSISTENCE IS OFF THE DELIVERY CRITICAL PATH.
+			 *
+			 * This used to `await this.persistChunks(chunks)` before resolving
+			 * any owned promise, so the caller — and therefore the client — paid
+			 * a full storage round-trip for the entire batch before a single
+			 * chunk could be sent. Storage is not the throughput bottleneck, and
+			 * the client already streams sub-batches as they complete, so paying
+			 * it up front only added latency to everything.
+			 *
+			 * Safe because the dedupMap entry for each key is owned by that
+			 * entry's promise and removed on settlement: a concurrent request
+			 * cannot slip past the write, and a failed write degrades to
+			 * regenerating the chunk rather than to dropping it.
 			 */
-			await this.persistChunks(chunks);
+			this.schedulePersistBatch(chunks);
 
 			for (let index = 0; index < ownedCount; index++) {
 				owned[index].resolve(chunks[index]);
@@ -449,6 +561,27 @@ export class ChunkGenerationService {
 		}
 	}
 
+	/*
+	 * Batch persistence shares the same bounded writer budget as single chunks.
+	 *
+	 * schedulePersistBatch deliberately funnels into the SAME queue rather than
+	 * calling persistChunks directly: persistChunks has its own concurrency of 8,
+	 * which combined with the single-chunk writers meant up to 10 concurrent
+	 * serialize+compress operations competing with generation for CPU. One shared
+	 * budget keeps the total bounded regardless of which path enqueued the work.
+	 */
+	private schedulePersistBatch(chunks: readonly ChunkData[]): void {
+		if (this.storage === null) {
+			return;
+		}
+
+		for (let i = 0; i < chunks.length; i++) {
+			this.persistQueue.push(chunks[i]);
+		}
+
+		this.drainPersistQueue();
+	}
+
 	private persistChunk(data: ChunkData): Promise<void> {
 		const storage = this.storage;
 
@@ -461,6 +594,11 @@ export class ChunkGenerationService {
 
 	/**
 	 * Persist a batch with bounded write concurrency.
+	 *
+	 * RETAINED, not used by the generation path: persistQueue + drainPersistQueue
+	 * own all generation writes now, because they are fire-and-forget and
+	 * therefore need one shared concurrency bound. Callers that must AWAIT a
+	 * batch write (world-save paths) still use this.
 	 */
 	private async persistChunks(
 		chunks: readonly ChunkData[],

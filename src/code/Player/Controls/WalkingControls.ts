@@ -6,7 +6,10 @@ import type { IControls } from "@/code/Interface/IControls";
 import { playMobDamage } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import { Chunk } from "@/code/World/Chunk/Chunk";
-import { validateChunksAround } from "@/code/World/Chunk/ChunkLoadingSystem";
+import {
+	dumpStreamingDiagnostics,
+	validateChunksAround,
+} from "@/code/World/Chunk/ChunkLoadingSystem";
 import { isUiOpen, UiFocus } from "../../Lib/GameRuntimeState";
 import type { BlockRaycastHit } from "../Hud/BlockHighlight/BlockRaycaster";
 import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
@@ -116,6 +119,14 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	public static KEY_CTRL = ["control"];
 	public static KEY_ALT = ["alt"];
 	public static KEY_PRINT_TRACE = ["o"];
+
+	/**
+	 * Dumps the full chunk-streaming pipeline state (queues, scheduler stage,
+	 * worker availability, chunk-state census) to the console. Distinct from
+	 * KEY_PRINT_TRACE, which only reports chunks that are missing a load
+	 * request. Use this one when streaming has visibly stopped.
+	 */
+	public static KEY_PRINT_STREAM_DIAG = ["p"];
 
 	public static MOUSE_WHEEL_UP = ["wheel_up"];
 	public static MOUSE_WHEEL_DOWN = ["wheel_down"];
@@ -589,6 +600,10 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 				Math.floor(this.#player.position.y / size),
 				Math.floor(this.#player.position.z / size),
 			);
+		}
+
+		if (WalkingControls.KEY_PRINT_STREAM_DIAG.includes(key)) {
+			dumpStreamingDiagnostics();
 		}
 
 		const hotbarSlot = WalkingControls.#HOTBAR_KEY_MAP.get(key);

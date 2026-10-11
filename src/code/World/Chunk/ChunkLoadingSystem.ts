@@ -28,6 +28,12 @@ import {
 	getBlockStateByWorldCoords as getBlockStateFromMutations,
 } from "./Loading/ChunkWorldMutations";
 import {
+	type StreamingSnapshot,
+	StreamingWatchdog,
+	surveyChunkStates,
+	surveyWorkerPool,
+} from "./Loading/StreamingWatchdog";
+import {
 	checkNewInfiniteSource,
 	scheduleBlockBreakWaterUpdates,
 	scheduleBlockPlaceWaterUpdates,
@@ -93,6 +99,8 @@ const debugStats: ChunkLoadingDebugStats = {
 	frameBudgetMs: Math.max(0.5, SETTING_PARAMS.CHUNK_LOADING_FRAME_BUDGET_MS),
 	lastProcessMs: 0,
 	totalProcessLoops: 0,
+	lastOrphanRescued: 0,
+	totalOrphanRescued: 0,
 	lastLoadedFromStorage: 0,
 	lastGenerated: 0,
 	lastHydrated: 0,
@@ -215,6 +223,10 @@ const processScheduler = new ChunkProcessScheduler({
 
 	onLoadRequestsDequeued: (requests) =>
 		streamingController.onLoadRequestsDequeued(requests),
+	onLoadRequestsRecovered: (requests) =>
+		streamingController.onLoadRequestsRecovered(requests),
+	onLoadRequestsAbandoned: (requests) =>
+		streamingController.onLoadRequestsAbandoned(requests),
 	recycleQueuedRequests: (requests) =>
 		streamingController.recycleQueuedRequests(requests),
 });
@@ -223,6 +235,63 @@ const processScheduler = new ChunkProcessScheduler({
 processScheduler.onContinuationSlice = () => {
 	ChunkWorkerPool.getInstance().pumpRemoteGeneration();
 };
+
+/**
+ * Observer that reports the exact internal state when streaming stops making
+ * progress despite having work queued. See StreamingWatchdog — every form of
+ * this bug looks identical from the outside, so the only reliable way to tell
+ * them apart is to capture the pipeline's own counters at the moment it stalls.
+ */
+const streamingWatchdog = new StreamingWatchdog();
+
+function collectStreamingSnapshot(): StreamingSnapshot {
+	const chunks = surveyChunkStates();
+	const workers = surveyWorkerPool();
+	const remote = ChunkWorkerPool.getInstance().getRemotePipelineStats();
+
+	return {
+		loadQueueLength: loadQueue.length,
+		unloadQueueLength: unloadQueueSet.size,
+		terrainQueueLength: workers.terrainQueueLength,
+		desiredStateCount: streamingController.getDesiredStateCount(),
+
+		schedulerProcessing: processScheduler.processing,
+		schedulerStage: processScheduler.currentStageName,
+		schedulerProgress: processScheduler.inFlightProgress,
+		idleWorkers: workers.idleWorkers,
+		workerCount: workers.workerCount,
+
+		chunkInstances: chunks.chunkInstances,
+		loadedChunks: chunks.loadedChunks,
+		loadedWithVoxels: chunks.loadedWithVoxels,
+		loadedWithoutVoxels: chunks.loadedWithoutVoxels,
+		unloadedScheduled: chunks.unloadedScheduled,
+
+		totalLoaded: debugStats.totalLoadedFromStorage,
+		totalGenerated: debugStats.totalGenerated,
+		totalHydrated: debugStats.totalHydrated,
+		totalUnloaded: debugStats.totalUnloaded,
+
+		remoteEnabled: remote.enabled,
+		remoteTaskQueue: remote.taskQueueLength,
+		remotePending: remote.pendingCount,
+		remotePendingCap: remote.pendingCap,
+		remoteParked: remote.parkedCount,
+	};
+}
+
+streamingWatchdog.attach(collectStreamingSnapshot);
+
+/** Number of storage awaits abandoned because they never settled. See scheduler. */
+export function getChunkIoTimeoutCount(): number {
+	return processScheduler.getIoTimeoutCount();
+}
+
+/** Force a streaming diagnostic dump to the console (bound to a debug key). */
+export function dumpStreamingDiagnostics(): void {
+	const snapshot = streamingWatchdog.lastSnapshot ?? collectStreamingSnapshot();
+	streamingWatchdog.report(snapshot);
+}
 
 function isEntityAlive(entity: ChunkBoundEntity): boolean {
 	return !(entity.isAlive && !entity.isAlive());
@@ -317,7 +386,8 @@ function buildQueuedIdSet(): Set<bigint> {
 	set.clear();
 
 	for (let i = 0; i < loadQueue.length; i++) {
-		set.add(loadQueue[i].chunk.id);
+		const chunk = loadQueue[i].chunk;
+		if (chunk) set.add(chunk.id);
 	}
 
 	return set;
@@ -347,6 +417,22 @@ export function validateChunksAround(
 		hasDesiredState: boolean;
 	}> = [];
 
+	/*
+	 * STALLFIX: chunks stuck in the loaded-but-never-hydrated shape (near LOD,
+	 * isLoaded, but no voxel data) were invisible to this validator because the
+	 * `chunk.isLoaded` check below skipped them — which is exactly the shape
+	 * produced by a lost hydration request, i.e. the "chunks stop appearing
+	 * after a while" symptom. Report them separately.
+	 */
+	const unHydrated: Array<{
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+		chunkId: bigint;
+		lodLevel: number;
+		isQueued: boolean;
+	}> = [];
+
 	const minChunkY = SETTING_PARAMS.MIN_CHUNK_Y;
 	const maxChunkY = minChunkY + SETTING_PARAMS.MAX_CHUNK_HEIGHT - 1;
 
@@ -371,13 +457,28 @@ export function validateChunksAround(
 				const hasDesiredState =
 					streamingController.getDesiredState(chunk.numericId) !== undefined;
 
-				if (!hasDesiredState || chunk.isLoaded || unloadQueueSet.has(chunk)) {
+				if (!hasDesiredState || unloadQueueSet.has(chunk)) {
 					continue;
 				}
 
 				const chunkId = chunk.id;
+				const isQueued = queuedIds.has(chunkId);
 
-				if (queuedIds.has(chunkId)) {
+				if (chunk.isLoaded) {
+					if (chunk.lodLevel <= 1 && !chunk.hasVoxelData && !isQueued) {
+						unHydrated.push({
+							chunkX: x,
+							chunkY: y,
+							chunkZ: z,
+							chunkId,
+							lodLevel: chunk.lodLevel,
+							isQueued,
+						});
+					}
+					continue;
+				}
+
+				if (isQueued) {
 					continue;
 				}
 
@@ -397,6 +498,13 @@ export function validateChunksAround(
 
 	if (missing.length > 0) {
 		console.warn("[ChunkLoadingSystem] Missing desired chunks:", missing);
+	}
+
+	if (unHydrated.length > 0) {
+		console.warn(
+			"[ChunkLoadingSystem] Stuck un-hydrated chunks (loaded at near LOD with no voxel data and no pending load request):",
+			unHydrated,
+		);
 	}
 }
 
@@ -425,6 +533,12 @@ export async function processFrameBudgetedStreamingWork(
 ): Promise<void> {
 	const sliceStart = performance.now();
 
+	// Safety net for chunks that want to load but lost their request. Runs
+	// every frame but is internally throttled to ORPHAN_SWEEP_INTERVAL_MS and
+	// capped per pass, so this is a single cheap timestamp comparison in the
+	// common case.
+	streamingController.sweepOrphanedChunks();
+
 	streamingController.processLoadedRefreshQueue(
 		playerChunkX,
 		playerChunkY,
@@ -437,6 +551,8 @@ export async function processFrameBudgetedStreamingWork(
 	if (!processScheduler.processing) {
 		await processScheduler.processQueues();
 	}
+
+	streamingWatchdog.tick(performance.now());
 
 	const elapsedMs = performance.now() - sliceStart;
 	const pool = ChunkWorkerPool.getInstance();
@@ -632,6 +748,10 @@ function updateSliceDebugStats(state: InFlightProcessState): void {
 	debugStats.lastHydrated = state.hydratedCount;
 	debugStats.lastUnloaded = state.unloadedCount;
 	debugStats.lastSaved = state.savedCount;
+	debugStats.lastOrphanRescued =
+		streamingController.getLastOrphanSweepRescued();
+	debugStats.totalOrphanRescued =
+		streamingController.getTotalOrphanSweepRescued();
 
 	refreshQueueDebugSnapshot();
 }

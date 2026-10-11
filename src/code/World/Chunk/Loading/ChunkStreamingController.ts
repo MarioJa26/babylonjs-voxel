@@ -172,6 +172,10 @@ function compareQueuedChunkRequestPriority(
 // Scratch array for LoadedChunkIndex.queryCollect, avoids generator overhead.
 const _queryScratch: Chunk[] = [];
 
+// Scratch set for sweepOrphanedChunks: chunk ids currently sitting in loadQueue.
+// Reused so the sweep allocates nothing.
+const _orphanSweepQueuedIds = new Set<number>();
+
 // PERF: relative-offset key for the refresh decision cache.
 // Multiplicative fields stay float-exact (< 2^53) while widening the ranges:
 // rx/rz hold ±2047 (render radii beyond that are unrealistic), ry ±127, and
@@ -352,6 +356,23 @@ export class ChunkStreamingController {
 	 */
 	private static readonly LOADED_REFRESH_FRAME_BUDGET_MS = 3.5;
 
+	/**
+	 * Upper bound on pooled QueuedChunkRequest objects.
+	 *
+	 * Requests are recycled a whole batch at a time but handed back out one at
+	 * a time, so an uncapped pool grows by ~CHUNK_LOAD_BATCH_LIMIT per
+	 * PrepareLoadBatch pass and never shrinks.
+	 */
+	private static readonly FREE_REQUEST_POOL_MAX = 512;
+
+	/**
+	 * Max orphaned chunks re-queued per orphan sweep (see sweepOrphanedChunks).
+	 */
+	private static readonly ORPHAN_SWEEP_MAX_PER_PASS = 128;
+
+	/** Minimum ms between orphan sweeps — the sweep is a safety net, not a hot path. */
+	private static readonly ORPHAN_SWEEP_INTERVAL_MS = 250;
+
 	private streamRevision = 0;
 
 	/** Phase-0 instrumentation: per-stage ms of the last updateChunksAround. */
@@ -364,6 +385,16 @@ export class ChunkStreamingController {
 		return this.lastTimings;
 	}
 
+	/** Chunks re-queued by the most recent orphan sweep (see sweepOrphanedChunks). */
+	public getLastOrphanSweepRescued(): number {
+		return this._lastOrphanSweepRescued;
+	}
+
+	/** Total chunks re-queued by orphan sweeps this session. */
+	public getTotalOrphanSweepRescued(): number {
+		return this._totalOrphanSweepRescued;
+	}
+
 	// Packed as desiredLod + revision * 8.
 	// Keyed by chunk.numericId, because number keys avoid BigInt box churn.
 	private desiredStates = new Map<number, number>();
@@ -374,9 +405,27 @@ export class ChunkStreamingController {
 	private loadQueueRequestMap = new Map<number, QueuedChunkRequest>();
 	private readonly _freeRequests: QueuedChunkRequest[] = [];
 
+	/**
+	 * Numeric ids of chunks whose request the scheduler has dequeued and is
+	 * currently processing (storage read in flight, or awaiting hydration).
+	 *
+	 * Those chunks are in neither `loadQueue` nor the worker pool, so the
+	 * orphan sweep would otherwise mistake them for strays and queue a second
+	 * request, making the chunk load twice per pass. Cleared when the batch is
+	 * recycled, or when recoverProcessState puts it back on `loadQueue`.
+	 */
+	private readonly _loadRequestsInFlight = new Set<number>();
+
 	private loadedRefreshQueue: Chunk[] = [];
 	private loadedRefreshQueueSet = new Set<number>();
 	private loadedRefreshQueueHead = 0;
+
+	/** Timestamp (performance.now) of the last orphan sweep; see sweepOrphanedChunks. */
+	private _lastOrphanSweepMs = -Infinity;
+
+	/** Chunks rescued by the last orphan sweep pass, and the running total. */
+	private _lastOrphanSweepRescued = 0;
+	private _totalOrphanSweepRescued = 0;
 
 	private _cachedCaveLodRuleSet: ChunkLodRuleSet | null = null;
 	private _cachedOutdoorLodRuleSet: ChunkLodRuleSet | null = null;
@@ -394,6 +443,11 @@ export class ChunkStreamingController {
 
 	public getDesiredState(numericId: number): number | undefined {
 		return this.desiredStates.get(numericId);
+	}
+
+	/** Size of the desired-state map; a runaway value means pruning has stalled. */
+	public getDesiredStateCount(): number {
+		return this.desiredStates.size;
 	}
 
 	private trackDesiredState(
@@ -1013,6 +1067,118 @@ export class ChunkStreamingController {
 		}
 	}
 
+	/**
+	 * Re-queue chunks that want to be loaded but have no outstanding request.
+	 *
+	 * STALLFIX. `updateChunksAround` — the only thing that decides what *should*
+	 * exist — runs exclusively when the player's chunk coordinate changes
+	 * (PlayerLoopController.updateChunksAroundPlayer). Within a run it only
+	 * revisits:
+	 *   - entries already in `loadQueue`          (reconcile)
+	 *   - the leading edge of the movement        (processMovementRings)
+	 *   - chunks that are already loaded          (enqueueLoadedChunksForRefresh)
+	 *
+	 * A chunk that reaches `isTerrainScheduled === true` while NOT loaded and
+	 * NOT in `loadQueue` is therefore invisible to all three, forever:
+	 * PrepareLoadBatch removes a request from `loadQueue` and drops it when its
+	 * revision no longer matches the recorded desired state, without clearing
+	 * the flag. Standing still (or moving through the interior, which only ever
+	 * scans the new edge) never revisits that coordinate again, so the chunk
+	 * stays isTerrainScheduled + !isLoaded forever and its world hole only ever
+	 * heals after a teleport that re-runs the full initial shell.
+	 *
+	 * The second rescued shape is the mirror image: loaded, near LOD, but with
+	 * no voxel data (a hydration request that never landed). Those are normally
+	 * re-detected by enqueueLoadedChunksForRefresh — but that only runs inside
+	 * updateChunksAround, so while the player stands still they are never
+	 * re-examined either.
+	 *
+	 * This is a safety net, not the primary path: it is throttled
+	 * (ORPHAN_SWEEP_INTERVAL_MS), capped per pass (ORPHAN_SWEEP_MAX_PER_PASS),
+	 * and bounded by wall-clock, so it can never dominate a frame.
+	 */
+	public sweepOrphanedChunks(): number {
+		const nowMs = performance.now();
+		if (nowMs - this._lastOrphanSweepMs < ChunkStreamingController.ORPHAN_SWEEP_INTERVAL_MS) {
+			return this._lastOrphanSweepRescued;
+		}
+		this._lastOrphanSweepMs = nowMs;
+
+		const loadQueue = this.adapter.getLoadQueue();
+		const queuedIds = _orphanSweepQueuedIds;
+		queuedIds.clear();
+		for (let i = 0; i < loadQueue.length; i++) {
+			const queuedChunk = loadQueue[i].chunk;
+			if (queuedChunk) queuedIds.add(queuedChunk.numericId);
+		}
+
+		const pool = ChunkWorkerPool.getInstance();
+		const unloadQueueSet = this.adapter.getUnloadQueueSet();
+		const revision = this.streamRevision;
+		const budgetMs = ChunkStreamingController.LOADED_REFRESH_FRAME_BUDGET_MS;
+		const startedMs = nowMs;
+
+		let rescued = 0;
+
+		for (const chunk of Chunk.chunkInstances.values()) {
+			if (rescued >= ChunkStreamingController.ORPHAN_SWEEP_MAX_PER_PASS) break;
+			if (rescued !== 0 && performance.now() - startedMs >= budgetMs) break;
+
+			// Only chunks that still claim to want loading are candidates; a
+			// chunk with the flag clear is either unloaded-by-design (culled) or
+			// already resolved, and re-queuing it would resurrect dead chunks.
+			if (!chunk.isTerrainScheduled) continue;
+			if (queuedIds.has(chunk.numericId)) continue;
+
+			// An unload in progress wins: rescuing would pull the chunk straight
+			// back off the dispose queue (ensureChunkQueuedForLoad deletes it from
+			// the unload set), so the chunk could never be freed.
+			if (unloadQueueSet.has(chunk)) continue;
+
+			// The scheduler already dequeued this chunk's request and is awaiting
+			// its storage read — re-queueing now would load it twice per pass.
+			if (this._loadRequestsInFlight.has(chunk.numericId)) continue;
+
+			if (!chunk.isLoaded) {
+				// Already handed to a terrain worker — leave it alone, otherwise
+				// the chunk becomes both a storage load and a generation task.
+				if (pool.isTerrainTaskQueued(chunk)) continue;
+
+				this.rescueChunkLoad(chunk, revision);
+				rescued++;
+				continue;
+			}
+
+			// Loaded at near LOD with no voxels: the hydration request was lost.
+			if (chunk.lodLevel <= 1 && !chunk.hasVoxelData) {
+				this.rescueChunkLoad(chunk, revision);
+				rescued++;
+			}
+		}
+
+		queuedIds.clear();
+
+		this._lastOrphanSweepRescued = rescued;
+		this._totalOrphanSweepRescued += rescued;
+
+		if (rescued > 0) {
+			this.adapter.onQueueSnapshotChanged?.();
+		}
+
+		return rescued;
+	}
+
+	/**
+	 * Re-queue a single orphaned chunk, reusing its recorded desired LOD when one
+	 * is still available so the new request is valid on the first attempt.
+	 */
+	private rescueChunkLoad(chunk: Chunk, revision: number): void {
+		const desired = this.desiredStates.get(chunk.numericId);
+		const desiredLod = desired !== undefined ? desired & 0b111 : chunk.lodLevel;
+
+		this.ensureChunkQueuedForLoad(chunk, desiredLod, revision, desiredLod <= 1);
+	}
+
 	private dequeueLoadedRefreshChunk(): Chunk | undefined {
 		const head = this.loadedRefreshQueueHead;
 
@@ -1106,6 +1272,14 @@ export class ChunkStreamingController {
 
 		if (chunk.isLoaded && previousLod === desiredLod) {
 			if (desiredLod <= 1 && !chunk.hasVoxelData) {
+				// STALLFIX: this branch used to be the only queueing path that
+				// skipped trackDesiredState, so its request carried the current
+				// streamRevision while desiredStates still held an older (or
+				// pruned) one — and PrepareLoadBatch drops every request whose
+				// revision disagrees. The chunk (loaded at near LOD, never
+				// hydrated) was therefore re-queued and silently discarded on
+				// every single frame, forever. Tracking now happens inside
+				// ensureChunkQueuedForLoad, so it cannot be missed again.
 				this.ensureChunkQueuedForLoad(chunk, desiredLod, revision, true);
 				this.tryApplyCachedLodTransitionMesh(chunk, desiredLod);
 			} else if (chunk.isDirty && !chunk.hasVoxelData && desiredLod >= 2) {
@@ -1549,6 +1723,21 @@ export class ChunkStreamingController {
 			return;
 		}
 
+		// STALLFIX: this is the single choke point through which every load
+		// request enters `loadQueue`, so it is also where the matching desired
+		// state must be published. ChunkProcessScheduler.PrepareLoadBatch drops
+		// any request whose `revision` disagrees with the recorded desired state
+		// (revision + lod packed together). Callers that queued without
+		// tracking produced requests that were silently discarded on every
+		// attempt, leaving their chunk stuck at isTerrainScheduled=true with no
+		// request and no way back — see applyTargetChunkDecision's early-return
+		// branch, which skipped tracking entirely.
+		this.trackDesiredState(
+			chunk.numericId,
+			packLodRevision(desiredLod, revision),
+			revision,
+		);
+
 		const loadQueue = this.adapter.getLoadQueue();
 		const numericId = chunk.numericId;
 		let request = this.loadQueueRequestMap.get(numericId);
@@ -1593,7 +1782,52 @@ export class ChunkStreamingController {
 		requests: ReadonlyArray<QueuedChunkRequest>,
 	): void {
 		for (let i = 0; i < requests.length; i++) {
-			this.loadQueueRequestMap.delete(requests[i].chunk.numericId);
+			const request = requests[i];
+			if (request.chunk) {
+				this.loadQueueRequestMap.delete(request.chunk.numericId);
+				this._loadRequestsInFlight.add(request.chunk.numericId);
+			}
+		}
+	}
+
+	/**
+	 * Mirror of onLoadRequestsDequeued for requests that the scheduler pushed
+	 * back into `loadQueue` after a failed pass. Without this they would be
+	 * invisible to ensureChunkQueuedForLoad, which would then allocate a second
+	 * request object for a chunk that already has one queued.
+	 */
+	public onLoadRequestsRecovered(
+		requests: ReadonlyArray<QueuedChunkRequest>,
+	): void {
+		for (let i = 0; i < requests.length; i++) {
+			const request = requests[i];
+			if (request.chunk) {
+				this.loadQueueRequestMap.set(request.chunk.numericId, request);
+				this._loadRequestsInFlight.delete(request.chunk.numericId);
+			}
+		}
+	}
+
+	/**
+	 * Terminal cleanup for a batch that is being dropped without being recycled
+	 * (scheduler recovery failed). Clears the in-flight marks so the orphan sweep
+	 * can rescue those chunks, and evicts any stale request-map entry so a later
+	 * ensureChunkQueuedForLoad allocates a fresh request instead of mutating one
+	 * that is not on `loadQueue`.
+	 */
+	public onLoadRequestsAbandoned(
+		requests: ReadonlyArray<QueuedChunkRequest>,
+	): void {
+		for (let i = 0; i < requests.length; i++) {
+			const request = requests[i];
+			if (!request.chunk) continue;
+
+			const numericId = request.chunk.numericId;
+			this._loadRequestsInFlight.delete(numericId);
+
+			if (this.loadQueueRequestMap.get(numericId) === request) {
+				this.loadQueueRequestMap.delete(numericId);
+			}
 		}
 	}
 
@@ -1602,15 +1836,42 @@ export class ChunkStreamingController {
 	): void {
 		for (let i = 0; i < requests.length; i++) {
 			const r = requests[i] as QueuedChunkRequest;
-			// Clear chunk reference to avoid retaining disposed chunks; will be reassigned on reuse.
-			(r as unknown as { chunk: Chunk | null }).chunk =
-				null as unknown as Chunk;
-			this._freeRequests.push(r);
+
+			// The batch finished processing (or was recovered back onto
+			// loadQueue), so it is no longer in flight either way. Done before
+			// the pool-cap check so a full pool cannot leak in-flight ids.
+			if (r.chunk) {
+				this._loadRequestsInFlight.delete(r.chunk.numericId);
+			}
+
+			// STALLFIX: do NOT null `chunk` here.
+			//
+			// ChunkProcessScheduler.recoverProcessState() pushes the in-flight
+			// batch back into `loadQueue`. clearLoadState recycles whatever is
+			// left in state.loadBatch on the next pass, and used to run against
+			// requests that were live in `loadQueue` again. Nulling their chunk
+			// made the next PrepareLoadBatch dereference null (TypeError), whose
+			// recovery path dereferenced null again and escaped the catch handler
+			// with shouldContinue still false — permanently stopping the rAF
+			// pump, so no chunk ever loaded again.
+			//
+			// Pooling one extra strong reference per free slot is bounded (see
+			// FREE_REQUEST_POOL_MAX) and cheap; a permanently dead loader is not.
+			//
+			// Bounded on purpose: clearLoadState recycles a whole batch (up to
+			// CHUNK_LOAD_BATCH_LIMIT) on every PrepareLoadBatch, while only a
+			// handful of those are ever handed back out by
+			// ensureChunkQueuedForLoad. Uncapped, the pool grew by hundreds of
+			// entries per pass for the life of the session.
+			if (this._freeRequests.length < ChunkStreamingController.FREE_REQUEST_POOL_MAX) {
+				this._freeRequests.push(r);
+			}
 		}
 	}
 
 	public onChunkDisposed(numericId: number): void {
 		this.loadedRefreshQueueSet.delete(numericId);
+		this._loadRequestsInFlight.delete(numericId);
 	}
 
 	private sortLoadQueue(): void {

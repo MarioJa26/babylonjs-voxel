@@ -1,5 +1,3 @@
-// Add these module-level reusable scratch buffers near _indexedScratch.
-
 import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import { playFootstep } from "../Audio/SurfaceAudio";
 import { CustomBoat } from "../Entities/CustomBoat";
@@ -24,6 +22,7 @@ import { tickStationRuntime } from "../World/BlockInventory/StationRuntime";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
 	getBlockByWorldCoords,
+	getChunkIoTimeoutCount,
 	getDebugStats,
 	processFrameBudgetedStreamingWork,
 	updateChunksAround,
@@ -75,9 +74,10 @@ import { updateHeldItemView } from "./Inventory/HeldItemView";
 import type { PlayerCamera } from "./PlayerCamera";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
 
-// They replace the object-allocation + full-sort path for Worker Dist.
-const _topDispatchIndices = [-1, -1, -1, -1];
-const _topDispatchCounts = [0, 0, 0, 0];
+// Shared scratch is safe because debug-HUD formatting is synchronous and
+// neither helper retains these arrays.
+const _topDispatchIndices = new Int32Array(4);
+const _topDispatchCounts = new Float64Array(4);
 
 const MOB_TYPE_NAMES: Record<number, string> = {
 	[MobTypeId.Chicken]: "Chicken",
@@ -1031,6 +1031,22 @@ export class PlayerLoopController {
 			`load:${loadStats.lastLoadedFromStorage} gen:${loadStats.lastGenerated} hyd:${loadStats.lastHydrated} unload:${loadStats.lastUnloaded} save:${loadStats.lastSaved}`,
 			"chunks",
 		);
+		// Non-zero here means chunks wanted to load but had lost their request
+		// and the safety net re-queued them. A climbing total while standing
+		// still is the "chunk loading stopped" symptom.
+		PlayerHud.updateDebugInfo(
+			"Orphan Rescue",
+			`${loadStats.lastOrphanRescued} (total ${loadStats.totalOrphanRescued})`,
+			"chunks",
+		);
+		// IO timeouts mean a storage await never settled and had to be abandoned.
+		// Any non-zero value is a bug worth reporting — press P for the full dump.
+		const ioTimeouts = getChunkIoTimeoutCount();
+		PlayerHud.updateDebugInfo(
+			"Chunk IO Timeout",
+			ioTimeouts > 0 ? `${ioTimeouts} [press P]` : "0",
+			"chunks",
+		);
 		PlayerHud.updateDebugInfo(
 			"Worker Queues",
 			`T:${workerStats.terrainQueueLength} R:${workerStats.remeshQueueLength} P:${workerStats.lodPrecomputeQueueLength} D:${workerStats.distantTerrainQueueLength} DL:${workerStats.deferredLightingQueueLength} busy:${workerStats.busyWorkers}/${workerStats.workerCount} idle:${workerStats.idleWorkers}`,
@@ -1284,24 +1300,27 @@ export class PlayerLoopController {
 		}
 	}
 
+	/**
+	 * Formats the four workers with the highest dispatch counts.
+	 *
+	 * Runs in O(n) time with O(1) reusable storage, replacing an indexed-object
+	 * allocation followed by a full O(n log n) sort.
+	 */
 	#formatTopDispatchWorkers(counts: readonly number[]): string {
-		_topDispatchIndices[0] = -1;
-		_topDispatchIndices[1] = -1;
-		_topDispatchIndices[2] = -1;
-		_topDispatchIndices[3] = -1;
-
-		_topDispatchCounts[0] = 0;
-		_topDispatchCounts[1] = 0;
-		_topDispatchCounts[2] = 0;
-		_topDispatchCounts[3] = 0;
+		_topDispatchIndices.fill(-1);
+		_topDispatchCounts.fill(0);
 
 		for (let index = 0; index < counts.length; index++) {
 			const count = counts[index];
+
+			// Zero-count workers are omitted. Once all four slots are occupied,
+			// values no greater than the current fourth place cannot enter.
 			if (count <= 0 || count <= _topDispatchCounts[3]) {
 				continue;
 			}
 
 			let slot = 3;
+
 			while (slot > 0 && count > _topDispatchCounts[slot - 1]) {
 				_topDispatchCounts[slot] = _topDispatchCounts[slot - 1];
 				_topDispatchIndices[slot] = _topDispatchIndices[slot - 1];
@@ -1312,37 +1331,44 @@ export class PlayerLoopController {
 			_topDispatchIndices[slot] = index;
 		}
 
-		let out = "";
-		for (let i = 0; i < 4; i++) {
-			const index = _topDispatchIndices[i];
-			if (index < 0) {
+		let result = "";
+
+		for (let slot = 0; slot < 4; slot++) {
+			const workerIndex = _topDispatchIndices[slot];
+
+			if (workerIndex < 0) {
 				break;
 			}
 
-			if (out.length > 0) {
-				out += " ";
+			if (result.length !== 0) {
+				result += " ";
 			}
 
-			out += `${index}:${_topDispatchCounts[i]}`;
+			result += `${workerIndex}:${_topDispatchCounts[slot]}`;
 		}
 
-		return out || "-";
+		return result || "-";
 	}
 
+	/**
+	 * Formats at most the eight most recently dispatched worker indices.
+	 * Iterates only the required suffix and creates no intermediate array.
+	 */
 	#formatRecentWorkers(indices: readonly number[]): string {
-		const len = indices.length;
-		const start = len > 8 ? len - 8 : 0;
+		const length = indices.length;
 
-		let out = "";
-		for (let i = start; i < len; i++) {
-			if (i > start) {
-				out += ",";
-			}
-
-			out += String(indices[i]);
+		if (length === 0) {
+			return "-";
 		}
 
-		return out || "-";
+		const start = length > 8 ? length - 8 : 0;
+		let result = String(indices[start]);
+
+		for (let index = start + 1; index < length; index++) {
+			result += `,${indices[index]}`;
+		}
+
+		return result;
 	}
 
 	static readonly #DIRECTION_NAMES = [

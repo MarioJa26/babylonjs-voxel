@@ -26,6 +26,17 @@ export interface ServerConfig {
 	wasmEnabled: boolean;
 	worldStoragePath: string;
 	chunkCacheSize: number;
+	/**
+	 * Number of CPU-bound chunk-generation worker threads.
+	 *
+	 * 0 = auto: sized from DETECTED PHYSICAL CORES, not logical threads (see
+	 * workers/PhysicalCores.ts). Sizing from `cpus().length` oversubscribes every
+	 * SMT machine, and this server very often shares a box with the game client.
+	 *
+	 * Override when co-locating with a client: leave roughly half the physical
+	 * cores for the client plus the server's main thread.
+	 */
+	chunkWorkerThreads: number;
 }
 
 const DEFAULTS: ServerConfig = {
@@ -44,6 +55,8 @@ const DEFAULTS: ServerConfig = {
 	wasmEnabled: true,
 	worldStoragePath: "server-data",
 	chunkCacheSize: 16384,
+	// 0 = auto from physical cores.
+	chunkWorkerThreads: 0,
 };
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
@@ -121,6 +134,13 @@ export function loadServerConfig(
 		chunkCacheSize: Math.max(
 			0,
 			parseIntSafe(props["chunk-cache-size"], DEFAULTS.chunkCacheSize),
+		),
+		chunkWorkerThreads: Math.max(
+			0,
+			parseIntSafe(
+				props["chunk-worker-threads"],
+				DEFAULTS.chunkWorkerThreads,
+			),
 		),
 	};
 

@@ -159,11 +159,25 @@ export class RemoteChunkProvider {
 	// requests created before the increment can no longer be resolved by
 	// (potentially stale) late responses.
 	private epoch = 0;
-	// Single nearest-deadline sweep timer for batch chunk request timeouts.
-	// Instead of one setTimeout per chunk, one timer fires at the earliest
-	// pending deadline and rejects everything that has expired.
+	/*
+	 * STALLFIX — heartbeat sweep, not a scheduled one-shot.
+	 *
+	 * This used to arm a single timer at the earliest pending deadline and
+	 * re-arm it after each pass. That makes "every pending request is rejected
+	 * within timeoutMs" depend on EVERY path re-arming correctly, and the sweep
+	 * tail had a reachable case where it armed nothing (empty heap, non-empty
+	 * pending). Requests then hung with no timeout at all — the reported
+	 * symptom. That defect proved anything which can drop an arm is a latent
+	 * permanent hang.
+	 *
+	 * A periodic heartbeat cannot be broken that way: if a pass fails to re-arm,
+	 * the next one is already scheduled, and timeouts degrade to at most one
+	 * interval of extra latency instead of to infinity. The heap is kept for
+	 * efficiency, so the per-pass cost stays O(expired + ghosts) rather than
+	 * O(pending).
+	 */
 	private sweepTimer: ReturnType<typeof setTimeout> | null = null;
-	private nextSweepDeadline = Number.POSITIVE_INFINITY;
+	private static readonly SWEEP_INTERVAL_MS = 1000;
 
 	// Reused decoder + scratch for chunk messages — avoids per-packet
 	// BinaryDecoder + per-entry {cx,cy,cz,version} allocations on the hot path.
@@ -893,7 +907,6 @@ export class RemoteChunkProvider {
 		if (this.sweepTimer !== null) {
 			clearTimeout(this.sweepTimer);
 			this.sweepTimer = null;
-			this.nextSweepDeadline = Number.POSITIVE_INFINITY;
 		}
 
 		this.heapDeadlines.length = 0;
@@ -1217,7 +1230,7 @@ export class RemoteChunkProvider {
 
 		this.inFlight.set(key, promise);
 		this.heapPush(deadline, key);
-		this.scheduleSweepAt(deadline);
+		this.scheduleSweep();
 
 		try {
 			this.sendRequest(cx, cy, cz, cachedVersion);
@@ -1366,7 +1379,7 @@ export class RemoteChunkProvider {
 			return results;
 		}
 
-		this.scheduleSweepAt(deadline);
+		this.scheduleSweep();
 
 		try {
 			this.client.sendChunkRequestBatch(requests);
@@ -1523,6 +1536,36 @@ export class RemoteChunkProvider {
 		const heapSize = this.heapDeadlines.length;
 		const pendingSize = this.pending.size;
 
+		/*
+		 * STALLFIX — correctness condition, checked BEFORE the size heuristics.
+		 *
+		 * Every live `pending` entry must own exactly one heap slot, because
+		 * that slot is the only thing able to reject it on timeout. The pop loop
+		 * in sweepPending consumes a slot whenever the heap root expires, and
+		 * discards it when the slot's deadline does not match the live entry's
+		 * (the ABA case described above). Discarding is right for the entry the
+		 * slot was guarding, but the slot is still gone — so a live request can
+		 * end up owning no slot at all.
+		 *
+		 * sweepPending's tail used to be:
+		 *     if (deadlines.length > 0) scheduleSweepAt(deadlines[0]);
+		 * With an empty heap and a non-empty `pending`, no timer was armed and
+		 * nothing remained to arm one, so those promises hung forever: no
+		 * resolve, no reject, no 30 s timeout. Nothing upstream could unblock
+		 * them except the requester's own watchdog — which is exactly the
+		 * reported symptom, chunks that never arrive and never report an
+		 * error. The ghost-ratio heuristics could not repair it either, since
+		 * HEAP_COMPACT_MIN_SIZE deliberately skips small heaps, and a heap that
+		 * has lost its live slots is precisely a small mostly-ghost heap.
+		 *
+		 * A heap smaller than the pending set is always wrong and always cheap
+		 * to repair, so repair it unconditionally.
+		 */
+		if (heapSize < pendingSize) {
+			this.rebuildHeapFromPending();
+			return;
+		}
+
 		if (
 			heapSize <= RemoteChunkProvider.HEAP_COMPACT_MIN_SIZE ||
 			heapSize <= pendingSize * RemoteChunkProvider.HEAP_COMPACT_GHOST_RATIO
@@ -1530,6 +1573,15 @@ export class RemoteChunkProvider {
 			return;
 		}
 
+		this.rebuildHeapFromPending();
+	}
+
+	/**
+	 * Drop every heap slot and re-add one per live pending entry. O(pending)
+	 * pushes into an empty array, and the only way to restore the "every live
+	 * request is scheduled" invariant after slots have been lost.
+	 */
+	private rebuildHeapFromPending(): void {
 		this.heapDeadlines.length = 0;
 		this.heapKeys.length = 0;
 
@@ -1539,39 +1591,24 @@ export class RemoteChunkProvider {
 	}
 
 	/**
-	 * Ensure the sweep timer fires at or before `deadline`. No-op if a
-	 * timer already scheduled for an earlier-or-equal time exists. Same
-	 * coalescing behavior as the old scheduleSweep, just without the O(n)
-	 * scan to discover `deadline` — every caller already knows it, since
-	 * it's the deadline of the entry/batch it just inserted.
+	 * Arm the next heartbeat sweep. Idempotent — a sweep is already pending, so
+	 * there is nothing to do. Safe to call from every insert path without
+	 * coalescing logic: it never reschedules or cancels an armed timer, so it
+	 * cannot strand one.
 	 */
-	private scheduleSweepAt(deadline: number): void {
-		if (this.sweepTimer !== null && deadline >= this.nextSweepDeadline) {
-			return;
-		}
-
-		if (this.sweepTimer !== null) {
-			clearTimeout(this.sweepTimer);
-		}
-
-		this.nextSweepDeadline = deadline;
-
-		const now = performance.now();
-		const delay = deadline <= now ? 0 : deadline - now;
+	private scheduleSweep(): void {
+		if (this.sweepTimer !== null) return;
 
 		this.sweepTimer = setTimeout(() => {
 			this.sweepTimer = null;
-			this.nextSweepDeadline = Number.POSITIVE_INFINITY;
 			this.sweepPending();
-		}, delay);
+		}, RemoteChunkProvider.SWEEP_INTERVAL_MS);
 	}
 
 	/**
-	 * If no pending requests remain, cancel the timer and drop the heap
-	 * outright — anything left in it is necessarily a ghost. Called after
-	 * every removal-only code path; insertions always (re)schedule
-	 * explicitly via scheduleSweepAt, so no separate "insert" branch is
-	 * needed here.
+	 * If no pending requests remain, cancel the heartbeat and drop the heap
+	 * outright — anything left in it is necessarily a ghost. Called after every
+	 * removal-only code path.
 	 */
 	private clearSweepIfEmpty(): void {
 		if (this.pending.size !== 0) return;
@@ -1583,17 +1620,16 @@ export class RemoteChunkProvider {
 			clearTimeout(this.sweepTimer);
 			this.sweepTimer = null;
 		}
-
-		this.nextSweepDeadline = Number.POSITIVE_INFINITY;
 	}
 
 	/**
-	 * Pop and reject every pending entry whose deadline has elapsed, then
-	 * reschedule for the next real deadline. A popped heap entry only
-	 * rejects something if `pending` still has that exact key AND its
-	 * stored deadline still matches this heap entry's — without that
-	 * match check, a stale ghost could reject a newer, still-live request
-	 * for the same key.
+	 * Reject every pending entry whose deadline has elapsed, then re-arm the
+	 * heartbeat while anything is still pending.
+	 *
+	 * A popped heap entry only rejects something if `pending` still has that
+	 * exact key AND its stored deadline still matches this heap entry's —
+	 * without that match check, a stale ghost could reject a newer, still-live
+	 * request for the same key.
 	 */
 	private sweepPending(): void {
 		const now = performance.now();
@@ -1636,8 +1672,13 @@ export class RemoteChunkProvider {
 			return;
 		}
 
-		if (deadlines.length > 0) {
-			this.scheduleSweepAt(deadlines[0]);
-		}
+		/*
+		 * Always re-arm while requests remain. This is unconditional on purpose:
+		 * the heartbeat makes a missed arm cost one interval of latency rather
+		 * than a permanent hang, so there is no reason to gate the re-arm on any
+		 * other condition (heap contents, a "next deadline" comparison). Any such
+		 * gate is a place where the next bug becomes an unbounded hang again.
+		 */
+		this.scheduleSweep();
 	}
 }

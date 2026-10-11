@@ -101,8 +101,33 @@ export function computeBorderSkirtMasks(chunk: Chunk): number {
 }
 
 export class ChunkWorker {
-	private terrainWorker: Worker; // terrain + distant terrain + light
+	/*
+	 * Terrain / distant-terrain / light worker, created LAZILY.
+	 *
+	 * This worker exists solely for locally-generated terrain. In multiplayer the
+	 * server is authoritative and terrain arrives over the network instead, so
+	 * TaskType.Terrain is essentially never dispatched — meaning this thread sat
+	 * idle for the whole session while still occupying a core's worth of
+	 * scheduler budget.
+	 *
+	 * That mattered because the pool is sized in ChunkWorker units and each
+	 * unit used to cost TWO threads (this one plus the mesh worker). Pool sizing
+	 * therefore had to assume both were always busy, so multiplayer paid for
+	 * idle terrain capacity by having its real mesh capacity cut to stay inside
+	 * the same thread budget.
+	 *
+	 * Deferring construction makes a ChunkWorker cost one thread until terrain
+	 * is genuinely needed, so the pool can be sized for the work that actually
+	 * runs.
+	 */
+	private _terrainWorker: Worker | null = null;
 	private voxelWorker: Worker; // voxel mesh
+
+	private readonly workerIndex: number;
+	private readonly onTerrainMessage: (
+		event: MessageEvent<WorkerResponseData>,
+	) => void;
+	private onWorkerError: (ev: ErrorEvent | Event) => void = () => {};
 
 	private distantTerrainSharedInitialized = false;
 	private lightSharedInitialized = false;
@@ -271,29 +296,62 @@ export class ChunkWorker {
 		onMessageTerrain: (event: MessageEvent<WorkerResponseData>) => void,
 		onMessageMesh: (event: MessageEvent<MeshWorkerResponse>) => void,
 	) {
-		// Terrain / distant terrain / lighting worker
-		this.terrainWorker = new Worker(
-			new URL("./chunk.worker.ts", import.meta.url),
-			{ type: "module", name: `chunk-terrain-${workerIndex}` },
-		);
-		this.terrainWorker.onmessage = onMessageTerrain;
+		this.workerIndex = workerIndex;
+this.onTerrainMessage = onMessageTerrain;
 
 		// Voxel mesh worker – assign directly to avoid per-worker closure (was 50 kB / frame)
 		this.voxelWorker = new Worker(
 			new URL("./voxel.worker.ts", import.meta.url),
-			{ type: "module", name: `chunk-voxel-${workerIndex}` },
+			{ type: "module", name: `chunk-voxel-${this.workerIndex}` },
 		);
 		this.voxelWorker.onmessage = onMessageMesh as any;
 	}
 
+	/**
+	 * The terrain worker, constructed on first use.
+	 *
+	 * Worker construction is a one-time cost on a cold path (the first terrain
+	 * dispatch), so laziness is effectively free while saving an idle thread for
+	 * the entire session in multiplayer.
+	 */
+	private terrain(): Worker {
+		let worker = this._terrainWorker;
+
+		if (worker === null) {
+			worker = new Worker(new URL("./chunk.worker.ts", import.meta.url), {
+				type: "module",
+				name: `chunk-terrain-${this.workerIndex}`,
+			});
+			worker.onmessage = this.onTerrainMessage;
+			worker.onerror = this.onWorkerError;
+
+			this._terrainWorker = worker;
+		}
+
+		return worker;
+	}
+
+	/** True once the terrain worker has actually been created. */
+	public get terrainWorkerActive(): boolean {
+		return this._terrainWorker !== null;
+	}
+
 	public setOnError(handler: (ev: ErrorEvent | Event) => void): void {
-		this.terrainWorker.onerror = handler;
+		this.onWorkerError = handler;
+		if (this._terrainWorker !== null) {
+			this._terrainWorker.onerror = handler;
+		}
 		this.voxelWorker.onerror = handler;
 	}
 
 	public terminate(): void {
 		this.distantTerrainSharedInitialized = false;
-		this.terrainWorker.terminate();
+
+		if (this._terrainWorker !== null) {
+			this._terrainWorker.terminate();
+			this._terrainWorker = null;
+		}
+
 		this.voxelWorker.terminate();
 	}
 
@@ -423,7 +481,7 @@ export class ChunkWorker {
 		msg.chunkY = chunk.chunkY;
 		msg.chunkZ = chunk.chunkZ;
 		msg.deferLighting = deferLighting;
-		this.terrainWorker.postMessage(msg);
+		this.terrain().postMessage(msg);
 	}
 
 	// ---------------------------------------------------------------------
@@ -447,7 +505,7 @@ export class ChunkWorker {
 		};
 
 		// SharedArrayBuffer is shared, not transferred.
-		this.terrainWorker.postMessage(message);
+		this.terrain().postMessage(message);
 		this.distantTerrainSharedInitialized = true;
 	}
 
@@ -476,7 +534,7 @@ export class ChunkWorker {
 			renderDistance,
 		};
 
-		this.terrainWorker.postMessage(message);
+		this.terrain().postMessage(message);
 	}
 
 	public postGenerateFarTile(
@@ -493,7 +551,7 @@ export class ChunkWorker {
 			tileZ,
 		};
 
-		this.terrainWorker.postMessage(message);
+		this.terrain().postMessage(message);
 	}
 
 	// ---------------------------------------------------------------------
@@ -505,7 +563,7 @@ export class ChunkWorker {
 	// ---------------------------------------------------------------------
 
 	public initWorkerChannel(port: MessagePort): void {
-		this.terrainWorker.postMessage(
+		this.terrain().postMessage(
 			{ type: WorkerTaskType.InitWorkerChannel, port },
 			[port],
 		);
@@ -529,7 +587,7 @@ export class ChunkWorker {
 			type: WorkerTaskType.InitLightShared,
 			headerBuffer,
 		};
-		this.terrainWorker.postMessage(message);
+		this.terrain().postMessage(message);
 		this.lightSharedInitialized = true;
 	}
 
@@ -539,7 +597,7 @@ export class ChunkWorker {
 	 * creating each worker).
 	 */
 	public setWorldSeed(seed: string): void {
-		this.terrainWorker.postMessage({
+		this.terrain().postMessage({
 			type: WorkerTaskType.SetWorldSeed,
 			seed,
 		} satisfies SetWorldSeedRequest);
@@ -550,7 +608,7 @@ export class ChunkWorker {
 			type: WorkerTaskType.LightSetClosedFaceMask,
 			maskBuffer,
 		};
-		this.terrainWorker.postMessage(message);
+		this.terrain().postMessage(message);
 	}
 
 	public postLightRegisterChunk(req: {
@@ -576,21 +634,21 @@ export class ChunkWorker {
 		msg.lightSAB = req.lightSAB;
 		msg.paletteSAB = req.paletteSAB;
 		msg.blockStorageBytesPerElement = req.blockStorageBytesPerElement;
-		this.terrainWorker.postMessage(msg);
+		this.terrain().postMessage(msg);
 	}
 
 	public postLightRegisterChunkBatch(
 		chunks: LightRegisterChunkBatchRequest["chunks"],
 	): void {
 		if (chunks.length === 0) return;
-		this.terrainWorker.postMessage({
+		this.terrain().postMessage({
 			type: WorkerTaskType.LightRegisterChunkBatch,
 			chunks,
 		});
 	}
 
 	public postLightUnregisterChunk(chunkId: bigint): void {
-		this.terrainWorker.postMessage({
+		this.terrain().postMessage({
 			type: WorkerTaskType.LightUnregisterChunk,
 			chunkId,
 		});
@@ -598,7 +656,7 @@ export class ChunkWorker {
 
 	public postLightUnregisterChunkBatch(chunkIds: bigint[]): void {
 		if (chunkIds.length === 0) return;
-		this.terrainWorker.postMessage({
+		this.terrain().postMessage({
 			type: WorkerTaskType.LightUnregisterChunkBatch,
 			chunkIds,
 		});
@@ -619,7 +677,7 @@ export class ChunkWorker {
 		msg.paletteSAB = req.paletteSAB;
 		msg.lightSAB = req.lightSAB;
 		msg.blockStorageBytesPerElement = req.blockStorageBytesPerElement;
-		this.terrainWorker.postMessage(msg);
+		this.terrain().postMessage(msg);
 	}
 
 	public postLightMutate(req: {
@@ -641,7 +699,7 @@ export class ChunkWorker {
 		msg.oldPacked = req.oldPacked;
 		msg.newPacked = req.newPacked;
 		msg.seq = req.seq;
-		this.terrainWorker.postMessage(msg);
+		this.terrain().postMessage(msg);
 	}
 
 	public postLightMutateBatch(req: {
@@ -652,7 +710,7 @@ export class ChunkWorker {
 	}): void {
 		// Transfer the mutation buffer zero-copy; the caller must not reuse
 		// it after posting (flushed arrays are freshly allocated per chunk).
-		this.terrainWorker.postMessage(
+		this.terrain().postMessage(
 			{
 				type: WorkerTaskType.LightMutateBatch,
 				chunkId: req.chunkId,
@@ -681,7 +739,7 @@ export class ChunkWorker {
 		msg.z = req.z;
 		msg.level = req.level;
 		msg.seq = req.seq;
-		this.terrainWorker.postMessage(msg);
+		this.terrain().postMessage(msg);
 	}
 
 	public postLightSkyReconcile(req: {
@@ -693,7 +751,7 @@ export class ChunkWorker {
 		msg.chunkId = req.chunkId;
 		msg.headerSlot = req.headerSlot;
 		msg.seq = req.seq;
-		this.terrainWorker.postMessage(msg);
+		this.terrain().postMessage(msg);
 	}
 
 	public postLightPropagateDeferred(req: {
@@ -713,7 +771,7 @@ export class ChunkWorker {
 		// deletes its deferredLightingSeedStates entry before posting), so it
 		// is transferred instead of structured-cloned — otherwise postMessage
 		// would copy up to 6144 Uint16s a second time.
-		this.terrainWorker.postMessage(msg, [req.seedQueue.buffer]);
+		this.terrain().postMessage(msg, [req.seedQueue.buffer]);
 	}
 
 	// ---------------------------------------------------------------------

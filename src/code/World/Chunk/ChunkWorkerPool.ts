@@ -1,4 +1,5 @@
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
+import { estimatePhysicalCores } from "@/code/Lib/estimatePhysicalCores";
 import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
 import type {
 	RemoteChunkProvider,
@@ -170,6 +171,30 @@ function assertNever(value: never): never {
 	throw new Error("Unhandled remote chunk result kind");
 }
 
+/** Backoff state for a chunk parked after exhausting remote retries. */
+type RemoteParkedRetry = {
+	/** performance.now() deadline at which the chunk may be re-requested. */
+	retryAtMs: number;
+	/** Retry tier; each give-up increments it so the delay keeps growing. */
+	tier: number;
+};
+
+/**
+ * A remote request that has been dispatched and not yet settled.
+ *
+ * STALLFIX: the dispatch timestamp lives on the entry rather than in a
+ * parallel map. `remotePendingChunks` gates the entire multiplayer request
+ * pump (`MAX_OUTSTANDING_REMOVE` backpressure) and every stuck entry is a chunk
+ * that will never become isLoaded — which is precisely the reported symptom,
+ * "chunks just missing, no voxel data, not considered loaded". Keying the
+ * timestamp to the same object makes it impossible for the staleness reaper to
+ * drift out of sync with the pending set, which a side map eventually would.
+ */
+type RemotePendingEntry = {
+	chunk: Chunk;
+	dispatchedAtMs: number;
+};
+
 export class ChunkWorkerPool {
 	private static instance: ChunkWorkerPool | undefined;
 	private static readonly WORKER_ERROR_COOLDOWN_MS = 120;
@@ -212,18 +237,62 @@ export class ChunkWorkerPool {
 	public isRemoteGenerationEnabled(): boolean {
 		return this.remoteGenerationEnabled;
 	}
-	private remotePendingChunks = new Map<bigint, Chunk>();
+	private remotePendingChunks = new Map<bigint, RemotePendingEntry>();
 	private remoteTaskQueue: Chunk[] = [];
 	private remoteTaskQueueSet = new Set<Chunk>();
 	private remoteRetryCount = new Map<bigint, number>();
 	private readonly MAX_REMOTE_RETRY = 3;
+
+	/*
+	 * STALLFIX: chunks that exhausted MAX_REMOTE_RETRY used to be abandoned
+	 * outright — removed from every queue with isTerrainScheduled left false, so
+	 * nothing ever re-requested them and the world kept a permanent hole. They
+	 * are now parked here with a backoff deadline and re-requested by a single
+	 * low-rate sweep, so a server that is merely overloaded (or a request that
+	 * hit the provider's 30 s timeout) heals instead of losing the chunk.
+	 */
+	private remoteRetryParked = new Map<Chunk, RemoteParkedRetry>();
+	private remoteRetryParkTimer: ReturnType<typeof setTimeout> | null = null;
+	private static readonly REMOTE_RETRY_PARK_SWEEP_MS = 2000;
+	private static readonly REMOTE_RETRY_PARK_BASE_MS = 2000;
+	private static readonly REMOTE_RETRY_PARK_MAX_MS = 30000;
 	// Coalescing guard: at most one pump cycle (one batched cache read) is
 	// active at a time; continuation cycles are deferred to a microtask
 	// (queueMicrotask) for minimal delay between batches.
 	private remotePumpScheduled = false;
 	private remoteBackpressureTimer: ReturnType<typeof setTimeout> | null = null;
-	private readonly MAX_REMOTE_CONCURRENT = 128; // Max concurrent server requests per pump cycle
-	private readonly MAX_OUTSTANDING_REMOTE = 1024; // Backpressure cap
+	/*
+	 * Per-client ceiling on in-flight server chunk requests.
+	 *
+	 * This is a SHARED resource budget, not a client-local one: every client
+	 * can have this many outstanding at once, so N players can put N x this on
+	 * the server's generation queue. At the previous 1024 that is 16,384 queued
+	 * full-detail chunk generations for a 16-player server — far more than any
+	 * single machine can generate, so every client spends its time waiting and
+	 * timing out on chunks that were never going to arrive.
+	 *
+	 * A lower ceiling makes each client progress steadily and lets the server's
+	 * priority queue actually see fresh, relevant work instead of one enormous
+	 * backlog. Throughput per client is bounded by the server either way; what
+	 * changes is latency and how fairly the pool is shared.
+	 */
+	private readonly MAX_OUTSTANDING_REMOTE = 256;
+	/*
+	 * PERF / LATENCY: chunks handed to the server per request batch.
+	 *
+	 * Batch handlers on the server deliberately overlap (handleChunkRequestBatchMessage
+	 * does not await handleBatchChunkRequest), so more, smaller batches pipeline
+	 * better than one big one — but a response for a batch is only sent after
+	 * EVERY missing chunk in that batch has finished generating
+	 * (VoxelRoom.handleBatchChunkRequest awaits generateChunksBatch for the whole
+	 * set). So batch size is exactly the head-of-line blocking window: at 128, a
+	 * single slow chunk stalls 128 responses, including the near ones the player
+	 * is standing in. Batches still overlap, so the outstanding request count is
+	 * unchanged — only the latency distribution improves.
+	 *
+	 * Server-side MAX_CHUNK_BATCH (255) remains the hard ceiling per message.
+	 */
+	private static readonly REMOTE_BATCH_SIZE = 32;
 	// Batched remesh scheduling for remote chunks: instead of calling
 	// scheduleRemesh + scheduleChunkAndNeighborsRemesh per chunk (O(7N) work),
 	// collect chunks and flush once per frame (O(N) unique chunks + deduped neighbors).
@@ -2174,16 +2243,36 @@ export class ChunkWorkerPool {
 		const configured = SETTING_PARAMS.CHUNK_WORKER_POOL_SIZE | 0;
 		if (Number.isFinite(configured) && configured > 0) return configured;
 
-		// Each ChunkWorker spawns TWO workers (terrain/light + voxel-mesh), so
-		// the effective worker count is 2x the ChunkWorker count. Reserve 2
-		// cores for the main thread / render so we never starve the UI thread
-		// (which also does mesh assembly, occlusion culling and game logic).
+/*
+		 * Size from PHYSICAL cores, not hardwareConcurrency.
+		 *
+		 * hardwareConcurrency reports logical processors, which is 2x physical
+		 * cores on any SMT machine. Sizing from it over-allocates, and
+		 * over-allocating a CPU-bound pool is actively slower than sizing it
+		 * correctly: once a core saturates, a sibling thread on it contends for
+		 * the same execution resources instead of adding throughput.
+		 *
+		 * One physical core is reserved for the main thread (render, mesh
+		 * assembly, occlusion culling, game logic) — the most
+		 * latency-sensitive thread in the client.
+		 *
+		 * Each ChunkWorker costs ONE thread, not two: its terrain worker is
+		 * created lazily (see Worker/chunkWorker.ts) because in multiplayer the
+		 * server is authoritative and local terrain generation never dispatches,
+		 * so that thread would otherwise sit idle for the whole session. This
+		 * matters directly for multiplayer throughput — a chunk only becomes
+		 * visible once the CLIENT has meshed it, so mesh thread count, not
+		 * worker-pair count, is what governs how fast chunks appear.
+		 *
+		 * Set SETTING_PARAMS.CHUNK_WORKER_POOL_SIZE to override when co-locating
+		 * with a server; it is checked above and wins outright.
+		 */
 		const detected = Math.max(1, (navigator.hardwareConcurrency ?? 0) | 0);
-		const workerBudget = Math.max(2, detected - 2);
-		const chunkWorkerCount = Math.floor(workerBudget / 2);
+		const physical = estimatePhysicalCores(detected);
+		const workerBudget = Math.max(2, physical - 1);
 		return Math.max(
 			ChunkWorkerPool.MIN_AUTO_POOL_SIZE,
-			Math.min(ChunkWorkerPool.MAX_AUTO_POOL_SIZE, chunkWorkerCount),
+			Math.min(ChunkWorkerPool.MAX_AUTO_POOL_SIZE, workerBudget),
 		);
 	}
 
@@ -2738,6 +2827,42 @@ export class ChunkWorkerPool {
 		return undefined;
 	}
 
+	/**
+	 * Whether this chunk is already sitting in the local terrain-generation
+	 * queue awaiting a worker.
+	 *
+	 * Used by ChunkStreamingController's orphan sweep so it does not re-queue a
+	 * chunk that is already scheduled for generation (which would make the chunk
+	 * both a storage load and a terrain task).
+	 */
+	public isTerrainTaskQueued(chunk: Chunk): boolean {
+		return this.terrainTaskQueue.has(chunk);
+	}
+
+	/**
+	 * Multiplayer request-pipeline state, for stall diagnosis.
+	 *
+	 * `pending` is the hard gate on this pump: once it reaches `pendingCap` the
+	 * pump backpressures shut and no further chunk can be requested until
+	 * entries settle. If pending sits at the cap, the client is connected and
+	 * silent but the world has stopped filling in.
+	 */
+	public getRemotePipelineStats(): {
+		enabled: boolean;
+		taskQueueLength: number;
+		pendingCount: number;
+		pendingCap: number;
+		parkedCount: number;
+	} {
+		return {
+			enabled: this.remoteGenerationEnabled,
+			taskQueueLength: this.remoteTaskQueue.length,
+			pendingCount: this.remotePendingChunks.size,
+			pendingCap: this.MAX_OUTSTANDING_REMOTE,
+			parkedCount: this.remoteRetryParked.size,
+		};
+	}
+
 	// -------------------------------------------------------------------------
 	// taskHeap: binary min-heap over compareRemeshPriority.
 	//
@@ -2960,6 +3085,151 @@ export class ChunkWorkerPool {
 		chunk.isTerrainScheduled = true;
 	}
 
+	/**
+	 * Park a chunk whose remote request failed MAX_REMOTE_RETRY times and re-arm
+	 * it on an exponential backoff, instead of dropping it permanently.
+	 *
+	 * `tier` is the retry tier; the delay doubles up to
+	 * REMOTE_RETRY_PARK_MAX_MS so a server that stays unreachable costs one
+	 * probe every 30 s per chunk rather than a hot loop.
+	 */
+	private rearmDeferredRemoteChunk(chunk: Chunk, tier = 0): void {
+		if (!chunk || chunk.isBoatChunk) return;
+
+		const delay = Math.min(
+			ChunkWorkerPool.REMOTE_RETRY_PARK_MAX_MS,
+			ChunkWorkerPool.REMOTE_RETRY_PARK_BASE_MS << Math.min(tier, 4),
+		);
+
+		this.remoteRetryParked.set(chunk, {
+			retryAtMs: performance.now() + delay,
+			tier: tier + 1,
+		});
+
+		this.rearmDeferredRemoteChunkSweepTimer();
+	}
+
+	private sweepDeferredRemoteChunks(): void {
+		if (this.remoteRetryParked.size === 0) return;
+
+		const now = performance.now();
+		let released = 0;
+
+		for (const [chunk, parked] of this.remoteRetryParked) {
+			if (now < parked.retryAtMs) continue;
+
+			this.remoteRetryParked.delete(chunk);
+
+			// Still the live instance — otherwise the streaming controller owns
+			// it (or it has been disposed) and there is nothing to do.
+			if (getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ) !== chunk) {
+				continue;
+			}
+
+			this.remoteDeferredChunks.delete(chunk);
+
+			if (chunk.isLoaded) {
+				continue;
+			}
+
+			if (this.remotePendingChunks.size >= this.MAX_OUTSTANDING_REMOTE) {
+				// Still saturated: park again rather than piling on.
+				this.rearmDeferredRemoteChunk(chunk, parked.tier);
+				continue;
+			}
+
+			this.enqueueRemoteGeneration(chunk);
+			released++;
+		}
+
+		if (released > 0) {
+			this.pumpRemoteGeneration();
+		}
+
+		// Keep ticking while anything is still parked.
+		if (this.remoteRetryParked.size > 0) {
+			this.rearmDeferredRemoteChunkSweepTimer();
+		}
+	}
+
+	private rearmDeferredRemoteChunkSweepTimer(): void {
+		if (this.remoteRetryParkTimer !== null) return;
+		this.remoteRetryParkTimer = setTimeout(() => {
+			this.remoteRetryParkTimer = null;
+			this.sweepDeferredRemoteChunks();
+		}, ChunkWorkerPool.REMOTE_RETRY_PARK_SWEEP_MS);
+	}
+
+	/** Clear parked retries; the caller has decided these chunks are not wanted. */
+	private clearDeferredRemoteChunkRetries(): void {
+		this.remoteRetryParked.clear();
+		if (this.remoteRetryParkTimer !== null) {
+			clearTimeout(this.remoteRetryParkTimer);
+			this.remoteRetryParkTimer = null;
+		}
+	}
+
+	/*
+	 * STALLFIX: staleness reaper for the remote pending set.
+	 *
+	 * `remotePendingChunks` is a hard gate on the whole multiplayer request
+	 * pump: at MAX_OUTSTANDING_REMOTE entries the pump bails out on every pass
+	 * and only new completions can reopen it. Any entry that never settles —
+	 * a provider promise that resolves to nothing, a transport that silently
+	 * drops the request instead of timing it out, a settlement callback lost to
+	 * an exception in a previous dispatch path — is therefore a permanent,
+	 * silent wedge that grows one dead chunk at a time until nothing loads.
+	 *
+	 * The reaper makes the invariant enforceable instead of hopeful: no entry
+	 * may occupy a pending slot longer than REMOTE_PENDING_STALE_MS, so the
+	 * pump can always make progress again. Threshold sits comfortably above
+	 * RemoteChunkProvider.DEFAULT_TIMEOUT_MS (30 s) so it only fires on
+	 * requests the provider itself would already have given up on.
+	 */
+	private static readonly REMOTE_PENDING_STALE_MS = 45_000;
+	private static readonly REMOTE_PENDING_REAP_INTERVAL_MS = 5000;
+	private remotePendingReapTimer: ReturnType<typeof setTimeout> | null = null;
+
+	private reapStaleRemotePending(): void {
+		if (this.remotePendingChunks.size === 0) return;
+
+		const nowMs = performance.now();
+		const stale: Array<{ chunk: Chunk; key: bigint }> = [];
+
+		for (const [key, entry] of this.remotePendingChunks) {
+			if (nowMs - entry.dispatchedAtMs > ChunkWorkerPool.REMOTE_PENDING_STALE_MS) {
+				stale.push({ chunk: entry.chunk, key });
+			}
+		}
+
+		if (stale.length > 0) {
+			console.warn(
+				`[RemoteGen] reaped ${stale.length} remote request(s) stuck pending for ` +
+					`>${ChunkWorkerPool.REMOTE_PENDING_STALE_MS / 1000}s — ` +
+					`their settlement callbacks never fired. Retrying them.`,
+			);
+
+			for (let i = 0; i < stale.length; i++) {
+				this.handleRemoteGenError(
+					new Error("Remote request stalled (no settlement)"),
+					stale[i].chunk,
+					stale[i].key,
+				);
+			}
+		}
+
+		// Keep the reaper alive while anything is outstanding.
+		if (this.remotePendingChunks.size > 0) this.scheduleRemotePendingReap();
+	}
+
+	private scheduleRemotePendingReap(): void {
+		if (this.remotePendingReapTimer !== null) return;
+		this.remotePendingReapTimer = setTimeout(() => {
+			this.remotePendingReapTimer = null;
+			this.reapStaleRemotePending();
+		}, ChunkWorkerPool.REMOTE_PENDING_REAP_INTERVAL_MS);
+	}
+
 	/** Enter multiplayer mode: defer chunk requests until the server connects. */
 	public enableRemoteMode(): void {
 		this.expectingRemoteProvider = true;
@@ -2975,6 +3245,7 @@ export class ChunkWorkerPool {
 			chunk.isTerrainScheduled = false;
 		}
 		this.remoteDeferredChunks.clear();
+		this.clearDeferredRemoteChunkRetries();
 	}
 
 	public hasRemoteChunksQueued(): boolean {
@@ -3002,7 +3273,9 @@ export class ChunkWorkerPool {
 
 		this.remotePumpScheduled = true;
 
-		const toCheck = this.selectColumnBatch(this.MAX_REMOTE_CONCURRENT);
+		const toCheck = this.selectColumnBatch(
+			ChunkWorkerPool.REMOTE_BATCH_SIZE,
+		);
 
 		if (toCheck.length === 0) {
 			this.remotePumpScheduled = false;
@@ -3209,6 +3482,44 @@ export class ChunkWorkerPool {
 		if (len === 0 || !provider) return;
 
 		const pending = this.remotePendingChunks;
+		const nowMs = performance.now();
+
+		// Arm the staleness reaper before dispatching: from this point on every
+		// entry in `pending` MUST be guaranteed a settlement path, and the reaper
+		// is what makes that true even if one is lost.
+		this.scheduleRemotePendingReap();
+
+		/**
+		 * STALLFIX: every path that adds to `remotePendingChunks` MUST have a
+		 * settlement path, including the synchronous failure modes.
+		 *
+		 * `provider.requestChunk` / `provider.requestChunkBatch` sit behind a
+		 * network transport and can throw before returning a promise (closed
+		 * socket, room already consumed, serialization failure). In that case
+		 * the `.then/.catch` chain is never even constructed, so nothing ever
+		 * removes the entries added here: `remotePendingChunks` grows without
+		 * bound, `MAX_OUTSTANDING_REMOTE` is reached, the backpressure branch
+		 * bails on every subsequent pump, and no chunk is ever requested again.
+		 * The client stays connected and silent while the world stops filling
+		 * in — the exact reported multiplayer failure.
+		 *
+		 * Wrapping both calls turns that into an ordinary per-chunk error, which
+		 * handleRemoteGenError retries (and, past MAX_REMOTE_RETRY, parks with a
+		 * backoff instead of abandoning).
+		 */
+		const releaseAll = (err: unknown): void => {
+			for (let i = 0; i < toRequest.length; i++) {
+				const chunk = toRequest[i];
+				if (chunk) {
+					this.handleRemoteGenError(
+						err instanceof Error ? err : new Error(String(err)),
+						chunk,
+						this.remoteKeyFor(chunk),
+					);
+				}
+			}
+			this.pumpRemoteGeneration();
+		};
 
 		if (len === 1) {
 			const chunk = toRequest[0];
@@ -3218,10 +3529,22 @@ export class ChunkWorkerPool {
 			}
 
 			const key = this.remoteKeyFor(chunk);
-			pending.set(key, chunk);
+			pending.set(key, { chunk, dispatchedAtMs: nowMs });
 
-			void provider
-				.requestChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
+			let request: Promise<RemoteChunkResult>;
+
+			try {
+				request = provider.requestChunk(
+					chunk.chunkX,
+					chunk.chunkY,
+					chunk.chunkZ,
+				);
+			} catch (error) {
+				releaseAll(error);
+				return;
+			}
+
+			void request
 				.then((data) => this.handleRemoteChunkData(data))
 				.catch((err) => this.handleRemoteGenError(err, chunk, key));
 
@@ -3244,7 +3567,7 @@ export class ChunkWorkerPool {
 			const cz = chunk.chunkZ;
 			const key = this.remoteKeyFor(chunk);
 
-			pending.set(key, chunk);
+			pending.set(key, { chunk, dispatchedAtMs: nowMs });
 			chunks.push(chunk);
 			keys.push(key);
 			coords.push({ cx, cy, cz });
@@ -3252,11 +3575,41 @@ export class ChunkWorkerPool {
 
 		if (coords.length === 0) return;
 
-		const promises = provider.requestChunkBatch(coords);
+		let promises: Promise<RemoteChunkResult>[];
+
+		try {
+			promises = provider.requestChunkBatch(coords);
+		} catch (error) {
+			// Synchronous transport failure — release exactly the entries this
+			// batch added, not the whole toRequest list (the non-live chunks in
+			// it were never registered).
+			for (let i = 0; i < chunks.length; i++) {
+				this.handleRemoteGenError(
+					error instanceof Error ? error : new Error(String(error)),
+					chunks[i],
+					keys[i],
+				);
+			}
+			this.pumpRemoteGeneration();
+			return;
+		}
 
 		for (let i = 0, count = promises.length; i < count; i++) {
 			const chunk = chunks[i];
 			const key = keys[i];
+
+			if (i >= count || !chunk || !key) {
+				// Provider returned a shorter array than it was given. Release the
+				// entries that will never get a settlement callback attached.
+				if (chunk && key && i >= promises.length) {
+					this.handleRemoteGenError(
+						new Error("Remote provider returned a short batch"),
+						chunk,
+						key,
+					);
+				}
+				continue;
+			}
 
 			void promises[i]
 				.then((data) => this.handleRemoteChunkData(data))
@@ -3286,7 +3639,34 @@ export class ChunkWorkerPool {
 				`[RemoteGen] GIVING UP on ${key} after ${retries} attempts:`,
 				err,
 			);
+
+			/*
+			 * STALLFIX: giving up permanently is what produced the multiplayer
+			 * variant of "chunks stop loading after a while". Three failures
+			 * (each of which can be a plain 30 s request timeout under load)
+			 * abandoned the chunk with no request anywhere: it is not in
+			 * remoteTaskQueue, not pending, and the scheduler will not re-queue
+			 * it because the streaming controller still has a desired state and
+			 * `isTerrainScheduled` is false. The hole only healed after a
+			 * teleport.
+			 *
+			 * Park it in remoteDeferredChunks and retry on a slow timer instead.
+			 * That is the same holding area used before the server connection is
+			 * live, so the chunk comes back as soon as the server is reachable
+			 * again rather than never.
+			 */
 			this.remoteRetryCount.delete(key);
+
+			if (!chunk.isLoaded) {
+				this.remoteDeferredChunks.add(chunk);
+				this.rearmDeferredRemoteChunk(
+					chunk,
+					this.remoteRetryParked.get(chunk)?.tier ?? 0,
+				);
+			} else {
+				chunk.isTerrainScheduled = false;
+			}
+
 			this.pumpRemoteGeneration();
 			return;
 		}
@@ -3367,6 +3747,9 @@ export class ChunkWorkerPool {
 			}
 
 			this.remoteDeferredChunks.clear();
+			// Chunks parked after exhausting retries are re-requested below along
+			// with every other loaded chunk, so their backoff state is obsolete.
+			this.clearDeferredRemoteChunkRetries();
 
 			let requeued = 0;
 
@@ -3396,6 +3779,7 @@ export class ChunkWorkerPool {
 		this.remoteTaskQueueSet.clear();
 		this.remotePendingChunks.clear();
 		this.remoteRetryCount.clear();
+		this.clearDeferredRemoteChunkRetries();
 		this.remoteNoBlobRetries.clear();
 		this.pendingRemoteChunks.clear();
 		this.remotePumpScheduled = false;
@@ -3404,6 +3788,11 @@ export class ChunkWorkerPool {
 		if (this.remoteBackpressureTimer !== null) {
 			clearTimeout(this.remoteBackpressureTimer);
 			this.remoteBackpressureTimer = null;
+		}
+
+		if (this.remotePendingReapTimer !== null) {
+			clearTimeout(this.remotePendingReapTimer);
+			this.remotePendingReapTimer = null;
 		}
 
 		console.log(`[RemoteGen] setRemoteChunkProvider enabled=false`);
@@ -3416,7 +3805,7 @@ export class ChunkWorkerPool {
 	 */
 	private handleRemoteChunkData(result: RemoteChunkResult): void {
 		const key = packCoords(result.chunkX, result.chunkY, result.chunkZ);
-		const captured = this.remotePendingChunks.get(key) ?? null;
+		const captured = this.remotePendingChunks.get(key)?.chunk ?? null;
 
 		this.remotePendingChunks.delete(key);
 		this.remoteRetryCount.delete(key);
@@ -3520,12 +3909,34 @@ export class ChunkWorkerPool {
 						this.remoteNoBlobRetries.delete(key);
 						this.queueLocalTerrainGeneration(chunk);
 					})
-					.catch(() => {
-						chunk.isLoaded = true;
-					})
-					.finally(() => {
-						this.pumpRemoteGeneration();
-					});
+				.catch((error) => {
+					/*
+					 * STALLFIX: this used to do `chunk.isLoaded = true`, which
+					 * lies about a chunk that has no voxel data at all. The result
+					 * is a chunk that reports loaded (so collision/raycast treat it
+					 * as authoritative terrain and read uniform air) while
+					 * rendering nothing and never having had the server's blocks —
+					 * exactly "missing chunk, no voxel data". A failed cache read is
+					 * recoverable, so retry the server request instead.
+					 */
+					console.warn(
+						`[RemoteGen] cached-blob read failed for ${key}; re-requesting from server:`,
+						error,
+					);
+
+					if (
+						!this.remotePendingChunks.has(key) &&
+						!this.remoteTaskQueueSet.has(chunk)
+					) {
+						this.remoteTaskQueue.unshift(chunk);
+						this.remoteTaskQueueSet.add(chunk);
+						chunk.isTerrainScheduled = true;
+					}
+				})
+				.finally(() => {
+					this.pumpRemoteGeneration();
+				});
+
 
 				return;
 			}
@@ -4175,6 +4586,7 @@ export class ChunkWorkerPool {
 		// Remote-generation cleanup. These structures can otherwise retain
 		// disposed Chunk objects and their voxel/light SharedArrayBuffers.
 		this.remoteDeferredChunks.delete(chunk);
+		this.remoteRetryParked.delete(chunk);
 		this.remoteTaskQueueSet.delete(chunk);
 		this.remotePendingChunks.delete(remoteKey);
 		this.remoteRetryCount.delete(remoteKey);

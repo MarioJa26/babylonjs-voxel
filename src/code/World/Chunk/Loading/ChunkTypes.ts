@@ -74,6 +74,12 @@ export type ChunkLoadingDebugStats = {
 	frameBudgetMs: number;
 	lastProcessMs: number;
 	totalProcessLoops: number;
+	// Orphan sweep (ChunkStreamingController.sweepOrphanedChunks): chunks that
+	// wanted to load but had lost their request, re-queued by the safety net.
+	// A non-zero "last" while the player is not moving means the streaming
+	// controller is dropping requests; "total" climbing steadily is the stall.
+	lastOrphanRescued: number;
+	totalOrphanRescued: number;
 	lastLoadedFromStorage: number;
 	lastGenerated: number;
 	lastHydrated: number;

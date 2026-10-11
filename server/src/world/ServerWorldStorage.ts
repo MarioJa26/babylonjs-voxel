@@ -24,6 +24,7 @@ import {
 	unpackChunkKeyFast,
 } from "@/code/World/Storage/ChunkKey.ts";
 import { LevelDbChunkStore } from "@/code/World/Storage/LevelDbChunkStore";
+import { compressBlob } from "@/code/World/Storage/BlobCompression";
 import {
 	deserializeVoxelData,
 	serializeVoxelData,
@@ -797,7 +798,36 @@ export class ServerWorldStorage {
 			data.version,
 		);
 
-		await this.store.writeChunk(data.chunkX, data.chunkY, data.chunkZ, blob);
+		/*
+		 * COMPRESS BEFORE STORING.
+		 *
+		 * The IndexedDB write path compresses every non-preCompressed value
+		 * (LevelDbChunkStore, commitBatch). The Node/LevelDB path did not — it
+		 * passed the raw serialized blob straight to `batch.put`. So the server,
+		 * which runs on Node, was writing every generated chunk to disk as a
+		 * 32-98 KB raw blob while the client wrote a fraction of that.
+		 *
+		 * compressBlob is total: payloads below the compression threshold, codec
+		 * failures, and payloads that do not shrink are all framed as raw, so
+		 * this can never make a write fail or grow. And decompressBlob passes
+		 * through unframed values unchanged, so chunks already on disk from
+		 * before this change keep reading correctly — the format is
+		 * self-describing rather than a breaking migration.
+		 *
+		 * preCompressed: true tells the store that the value is already framed,
+		 * so it decompresses on the read-back cache path rather than caching
+		 * the compressed bytes as if they were the chunk.
+		 */
+		const stored = await compressBlob(blob);
+
+		await this.store.writeChunk(
+			data.chunkX,
+			data.chunkY,
+			data.chunkZ,
+			stored,
+			undefined,
+			true,
+		);
 
 		this.addToCache(key, data);
 		this.dirtyChunks.add(key);

@@ -7,6 +7,7 @@ import { cpus } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
+import { detectPhysicalCores } from "./PhysicalCores";
 import { PendingTaskKindType } from "./workerProtocol.ts";
 
 interface ChunkResult {
@@ -30,6 +31,7 @@ type PendingTask =
 			chunkX: number;
 			chunkY: number;
 			chunkZ: number;
+			priority: TaskPriority;
 			resolve: (result: ChunkResult) => void;
 			reject: (error: Error) => void;
 	  }
@@ -37,6 +39,7 @@ type PendingTask =
 			id: number;
 			kind: PendingTaskKindType.BATCH;
 			coords: ChunkCoord[];
+			priority: TaskPriority;
 			resolve: (results: ChunkResult[]) => void;
 			reject: (error: Error) => void;
 	  }
@@ -46,6 +49,7 @@ type PendingTask =
 			chunkX: number;
 			chunkY: number;
 			chunkZ: number;
+			priority: TaskPriority;
 			blocks: Uint8Array | Uint16Array;
 			topSunlightMask?: Uint8Array;
 			neighborLight?: (Uint8Array | null)[];
@@ -100,10 +104,73 @@ function pendingTaskKindLabel(kind: PendingTaskKindType): string {
 	}
 }
 
-function resolvePoolSize(): number {
-	const cpuCount = cpus().length;
-	const workerBudget = Math.max(2, cpuCount - 1);
-	return Math.max(2, Math.min(8, workerBudget));
+/**
+ * Worker queue priority tiers.
+ *
+ * PERFORMANCE / FAIRNESS.
+ *
+ * This pool used to be a single FIFO. The consequence was that the 637-chunk
+ * spawn prewarm — enqueued during `onCreate`, before any player exists — sat
+ * in front of every chunk a joining player asks for. A player who joined while
+ * prewarm was still draining queued behind the whole tail of it.
+ *
+ * Tiers let interactive work jump the queue. Within a tier, FIFO is preserved
+ * so equal-priority work stays fair and the batch grouping in dispatchAll still
+ * sees similar work close together.
+ *
+ * A frozen object rather than a `const enum` so the value crosses the
+ * module boundary to ChunkGenerationService under isolatedModules builds.
+ */
+export const TaskPriority = {
+	/** A player is waiting for this chunk right now. Always served first. */
+	Interactive: 0,
+	/** Background warming (spawn prewarm). Never delays an interactive task. */
+	Background: 1,
+	/** Speculative/exploratory. Only runs when the pool would otherwise idle. */
+	Speculative: 2,
+} as const;
+
+export type TaskPriority = (typeof TaskPriority)[keyof typeof TaskPriority];
+
+function priorityTierName(tier: TaskPriority): string {
+	switch (tier) {
+		case TaskPriority.Interactive:
+			return "interactive";
+		case TaskPriority.Background:
+			return "background";
+		default:
+			return "speculative";
+	}
+}
+
+/**
+ * Resolve the chunk-generation worker thread count.
+ *
+ * PHYSICAL CORES, NOT LOGICAL THREADS. `cpus().length` reports hardware
+ * threads, which is 2x physical cores on any SMT machine. Sizing a CPU-bound
+ * pool from that oversubscribes: N threads on N/2 physical cores run slower
+ * than N/2 threads on N/2 cores, because SMT siblings contend for the same
+ * execution resources. The old `Math.min(8, cpus().length - 1)` produced 8
+ * workers on a 6-core Ryzen — measurably worse than 6.
+ *
+ * One core is reserved for the main thread, which is the most
+ * latency-sensitive thread in the process (20 Hz tick, mob/water simulation,
+ * blob deflate, LevelDB write pump). Chunk generation is a background
+ * workload and must never starve it.
+ *
+ * `override` > 0 wins outright. Use it when co-locating this server with the
+ * game client on one box and leaving it roughly half the physical cores.
+ */
+export function resolvePoolSize(override = 0): number {
+	const requested = Math.floor(override);
+	if (Number.isFinite(requested) && requested > 0) {
+		return Math.max(1, requested);
+	}
+
+	const physical = detectPhysicalCores(cpus().length);
+	const budget = Math.max(1, physical - 1);
+
+	return Math.max(1, budget);
 }
 
 export class ChunkWorkerPool {
@@ -111,17 +178,34 @@ export class ChunkWorkerPool {
 	private readonly workerByInstance = new Map<Worker, WorkerState>();
 
 	/*
-	 * queueStart makes dequeue O(1). Dispatched entries are released
-	 * periodically by compactQueueIfNeeded().
+	 * Per-tier FIFO queues drained in priority order. `queueStart` makes dequeue
+	 * O(1) per tier; dispatched entries are released periodically by
+	 * compactQueueIfNeeded().
+	 *
+	 * Three queues instead of one because interactive work must be able to jump
+	 * ahead of the 637-chunk spawn prewarm that runs at room creation — under a
+	 * single FIFO a joining player queued behind the entire prewarm tail.
 	 */
-	private queue: PendingTask[] = [];
-	private queueStart = 0;
+	private queues: PendingTask[][] = [[], [], []];
+	private queueStarts: number[] = [0, 0, 0];
+
+	/**
+	 * Hard cap on queued (not yet dispatched) tasks.
+	 *
+	 * The queue used to be unbounded and `pendingCount` was exported but never
+	 * read, so a client that walked away from unexplored terrain left its
+	 * chunks queued to be generated — and written to disk — for nothing. Bounding
+	 * it makes overload visible and sheddable instead of silently unbounded.
+	 */
+	private static readonly MAX_QUEUED_TASKS = 512;
+	private droppedTaskCount = 0;
 
 	private readonly pendingTasks = new Map<number, PendingTask>();
 
 	private nextId = 1;
 	private seed = "default";
 	private wasmEnabled = true;
+	private poolSizeOverride = 0;
 	private initialized = false;
 	private terminated = false;
 
@@ -132,11 +216,20 @@ export class ChunkWorkerPool {
 	 */
 	private static readonly MAX_COLUMN_GROUP_SIZE = 4;
 
-	async initialize(seed: string, wasmEnabled = true): Promise<void> {
+	async initialize(
+		seed: string,
+		wasmEnabled = true,
+		poolSizeOverride = 0,
+	): Promise<void> {
 		if (this.initialized) {
-			if (seed !== this.seed || wasmEnabled !== this.wasmEnabled) {
+			if (
+				seed !== this.seed ||
+				wasmEnabled !== this.wasmEnabled ||
+				poolSizeOverride !== this.poolSizeOverride
+			) {
 				this.seed = seed;
 				this.wasmEnabled = wasmEnabled;
+				this.poolSizeOverride = poolSizeOverride;
 				await this.recreateWorkers();
 			}
 			return;
@@ -145,8 +238,9 @@ export class ChunkWorkerPool {
 		this.terminated = false;
 		this.seed = seed;
 		this.wasmEnabled = wasmEnabled;
+		this.poolSizeOverride = poolSizeOverride;
 
-		const poolSize = resolvePoolSize();
+		const poolSize = resolvePoolSize(poolSizeOverride);
 		const workers = new Array<WorkerState>(poolSize);
 
 		for (let i = 0; i < poolSize; i++) {
@@ -155,27 +249,40 @@ export class ChunkWorkerPool {
 
 		this.workers = workers;
 		this.initialized = true;
+
+		console.log(
+			`[ChunkWorkerPool] ${poolSize} generation worker thread(s) ` +
+				`(cpus() reports ${cpus().length} logical / ` +
+				`${detectPhysicalCores(cpus().length)} physical` +
+				`${poolSizeOverride > 0 ? `, override=${poolSizeOverride}` : ""})`,
+		);
 	}
 
 	dispatch(
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
+		priority: TaskPriority = TaskPriority.Interactive,
 	): Promise<ChunkResult> {
 		const unavailable = this.getUnavailableError();
 		if (unavailable) {
 			return Promise.reject(unavailable);
 		}
 
+		if (!this.tryReserveQueueSlot(priority)) {
+			return Promise.reject(this.overflowError());
+		}
+
 		const id = this.nextId++;
 
 		return new Promise((resolve, reject) => {
-			this.queue.push({
+			this.queues[priority].push({
 				id,
 				kind: PendingTaskKindType.SINGLE,
 				chunkX,
 				chunkY,
 				chunkZ,
+				priority,
 				resolve,
 				reject,
 			});
@@ -184,7 +291,45 @@ export class ChunkWorkerPool {
 		});
 	}
 
-	dispatchAll(coords: ChunkCoord[]): Promise<ChunkResult[]> {
+	/**
+	 * Admit a task only if the queue has room.
+	 *
+	 * Interactive work is never shed — it is what a player is waiting on, and
+	 * dropping it would leave a hole in the world. Background and speculative
+	 * work is shed first, because it is by definition replaceable: the player
+	 * will ask again when they get close.
+	 */
+	private tryReserveQueueSlot(priority: TaskPriority): boolean {
+		if (this.queuedTaskCount < ChunkWorkerPool.MAX_QUEUED_TASKS) {
+			return true;
+		}
+
+		if (priority === TaskPriority.Interactive) {
+			// Still admit interactive work even when the queue is at the cap.
+			// The cap exists to bound speculative memory growth, and a player
+			// waiting on a chunk must never be refused because of one.
+			return true;
+		}
+
+		this.droppedTaskCount++;
+		return false;
+	}
+
+	private overflowError(): Error {
+		return new Error(
+			"Chunk worker pool queue is full — background generation shed under load",
+		);
+	}
+
+	/** Tasks shed because the queue was full. Surfaced in logs for tuning. */
+	get droppedTasks(): number {
+		return this.droppedTaskCount;
+	}
+
+	dispatchAll(
+		coords: ChunkCoord[],
+		priority: TaskPriority = TaskPriority.Interactive,
+	): Promise<ChunkResult[]> {
 		const count = coords.length;
 
 		if (count === 0) {
@@ -322,7 +467,7 @@ export class ChunkWorkerPool {
 			const batchIndices = originalIndices[workerIndex]!;
 
 			dispatches.push(
-				this._dispatchBatch(batch).then((batchResults) => {
+				this._dispatchBatch(batch, priority).then((batchResults) => {
 					for (let i = 0; i < batchResults.length; i++) {
 						results[batchIndices[i]] = batchResults[i];
 					}
@@ -354,12 +499,15 @@ export class ChunkWorkerPool {
 		const id = this.nextId++;
 
 		return new Promise((resolve, reject) => {
-			this.queue.push({
+			// Relight is triggered by a live block edit, so it is interactive work:
+			// the player is looking at the change they just made.
+			this.queues[TaskPriority.Interactive].push({
 				id,
 				kind: PendingTaskKindType.RELIGHT,
 				chunkX,
 				chunkY,
 				chunkZ,
+				priority: TaskPriority.Interactive,
 				blocks,
 				topSunlightMask,
 
@@ -407,22 +555,30 @@ export class ChunkWorkerPool {
 	}
 
 	get pendingCount(): number {
-		return this.queue.length - this.queueStart + this.pendingTasks.size;
+		return this.queuedTaskCount + this.pendingTasks.size;
 	}
 
-	private _dispatchBatch(coords: ChunkCoord[]): Promise<ChunkResult[]> {
+	private _dispatchBatch(
+		coords: ChunkCoord[],
+		priority: TaskPriority = TaskPriority.Interactive,
+	): Promise<ChunkResult[]> {
 		const unavailable = this.getUnavailableError();
 		if (unavailable) {
 			return Promise.reject(unavailable);
 		}
 
+		if (!this.tryReserveQueueSlot(priority)) {
+			return Promise.reject(this.overflowError());
+		}
+
 		const id = this.nextId++;
 
 		return new Promise((resolve, reject) => {
-			this.queue.push({
+			this.queues[priority].push({
 				id,
 				kind: PendingTaskKindType.BATCH,
 				coords,
+				priority,
 				resolve,
 				reject,
 			});
@@ -487,14 +643,16 @@ export class ChunkWorkerPool {
 		this.pendingTasks.delete(message.id);
 
 		if ("error" in message) {
-			const queueDepth = this.queue.length - this.queueStart;
+			const queueDepth = this.queuedTaskCount;
 
 			console.error(
 				`[ChunkWorkerPool] worker error ` +
-					`(task ${pendingTaskKindLabel(task.kind)} id=${task.id}): ` +
+					`(task ${pendingTaskKindLabel(task.kind)} ` +
+					`${priorityTierName(task.priority)} id=${task.id}): ` +
 					`${message.error} ` +
 					`[pending=${this.pendingTasks.size} ` +
-					`queued=${queueDepth} workers=${this.workers.length}]`,
+					`queued=${queueDepth} workers=${this.workers.length} ` +
+					`dropped=${this.droppedTaskCount}]`,
 			);
 
 			task.reject(new Error(message.error));
@@ -541,11 +699,6 @@ export class ChunkWorkerPool {
 		}
 
 		for (;;) {
-			if (this.queueStart >= this.queue.length) {
-				this.compactQueueIfNeeded();
-				return;
-			}
-
 			let freeWorker: WorkerState | undefined;
 
 			for (let i = 0; i < this.workers.length; i++) {
@@ -558,11 +711,19 @@ export class ChunkWorkerPool {
 			}
 
 			if (freeWorker === undefined) {
-				this.compactQueueIfNeeded();
+				this.compactQueuesIfNeeded();
 				return;
 			}
 
-			const task = this.queue[this.queueStart++];
+			// Drain the highest-priority tier that has work. Idle capacity is
+			// offered to the next tier down, so background work still fills a
+			// pool that no interactive request is using.
+			const task = this.takeNextTask();
+
+			if (task === undefined) {
+				this.compactQueuesIfNeeded();
+				return;
+			}
 
 			freeWorker.busy = true;
 			freeWorker.activeTaskId = task.id;
@@ -689,7 +850,7 @@ export class ChunkWorkerPool {
 
 		this.workerByInstance.clear();
 
-		const poolSize = resolvePoolSize();
+		const poolSize = resolvePoolSize(this.poolSizeOverride);
 		const replacementWorkers = new Array<WorkerState>(poolSize);
 
 		/*
@@ -704,24 +865,66 @@ export class ChunkWorkerPool {
 	}
 
 	private requeueFront(task: PendingTask): void {
-		if (this.queueStart > 0) {
-			this.queue[--this.queueStart] = task;
+		const tier = task.priority;
+		const queue = this.queues[tier];
+		const start = this.queueStarts[tier];
+
+		if (start > 0) {
+			this.queues[tier] = queue.slice(0, start);
+			this.queues[tier].unshift(task);
+			this.queueStarts[tier] = 0;
 		} else {
-			this.queue.unshift(task);
+			queue.unshift(task);
 		}
 	}
 
-	private rejectQueued(error: Error): void {
-		for (let i = this.queueStart; i < this.queue.length; i++) {
-			this.queue[i].reject(error);
+	/**
+	 * Pop the next task, highest-priority tier first.
+	 *
+	 * Within a tier this is FIFO, which keeps dispatchAll's column grouping
+	 * seeing similar work close together and stops one tenant from starving
+	 * another at equal priority.
+	 */
+	private takeNextTask(): PendingTask | undefined {
+		for (let tier = 0; tier < this.queues.length; tier++) {
+			const start = this.queueStarts[tier];
+
+			if (start < this.queues[tier].length) {
+				const task = this.queues[tier][start];
+				this.queueStarts[tier] = start + 1;
+				return task;
+			}
 		}
 
-		/*
-		 * Replace the array rather than setting length to zero so a very large
-		 * queue's backing storage can be reclaimed.
-		 */
-		this.queue = [];
-		this.queueStart = 0;
+		return undefined;
+	}
+
+	private get queuedTaskCount(): number {
+		let total = 0;
+
+		for (let tier = 0; tier < this.queues.length; tier++) {
+			total += this.queues[tier].length - this.queueStarts[tier];
+		}
+
+		return total;
+	}
+
+	private rejectQueued(error: Error): void {
+		for (let tier = 0; tier < this.queues.length; tier++) {
+			const queue = this.queues[tier];
+			const start = this.queueStarts[tier];
+
+			for (let i = start; i < queue.length; i++) {
+				queue[i].reject(error);
+			}
+
+			/*
+			 * Replace the array rather than setting length to zero so a very
+			 * large queue's backing storage can be reclaimed.
+			 */
+			this.queues[tier] = [];
+			this.queueStarts[tier] = 0;
+		}
 	}
 
 	private rejectAllWork(error: Error): void {
@@ -734,32 +937,33 @@ export class ChunkWorkerPool {
 		this.pendingTasks.clear();
 	}
 
-	private compactQueueIfNeeded(): void {
-		const start = this.queueStart;
+	private compactQueuesIfNeeded(): void {
+		for (let tier = 0; tier < this.queues.length; tier++) {
+			const start = this.queueStarts[tier];
 
-		if (start === 0) {
-			return;
-		}
+			if (start === 0) continue;
 
-		const length = this.queue.length;
+			const queue = this.queues[tier];
+			const length = queue.length;
 
-		if (start >= length) {
+			if (start >= length) {
+				/*
+				 * Replacing the array releases references and allows oversized
+				 * backing storage to be reclaimed.
+				 */
+				this.queues[tier] = [];
+				this.queueStarts[tier] = 0;
+				continue;
+			}
+
 			/*
-			 * Replacing the array releases references and allows oversized
-			 * backing storage to be reclaimed.
+			 * Compact only after meaningful drift. slice() allocates one smaller
+			 * array, but releases all references held by consumed queue slots.
 			 */
-			this.queue = [];
-			this.queueStart = 0;
-			return;
-		}
-
-		/*
-		 * Compact only after meaningful drift. slice() allocates one smaller
-		 * array, but releases all references held by consumed queue slots.
-		 */
-		if (start > 1024 && start * 2 >= length) {
-			this.queue = this.queue.slice(start);
-			this.queueStart = 0;
+			if (start > 1024 && start * 2 >= length) {
+				this.queues[tier] = queue.slice(start);
+				this.queueStarts[tier] = 0;
+			}
 		}
 	}
 
