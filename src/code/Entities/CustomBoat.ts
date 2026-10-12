@@ -281,10 +281,7 @@ export class CustomBoat implements IUsable {
 	};
 
 	#currentYaw = 0;
-	// PERF: Cache cos/sin to avoid recomputing when yaw is unchanged.
-	#cachedYaw = 0;
-	#cachedCos = 0;
-	#cachedSin = 0;
+
 	#linearVelocity = vec3Zero();
 	#angularVelocity = vec3Zero();
 	#angularResponseScale = 1;
@@ -499,105 +496,207 @@ export class CustomBoat implements IUsable {
 		setVec3(bp[7], cox - ix, y, coz + iz);
 		setVec3(bp[8], cox + ix, y, coz + iz);
 	}
+	// Replace the existing yaw-cache initialization.
+	#cachedYaw = Number.NaN;
+	#cachedCos = 1;
+	#cachedSin = 0;
+	/**
+	 * Apply a vertical buoyancy force at a sampled world position.
+	 *
+	 * This is the hot-path specialization of #applyForceAtPoint for:
+	 *
+	 *     force = (0, forceY, 0)
+	 *
+	 * The simplified cross product is:
+	 *
+	 *     torque.x = -lever.z * forceY
+	 *     torque.y = 0
+	 *     torque.z =  lever.x * forceY
+	 *
+	 * This avoids two setVec3 calls, temporary lever/torque writes, and the
+	 * multiplications by zero performed by the generic force method.
+	 */
+	#applyVerticalBuoyancyForce(
+		forceY: number,
+		worldX: number,
+		worldZ: number,
+		dt: number,
+		inverseMass: number,
+		angularScale: number,
+	): void {
+		this.#linearVelocity.y += forceY * inverseMass * dt;
 
+		const boatPosition = this.#boat.position;
+		const leverX = worldX - boatPosition.x;
+		const leverZ = worldZ - boatPosition.z;
+
+		this.#angularVelocity.x -= leverZ * forceY * angularScale;
+
+		this.#angularVelocity.z += leverX * forceY * angularScale;
+	}
 	#tick(_scene: SceneContext, deltaMs: number): void {
-		// PERF: frame dt comes from the central tick (PlayerLoopController),
-		// so no performance.now() per boat per frame. Clamp semantics are
-		// unchanged: non-positive dt skips, hitches clamp to 1/24 max.
-		if (deltaMs <= 0) return;
-		let dt = deltaMs * 0.001;
-		dt = Math.min(Math.max(dt, this.#cfg.dtClamp.min), this.#cfg.dtClamp.max);
-
-		this.#submergedPoints = 0;
-
-		// PERF: Only recompute cos/sin when yaw has changed.
-		if (this.#currentYaw !== this.#cachedYaw) {
-			this.#cachedYaw = this.#currentYaw;
-			this.#cachedCos = Math.cos(this.#currentYaw);
-			this.#cachedSin = Math.sin(this.#currentYaw);
+		if (deltaMs <= 0) {
+			return;
 		}
-		const cos = this.#cachedCos;
-		const sin = this.#cachedSin;
 
-		this.#linearVelocity.y += this.#cfg.gravity * dt;
+		const cfg = this.#cfg;
 
-		for (const lp of this.#buoyancyPoints) {
-			const rx = lp.x * cos - lp.z * sin;
-			const rz = lp.x * sin + lp.z * cos;
+		let dt = deltaMs * 0.001;
 
-			setVec3(
-				this.#tmpWorldPoint,
-				this.#boat.position.x + rx,
-				this.#boat.position.y + lp.y,
-				this.#boat.position.z + rz,
+		if (dt < cfg.dtClamp.min) {
+			dt = cfg.dtClamp.min;
+		} else if (dt > cfg.dtClamp.max) {
+			dt = cfg.dtClamp.max;
+		}
+
+		let submergedPoints = 0;
+
+		/*
+		 * Number.NaN initializes #cachedYaw, so this also runs on the first frame.
+		 * The previous zero initialization left #cachedCos at zero when the initial
+		 * yaw was zero, collapsing every buoyancy point onto the boat center.
+		 */
+		const yaw = this.#currentYaw;
+
+		if (yaw !== this.#cachedYaw) {
+			this.#cachedYaw = yaw;
+			this.#cachedCos = Math.cos(yaw);
+			this.#cachedSin = Math.sin(yaw);
+		}
+
+		const cosYaw = this.#cachedCos;
+		const sinYaw = this.#cachedSin;
+
+		const boatPosition = this.#boat.position;
+		const boatX = boatPosition.x;
+		const boatY = boatPosition.y;
+		const boatZ = boatPosition.z;
+
+		const linearVelocity = this.#linearVelocity;
+		const angularVelocity = this.#angularVelocity;
+
+		linearVelocity.y += cfg.gravity * dt;
+
+		const inverseMass = 1 / cfg.mass;
+
+		/*
+		 * Includes dt because the generic #applyForceAtPoint multiplied its torque
+		 * scale by dt before applying angular velocity.
+		 */
+		const angularForceScale =
+			cfg.torqueScale * this.#angularResponseScale * inverseMass * dt;
+
+		const buoyancyScale = cfg.baseBuoyancyForce;
+
+		const buoyancyPoints = this.#buoyancyPoints;
+
+		/*
+		 * Indexed iteration avoids the array iterator in this per-boat,
+		 * per-frame loop.
+		 */
+		for (let index = 0; index < buoyancyPoints.length; index++) {
+			const localPoint = buoyancyPoints[index];
+
+			const rotatedX = localPoint.x * cosYaw - localPoint.z * sinYaw;
+
+			const rotatedZ = localPoint.x * sinYaw + localPoint.z * cosYaw;
+
+			const worldX = boatX + rotatedX;
+			const worldY = boatY + localPoint.y;
+			const worldZ = boatZ + rotatedZ;
+
+			/*
+			 * Reuse the point object because the submersion helper currently accepts
+			 * Vec3. If this remains prominent in profiles, add a scalar
+			 * #getWaterSubmersionAtXYZ helper and remove this write entirely.
+			 */
+			const worldPoint = this.#tmpWorldPoint;
+
+			worldPoint.x = worldX;
+			worldPoint.y = worldY;
+			worldPoint.z = worldZ;
+
+			const submersion = this.#getWaterSubmersionAtPoint(worldPoint);
+
+			if (submersion <= 0) {
+				continue;
+			}
+
+			this.#applyVerticalBuoyancyForce(
+				submersion * buoyancyScale,
+				worldX,
+				worldZ,
+				dt,
+				inverseMass,
+				angularForceScale,
 			);
 
-			const sub = this.#getWaterSubmersionAtPoint(this.#tmpWorldPoint);
-			if (sub > 0) {
-				this.#applyForceAtPoint(
-					0,
-					sub * this.#cfg.baseBuoyancyForce,
-					0,
-					this.#tmpWorldPoint,
-					dt,
-				);
-				this.#submergedPoints++;
-			}
+			submergedPoints++;
 		}
 
-		// Drag
-		{
-			const d =
-				this.#submergedPoints > 0
-					? this.#cfg.damping.waterLinear
-					: this.#cfg.damping.airLinear;
-			const ad =
-				this.#submergedPoints > 0
-					? this.#cfg.damping.waterAngular
-					: this.#cfg.damping.airAngular;
+		this.#submergedPoints = submergedPoints;
 
-			// PERF: hoist dt*60 out of the two pow calls.
-			const k = dt * 60;
-			scaleVec3InPlace(this.#linearVelocity, d ** k);
-			scaleVec3InPlace(this.#angularVelocity, ad ** k);
+		const isSubmerged = submergedPoints !== 0;
+
+		const linearDamping = isSubmerged
+			? cfg.damping.waterLinear
+			: cfg.damping.airLinear;
+
+		const angularDamping = isSubmerged
+			? cfg.damping.waterAngular
+			: cfg.damping.airAngular;
+
+		const dampingTimeScale = dt * 60;
+
+		scaleVec3InPlace(linearVelocity, linearDamping ** dampingTimeScale);
+
+		scaleVec3InPlace(angularVelocity, angularDamping ** dampingTimeScale);
+
+		/*
+		 * Skip collider calls for zero movement. Depending on VoxelObbCollider,
+		 * this can avoid coordinate resolution and collision sweeps while the boat
+		 * is fully stationary.
+		 */
+		const moveX = linearVelocity.x * dt;
+		const moveY = linearVelocity.y * dt;
+		const moveZ = linearVelocity.z * dt;
+
+		if (moveX !== 0) {
+			this.#moveAxis(Axis.X, moveX);
 		}
 
-		// Move
-		this.#moveAxis(Axis.X, this.#linearVelocity.x * dt);
-		this.#moveAxis(Axis.Y, this.#linearVelocity.y * dt);
-		this.#moveAxis(Axis.Z, this.#linearVelocity.z * dt);
+		if (moveY !== 0) {
+			this.#moveAxis(Axis.Y, moveY);
+		}
 
-		// Rotate
+		if (moveZ !== 0) {
+			this.#moveAxis(Axis.Z, moveZ);
+		}
+
 		this.#integrateRotation(dt);
 
-		// Sync visuals (if any)
-		if (this.#customVisualRoot) {
-			this.#customVisualRoot.position.copyFrom(this.#boat.position);
+		const currentYaw = this.#currentYaw;
+		const customVisualRoot = this.#customVisualRoot;
+
+		if (customVisualRoot !== undefined) {
+			customVisualRoot.position.copyFrom(boatPosition);
+
 			Quaternion.FromEulerAnglesToRef(
 				0,
-				this.#currentYaw + this.#customVisualLocalYaw,
+				currentYaw + this.#customVisualLocalYaw,
 				0,
 				this.#scratchQuat,
 			);
-			(this.#customVisualRoot.rotationQuaternion as any).copyFrom(
-				this.#scratchQuat,
-			);
+
+			customVisualRoot.rotationQuaternion.copyFrom(this.#scratchQuat);
 		}
 
-		// Always update collider orientation
-		this.#voxelCollider.setYaw(this.#currentYaw);
+		this.#voxelCollider.setYaw(currentYaw);
 
-		// Keep the rider behind the wheel as the boat turns.
 		this.#syncHelmMount();
-
-		// Sync mounted player to new position
 		this.#mount.update();
-
-		// Sync boat chunk visuals
 		this.#boatChunk?.syncVisualMeshes();
-
-		// Debug
-		this.#voxelCollider.syncDebugMesh(this.#boat.position);
+		this.#voxelCollider.syncDebugMesh(boatPosition);
 	}
 
 	#applyForceAtPoint(

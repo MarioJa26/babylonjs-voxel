@@ -51,6 +51,75 @@ function hash2(x: number, z: number, mask: number): number {
 // ---------------------------------------------------------------------------
 // One-time initialization
 // ---------------------------------------------------------------------------
+type BiomeTerrainCell = {
+	gx: number;
+	gz: number;
+
+	base00: number;
+	base10: number;
+	base01: number;
+	base11: number;
+
+	amp00: number;
+	amp10: number;
+	amp01: number;
+	amp11: number;
+
+	scale00: number;
+	scale10: number;
+	scale01: number;
+	scale11: number;
+
+	exp00: number;
+	exp10: number;
+	exp01: number;
+	exp11: number;
+
+	pvScale00: number;
+	pvScale10: number;
+	pvScale01: number;
+	pvScale11: number;
+
+	erosionScale00: number;
+	erosionScale10: number;
+	erosionScale01: number;
+	erosionScale11: number;
+};
+
+const cachedBiomeTerrainCell: BiomeTerrainCell = {
+	gx: Number.NaN,
+	gz: Number.NaN,
+
+	base00: 0,
+	base10: 0,
+	base01: 0,
+	base11: 0,
+
+	amp00: 0,
+	amp10: 0,
+	amp01: 0,
+	amp11: 0,
+
+	scale00: 0,
+	scale10: 0,
+	scale01: 0,
+	scale11: 0,
+
+	exp00: 0,
+	exp10: 0,
+	exp01: 0,
+	exp11: 0,
+
+	pvScale00: 0,
+	pvScale10: 0,
+	pvScale01: 0,
+	pvScale11: 0,
+
+	erosionScale00: 0,
+	erosionScale10: 0,
+	erosionScale01: 0,
+	erosionScale11: 0,
+};
 
 type TerrainNoiseSet = {
 	riverGenerator: RiverGenerator;
@@ -155,6 +224,9 @@ export function setTerrainSeed(seed: string): void {
 	cornerValid.fill(0);
 	chunkCacheValid.fill(0);
 	fhcValid.fill(0);
+
+	cachedBiomeTerrainCell.gx = Number.NaN;
+	cachedBiomeTerrainCell.gz = Number.NaN;
 }
 
 function applyRidged(raw: number): number {
@@ -415,6 +487,74 @@ function ensureCorner(
 		riverGenerator.getRiverNoise(worldX, worldZ),
 	);
 }
+function loadBiomeTerrainCell(
+	gx: number,
+	gz: number,
+	x0: number,
+	z0: number,
+): BiomeTerrainCell {
+	const cell = cachedBiomeTerrainCell;
+
+	if (cell.gx === gx && cell.gz === gz) {
+		return cell;
+	}
+
+	/*
+	 * Copy each corner immediately after ensureCorner().
+	 *
+	 * The underlying cache is direct-mapped, so a later ensureCorner call
+	 * could theoretically overwrite an earlier slot after a hash collision.
+	 */
+	const s00 = ensureCorner(gx, gz, x0, z0);
+
+	cell.base00 = cornerBase[s00];
+	cell.amp00 = cornerAmp[s00];
+	cell.scale00 = cornerScale[s00];
+	cell.exp00 = cornerExp[s00];
+	cell.pvScale00 = cornerPvScale[s00];
+	cell.erosionScale00 = cornerErosionScale[s00];
+
+	const s10 = ensureCorner(gx + 1, gz, x0 + BIOME_TERRAIN_GRID, z0);
+
+	cell.base10 = cornerBase[s10];
+	cell.amp10 = cornerAmp[s10];
+	cell.scale10 = cornerScale[s10];
+	cell.exp10 = cornerExp[s10];
+	cell.pvScale10 = cornerPvScale[s10];
+	cell.erosionScale10 = cornerErosionScale[s10];
+
+	const s01 = ensureCorner(gx, gz + 1, x0, z0 + BIOME_TERRAIN_GRID);
+
+	cell.base01 = cornerBase[s01];
+	cell.amp01 = cornerAmp[s01];
+	cell.scale01 = cornerScale[s01];
+	cell.exp01 = cornerExp[s01];
+	cell.pvScale01 = cornerPvScale[s01];
+	cell.erosionScale01 = cornerErosionScale[s01];
+
+	const s11 = ensureCorner(
+		gx + 1,
+		gz + 1,
+		x0 + BIOME_TERRAIN_GRID,
+		z0 + BIOME_TERRAIN_GRID,
+	);
+
+	cell.base11 = cornerBase[s11];
+	cell.amp11 = cornerAmp[s11];
+	cell.scale11 = cornerScale[s11];
+	cell.exp11 = cornerExp[s11];
+	cell.pvScale11 = cornerPvScale[s11];
+	cell.erosionScale11 = cornerErosionScale[s11];
+
+	/*
+	 * Publish the key only after all values have been populated, keeping the
+	 * cache valid if corner generation throws.
+	 */
+	cell.gx = gx;
+	cell.gz = gz;
+
+	return cell;
+}
 
 function shapeHeightNoise(rawNoise: number, exp: number): number {
 	const n01 = (rawNoise + 1) * 0.5;
@@ -443,6 +583,7 @@ function computeFinalTerrainHeight(
 ): number {
 	const gx = Math.floor(x * INV_BIOME_TERRAIN_GRID);
 	const gz = Math.floor(z * INV_BIOME_TERRAIN_GRID);
+
 	const x0 = gx * BIOME_TERRAIN_GRID;
 	const z0 = gz * BIOME_TERRAIN_GRID;
 
@@ -454,77 +595,57 @@ function computeFinalTerrainHeight(
 	tz = tz < 0 ? 0 : tz > 1 ? 1 : tz;
 	tz = tz * tz * tz * (tz * (tz * 6 - 15) + 10);
 
-	const s00 = ensureCorner(gx, gz, x0, z0);
-	const s00Base = cornerBase[s00];
-	const s00Amp = cornerAmp[s00];
-	const s00Scale = cornerScale[s00];
-	const s00Exp = cornerExp[s00];
-	const s00PvScale = cornerPvScale[s00];
-	const s00ErosScale = cornerErosionScale[s00];
-
-	const s10 = ensureCorner(gx + 1, gz, x0 + BIOME_TERRAIN_GRID, z0);
-	const s10Base = cornerBase[s10];
-	const s10Amp = cornerAmp[s10];
-	const s10Scale = cornerScale[s10];
-	const s10Exp = cornerExp[s10];
-	const s10PvScale = cornerPvScale[s10];
-	const s10ErosScale = cornerErosionScale[s10];
-
-	const s01 = ensureCorner(gx, gz + 1, x0, z0 + BIOME_TERRAIN_GRID);
-	const s01Base = cornerBase[s01];
-	const s01Amp = cornerAmp[s01];
-	const s01Scale = cornerScale[s01];
-	const s01Exp = cornerExp[s01];
-	const s01PvScale = cornerPvScale[s01];
-	const s01ErosScale = cornerErosionScale[s01];
-
-	const s11 = ensureCorner(
-		gx + 1,
-		gz + 1,
-		x0 + BIOME_TERRAIN_GRID,
-		z0 + BIOME_TERRAIN_GRID,
-	);
-	const s11Base = cornerBase[s11];
-	const s11Amp = cornerAmp[s11];
-	const s11Scale = cornerScale[s11];
-	const s11Exp = cornerExp[s11];
-	const s11PvScale = cornerPvScale[s11];
-	const s11ErosScale = cornerErosionScale[s11];
+	const cell = loadBiomeTerrainCell(gx, gz, x0, z0);
 
 	const itx = 1 - tx;
 	const itz = 1 - tz;
 
+	/*
+	 * Keep the original interpolation expression and operation order. Using
+	 * precomputed four-corner weights would require fewer operations, but can
+	 * change floating-point rounding near integer height boundaries.
+	 */
 	const sBase =
-		(s00Base * itx + s10Base * tx) * itz + (s01Base * itx + s11Base * tx) * tz;
+		(cell.base00 * itx + cell.base10 * tx) * itz +
+		(cell.base01 * itx + cell.base11 * tx) * tz;
 
 	const sAmp =
-		(s00Amp * itx + s10Amp * tx) * itz + (s01Amp * itx + s11Amp * tx) * tz;
+		(cell.amp00 * itx + cell.amp10 * tx) * itz +
+		(cell.amp01 * itx + cell.amp11 * tx) * tz;
 
 	const sScale =
-		(s00Scale * itx + s10Scale * tx) * itz +
-		(s01Scale * itx + s11Scale * tx) * tz;
+		(cell.scale00 * itx + cell.scale10 * tx) * itz +
+		(cell.scale01 * itx + cell.scale11 * tx) * tz;
 
 	const sExp =
-		(s00Exp * itx + s10Exp * tx) * itz + (s01Exp * itx + s11Exp * tx) * tz;
+		(cell.exp00 * itx + cell.exp10 * tx) * itz +
+		(cell.exp01 * itx + cell.exp11 * tx) * tz;
 
 	const sPvScale =
-		(s00PvScale * itx + s10PvScale * tx) * itz +
-		(s01PvScale * itx + s11PvScale * tx) * tz;
+		(cell.pvScale00 * itx + cell.pvScale10 * tx) * itz +
+		(cell.pvScale01 * itx + cell.pvScale11 * tx) * tz;
 
-	const sErosScale =
-		(s00ErosScale * itx + s10ErosScale * tx) * itz +
-		(s01ErosScale * itx + s11ErosScale * tx) * tz;
+	const sErosionScale =
+		(cell.erosionScale00 * itx + cell.erosionScale10 * tx) * itz +
+		(cell.erosionScale01 * itx + cell.erosionScale11 * tx) * tz;
 
-	const shaped = shapeHeightNoise(heightNoise(x * sScale, z * sScale), sExp);
-	const noiseHeight = shaped * sAmp;
+	const shapedNoise = shapeHeightNoise(
+		heightNoise(x * sScale, z * sScale),
+		sExp,
+	);
 
+	const noiseHeight = shapedNoise * sAmp;
 	const riverFactor = riverAbs < 0.1 ? riverAbs * 10 : 1;
-	const roughness = erosionSpline.getValue(erosion) * riverFactor * sErosScale;
+
+	const roughness =
+		erosionSpline.getValue(erosion) * riverFactor * sErosionScale;
+
 	const detail =
 		peaksAndValleysSpline.getValue(pv) * roughness * sPvScale +
 		riverGenerator.getRiverDepth(riverAbs);
 
 	const continent = applyRidged(rawContinent);
+
 	const splineBaseHeight =
 		GenerationParams.SEA_LEVEL + continentalnessSpline.getValue(continent);
 

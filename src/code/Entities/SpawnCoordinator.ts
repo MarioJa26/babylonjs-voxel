@@ -3,6 +3,7 @@ import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { Map1 } from "../Maps/Map1";
 import {
 	getLightByWorldCoords,
+	type ResolvedBlock,
 	resolveBlockAtWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
@@ -13,43 +14,104 @@ import type { Mob, MobRegistry, MobSpawnConfig } from "./Mobs/Mob";
 
 const SPAWN_MIN_RADIUS = 24;
 const SPAWN_MAX_RADIUS = 96;
+const SPAWN_RADIUS_RANGE = SPAWN_MAX_RADIUS - SPAWN_MIN_RADIUS;
+
 const DESPAWN_INSTANT_RADIUS = 128;
 const DESPAWN_INSTANT_RADIUS_SQ =
 	DESPAWN_INSTANT_RADIUS * DESPAWN_INSTANT_RADIUS;
+
 const DESPAWN_GRADUAL_INNER = 32;
 const DESPAWN_GRADUAL_INNER_SQ = DESPAWN_GRADUAL_INNER * DESPAWN_GRADUAL_INNER;
+
 const DESPAWN_GRADUAL_OUTER = 128;
+const DESPAWN_GRADUAL_RANGE = DESPAWN_GRADUAL_OUTER - DESPAWN_GRADUAL_INNER;
+
 const DESPAWN_CHANCE_PER_SEC = 0.3;
-const SPAWN_CHECK_INTERVAL = 3000;
+const SPAWN_CHECK_INTERVAL = 3_000;
+
+const DESPAWN_CHECK_CHANCE_SCALE =
+	DESPAWN_CHANCE_PER_SEC * (SPAWN_CHECK_INTERVAL / 1_000);
+
 const MIN_SPAWN_HEIGHT = 1;
 const MAX_SPAWN_HEIGHT = 200;
-/** Flock cruise altitude above the player (blocks). */
+
 const FLOCK_ALTITUDE_MIN = 12;
 const FLOCK_ALTITUDE_MAX = 20;
+const FLOCK_ALTITUDE_RANGE = FLOCK_ALTITUDE_MAX - FLOCK_ALTITUDE_MIN;
 
-const _mobSnapshot: Mob[] = [];
+const NATURAL_SPAWN_ATTEMPTS = 3;
+const TWO_PI = Math.PI * 2;
+
+const SEA_LEVEL = 62;
 
 /**
- * True when the world clock is in its night phase. Defaults to true when
- * there is no environment yet (tests, early boot) so spawning never
- * deadlocks for lack of a clock.
+ * Shared scratch arrays.
+ *
+ * SpawnCoordinator runs on the main thread, so one module-level snapshot is
+ * sufficient. The snapshot is rebuilt after despawning and then reused by all
+ * spawn-position searches during that cycle.
  */
+const mobSnapshot: Mob[] = [];
+
+/**
+ * Voxel lookup snapshots must be copied because resolveBlockAtWorldCoords()
+ * returns a shared scratch object whose fields are overwritten by the next
+ * lookup.
+ */
+const lowerBlockScratch: ResolvedBlock = {
+	blockId: 0,
+	blockState: 0,
+	loaded: false,
+	unloaded: false,
+};
+
+function copyResolvedBlock(
+	source: ResolvedBlock,
+	destination: ResolvedBlock,
+): void {
+	destination.blockId = source.blockId;
+	destination.blockState = source.blockState;
+	destination.loaded = source.loaded;
+	destination.unloaded = source.unloaded;
+}
+
 function isNightNow(): boolean {
-	const env = Map1.environment;
-	if (!env) return true;
+	const environment = Map1.environment;
+
+	if (environment === null || environment === undefined) {
+		return true;
+	}
+
 	return isNightTimeFraction(
-		env.getTimeOfDayMs() / SETTING_PARAMS.DAY_DURATION_MS,
+		environment.getTimeOfDayMs() / SETTING_PARAMS.DAY_DURATION_MS,
 	);
 }
 
+function randomSpawnCoordinate(playerPosition: Vec3): { x: number; z: number } {
+	const angle = Math.random() * TWO_PI;
+	const distance = SPAWN_MIN_RADIUS + Math.random() * SPAWN_RADIUS_RANGE;
+
+	return {
+		x: Math.floor(playerPosition.x + Math.cos(angle) * distance),
+		z: Math.floor(playerPosition.z + Math.sin(angle) * distance),
+	};
+}
+
 export class SpawnCoordinator {
-	#scene: SceneContext;
-	#getPlayerPosition: () => Vec3;
-	#lastSpawnCheck = 0;
-	#disposed = false;
+	readonly #scene: SceneContext;
+	readonly #getPlayerPosition: () => Vec3;
 	readonly #registry: MobRegistry;
 
-	constructor(
+	/**
+	 * Configured total cap is normally static for the lifetime of the registry,
+	 * so compute it once rather than scanning every config every spawn cycle.
+	 */
+	readonly #totalCap: number;
+
+	#lastSpawnCheck = 0;
+	#disposed = false;
+
+	public constructor(
 		scene: SceneContext,
 		getPlayerPosition: () => Vec3,
 		registry: MobRegistry,
@@ -58,270 +120,378 @@ export class SpawnCoordinator {
 		this.#getPlayerPosition = getPlayerPosition;
 		this.#registry = registry;
 
-		onBeforeRender(this.#scene, () => {
-			if (this.#disposed) return;
+		let totalCap = 0;
+
+		for (const config of registry.getConfigs()) {
+			totalCap += config.maxCount;
+		}
+
+		this.#totalCap = totalCap;
+
+		onBeforeRender(scene, (): void => {
+			if (this.#disposed) {
+				return;
+			}
+
 			frameProfiler.begin("mobSpawn");
-			this.#tick();
-			frameProfiler.end("mobSpawn");
+
+			try {
+				this.#tick();
+			} finally {
+				frameProfiler.end("mobSpawn");
+			}
 		});
 	}
 
-	get registry(): MobRegistry {
+	public get registry(): MobRegistry {
 		return this.#registry;
 	}
 
-	dispose(): void {
+	public dispose(): void {
 		this.#disposed = true;
 	}
 
 	#tick(): void {
-		const now = performance.now();
-		if (now - this.#lastSpawnCheck < SPAWN_CHECK_INTERVAL) return;
-		this.#lastSpawnCheck = now;
+		const nowMs = performance.now();
 
-		const playerPos = this.#getPlayerPosition();
-		this.#updatePlayerPositions(playerPos);
-		this.#despawnDistant(playerPos);
-		this.#trySpawn(playerPos);
+		if (nowMs - this.#lastSpawnCheck < SPAWN_CHECK_INTERVAL) {
+			return;
+		}
+
+		this.#lastSpawnCheck = nowMs;
+
+		const playerPosition = this.#getPlayerPosition();
+
+		/*
+		 * Updating player references and despawning share the same initial
+		 * registry traversal.
+		 */
+		this.#updateAndDespawnMobs(playerPosition);
+
+		/*
+		 * Rebuild once after disposal. All spawn attempts in this cycle use the
+		 * same snapshot, with newly spawned mobs appended as they are created.
+		 */
+		this.#buildMobSnapshot();
+		this.#trySpawn(playerPosition);
 	}
 
-	#updatePlayerPositions(playerPos: Vec3): void {
-		for (const mob of this.#registry.getAllMobs()) {
-			mob.setPlayerPosition(playerPos);
-		}
-	}
+	#updateAndDespawnMobs(playerPosition: Vec3): void {
+		const registry = this.#registry;
+		const playerX = playerPosition.x;
+		const playerY = playerPosition.y;
+		const playerZ = playerPosition.z;
 
-	#despawnDistant(playerPos: Vec3): void {
-		_mobSnapshot.length = 0;
-		for (const mob of this.#registry.getAllMobs()) {
-			_mobSnapshot.push(mob);
-		}
-		for (let i = 0; i < _mobSnapshot.length; i++) {
-			const mob = _mobSnapshot[i];
-			if (!mob) continue;
-			const config = this.#registry.getConfig(mob.mobType);
-			if (config && config.despawnable === false) continue;
+		mobSnapshot.length = 0;
 
-			const dx = mob.position.x - playerPos.x;
-			const dy = mob.position.y - playerPos.y;
-			const dz = mob.position.z - playerPos.z;
-			const distSq = dx * dx + dy * dy + dz * dz;
-			if (distSq > DESPAWN_INSTANT_RADIUS_SQ) {
+		/*
+		 * Snapshot before disposing because disposal can mutate the registry.
+		 */
+		for (const mob of registry.getAllMobs()) {
+			mobSnapshot.push(mob);
+		}
+
+		for (let index = 0; index < mobSnapshot.length; index++) {
+			const mob = mobSnapshot[index];
+
+			mob.setPlayerPosition(playerPosition);
+
+			const config = registry.getConfig(mob.mobType);
+
+			if (config?.despawnable === false) {
+				continue;
+			}
+
+			const position = mob.position;
+			const dx = position.x - playerX;
+			const dy = position.y - playerY;
+			const dz = position.z - playerZ;
+
+			const distanceSq = dx * dx + dy * dy + dz * dz;
+
+			if (distanceSq > DESPAWN_INSTANT_RADIUS_SQ) {
 				mob.dispose();
 				continue;
 			}
-			if (distSq > DESPAWN_GRADUAL_INNER_SQ) {
-				const dist = Math.sqrt(distSq);
-				const t =
-					(dist - DESPAWN_GRADUAL_INNER) /
-					(DESPAWN_GRADUAL_OUTER - DESPAWN_GRADUAL_INNER);
-				if (
-					Math.random() <
-					DESPAWN_CHANCE_PER_SEC * t * (SPAWN_CHECK_INTERVAL / 1000)
-				) {
-					mob.dispose();
-				}
-			}
-		}
-	}
 
-	#trySpawn(playerPos: Vec3): void {
-		const totalCap = this.#getTotalCap();
-		// Only naturally spawned mobs count toward the cap; spawn-egg mobs
-		// (countsTowardMobCap === false) never block natural spawning.
-		if (this.#registry.getNaturalTotal() >= totalCap) return;
-
-		const night = isNightNow();
-		const attempts = 3;
-		for (let i = 0; i < attempts; i++) {
-			if (this.#registry.getNaturalTotal() >= totalCap) return;
-
-			const config = this.#registry.pickSpawnType();
-			if (!config) return;
-
-			// Night spawners (zombies/skeletons) never roll during the day.
-			if (config.nightSpawn && !night) continue;
-
-			// Day spawners (birds) never roll at night.
-			if (config.daySpawn && night) continue;
-
-			// Flock spawners (birds) create the whole formation at one
-			// shared position instead of scattering solo spawns.
-			if (config.flockSize && config.mobType === "bird") {
-				const pos = this.#findAirSpawnPosition(playerPos, config);
-				if (pos) {
-					const flock = config.flockSize;
-					const count =
-						flock.min + Math.floor(Math.random() * (flock.max - flock.min + 1));
-					Bird.createFlock(
-						pos.x,
-						pos.y,
-						pos.z,
-						this.#scene,
-						count,
-						this.#registry,
-					);
-				}
+			if (distanceSq <= DESPAWN_GRADUAL_INNER_SQ) {
 				continue;
 			}
 
-			const pos = this.#findSpawnPosition(playerPos, config);
-			if (pos) {
-				const mob = config.factory(pos.x, pos.y, pos.z, this.#scene);
-				this.#registry.addMob(mob);
+			const distance = Math.sqrt(distanceSq);
+			const normalizedDistance =
+				(distance - DESPAWN_GRADUAL_INNER) / DESPAWN_GRADUAL_RANGE;
+
+			if (Math.random() < DESPAWN_CHECK_CHANCE_SCALE * normalizedDistance) {
+				mob.dispose();
 			}
 		}
 	}
 
-	#getTotalCap(): number {
-		let cap = 0;
-		for (const config of this.#registry.getConfigs()) {
-			cap += config.maxCount;
+	#buildMobSnapshot(): void {
+		mobSnapshot.length = 0;
+
+		for (const mob of this.#registry.getAllMobs()) {
+			mobSnapshot.push(mob);
 		}
-		return cap;
 	}
 
-	#findSpawnPosition(
-		playerPos: Vec3,
+	#trySpawn(playerPosition: Vec3): void {
+		const registry = this.#registry;
+		const totalCap = this.#totalCap;
+
+		let naturalTotal = registry.getNaturalTotal();
+
+		if (naturalTotal >= totalCap) {
+			return;
+		}
+
+		const night = isNightNow();
+
+		for (let attempt = 0; attempt < NATURAL_SPAWN_ATTEMPTS; attempt++) {
+			if (naturalTotal >= totalCap) {
+				return;
+			}
+
+			const config = registry.pickSpawnType();
+
+			if (config === null || config === undefined) {
+				return;
+			}
+
+			if (config.nightSpawn && !night) {
+				continue;
+			}
+
+			if (config.daySpawn && night) {
+				continue;
+			}
+
+			if (config.flockSize !== undefined && config.mobType === "bird") {
+				const position = this.#findAirSpawnPosition(playerPosition);
+
+				if (position === null) {
+					continue;
+				}
+
+				const flock = config.flockSize;
+				const requestedCount =
+					flock.min + Math.floor(Math.random() * (flock.max - flock.min + 1));
+
+				/*
+				 * Do not intentionally exceed the natural cap with a flock.
+				 */
+				const available = totalCap - naturalTotal;
+
+				const count = Math.min(requestedCount, available);
+
+				if (count <= 0) {
+					return;
+				}
+
+				Bird.createFlock(
+					position.x,
+					position.y,
+					position.z,
+					this.#scene,
+					count,
+					registry,
+				);
+
+				naturalTotal += count;
+
+				/*
+				 * Rebuild because Bird.createFlock owns mob construction and
+				 * registration, so its created objects are not returned here.
+				 */
+				this.#buildMobSnapshot();
+				continue;
+			}
+
+			const position = this.#findGroundSpawnPosition(playerPosition, config);
+
+			if (position === null) {
+				continue;
+			}
+
+			const mob = config.factory(
+				position.x,
+				position.y,
+				position.z,
+				this.#scene,
+			);
+
+			registry.addMob(mob);
+			mobSnapshot.push(mob);
+			naturalTotal++;
+		}
+	}
+
+	#findGroundSpawnPosition(
+		playerPosition: Vec3,
 		config: MobSpawnConfig,
 	): { x: number; y: number; z: number } | null {
-		const angle = Math.random() * Math.PI * 2;
-		const dist =
-			SPAWN_MIN_RADIUS + Math.random() * (SPAWN_MAX_RADIUS - SPAWN_MIN_RADIUS);
+		const coordinate = randomSpawnCoordinate(playerPosition);
 
-		const wx = Math.floor(playerPos.x + Math.cos(angle) * dist);
-		const wz = Math.floor(playerPos.z + Math.sin(angle) * dist);
+		const worldX = coordinate.x;
+		const worldZ = coordinate.z;
 
-		_mobSnapshot.length = 0;
-		for (const mob of this.#registry.getAllMobs()) {
-			_mobSnapshot.push(mob);
+		if (config.spawnBlockId === BlockType.Water) {
+			return this.#findWaterSpawnPosition(worldX, worldZ, config);
 		}
 
-		// Water mobs (squid/fish/kraken): spawn inside water column
-		const isWaterSpawn = config.spawnBlockId === BlockType.Water;
-		if (isWaterSpawn) {
-			return this.#findWaterSpawnPosition(wx, wz, config);
+		/*
+		 * Prime the rolling upper sample. For each descending Y:
+		 *
+		 *   lower = block at Y
+		 *   upper = previous lower, block at Y + 1
+		 *
+		 * This changes the scan from two block resolutions per height to one
+		 * after the initial lookup.
+		 */
+		const upper = resolveBlockAtWorldCoords(
+			worldX,
+			MAX_SPAWN_HEIGHT + 1,
+			worldZ,
+		);
+
+		if (!upper.loaded) {
+			return null;
 		}
 
-		for (let wy = MAX_SPAWN_HEIGHT; wy >= MIN_SPAWN_HEIGHT; wy--) {
-			// resolveBlockAtWorldCoords reports unloaded cells (chunk
-			// missing, not loaded, or no voxel data). For a spawn scan
-			// those cells aren't candidates — bail out of the column
-			// entirely instead of spending the rest of the Y range
-			// evaluating unloaded terrain as air.
-			const below = resolveBlockAtWorldCoords(wx, wy, wz);
-			if (!below.loaded) return null;
-			const above = resolveBlockAtWorldCoords(wx, wy + 1, wz);
-			if (!above.loaded) return null;
+		let upperBlockId = upper.blockId;
+
+		for (let worldY = MAX_SPAWN_HEIGHT; worldY >= MIN_SPAWN_HEIGHT; worldY--) {
+			const resolvedLower = resolveBlockAtWorldCoords(worldX, worldY, worldZ);
+
+			/*
+			 * Copy before the next lookup because resolveBlockAtWorldCoords
+			 * uses one shared result object.
+			 */
+			copyResolvedBlock(resolvedLower, lowerBlockScratch);
+
+			if (!lowerBlockScratch.loaded) {
+				return null;
+			}
 
 			if (
-				below.blockId === config.spawnBlockId &&
-				above.blockId === BlockType.Air
+				lowerBlockScratch.blockId === config.spawnBlockId &&
+				upperBlockId === BlockType.Air
 			) {
-				// Day mobs need open sky; night spawners hunt in the dark, so
-				// they skip the daylight gate (baked skylight can't tell time).
 				if (!config.nightSpawn) {
-					const light = getLightByWorldCoords(wx, wy + 1, wz);
-					const skyLight = (light >> 4) & 0xf;
-					if (skyLight < 8) continue;
-				}
+					const packedLight = getLightByWorldCoords(worldX, worldY + 1, worldZ);
 
-				const spawnY = wy + 1;
-				let tooClose = false;
-				for (let i = 0; i < _mobSnapshot.length; i++) {
-					const existing = _mobSnapshot[i];
-					if (!existing) continue;
-					const dx = existing.position.x - wx;
-					const dz = existing.position.z - wz;
-					if (dx * dx + dz * dz < 4) {
-						tooClose = true;
-						break;
+					const skyLight = (packedLight >>> 4) & 0x0f;
+
+					if (skyLight < 8) {
+						upperBlockId = lowerBlockScratch.blockId;
+						continue;
 					}
 				}
-				if (tooClose) continue;
 
-				return {
-					x: wx + 0.5,
-					y: spawnY + (config.spawnYOffset ?? 0.2),
-					z: wz + 0.5,
-				};
+				if (!this.#isMobTooClose(worldX, worldZ, 4)) {
+					return {
+						x: worldX + 0.5,
+						y: worldY + 1 + (config.spawnYOffset ?? 0.2),
+						z: worldZ + 0.5,
+					};
+				}
 			}
+
+			upperBlockId = lowerBlockScratch.blockId;
 		}
 
 		return null;
 	}
 
 	/**
-	 * Air spawn for flock birds: a loaded air cell at cruise altitude above
-	 * the player. No ground scan — flocks arrive mid-flight. Bails on
-	 * unloaded cells like the ground scans do.
+	 * Find a loaded air cell at flock cruise altitude.
 	 */
 	#findAirSpawnPosition(
-		playerPos: Vec3,
-		_config: MobSpawnConfig,
+		playerPosition: Vec3,
 	): { x: number; y: number; z: number } | null {
-		const angle = Math.random() * Math.PI * 2;
-		const dist =
-			SPAWN_MIN_RADIUS + Math.random() * (SPAWN_MAX_RADIUS - SPAWN_MIN_RADIUS);
-		const wx = Math.floor(playerPos.x + Math.cos(angle) * dist);
-		const wz = Math.floor(playerPos.z + Math.sin(angle) * dist);
-		const wy =
-			Math.floor(playerPos.y) +
+		const coordinate = randomSpawnCoordinate(playerPosition);
+
+		const worldY =
+			Math.floor(playerPosition.y) +
 			FLOCK_ALTITUDE_MIN +
-			Math.floor(Math.random() * (FLOCK_ALTITUDE_MAX - FLOCK_ALTITUDE_MIN));
+			Math.floor(Math.random() * FLOCK_ALTITUDE_RANGE);
 
-		const cell = resolveBlockAtWorldCoords(wx, wy, wz);
-		if (!cell.loaded) return null;
-		if (cell.blockId !== BlockType.Air) return null;
+		const cell = resolveBlockAtWorldCoords(coordinate.x, worldY, coordinate.z);
 
-		return { x: wx + 0.5, y: wy + 0.5, z: wz + 0.5 };
+		if (!cell.loaded || cell.blockId !== BlockType.Air) {
+			return null;
+		}
+
+		return {
+			x: coordinate.x + 0.5,
+			y: worldY + 0.5,
+			z: coordinate.z + 0.5,
+		};
 	}
 
 	#findWaterSpawnPosition(
-		wx: number,
-		wz: number,
+		worldX: number,
+		worldZ: number,
 		config: MobSpawnConfig,
 	): { x: number; y: number; z: number } | null {
-		// Scan around sea level for a water column; kraken prefers deeper water
-		const SEA_LEVEL = 62;
 		const isKraken = config.mobType === "kraken";
-		const yStart = isKraken ? SEA_LEVEL - 2 : SEA_LEVEL + 2;
-		const yEnd = isKraken ? SEA_LEVEL - 12 : SEA_LEVEL - 4;
 
-		for (let wy = yStart; wy >= yEnd; wy--) {
-			// Same as the land scan: bail out of the column when a cell
-			// is unloaded so we don't keep scanning against "air" until
-			// the streaming frontier rolls in.
-			const block = resolveBlockAtWorldCoords(wx, wy, wz);
-			if (!block.loaded) return null;
-			const above = resolveBlockAtWorldCoords(wx, wy + 1, wz);
-			if (!above.loaded) return null;
-			if (
-				block.blockId !== BlockType.Water ||
-				above.blockId !== BlockType.Water
-			) {
-				continue; // need water + water above
-			}
+		const startY = isKraken ? SEA_LEVEL - 2 : SEA_LEVEL + 2;
 
-			let tooClose = false;
-			for (let i = 0; i < _mobSnapshot.length; i++) {
-				const existing = _mobSnapshot[i];
-				if (!existing) continue;
-				const dx = existing.position.x - wx;
-				const dz = existing.position.z - wz;
-				if (dx * dx + dz * dz < 9) {
-					tooClose = true;
-					break;
-				}
-			}
-			if (tooClose) continue;
+		const endY = isKraken ? SEA_LEVEL - 12 : SEA_LEVEL - 4;
 
-			return {
-				x: wx + 0.5,
-				y: wy + (config.spawnYOffset ?? 0.5),
-				z: wz + 0.5,
-			};
+		const upper = resolveBlockAtWorldCoords(worldX, startY + 1, worldZ);
+
+		if (!upper.loaded) {
+			return null;
 		}
+
+		let upperBlockId = upper.blockId;
+
+		for (let worldY = startY; worldY >= endY; worldY--) {
+			const lower = resolveBlockAtWorldCoords(worldX, worldY, worldZ);
+
+			copyResolvedBlock(lower, lowerBlockScratch);
+
+			if (!lowerBlockScratch.loaded) {
+				return null;
+			}
+
+			if (
+				lowerBlockScratch.blockId === BlockType.Water &&
+				upperBlockId === BlockType.Water &&
+				!this.#isMobTooClose(worldX, worldZ, 9)
+			) {
+				return {
+					x: worldX + 0.5,
+					y: worldY + (config.spawnYOffset ?? 0.5),
+					z: worldZ + 0.5,
+				};
+			}
+
+			upperBlockId = lowerBlockScratch.blockId;
+		}
+
 		return null;
+	}
+
+	#isMobTooClose(
+		worldX: number,
+		worldZ: number,
+		minimumDistanceSq: number,
+	): boolean {
+		for (let index = 0; index < mobSnapshot.length; index++) {
+			const position = mobSnapshot[index].position;
+
+			const dx = position.x - worldX;
+			const dz = position.z - worldZ;
+
+			if (dx * dx + dz * dz < minimumDistanceSq) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 }

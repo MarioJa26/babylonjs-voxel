@@ -110,44 +110,62 @@ function effectiveClipRadius(): number {
 // the hole never needs per-frame or per-vertex updates.
 function buildTerrainIndices(holeRd: number): Uint32Array {
 	const res = gridResolution;
+	const cellResolution = res - 1;
 
-	const insideX: boolean[] = new Array(res);
-	const insideZ: boolean[] = new Array(res);
+	// X and Z use the same coordinate mapping, so one lookup is sufficient.
+	const inside = new Uint8Array(res);
 
-	for (let v = 0; v < res; v++) {
-		// Same inside test as the worker's generateVertex (strictly greater
-		// on the low side, inclusive on the high side).
-		const off = v * gridStep - radius;
-		const inside = off > -holeRd && off <= holeRd;
-		insideX[v] = inside;
-		insideZ[v] = inside;
+	for (let i = 0; i < res; i++) {
+		const offset = i * gridStep - radius;
+		inside[i] = offset > -holeRd && offset <= holeRd ? 1 : 0;
 	}
 
-	const indices: number[] = [];
+	// First pass: determine the exact output size.
+	let visibleQuadCount = 0;
 
-	for (let z = 0; z < res - 1; z++) {
-		const row = z * res;
-		const next = row + res;
-		const inZ0 = insideZ[z];
-		const inZ1 = insideZ[z + 1];
+	for (let z = 0; z < cellResolution; z++) {
+		const zFullyInside = inside[z] !== 0 && inside[z + 1] !== 0;
 
-		for (let x = 0; x < res - 1; x++) {
-			// Skip quads fully inside the close-up region: real geometry
-			// covers them. Zero vertex cost, zero fragment cost, and — unlike
-			// a shader camera-distance test — zero ALU per vertex to decide.
-			// Boundary quads are kept so their outer half still renders.
-			if (inZ0 && inZ1 && insideX[x] && insideX[x + 1]) continue;
+		for (let x = 0; x < cellResolution; x++) {
+			const fullyInsideHole =
+				zFullyInside && inside[x] !== 0 && inside[x + 1] !== 0;
 
-			const i0 = row + x;
-			const i1 = i0 + 1;
-			const i2 = next + x;
-			const i3 = i2 + 1;
-
-			indices.push(i0, i1, i2, i1, i3, i2);
+			if (!fullyInsideHole) {
+				visibleQuadCount++;
+			}
 		}
 	}
 
-	return Uint32Array.from(indices);
+	// Six indices per visible quad.
+	const indices = new Uint32Array(visibleQuadCount * 6);
+	let writeIndex = 0;
+
+	// Second pass: fill the final typed array directly.
+	for (let z = 0; z < cellResolution; z++) {
+		const row = z * res;
+		const nextRow = row + res;
+		const zFullyInside = inside[z] !== 0 && inside[z + 1] !== 0;
+
+		for (let x = 0; x < cellResolution; x++) {
+			if (zFullyInside && inside[x] !== 0 && inside[x + 1] !== 0) {
+				continue;
+			}
+
+			const i0 = row + x;
+			const i1 = i0 + 1;
+			const i2 = nextRow + x;
+			const i3 = i2 + 1;
+
+			indices[writeIndex++] = i0;
+			indices[writeIndex++] = i1;
+			indices[writeIndex++] = i2;
+			indices[writeIndex++] = i1;
+			indices[writeIndex++] = i3;
+			indices[writeIndex++] = i2;
+		}
+	}
+
+	return indices;
 }
 
 function createDistantWaterMesh(): Mesh {

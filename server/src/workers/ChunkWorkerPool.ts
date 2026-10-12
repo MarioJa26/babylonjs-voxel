@@ -698,51 +698,68 @@ export class ChunkWorkerPool {
 			return;
 		}
 
-		for (;;) {
-			let freeWorker: WorkerState | undefined;
+		const workers = this.workers;
+		const pendingTasks = this.pendingTasks;
 
-			for (let i = 0; i < this.workers.length; i++) {
-				const state = this.workers[i];
+		/*
+		 * Walk each worker once.
+		 *
+		 * The previous implementation searched from workers[0] for every task.
+		 * Filling W idle workers therefore examined the same busy prefix repeatedly:
+		 *
+		 *     1 + 2 + ... + W = O(W²)
+		 *
+		 * This pass is O(W), while takeNextTask() retains priority-tier ordering.
+		 */
+		for (let workerIndex = 0; workerIndex < workers.length; workerIndex++) {
+			const state = workers[workerIndex];
 
-				if (!state.busy && !state.disposed) {
-					freeWorker = state;
+			if (state.busy || state.disposed) {
+				continue;
+			}
+
+			/*
+			 * Normally this loop runs once. It repeats only when postMessage throws,
+			 * allowing the same still-idle worker to accept the next queued task
+			 * instead of leaving capacity unused until another processQueue call.
+			 */
+			for (;;) {
+				const task = this.takeNextTask();
+
+				if (task === undefined) {
+					this.compactQueuesIfNeeded();
+					return;
+				}
+
+				state.busy = true;
+				state.activeTaskId = task.id;
+				pendingTasks.set(task.id, task);
+
+				try {
+					this.postTaskToWorker(state.worker, task);
+
+					// This worker now owns one task.
 					break;
+				} catch (error: unknown) {
+					state.busy = false;
+					state.activeTaskId = undefined;
+					pendingTasks.delete(task.id);
+
+					task.reject(
+						error instanceof Error
+							? error
+							: new Error(`Failed to post task to worker: ${String(error)}`),
+					);
+
+					/*
+					 * Continue with the same worker. A synchronous posting failure
+					 * for one task does not necessarily mean the worker is unusable.
+					 */
 				}
 			}
-
-			if (freeWorker === undefined) {
-				this.compactQueuesIfNeeded();
-				return;
-			}
-
-			// Drain the highest-priority tier that has work. Idle capacity is
-			// offered to the next tier down, so background work still fills a
-			// pool that no interactive request is using.
-			const task = this.takeNextTask();
-
-			if (task === undefined) {
-				this.compactQueuesIfNeeded();
-				return;
-			}
-
-			freeWorker.busy = true;
-			freeWorker.activeTaskId = task.id;
-			this.pendingTasks.set(task.id, task);
-
-			try {
-				this.postTaskToWorker(freeWorker.worker, task);
-			} catch (error) {
-				freeWorker.busy = false;
-				freeWorker.activeTaskId = undefined;
-				this.pendingTasks.delete(task.id);
-
-				task.reject(
-					error instanceof Error
-						? error
-						: new Error(`Failed to post task to worker: ${String(error)}`),
-				);
-			}
 		}
+
+		this.compactQueuesIfNeeded();
 	}
 
 	private postTaskToWorker(worker: Worker, task: PendingTask): void {

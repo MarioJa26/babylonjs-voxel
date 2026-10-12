@@ -30,8 +30,8 @@ import { IglooFeature } from "./Structure/IglooFeature";
 import { InfernalPitFeature } from "./Structure/InfernalPitFeature";
 import type { IWorldFeature } from "./Structure/IWorldFeature";
 import { LavaPoolFeature } from "./Structure/LavaPoolFeature";
-import { MayaTempleFeature } from "./Structure/MayaTempleFeature";
 import { LighthouseFeature } from "./Structure/LighthouseFeature";
+import { MayaTempleFeature } from "./Structure/MayaTempleFeature";
 import { MineshaftFeature } from "./Structure/MineshaftFeature";
 import { MountainCabinFeature } from "./Structure/MountainCabinFeature";
 import { MushroomHutFeature } from "./Structure/MushroomHutFeature";
@@ -1822,61 +1822,38 @@ export class SurfaceGenerator {
 		cliffNoise?: number,
 	): number {
 		const range = SurfaceGenerator.DENSITY_VERTICAL_SCAN_RANGE;
+		const coarseStep = SurfaceGenerator.DENSITY_COARSE_STEP;
+
 		const maxY = baseHeight + range;
 		const minY = baseHeight - range;
 
 		const cliff =
-			cliffNoise ?? this.sampleCliffNoise(worldX, baseHeight, worldZ);
+			cliffNoise !== undefined
+				? cliffNoise
+				: this.sampleCliffNoise(worldX, baseHeight, worldZ);
+
+		const baseNoiseX = worldX * 0.002;
+		const baseNoiseZ = worldZ * 0.01;
+		const overhangBaseX = worldX * 0.008;
+		const overhangBaseZ = worldZ * 0.008;
 
 		const baseAmp = SurfaceGenerator.DENSITY_BASE_AMPLITUDE;
 		const overhangAmp = SurfaceGenerator.DENSITY_OVERHANG_AMPLITUDE;
 		const cliffContribution = cliff * SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE;
 
-		const baseNoiseX = worldX * 0.002;
-		const baseNoiseZ = worldZ * 0.01;
-
-		const overhangBaseX = worldX * 0.008;
-		const overhangBaseZ = worldZ * 0.008;
-
-		// Density evaluated via a static helper (no closure allocated per
-		// column call).
 		const evalSurfaceDensity = SurfaceGenerator.evalSurfaceDensity;
 
-		// Pass 1: coarse scan at DENSITY_COARSE_STEP to find a bracket
-		const coarseStep = SurfaceGenerator.DENSITY_COARSE_STEP;
+		/*
+		 * Coarse scan from the top of the density influence band.
+		 *
+		 * When this finds a positive sample, that sample is already known to be
+		 * solid. The fine scan therefore only needs to inspect the unsampled
+		 * positions above it, rather than evaluating coarseHigh a second time.
+		 */
 		let coarseHigh = CAVE_NO_SURFACE_Y;
-		for (let y = maxY; y >= minY; y -= coarseStep) {
-			if (
-				evalSurfaceDensity(
-					y,
-					baseNoiseX,
-					yFreq,
-					baseNoiseZ,
-					baseHeight,
-					baseAmp,
-					overhangBaseX,
-					overhangBaseZ,
-					overhangAmp,
-					cliffContribution,
-				) > 0
-			) {
-				coarseHigh = y;
-				break;
-			}
-		}
-		if (coarseHigh === CAVE_NO_SURFACE_Y) return CAVE_NO_SURFACE_Y;
 
-		// Pass 2: fine scan. The coarse pass steps down by DENSITY_COARSE_STEP
-		// and stops at the first (highest) solid sample `coarseHigh`. The
-		// previous coarse sample (coarseHigh + coarseStep) was air, so the true
-		// top surface lies somewhere in [coarseHigh, coarseHigh + coarseStep - 1].
-		// Walk that upward gap at step 1 to resolve the exact surface (a larger
-		// coarse step therefore costs fewer noise calls without losing resolution).
-		let densityAbove = -1;
-		let highestSolid = CAVE_NO_SURFACE_Y;
-		const fineTop = Math.min(coarseHigh + (coarseStep - 1), maxY);
-		for (let y = fineTop; y >= coarseHigh; y--) {
-			const d = evalSurfaceDensity(
+		for (let y = maxY; y >= minY; y -= coarseStep) {
+			const density = evalSurfaceDensity(
 				y,
 				baseNoiseX,
 				yFreq,
@@ -1888,16 +1865,50 @@ export class SurfaceGenerator {
 				overhangAmp,
 				cliffContribution,
 			);
-			if (d > 0) {
-				if (densityAbove <= 0) return y;
-				if (highestSolid === CAVE_NO_SURFACE_Y) {
-					highestSolid = y;
-				}
+
+			if (density > 0) {
+				coarseHigh = y;
+				break;
 			}
-			densityAbove = d;
 		}
 
-		return highestSolid;
+		if (coarseHigh === CAVE_NO_SURFACE_Y) {
+			return CAVE_NO_SURFACE_Y;
+		}
+
+		/*
+		 * coarseHigh is already confirmed solid.
+		 *
+		 * The previous coarse sample was either:
+		 *   coarseHigh + coarseStep, or
+		 *   above maxY for the first sample.
+		 *
+		 * Therefore, only the positions between coarseHigh and that upper bound
+		 * remain unresolved. Scan those from highest to lowest and return the
+		 * first solid position. If none are solid, coarseHigh is the exact result.
+		 */
+		const fineTop = Math.min(coarseHigh + coarseStep - 1, maxY);
+
+		for (let y = fineTop; y > coarseHigh; y--) {
+			const density = evalSurfaceDensity(
+				y,
+				baseNoiseX,
+				yFreq,
+				baseNoiseZ,
+				baseHeight,
+				baseAmp,
+				overhangBaseX,
+				overhangBaseZ,
+				overhangAmp,
+				cliffContribution,
+			);
+
+			if (density > 0) {
+				return y;
+			}
+		}
+
+		return coarseHigh;
 	}
 
 	/**

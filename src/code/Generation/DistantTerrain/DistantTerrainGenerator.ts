@@ -111,10 +111,10 @@ export function generate(
 	gStep: number,
 	out: DistantTerrainGenerateOutput,
 ): void {
-	const gridCenterChunkX = Math.floor(centerChunkX / gStep) * gStep;
-	const gridCenterChunkZ = Math.floor(centerChunkZ / gStep) * gStep;
-
 	ensureBuffers(r, gStep);
+
+	const gridCenterChunkX = Math.floor(centerChunkX / gridStep) * gridStep;
+	const gridCenterChunkZ = Math.floor(centerChunkZ / gridStep) * gridStep;
 
 	const firstBuild =
 		Number.isNaN(lastGridCenterChunkX) ||
@@ -132,74 +132,58 @@ export function generate(
 		const shiftX = (gridCenterChunkX - lastGridCenterChunkX) / gridStep;
 		const shiftZ = (gridCenterChunkZ - lastGridCenterChunkZ) / gridStep;
 
+		const snappedGridMoved = shiftX !== 0 || shiftZ !== 0;
 		const exactCenterMoved =
 			centerChunkX !== lastCenterChunkX || centerChunkZ !== lastCenterChunkZ;
 
-		const snappedGridMoved = shiftX !== 0 || shiftZ !== 0;
+		if (snappedGridMoved || exactCenterMoved) {
+			const absShiftX = Math.abs(shiftX);
+			const absShiftZ = Math.abs(shiftZ);
 
-		const absShiftX = Math.abs(shiftX);
-		const absShiftZ = Math.abs(shiftZ);
+			/*
+			 * Non-integer shifts indicate incompatible snapping state.
+			 * Shifts of at least rowSize have no reusable grid overlap.
+			 *
+			 * Keep the existing four-cell threshold to avoid changing the
+			 * established performance behavior for large movement jumps.
+			 */
+			const needsFullRebuild =
+				!Number.isInteger(shiftX) ||
+				!Number.isInteger(shiftZ) ||
+				absShiftX >= rowSize ||
+				absShiftZ >= rowSize ||
+				absShiftX > 4 ||
+				absShiftZ > 4 ||
+				(exactCenterMoved && !snappedGridMoved);
 
-		// PERF: slideArrays/regenerateEdges/rewriteLocalXZ are exact for any
-		// shift magnitude (heights/normals/tiles are pure world-grid
-		// functions; local XZ is rewritten from scratch), so multi-cell
-		// shifts don't need a full rebuild — only the exposed edge strips
-		// are regenerated (O(k*rowSize) vs O(rowSize^2)). Threshold 4 covers
-		// fast flight and hitch-induced jumps; teleports (shift >= rowSize)
-		// still take the full path below.
-		const absShiftTooLargeForSlide = absShiftX > 4 || absShiftZ > 4;
+			if (needsFullRebuild) {
+				fullGenerate(
+					gridCenterChunkX,
+					gridCenterChunkZ,
+					centerChunkX,
+					centerChunkZ,
+				);
+			} else {
+				/*
+				 * slideArrays already performs the Z move before the X move.
+				 * Both shifts can therefore be applied together. The newly
+				 * exposed rows and columns are regenerated afterward.
+				 *
+				 * Corner vertices may be generated twice by regenerateEdges,
+				 * but this is cheaper than performing a second full typed-array
+				 * slide for diagonal movement.
+				 */
+				slideArrays(shiftX, shiftZ);
 
-		const needsFullRebuild =
-			absShiftX >= rowSize ||
-			absShiftZ >= rowSize ||
-			!Number.isInteger(shiftX) ||
-			!Number.isInteger(shiftZ) ||
-			(exactCenterMoved && !snappedGridMoved) ||
-			absShiftTooLargeForSlide;
+				regenerateEdges(
+					shiftX,
+					shiftZ,
+					gridCenterChunkX,
+					gridCenterChunkZ,
+					centerChunkX,
+					centerChunkZ,
+				);
 
-		if (needsFullRebuild) {
-			fullGenerate(
-				gridCenterChunkX,
-				gridCenterChunkZ,
-				centerChunkX,
-				centerChunkZ,
-			);
-		} else {
-			if (snappedGridMoved) {
-				if (shiftX !== 0 && shiftZ !== 0) {
-					slideArrays(shiftX, 0);
-					regenerateEdges(
-						shiftX,
-						0,
-						gridCenterChunkX,
-						gridCenterChunkZ,
-						centerChunkX,
-						centerChunkZ,
-					);
-
-					slideArrays(0, shiftZ);
-					regenerateEdges(
-						0,
-						shiftZ,
-						gridCenterChunkX,
-						gridCenterChunkZ,
-						centerChunkX,
-						centerChunkZ,
-					);
-				} else {
-					slideArrays(shiftX, shiftZ);
-					regenerateEdges(
-						shiftX,
-						shiftZ,
-						gridCenterChunkX,
-						gridCenterChunkZ,
-						centerChunkX,
-						centerChunkZ,
-					);
-				}
-			}
-
-			if (snappedGridMoved || exactCenterMoved) {
 				rewriteLocalXZ(
 					centerChunkX,
 					centerChunkZ,

@@ -23,6 +23,10 @@ type ChunkCoord = {
 	chunkY: number;
 	chunkZ: number;
 };
+type GenerationRuntime = {
+	WorldGenerator: new (params: unknown) => Generator;
+	GenerationParams: Record<string, unknown>;
+};
 
 type GenRequest = {
 	id: number;
@@ -110,6 +114,7 @@ const port = parentPort;
 if (port === null) {
 	throw new Error("chunkWorker must run inside a worker thread");
 }
+let generationRuntimePromise: Promise<GenerationRuntime> | null = null;
 
 let generator: Generator | null = null;
 let currentSeed = "";
@@ -123,6 +128,75 @@ let initPromise: Promise<void> | null = null;
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+} /**
+ * Load and initialize the seed-independent generation runtime once.
+ *
+ * Dynamic imports, shape initialization, and closed-face-mask generation do
+ * not depend on the world seed. Repeating them whenever the seed changes adds
+ * unnecessary module coordination and LUT generation work.
+ */
+async function loadGenerationRuntime(): Promise<GenerationRuntime> {
+	const existing = generationRuntimePromise;
+
+	if (existing !== null) {
+		return existing;
+	}
+
+	const loading = (async (): Promise<GenerationRuntime> => {
+		const [
+			worldGeneratorModule,
+			generationParamsModule,
+			faceMasksModule,
+			lightGeneratorModule,
+			blockShapesModule,
+		] = await Promise.all([
+			import("@/code/Generation/WorldGenerator"),
+			import("@/code/Generation/NoiseAndParameters/GenerationParams"),
+			import("@/code/World/Chunk/Meshing/ChunkFaceMasks"),
+			import("@/code/Generation/LightGenerator"),
+			import("@/code/World/Shape/BlockShapes"),
+		]);
+
+		/*
+		 * Shape-aware lighting depends on the asynchronous shape registry.
+		 * This completes once for the lifetime of the worker.
+		 */
+		await blockShapesModule.shapeInitPromise;
+
+		/*
+		 * The closed-face LUT is seed-independent and relatively expensive to
+		 * derive. Build and publish it only once per worker.
+		 */
+		lightGeneratorModule.LightGenerator.setClosedFaceMaskLUT(
+			faceMasksModule.precomputeClosedFaceMasks(),
+		);
+
+		return {
+			WorldGenerator: worldGeneratorModule.WorldGenerator as new (
+				params: unknown,
+			) => Generator,
+			GenerationParams: generationParamsModule.GenerationParams as Record<
+				string,
+				unknown
+			>,
+		};
+	})();
+
+	generationRuntimePromise = loading;
+
+	try {
+		return await loading;
+	} catch (error) {
+		/*
+		 * Permit retry after a transient module or shape-initialization failure.
+		 * Clear only when this promise still owns the cache slot.
+		 */
+		if (generationRuntimePromise === loading) {
+			generationRuntimePromise = null;
+		}
+
+		throw error;
+	}
 }
 
 /**
@@ -173,162 +247,115 @@ function ensureWasm(wasmEnabled: boolean): Promise<void> | undefined {
 }
 
 /**
- * Constructs a generator for the supplied seed.
+ * Construct the generator for one seed.
  *
- * Dynamic imports remain intentional because they defer loading the generation
- * stack until the worker receives its first request.
+ * WASM initialization and seed-independent module initialization may run in
+ * parallel. Generator construction waits until both are ready.
  */
 async function initializeGenerator(
 	seed: string,
 	wasmEnabled: boolean,
 ): Promise<void> {
-	await ensureWasm(wasmEnabled);
+	const wasmReady = ensureWasm(wasmEnabled);
+	const runtimePromise = loadGenerationRuntime();
 
+	const runtime = wasmReady
+		? (await Promise.all([runtimePromise, wasmReady]))[0]
+		: await runtimePromise;
+
+	/*
+	 * TerrainHeightMap contains module-global seed-dependent state. This write
+	 * occurs only after ensureInit has given this initialization exclusive
+	 * ownership.
+	 */
 	setTerrainSeed(seed);
 
-	const [
-		worldGeneratorModule,
-		generationParamsModule,
-		faceMasksModule,
-		lightGeneratorModule,
-		blockShapesModule,
-	] = await Promise.all([
-		import("@/code/Generation/WorldGenerator"),
-		import("@/code/Generation/NoiseAndParameters/GenerationParams"),
-		import("@/code/World/Chunk/Meshing/ChunkFaceMasks"),
-		import("@/code/Generation/LightGenerator"),
-		import("@/code/World/Shape/BlockShapes"),
-	]);
-
 	/*
-	 * Shape-aware lighting depends on the asynchronous shape registry.
-	 * Waiting here preserves the original lighting behavior.
-	 */
-	await blockShapesModule.shapeInitPromise;
-
-	lightGeneratorModule.LightGenerator.setClosedFaceMaskLUT(
-		faceMasksModule.precomputeClosedFaceMasks(),
-	);
-
-	/*
-	 * This object copy is retained intentionally. Mutating GenerationParams
-	 * directly could leak the seed into other module consumers.
+	 * Preserve the original isolation from the shared GenerationParams object.
+	 * Only one shallow copy is made for each actual seed change.
 	 */
 	const params = {
-		...generationParamsModule.GenerationParams,
+		...runtime.GenerationParams,
 		SEED: seed,
 	};
 
-	generator = new worldGeneratorModule.WorldGenerator(params as any);
+	generator = new runtime.WorldGenerator(params);
 	currentSeed = seed;
 }
 
 /**
- * Ensures generator initialization remains serialized.
+ * Ensure that exactly one generator initialization runs at a time.
  *
- * A request for a different seed waits for the current initialization and then
- * performs its own initialization, matching the original behavior.
+ * Message handlers are asynchronous and can overlap while awaiting imports or
+ * WASM loading. The loop is important: after waiting for another request's
+ * initialization, this request must re-check both the active seed and the
+ * initialization slot before starting work of its own.
  */
 async function ensureInit(seed: string, wasmEnabled: boolean): Promise<void> {
-	if (generator !== null && currentSeed === seed) {
-		return;
-	}
-
-	const pending = initPromise;
-
-	if (pending !== null) {
-		await pending;
-
+	for (;;) {
 		if (generator !== null && currentSeed === seed) {
 			return;
 		}
-	}
 
-	const initialization = initializeGenerator(seed, wasmEnabled);
-	initPromise = initialization;
+		const pending = initPromise;
 
-	try {
-		await initialization;
-	} finally {
-		/*
-		 * Do not clear a newer initialization if overlapping requests started
-		 * another one after this promise completed.
-		 */
-		if (initPromise === initialization) {
-			initPromise = null;
+		if (pending !== null) {
+			await pending;
+			continue;
+		}
+
+		const initialization = initializeGenerator(seed, wasmEnabled);
+
+		initPromise = initialization;
+
+		try {
+			await initialization;
+			return;
+		} finally {
+			/*
+			 * Retain identity protection in case initialization ownership is
+			 * changed by future code.
+			 */
+			if (initPromise === initialization) {
+				initPromise = null;
+			}
 		}
 	}
-}
-
-function finalizeOne(raw: ChunkResult): FinalizedChunk {
-	const compressed = compressBlocks(raw.blocks);
-
-	return {
-		blocks: compressed.data,
-		light: raw.light,
-		palette: compressed.palette,
-		isUniform: compressed.isUniform,
-		uniformBlockId: compressed.uniformBlockId,
-	};
 }
 
 /**
- * Adds a non-shared ArrayBuffer to a transfer list.
+ * Collect unique transferable result buffers in linear time.
  *
- * A Set is allocated only when the first duplicate is actually encountered.
- * Most batches have unique buffers and therefore avoid the Set entirely.
+ * Large batches contain two buffers per generated chunk. Repeatedly scanning
+ * the growing transfer array for duplicates is O(n²), even though duplicates
+ * are uncommon. A Set makes collection O(n) with one short-lived allocation
+ * per batch.
  */
-function pushTransferable(
-	transfer: ArrayBuffer[],
-	seen: Set<ArrayBuffer> | null,
-	value: Uint8Array | Uint16Array,
-): Set<ArrayBuffer> | null {
-	const buffer = value.buffer;
-
-	if (buffer instanceof SharedArrayBuffer) {
-		return seen;
-	}
-
-	const arrayBuffer = buffer as ArrayBuffer;
-
-	if (seen !== null) {
-		if (!seen.has(arrayBuffer)) {
-			seen.add(arrayBuffer);
-			transfer.push(arrayBuffer);
-		}
-
-		return seen;
-	}
-
-	for (let i = 0; i < transfer.length; i++) {
-		if (transfer[i] === arrayBuffer) {
-			/*
-			 * The duplicate is already present. Constructing from transfer also
-			 * seeds the Set with every previously collected buffer.
-			 */
-			return new Set(transfer);
-		}
-	}
-
-	transfer.push(arrayBuffer);
-	return null;
-}
-
 function collectBatchTransferables(
 	items: readonly FinalizedChunk[],
 ): ArrayBuffer[] {
-	/*
-	 * Each item contributes at most two buffers. Preallocating with length would
-	 * create invalid empty entries, so normal push growth is used here.
-	 */
+	const itemCount = items.length;
 	const transfer: ArrayBuffer[] = [];
-	let seen: Set<ArrayBuffer> | null = null;
+	const seen = new Set<ArrayBuffer>();
 
-	for (let i = 0; i < items.length; i++) {
+	for (let i = 0; i < itemCount; i++) {
 		const item = items[i];
 
-		seen = pushTransferable(transfer, seen, item.blocks);
-		seen = pushTransferable(transfer, seen, item.light);
+		const blocksBuffer = item.blocks.buffer;
+
+		if (blocksBuffer instanceof ArrayBuffer) {
+			if (!seen.has(blocksBuffer)) {
+				seen.add(blocksBuffer);
+				transfer.push(blocksBuffer);
+			}
+		}
+
+		const lightBuffer = item.light.buffer;
+
+		if (lightBuffer instanceof ArrayBuffer && !seen.has(lightBuffer)) {
+			seen.add(lightBuffer);
+			transfer.push(lightBuffer);
+		}
 	}
 
 	return transfer;
@@ -399,29 +426,45 @@ async function handleRequest(request: GenRequest): Promise<void> {
 	}
 }
 
+/**
+ * Generate and finalize one worker-owned batch.
+ */
 async function handleBatchRequest(request: GenBatchRequest): Promise<void> {
 	try {
 		await ensureInit(request.seed, request.wasmEnabled);
 
+		const activeGenerator = generator;
+
+		if (activeGenerator === null) {
+			throw new Error("Chunk generator was not initialized");
+		}
+
 		const requestItems = request.items;
 		const itemCount = requestItems.length;
 		const items = new Array<FinalizedChunk>(itemCount);
-		const activeGenerator = generator!;
 
 		/*
-		 * Items arrive sorted by column and Y level. Process them in order to
-		 * retain SurfaceGenerator.columnCache locality.
+		 * Preserve the supplied column/Y ordering for terrain column-cache
+		 * locality.
 		 */
 		for (let i = 0; i < itemCount; i++) {
-			const coord = requestItems[i];
+			const coordinate = requestItems[i];
 
 			const raw = activeGenerator.generateChunkData(
-				coord.chunkX,
-				coord.chunkY,
-				coord.chunkZ,
+				coordinate.chunkX,
+				coordinate.chunkY,
+				coordinate.chunkZ,
 			);
 
-			items[i] = finalizeOne(raw);
+			const compressed = compressBlocks(raw.blocks);
+
+			items[i] = {
+				blocks: compressed.data,
+				light: raw.light,
+				palette: compressed.palette,
+				isUniform: compressed.isUniform,
+				uniformBlockId: compressed.uniformBlockId,
+			};
 		}
 
 		const message: GenBatchSuccess = {
@@ -433,13 +476,9 @@ async function handleBatchRequest(request: GenBatchRequest): Promise<void> {
 		const transfer = collectBatchTransferables(items);
 
 		if (transfer.length === 0) {
-			/*
-			 * Avoid passing an allocated empty list when every result uses
-			 * SharedArrayBuffer storage.
-			 */
-			port!.postMessage(message);
+			port?.postMessage(message);
 		} else {
-			port!.postMessage(message, transfer);
+			port?.postMessage(message, transfer);
 		}
 	} catch (error: unknown) {
 		const message: GenError = {
@@ -447,7 +486,7 @@ async function handleBatchRequest(request: GenBatchRequest): Promise<void> {
 			error: errorMessage(error),
 		};
 
-		port!.postMessage(message);
+		port?.postMessage(message);
 	}
 }
 

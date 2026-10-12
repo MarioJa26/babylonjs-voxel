@@ -223,7 +223,7 @@ function hasStaticLightingChanged(): boolean {
 		!nearlyEqual(u.wetness, lastWet)
 	);
 }
-
+const lightDirArray = new Float32Array(3);
 function cacheStaticLightingState(): void {
 	const u = cachedUniforms;
 	lastLX = u.lightDirection.x;
@@ -758,49 +758,97 @@ export function initEngineContext(
 	sceneRef = scene;
 }
 
-const lightDirArray = new Float32Array(3);
+const LIGHT_QUANTIZATION_SCALE = 256;
+const LIGHT_QUANTIZATION_INVERSE = 1 / LIGHT_QUANTIZATION_SCALE;
+const TRANSPARENT_TIME_UPDATE_INTERVAL = 3;
+
+function quantizeLightingValue(value: number): number {
+	return (
+		Math.round(value * LIGHT_QUANTIZATION_SCALE) * LIGHT_QUANTIZATION_INVERSE
+	);
+}
+
+function clampUnit(value: number): number {
+	return value <= 0 ? 0 : value >= 1 ? 1 : value;
+}
+
 export function updateGlobalUniforms(frameId: number): void {
-	if (lastUpdateFrame === frameId) return;
+	if (frameId === lastUpdateFrame || engineRef === null || sceneRef === null) {
+		return;
+	}
+
 	lastUpdateFrame = frameId;
 
-	if (!engineRef || !sceneRef) return;
+	const lightDirection = GLOBAL_VALUES.skyLightDirection;
+	const uniforms = cachedUniforms;
 
-	const lightDir = GLOBAL_VALUES.skyLightDirection;
-	const u = cachedUniforms;
+	const lightX = lightDirection.x;
+	const lightY = lightDirection.y;
+	const lightZ = lightDirection.z;
 
-	const shaderDirY = -lightDir.y;
-	const rawBlend = 1 - Math.min(1, Math.max(0, (shaderDirY + 0.2) / 0.4));
+	const shaderDirectionY = -lightY;
+
+	/*
+	 * Smoothly shift the shader light direction toward vertical around the
+	 * horizon. clampUnit avoids nested Math.min/Math.max calls.
+	 */
+	const normalizedHorizon = clampUnit((shaderDirectionY + 0.2) * 2.5);
+
+	const rawBlend = 1 - normalizedHorizon;
 	const blend = rawBlend * rawBlend * (3 - 2 * rawBlend);
-	const invBlend = 1 - blend;
 
-	// Quantize to 1/256 steps: the sun drifts continuously through the day
-	// cycle, and exact floats would flip hasStaticLightingChanged every
-	// frame, re-writing every material's UBO for imperceptible deltas.
-	const q = (v: number): number => Math.round(v * 256) / 256;
+	const directionalBlend = 1 - blend;
 
-	u.lightDirection.x = q(-lightDir.x * invBlend);
-	u.lightDirection.y = q(-lightDir.y * invBlend + blend);
-	u.lightDirection.z = q(-lightDir.z * invBlend);
+	/*
+	 * Quantization prevents imperceptible day-cycle changes from dirtying every
+	 * material uniform buffer on every frame.
+	 */
+	uniforms.lightDirection.x = quantizeLightingValue(-lightX * directionalBlend);
+	uniforms.lightDirection.y = quantizeLightingValue(
+		-lightY * directionalBlend + blend,
+	);
+	uniforms.lightDirection.z = quantizeLightingValue(-lightZ * directionalBlend);
 
-	const rawIntensity = (-lightDir.y + 0.1) * 4.0;
-	u.sunLightIntensity = q(
-		rawIntensity < 0.0 ? 0.0 : rawIntensity > 1.0 ? 1.0 : rawIntensity,
+	uniforms.sunLightIntensity = quantizeLightingValue(
+		clampUnit((-lightY + 0.1) * 4),
 	);
 
-	u.wetness = Map1.environment ? (Map1.environment.wetness ?? 0) : 0;
+	const environment = Map1.environment;
 
-	if (hasStaticLightingChanged()) {
+	uniforms.wetness =
+		environment === null || environment === undefined
+			? 0
+			: (environment.wetness ?? 0);
+
+	const lightingChanged = hasStaticLightingChanged();
+	let updateTransparentTime = false;
+
+	if (lightingChanged) {
 		populateMaterialList();
 		cacheStaticLightingState();
 
-		for (let i = 0, n = materialList.length; i < n; i++) {
-			const m = materialList[i];
-			if (m) setStaticMaterialUniforms(m);
+		const materials = materialList;
+
+		for (let i = 0, count = materials.length; i < count; i++) {
+			setStaticMaterialUniforms(materials[i]);
 		}
 
-		setTransparentTimeUniform(performance.now() * 0.001);
+		/*
+		 * Reset to one to preserve the previous update cadence:
+		 * one immediate update, followed by another after three unchanged
+		 * updateGlobalUniforms calls.
+		 */
 		_timeFrameCounter = 1;
-	} else if (transparentMaterial && _timeFrameCounter++ % 3 === 0) {
+		updateTransparentTime = transparentMaterial !== null;
+	} else if (transparentMaterial !== null) {
+		const timeFrame = _timeFrameCounter++;
+
+		if (timeFrame % TRANSPARENT_TIME_UPDATE_INTERVAL === 0) {
+			updateTransparentTime = true;
+		}
+	}
+
+	if (updateTransparentTime) {
 		setTransparentTimeUniform(performance.now() * 0.001);
 	}
 

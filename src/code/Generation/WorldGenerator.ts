@@ -1,4 +1,3 @@
-import Alea from "alea";
 import { BlockType } from "@/code/World/Texture/BlockType";
 import { WATER_BLOCK_ID } from "../World/Chunk/Worker/ChunkMesherConstants";
 import { LightGenerator, type LightSeedState } from "./LightGenerator";
@@ -59,31 +58,155 @@ const _undergroundRowNoiseScratch = new Float32Array(
 // ---------------------------------------------------------------------------
 
 export class WorldGenerator {
-	private params: GenerationParamsType;
-	private prng: ReturnType<typeof Alea>;
-	private seedAsInt: number;
-	private chunkSizeSq: number;
-	private chunk_size: number;
-	private chunkVolume: number;
+	private static readonly DEFAULT_UNDERGROUND_STONE = 29;
+	private static readonly LIGHTING_MIN_WORLD_Y = -128;
 
-	private surfaceGenerator: SurfaceGenerator;
-	private undergroundGenerator: UndergroundGenerator;
-	private oreGenerator: OreGenerator;
-	private undergroundBiomeSelector: UndergroundBiomeSelector;
-	private lightGenerator: LightGenerator;
+	private static readonly HAS_SHARED_ARRAY_BUFFER =
+		typeof SharedArrayBuffer !== "undefined";
 
-	private cheeseNoise: (x: number, y: number, z: number) => number;
-	private tunnelNoise: (x: number, y: number, z: number) => number;
-	private detailNoise: (x: number, y: number, z: number) => number;
+	private readonly params: GenerationParamsType;
+	private readonly seedAsInt: number;
 
-	constructor(params: GenerationParamsType) {
+	private readonly chunk_size: number;
+	private readonly chunkSizeSq: number;
+	private readonly chunkVolume: number;
+
+	private readonly surfaceGenerator: SurfaceGenerator;
+	private readonly undergroundGenerator: UndergroundGenerator;
+	private readonly oreGenerator: OreGenerator;
+	private readonly undergroundBiomeSelector: UndergroundBiomeSelector;
+	private readonly lightGenerator: LightGenerator;
+
+	private readonly cheeseNoise: (x: number, y: number, z: number) => number;
+
+	private readonly tunnelNoise: (x: number, y: number, z: number) => number;
+
+	private readonly detailNoise: (x: number, y: number, z: number) => number;
+
+	/*
+	 * Synchronous generation context used by the stable writer callbacks
+	 * below. This avoids allocating four closures for every generated chunk.
+	 *
+	 * SurfaceGenerator and UndergroundGenerator consume these callbacks
+	 * synchronously, so the context remains valid for the entire call.
+	 */
+	private activeBlocks: Uint8Array | null = null;
+	private activeChunkWorldX = 0;
+	private activeChunkWorldY = 0;
+	private activeChunkWorldZ = 0;
+
+	/*
+	 * Stable callback identities. These are allocated once per WorldGenerator
+	 * instead of once per generated chunk.
+	 */
+	private readonly placeBlockCallback = (
+		x: number,
+		y: number,
+		z: number,
+		blockId: number,
+		overwrite = false,
+	): void => {
+		const localX = x - this.activeChunkWorldX;
+		const localY = y - this.activeChunkWorldY;
+		const localZ = z - this.activeChunkWorldZ;
+
+		const chunkSize = this.chunk_size;
+
+		/*
+		 * Explicit comparisons preserve correct behavior for coordinates
+		 * outside the signed 32-bit range. Avoid bitwise coordinate checks
+		 * because large worlds may exceed that range.
+		 */
+		if (
+			localX < 0 ||
+			localX >= chunkSize ||
+			localY < 0 ||
+			localY >= chunkSize ||
+			localZ < 0 ||
+			localZ >= chunkSize
+		) {
+			return;
+		}
+
+		const blocks = this.activeBlocks!;
+
+		const index = localX + localY * chunkSize + localZ * this.chunkSizeSq;
+
+		const existing = blocks[index];
+
+		if (blockId === 0) {
+			if (existing !== WATER_BLOCK_ID && (existing === 0 || overwrite)) {
+				blocks[index] = 0;
+			}
+			return;
+		}
+
+		if (existing === 0 || overwrite) {
+			blocks[index] = blockId;
+		}
+	};
+
+	private readonly placeBlockLocalCallback = (
+		localX: number,
+		localY: number,
+		localZ: number,
+		blockId: number,
+		overwrite = false,
+	): void => {
+		const blocks = this.activeBlocks!;
+
+		const index = localX + localY * this.chunk_size + localZ * this.chunkSizeSq;
+
+		const existing = blocks[index];
+
+		if (blockId === 0) {
+			if (existing !== WATER_BLOCK_ID && (existing === 0 || overwrite)) {
+				blocks[index] = 0;
+			}
+			return;
+		}
+
+		if (existing === 0 || overwrite) {
+			blocks[index] = blockId;
+		}
+	};
+
+	private readonly columnBaseLocalCallback = (
+		localX: number,
+		localZ: number,
+	): number => localX + localZ * this.chunkSizeSq;
+
+	private readonly placeColumnLocalCallback = (
+		columnBase: number,
+		localY: number,
+		blockId: number,
+		overwrite = false,
+	): void => {
+		const blocks = this.activeBlocks!;
+		const index = columnBase + localY * this.chunk_size;
+		const existing = blocks[index];
+
+		if (blockId === 0) {
+			if (existing !== WATER_BLOCK_ID && (existing === 0 || overwrite)) {
+				blocks[index] = 0;
+			}
+			return;
+		}
+
+		if (existing === 0 || overwrite) {
+			blocks[index] = blockId;
+		}
+	};
+
+	public constructor(params: GenerationParamsType) {
 		this.params = params;
-		this.prng = Alea(this.params.SEED);
-		this.seedAsInt = computeSeedAsInt(this.params.SEED);
+		this.seedAsInt = computeSeedAsInt(params.SEED);
 
-		this.chunk_size = this.params.CHUNK_SIZE;
-		this.chunkSizeSq = this.chunk_size * this.chunk_size;
-		this.chunkVolume = this.chunk_size * this.chunkSizeSq;
+		const chunkSize = params.CHUNK_SIZE;
+
+		this.chunk_size = chunkSize;
+		this.chunkSizeSq = chunkSize * chunkSize;
+		this.chunkVolume = chunkSize * chunkSize * chunkSize;
 
 		const treeNoise = createFastNoise2D({
 			seed: getPRNGBySeed(52253100808, this.seedAsInt),
@@ -92,24 +215,30 @@ export class WorldGenerator {
 
 		const cheeseInstance = createFastNoise({
 			seed: getPRNGBySeed(4912491002, this.seedAsInt),
-			frequency: this.params.CAVE_CHEESE_FREQ,
+			frequency: params.CAVE_CHEESE_FREQ,
 		});
 		cheeseInstance.SetFractalOctaves(2);
-		this.cheeseNoise = (x, y, z) => cheeseInstance.GetNoise3D(x, y, z);
 
 		const tunnelInstance = createFastNoise({
 			seed: getPRNGBySeed(251251516119, this.seedAsInt),
-			frequency: this.params.CAVE_TUNNEL_FREQ,
+			frequency: params.CAVE_TUNNEL_FREQ,
 		});
 		tunnelInstance.SetFractalOctaves(2);
-		this.tunnelNoise = (x, y, z) => tunnelInstance.GetNoise3D(x, y, z);
 
 		const detailInstance = createFastNoise({
 			seed: getPRNGBySeed(242319705330, this.seedAsInt),
-			frequency: this.params.CAVE_DETAIL_FREQ,
+			frequency: params.CAVE_DETAIL_FREQ,
 		});
 		detailInstance.SetFractalOctaves(2);
-		this.detailNoise = (x, y, z) => detailInstance.GetNoise3D(x, y, z);
+
+		/*
+		 * These wrappers are created once. SurfaceGenerator and
+		 * UndergroundGenerator also receive the underlying instances for
+		 * their batched/grid paths.
+		 */
+		this.cheeseNoise = cheeseInstance.GetNoise3D.bind(cheeseInstance);
+		this.tunnelNoise = tunnelInstance.GetNoise3D.bind(tunnelInstance);
+		this.detailNoise = detailInstance.GetNoise3D.bind(detailInstance);
 
 		const { fn: densityNoise, instance: densityInstance } =
 			createFastNoise3DWithInstance({
@@ -130,6 +259,7 @@ export class WorldGenerator {
 			tunnelInstance,
 			detailInstance,
 		);
+
 		this.undergroundGenerator = new UndergroundGenerator(
 			params,
 			this.cheeseNoise,
@@ -144,12 +274,14 @@ export class WorldGenerator {
 			seed: getPRNGBySeed(25, this.seedAsInt),
 			frequency: 1,
 		});
+
 		this.oreGenerator = new OreGenerator(params, oreNoise, this.seedAsInt);
 
 		const undergroundBiomeNoise = createFastNoise2D({
 			seed: getPRNGBySeed(26, this.seedAsInt),
 			frequency: 0.001,
 		});
+
 		this.undergroundBiomeSelector = new UndergroundBiomeSelector(
 			undergroundBiomeNoise,
 			this.seedAsInt,
@@ -159,23 +291,29 @@ export class WorldGenerator {
 	}
 
 	private createBuffer(size: number): Uint8Array {
-		// PERF: Allocate generation output in a SharedArrayBuffer so the block/
-		// light buffers can be *shared* (not transferred) to the main thread and
-		// then handed straight to the mesh worker. This avoids the redundant
-		// main-thread SAB realloc+memcpy that Chunk.ensureSharedBacking used to
-		// perform per generated chunk. The (cheap) OS shared-page setup happens
-		// off the main thread, in this worker. Falls back to a plain ArrayBuffer
-		// where SharedArrayBuffer is unavailable (main thread then copies as before).
-		if (typeof SharedArrayBuffer !== "undefined") {
+		if (WorldGenerator.HAS_SHARED_ARRAY_BUFFER) {
 			return new Uint8Array(new SharedArrayBuffer(size));
 		}
-		return new Uint8Array(new ArrayBuffer(size));
+
+		return new Uint8Array(size);
 	}
 
-	// ---------------------------------------------------------------------------
-	// Phase 3: Underground biome replacement (kept as a standalone pass for the
-	// refineBlocks path).
-	// ---------------------------------------------------------------------------
+	private setActiveGenerationContext(
+		blocks: Uint8Array,
+		chunkWorldX: number,
+		chunkWorldY: number,
+		chunkWorldZ: number,
+	): void {
+		this.activeBlocks = blocks;
+		this.activeChunkWorldX = chunkWorldX;
+		this.activeChunkWorldY = chunkWorldY;
+		this.activeChunkWorldZ = chunkWorldZ;
+	}
+
+	private clearActiveGenerationContext(): void {
+		this.activeBlocks = null;
+	}
+
 	private applyUndergroundBiomes(
 		blocks: Uint8Array,
 		chunkWorldX: number,
@@ -184,28 +322,30 @@ export class WorldGenerator {
 		chunkSize: number,
 		chunkSizeSq: number,
 	): void {
-		// Chunks beginning at or above Y=16 cannot contain underground blocks
-		// affected by this pass.
-		if (chunkWorldY >= 16) return;
+		/*
+		 * Only world Y below zero is processed. A chunk starting at or above
+		 * Y=16 cannot contain affected underground blocks.
+		 */
+		if (chunkWorldY >= 16) {
+			return;
+		}
 
-		// Restrict processing to local coordinates whose world Y is below zero.
 		const maxLocalYExclusive =
 			chunkWorldY < 0 ? Math.min(chunkSize, -chunkWorldY) : 0;
 
-		if (maxLocalYExclusive === 0) return;
+		if (maxLocalYExclusive <= 0) {
+			return;
+		}
 
 		const selector = this.undergroundBiomeSelector;
-		const defaultStoneBlock = 29;
+		const defaultStoneBlock = WorldGenerator.DEFAULT_UNDERGROUND_STONE;
 
 		/*
-		 * Cheap conservative early-out.
-		 *
-		 * Include both chunk edges so an odd or very small chunk size does not
-		 * accidentally omit the far side. This remains a heuristic, matching the
-		 * behavior of the original implementation.
+		 * Conservative 3x3 sample before running the full replacement pass.
 		 */
 		const lastLocal = chunkSize - 1;
 		const midLocal = chunkSize >> 1;
+
 		const sampleWorldY = Math.min(chunkWorldY + (maxLocalYExclusive >> 1), -1);
 
 		const x0 = chunkWorldX;
@@ -239,18 +379,11 @@ export class WorldGenerator {
 		}
 
 		/*
-		 * Preserve the existing behavior where one biome is selected for every
-		 * Y/Z row and X variation is intentionally ignored.
-		 *
-		 * Memory layout:
-		 *   index = localX + localY * chunkSize + localZ * chunkSizeSq
+		 * Biome-band noise is independent of Y. Compute one value per Z row
+		 * instead of crossing the noise backend for every Y/Z combination.
 		 */
-
-		// PERF: The band noise is 2D — independent of Y. Sampling it once per
-		// column (32 wasm crossings) instead of once per (y, z) cell (up to
-		// 1024 crossings per fully-underground chunk) removes the dominant
-		// cost of this pass on deep chunks.
 		const rowNoise = _undergroundRowNoiseScratch;
+
 		for (let localZ = 0; localZ < chunkSize; localZ++) {
 			rowNoise[localZ] = selector.sampleBiomeNoise(
 				chunkWorldX,
@@ -258,11 +391,21 @@ export class WorldGenerator {
 			);
 		}
 
-		for (let localY = 0; localY < maxLocalYExclusive; localY++) {
-			const worldY = chunkWorldY + localY;
-			const yOffset = localY * chunkSize;
+		let yOffset = 0;
 
-			for (let localZ = 0; localZ < chunkSize; localZ++) {
+		for (
+			let localY = 0;
+			localY < maxLocalYExclusive;
+			localY++, yOffset += chunkSize
+		) {
+			const worldY = chunkWorldY + localY;
+			let zOffset = yOffset;
+
+			for (
+				let localZ = 0;
+				localZ < chunkSize;
+				localZ++, zOffset += chunkSizeSq
+			) {
 				const biome = selector.getBiomeWithNoise(
 					chunkWorldX,
 					worldY,
@@ -270,13 +413,34 @@ export class WorldGenerator {
 					rowNoise[localZ],
 				);
 
-				// If this biome uses default stone, replacement may still be needed
-				// for other replaceable block IDs, so only specialize stone itself.
 				const replacementStone = biome.stoneBlock;
-				let index = yOffset + localZ * chunkSizeSq;
-				const rowEnd = index + chunkSize;
+				const rowEnd = zOffset + chunkSize;
 
-				for (; index < rowEnd; index++) {
+				if (replacementStone === defaultStoneBlock) {
+					/*
+					 * Default-stone biomes still require replacement for
+					 * non-default replaceable blocks, but the overwhelmingly
+					 * common default stone can be skipped immediately.
+					 */
+					for (let index = zOffset; index < rowEnd; index++) {
+						const blockId = blocks[index];
+
+						if (
+							blockId === 0 ||
+							blockId === defaultStoneBlock ||
+							blockId >= IS_ORE.length ||
+							IS_ORE[blockId] !== 0
+						) {
+							continue;
+						}
+
+						blocks[index] = selector.getStoneReplacement(blockId, biome);
+					}
+
+					continue;
+				}
+
+				for (let index = zOffset; index < rowEnd; index++) {
 					const blockId = blocks[index];
 
 					if (
@@ -287,39 +451,15 @@ export class WorldGenerator {
 						continue;
 					}
 
-					// Stone is expected to dominate underground chunks. Avoid the
-					// method call for this overwhelmingly common case.
-					if (blockId === defaultStoneBlock) {
-						blocks[index] = replacementStone;
-					} else {
-						blocks[index] = selector.getStoneReplacement(blockId, biome);
-					}
+					blocks[index] =
+						blockId === defaultStoneBlock
+							? replacementStone
+							: selector.getStoneReplacement(blockId, biome);
 				}
 			}
 		}
 	}
 
-	// ---------------------------------------------------------------------------
-	// Phase 6+8: Combined underground pass — biome + cave + aquifer in one loop,
-	// followed by a smoothing pass that eliminates isolated air pockets.
-	//
-	// CROSS-CHUNK CONTINUITY
-	// ──────────────────────
-	// All noise is sampled at world-space coordinates, so caves are naturally
-	// continuous across chunk boundaries.  No extra seaming is required.
-	//
-	// SMOOTHING (pocket elimination)
-	// ───────────────────────────────
-	// After carving we run a single pass over the interior voxels (skipping the
-	// 1-voxel border on all 6 faces) and fill back any carved voxel that has
-	// MIN_SOLID_NEIGHBORS or more solid face-neighbours.  This eliminates tiny
-	// isolated air pockets without touching chunk-boundary voxels (which must
-	// remain consistent with adjacent chunks).
-	// ---------------------------------------------------------------------------
-
-	// ---------------------------------------------------------------------------
-	// Phase 2: refineBlocks — called when skipDecorations was used on first pass.
-	// ---------------------------------------------------------------------------
 	public refineBlocks(
 		blocks: Uint8Array,
 		chunkX: number,
@@ -327,27 +467,17 @@ export class WorldGenerator {
 		chunkZ: number,
 	): void {
 		const chunkSize = this.chunk_size;
-		const chunkSizeSq = this.chunkSizeSq;
-		const chunkWorldX = chunkX * chunkSize;
-		const chunkWorldY = chunkY * chunkSize;
-		const chunkWorldZ = chunkZ * chunkSize;
 
 		this.applyUndergroundBiomes(
 			blocks,
-			chunkWorldX,
-			chunkWorldY,
-			chunkWorldZ,
+			chunkX * chunkSize,
+			chunkY * chunkSize,
+			chunkZ * chunkSize,
 			chunkSize,
-			chunkSizeSq,
+			this.chunkSizeSq,
 		);
 	}
 
-	/**
-	 * Backward compatible:
-	 * - generateChunkData(x, y, z) => full terrain + full lighting
-	 * - generateChunkData(x, y, z, { deferLighting: true }) => terrain now, light later
-	 * - generateChunkData(x, y, z, { skipDecorations: true }) => terrain + caves now, biomes + aquifers + light later
-	 */
 	public generateChunkData(
 		chunkX: number,
 		chunkY: number,
@@ -364,155 +494,114 @@ export class WorldGenerator {
 		const chunkWorldX = chunkX * chunkSize;
 		const chunkWorldY = chunkY * chunkSize;
 		const chunkWorldZ = chunkZ * chunkSize;
+		const chunkTopWorldY = chunkWorldY + chunkSize - 1;
 
 		const blocks = this.createBuffer(chunkVolume);
 
-		// ── placeBlock closures ───────────────────────────────────────────
-		const writeBlock = (idx: number, blockId: number, overwrite: boolean) => {
-			const existing = blocks[idx];
-			if (blockId === 0 && existing === WATER_BLOCK_ID) return;
-			if (existing === 0 || overwrite) blocks[idx] = blockId;
-		};
-
-		// Checked variant — world coords; drops writes outside this chunk.
-		// Used by trees/structures/flora that can legitimately overflow.
-		const placeBlock = (
-			x: number,
-			y: number,
-			z: number,
-			blockId: number,
-			overwrite = false,
-		) => {
-			const localX = x - chunkWorldX;
-			const localY = y - chunkWorldY;
-			const localZ = z - chunkWorldZ;
-
-			if (
-				localX < 0 ||
-				localX >= chunkSize ||
-				localY < 0 ||
-				localY >= chunkSize ||
-				localZ < 0 ||
-				localZ >= chunkSize
-			)
-				return;
-
-			writeBlock(
-				localX + localY * chunkSize + localZ * chunkSizeSq,
-				blockId,
-				overwrite,
-			);
-		};
-
-		// Unchecked variant — caller guarantees in-chunk local coords.
-		const placeBlockLocal = (
-			localX: number,
-			localY: number,
-			localZ: number,
-			blockId: number,
-			overwrite = false,
-		) => {
-			writeBlock(
-				localX + localY * chunkSize + localZ * chunkSizeSq,
-				blockId,
-				overwrite,
-			);
-		};
-
-		// PERF: For fixed-X/Z Y-loops (the hottest fill loops in surface fill),
-		// the caller hoists the localX/localZ term once per column via
-		// columnBaseLocal instead of paying for it on every voxel.
-		const columnBaseLocal = (localX: number, localZ: number): number =>
-			localX + localZ * chunkSizeSq;
-
-		const placeColumnLocal = (
-			columnBase: number,
-			localY: number,
-			blockId: number,
-			overwrite = false,
-		) => {
-			writeBlock(columnBase + localY * chunkSize, blockId, overwrite);
-		};
-
-		const biome = getBiome(chunkWorldX, chunkWorldZ);
-
-		const surfaceGeneration = this.surfaceGenerator.generate(
-			chunkX,
-			chunkY,
-			chunkZ,
-			biome,
-			placeBlock,
-			columnBaseLocal,
-			placeColumnLocal,
-		);
-
-		this.oreGenerator.generate(chunkX, chunkY, chunkZ, blocks, biome);
-
-		const hadStructureSeal = this.undergroundGenerator.generate(
-			chunkX,
-			chunkY,
-			chunkZ,
-			surfaceGeneration.topSurfaceYMap,
-			placeBlockLocal,
+		this.setActiveGenerationContext(
 			blocks,
-			this.seedAsInt,
+			chunkWorldX,
+			chunkWorldY,
+			chunkWorldZ,
 		);
-		if (!skipDecorations) {
-			this.refineBlocks(blocks, chunkX, chunkY, chunkZ);
-		}
 
-		// A chunk containing a sealed structure has a hand-placed lit interior
-		// below the normal emission floor, so drop the floor for this chunk.
-		const emissionMinWorldY = hadStructureSeal
-			? LightGenerator.SEALED_EMISSION_MIN_WORLD_Y
-			: LightGenerator.EMISSION_MIN_WORLD_Y;
+		let surfaceGeneration: ReturnType<SurfaceGenerator["generate"]>;
+		let hadStructureSeal: boolean;
 
-		const light = this.createBuffer(chunkVolume);
+		try {
+			const biome = getBiome(chunkWorldX, chunkWorldZ);
 
-		if (chunkWorldY + chunkSize - 1 < -128) {
-			return { blocks, light };
-		}
-
-		if (!deferLighting) {
-			// PERF: In-place seed+propagate — no LightSeedState snapshot slice
-			// allocation (the slice would only be copied into a scratch queue
-			// and discarded within the same call).
-			this.lightGenerator.seedAndPropagateLightImmediate(
+			surfaceGeneration = this.surfaceGenerator.generate(
 				chunkX,
 				chunkY,
 				chunkZ,
+				biome,
+				this.placeBlockCallback,
+				this.columnBaseLocalCallback,
+				this.placeColumnLocalCallback,
+			);
+
+			this.oreGenerator.generate(chunkX, chunkY, chunkZ, blocks, biome);
+
+			hadStructureSeal = this.undergroundGenerator.generate(
+				chunkX,
+				chunkY,
+				chunkZ,
+				surfaceGeneration.topSurfaceYMap,
+				this.placeBlockLocalCallback,
+				blocks,
+				this.seedAsInt,
+			);
+
+			if (!skipDecorations) {
+				/*
+				 * Call the implementation directly because all world-space
+				 * coordinates and dimensions are already available here.
+				 */
+				this.applyUndergroundBiomes(
+					blocks,
+					chunkWorldX,
+					chunkWorldY,
+					chunkWorldZ,
+					chunkSize,
+					chunkSizeSq,
+				);
+			}
+
+			const emissionMinWorldY = hadStructureSeal
+				? LightGenerator.SEALED_EMISSION_MIN_WORLD_Y
+				: LightGenerator.EMISSION_MIN_WORLD_Y;
+
+			const light = this.createBuffer(chunkVolume);
+
+			/*
+			 * Deep chunks remain unlit. The newly allocated light array is
+			 * already zero-filled.
+			 */
+			if (chunkTopWorldY < WorldGenerator.LIGHTING_MIN_WORLD_Y) {
+				return { blocks, light };
+			}
+
+			if (!deferLighting) {
+				this.lightGenerator.seedAndPropagateLightImmediate(
+					chunkX,
+					chunkY,
+					chunkZ,
+					blocks,
+					light,
+					surfaceGeneration.topSunlightMask,
+					emissionMinWorldY,
+				);
+
+				return { blocks, light };
+			}
+
+			const lightSeedState = this.lightGenerator.seedInitialLight(
+				chunkX,
+				chunkY,
+				chunkZ,
+				biome,
 				blocks,
 				light,
 				surfaceGeneration.topSunlightMask,
 				emissionMinWorldY,
 			);
-			return { blocks, light };
-		}
 
-		const lightSeedState = this.lightGenerator.seedInitialLight(
-			chunkX,
-			chunkY,
-			chunkZ,
-			biome,
-			blocks,
-			light,
-			surfaceGeneration.topSunlightMask,
-			emissionMinWorldY,
-		);
-		return { blocks, light, lightSeedState };
+			return {
+				blocks,
+				light,
+				lightSeedState,
+			};
+		} finally {
+			/*
+			 * Prevent the generator from retaining the latest chunk's SAB
+			 * after generation. This also leaves the instance in a clean state
+			 * if a downstream generator throws.
+			 */
+			this.clearActiveGenerationContext();
+		}
 	}
 
-	/**
-	 * Recalculate light for a chunk from scratch given its current blocks.
-	 * Used after block edits (player placement/breaking) to update lighting.
-	 *
-	 * `topSunlightMask` (1024 bytes, 1 = column open to sky) overrides the
-	 * default every-column-sunlit assumption — required for underground
-	 * chunks, where the default would flood them with skylight.
-	 *
-	 * `neighborLight` ([+X,-X,+Y,-Y,+Z,-Z], each the neighbor's full light
-	 * array or null) seeds cross-chunk border light before BFS propagation.
-	 */
 	public relightChunk(
 		chunkX: number,
 		chunkY: number,
@@ -521,15 +610,16 @@ export class WorldGenerator {
 		topSunlightMask?: Uint8Array,
 		neighborLight?: ReadonlyArray<Uint8Array | null>,
 	): Uint8Array {
-		const chunkVolume = this.chunkVolume;
-		const light = this.createBuffer(chunkVolume);
+		const light = this.createBuffer(this.chunkVolume);
 
 		const chunkWorldY = chunkY * this.chunk_size;
-		if (chunkWorldY + this.chunk_size - 1 < -128) {
+		const chunkTopWorldY = chunkWorldY + this.chunk_size - 1;
+
+		if (chunkTopWorldY < WorldGenerator.LIGHTING_MIN_WORLD_Y) {
 			return light;
 		}
 
-		if (neighborLight) {
+		if (neighborLight !== undefined) {
 			this.lightGenerator.seedAndPropagateLightWithNeighbors(
 				chunkX,
 				chunkY,
@@ -539,6 +629,7 @@ export class WorldGenerator {
 				topSunlightMask,
 				neighborLight,
 			);
+
 			return light;
 		}
 
@@ -550,6 +641,7 @@ export class WorldGenerator {
 			light,
 			topSunlightMask,
 		);
+
 		return light;
 	}
 }
