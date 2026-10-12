@@ -15,6 +15,7 @@ import { FarTileManager } from "../../FarTiles/FarTileManager";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import { Chunk, getChunk } from "../Chunk";
 import { ChunkWorkerPool } from "../ChunkWorkerPool";
+import { packCoords } from "../DataStructures/ChunkCoords";
 import {
 	ChunkLodRuleSet,
 	DistantOnlyChunkCreationRule,
@@ -26,6 +27,13 @@ import {
 	UNDERGROUND_SKIP_LOD,
 } from "../LOD/LODUtilities";
 import { createMeshFromData } from "../Meshing/ChunkMesher";
+import { chunkForwardScore } from "./ChunkPriority";
+import {
+	ChunkResidency,
+	forgetChunkResidency,
+	residencyForLod,
+	setChunkResidency,
+} from "./ChunkResidency";
 
 /** Underground (cave) chunks never coarsen: clamp any desired LOD. */
 function clampLodForY(chunkY: number, lod: number): number {
@@ -248,6 +256,28 @@ const frameProfileCache = new Map<number, ColumnProfile>();
 let frameInCaveCache = false;
 let frameCacheActive = false;
 
+/**
+ * Record the residency tier a chunk drops to as it leaves the active set.
+ *
+ * Called ONLY for chunks actually being unloaded, never for every chunk scanned.
+ * `queueUnloading` runs over every loaded chunk on every streaming pass, so
+ * computing the packed key eagerly for all of them put a `packCoords` call ahead
+ * of the cheap distance comparisons across the entire resident set.
+ *
+ * A chunk leaving the render distance but whose blob is still cached ends at
+ * `Persisted`, not `Absent` — recovery is then a local cache read rather than a
+ * network round trip. Buried chunks always end at `Persisted`, since burial is
+ * not a distance decision and digging back down should still hit the cache.
+ */
+function noteChunkEvicted(chunk: Chunk, buried: boolean): void {
+	const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+
+	setChunkResidency(
+		key,
+		buried ? ChunkResidency.Persisted : residencyForLod(chunk.lodLevel),
+	);
+}
+
 // Two allowances on top of the raw 2D heightmap minimum:
 // - half a chunk absorbs terrain dips narrower than the corner sampling grid;
 // - SURFACE_DENSITY_INFLUENCE_RANGE is how far the TRUE surface (3D density
@@ -255,6 +285,15 @@ let frameCacheActive = false;
 //   heightmap estimate. Without it, tall density-amplified mountains keep
 //   their whole interior rendered.
 const BURIED_SAFETY_MARGIN = Chunk.SIZE / 2 + SURFACE_DENSITY_INFLUENCE_RANGE;
+
+/*
+ * Weight of the camera-forward term added to streaming priority.
+ *
+ * Must stay well below the 1,000,000 LOD band so a near LOD5 chunk can never
+ * outrank a far LOD0 one, and comparable to COLUMN_AHEAD_BONUS so the two
+ * corrections cannot combine to invert the LOD ordering.
+ */
+const CAMERA_FORWARD_BONUS = 512;
 
 function columnProfile(x: number, z: number): ColumnProfile {
 	const key = packColumnKey(x, z);
@@ -598,36 +637,40 @@ export class ChunkStreamingController {
 		const revision = ++this.streamRevision;
 		const updateStart = performance.now();
 
-		// Movement direction in chunk space (clamped) for ahead-of-motion
-		// priority. Defaults to 0 (no bonus) on teleport/initial load.
+		// Movement direction in chunk space, clamped to a unit direction.
+		// Teleports and initial loads intentionally receive no ahead bonus.
 		if (
 			prevChunkX !== undefined &&
 			prevChunkZ !== undefined &&
-			Math.abs(chunkX - prevChunkX) <= 8 &&
-			Math.abs(chunkZ - prevChunkZ) <= 8
+			absI(chunkX - prevChunkX) <= 8 &&
+			absI(chunkZ - prevChunkZ) <= 8
 		) {
-			this.lastMoveDx =
-				chunkX - prevChunkX > 0 ? 1 : chunkX - prevChunkX < 0 ? -1 : 0;
-			this.lastMoveDz =
-				chunkZ - prevChunkZ > 0 ? 1 : chunkZ - prevChunkZ < 0 ? -1 : 0;
+			const moveX = chunkX - prevChunkX;
+			const moveZ = chunkZ - prevChunkZ;
+
+			this.lastMoveDx = moveX > 0 ? 1 : moveX < 0 ? -1 : 0;
+			this.lastMoveDz = moveZ > 0 ? 1 : moveZ < 0 ? -1 : 0;
 		} else {
 			this.lastMoveDx = 0;
 			this.lastMoveDz = 0;
 		}
 
-		// Reuse the existing map and its internal capacity instead of allocating
-		// a replacement map and leaving the old one for garbage collection.
+		// Bound long-lived decision-cache growth while retaining its allocation.
 		if (revision % 512 === 0) {
 			this._refreshCache.clear();
 		}
 
 		const caveState = isInCave();
 
-		// Activate per-frame memoization for height queries.
 		frameProfileCache.clear();
 		frameInCaveCache = caveState;
 		frameCacheActive = true;
 
+		/*
+		 * Parentheses are intentional. Although << has higher precedence than ??,
+		 * the explicit grouping prevents this fallback from becoming ambiguous
+		 * during future edits.
+		 */
 		const distantTerrainX = playerWorldX ?? chunkX << CHUNK_SHIFT;
 		const distantTerrainZ = playerWorldZ ?? chunkZ << CHUNK_SHIFT;
 
@@ -644,7 +687,6 @@ export class ChunkStreamingController {
 				verticalRadius,
 			);
 
-			// Cache values used repeatedly in the loops below.
 			const operationalRadius = lodRuleSet.maxHorizontalRadius();
 			const operationalVerticalRadius = lodRuleSet.maxVerticalRadius();
 
@@ -662,13 +704,18 @@ export class ChunkStreamingController {
 
 			const loadQueue = this.adapter.getLoadQueue();
 			const unloadQueueSet = this.adapter.getUnloadQueueSet();
+			const requestMap = this.loadQueueRequestMap;
 
-			this.loadQueueRequestMap.clear();
+			/*
+			 * Rebuild the request map while compacting the queue. This makes the
+			 * queue the authoritative source and removes entries for discarded
+			 * requests without a second pass.
+			 */
+			requestMap.clear();
 
 			const reconcileStart = performance.now();
 			let writeIndex = 0;
 
-			// Capture the initial length because this loop compacts the same array.
 			for (
 				let readIndex = 0, readLength = loadQueue.length;
 				readIndex < readLength;
@@ -683,10 +730,11 @@ export class ChunkStreamingController {
 
 				const hDist = chebyH(relX, relZ);
 				const vDist = absI(relY);
+				const isUnderground = chunk.chunkY < 0;
 
 				if (
 					hDist > operationalRadius ||
-					(chunk.chunkY >= 0 && vDist > operationalVerticalRadius)
+					(!isUnderground && vDist > operationalVerticalRadius)
 				) {
 					chunk.isTerrainScheduled = false;
 					continue;
@@ -694,13 +742,19 @@ export class ChunkStreamingController {
 
 				let desiredLod = request.desiredLod;
 
+				/*
+				 * Requests near the player, or whose source data changed, must be
+				 * reconciled immediately. Outer requests retain their previous LOD
+				 * until their periodic refresh, preserving the existing hot-path
+				 * optimization.
+				 */
 				if (
 					chunk.isDirty ||
 					(hDist <= nearZoneRadius && vDist <= nearZoneVertical)
 				) {
 					const previousLod = chunk.lodLevel ?? request.desiredLod;
 
-					const key = packOffsetKey(
+					const cacheKey = packOffsetKey(
 						relX,
 						relY,
 						relZ,
@@ -708,21 +762,46 @@ export class ChunkStreamingController {
 						previousLod,
 					);
 
-					desiredLod = this.getCachedDecisionLod(key, chunk.isDirty);
+					desiredLod = this.getCachedDecisionLod(cacheKey, chunk.isDirty);
 
 					if (desiredLod < 0) {
-						desiredLod = lodRuleSet.resolveWithHysteresisFromDistance(
+						/*
+						 * Use the shared resolver rather than calling
+						 * resolveWithHysteresisFromDistance directly.
+						 *
+						 * This preserves:
+						 * - underground horizontal-only LOD selection;
+						 * - underground vertical-cap enforcement;
+						 * - ocean-floor-band handling;
+						 * - burial culling;
+						 * - creation-rule enforcement;
+						 * - underground LOD clamping.
+						 */
+						desiredLod = resolveDesiredLod(
+							chunk.chunkX,
+							chunk.chunkY,
+							chunk.chunkZ,
 							hDist,
 							vDist,
 							previousLod,
-						).lodLevel;
+							lodRuleSet,
+							true,
+						);
 
-						this.setCachedDecisionLod(key, desiredLod, chunk.isDirty);
+						if (desiredLod < 0) {
+							chunk.isTerrainScheduled = false;
+							continue;
+						}
+
+						this.setCachedDecisionLod(cacheKey, desiredLod, chunk.isDirty);
 					}
-				}
-
-				const loadUndesired =
-					chunk.chunkY < 0
+				} else {
+					/*
+					 * Retained outer requests still need the inexpensive culling
+					 * checks because player altitude and cave state may have changed
+					 * since the request was created.
+					 */
+					const undesired = isUnderground
 						? !undergroundDesired(
 								chunk.chunkX,
 								chunk.chunkY,
@@ -738,12 +817,13 @@ export class ChunkStreamingController {
 								hDist,
 							);
 
-				if (loadUndesired) {
-					chunk.isTerrainScheduled = false;
-					continue;
-				}
+					if (undesired) {
+						chunk.isTerrainScheduled = false;
+						continue;
+					}
 
-				desiredLod = clampLodForY(chunk.chunkY, desiredLod);
+					desiredLod = clampLodForY(chunk.chunkY, desiredLod);
+				}
 
 				request.desiredLod = desiredLod;
 				request.revision = revision;
@@ -762,14 +842,20 @@ export class ChunkStreamingController {
 					revision,
 				);
 
-				this.loadQueueRequestMap.set(chunk.numericId, request);
-
+				requestMap.set(chunk.numericId, request);
 				loadQueue[writeIndex++] = request;
 			}
 
 			loadQueue.length = writeIndex;
+
 			const reconcileMs = performance.now() - reconcileStart;
 
+			/*
+			 * Cancel unloads for chunks that became desirable again.
+			 *
+			 * Deleting the current Set entry during iteration is defined behavior:
+			 * the removed entry will not be revisited.
+			 */
 			for (const chunk of unloadQueueSet) {
 				const relX = chunk.chunkX - chunkX;
 				const relY = chunk.chunkY - chunkY;
@@ -778,24 +864,23 @@ export class ChunkStreamingController {
 				const hDist = chebyH(relX, relZ);
 				const vDist = absI(relY);
 
-				const keep =
-					chunk.chunkY < 0
-						? undergroundDesired(
-								chunk.chunkX,
-								chunk.chunkY,
-								chunk.chunkZ,
-								hDist,
-								vDist,
-								lodRuleSet,
-							)
-						: !buriedChunkCulled(
-								chunk.chunkX,
-								chunk.chunkY,
-								chunk.chunkZ,
-								hDist,
-							) &&
-							hDist <= operationalRadius &&
-							vDist <= operationalVerticalRadius;
+				let keep: boolean;
+
+				if (chunk.chunkY < 0) {
+					keep = undergroundDesired(
+						chunk.chunkX,
+						chunk.chunkY,
+						chunk.chunkZ,
+						hDist,
+						vDist,
+						lodRuleSet,
+					);
+				} else {
+					keep =
+						hDist <= operationalRadius &&
+						vDist <= operationalVerticalRadius &&
+						!buriedChunkCulled(chunk.chunkX, chunk.chunkY, chunk.chunkZ, hDist);
+				}
 
 				if (keep) {
 					unloadQueueSet.delete(chunk);
@@ -806,11 +891,12 @@ export class ChunkStreamingController {
 				prevChunkX !== undefined &&
 				prevChunkY !== undefined &&
 				prevChunkZ !== undefined &&
-				Math.abs(chunkX - prevChunkX) <= 1 &&
-				Math.abs(chunkY - prevChunkY) <= 1 &&
-				Math.abs(chunkZ - prevChunkZ) <= 1;
+				absI(chunkX - prevChunkX) <= 1 &&
+				absI(chunkY - prevChunkY) <= 1 &&
+				absI(chunkZ - prevChunkZ) <= 1;
 
 			const shellStart = performance.now();
+
 			if (canUseDelta) {
 				this.processMovementRings(
 					chunkX,
@@ -831,14 +917,19 @@ export class ChunkStreamingController {
 			} else {
 				this.processInitialShell(chunkX, chunkY, chunkZ, lodRuleSet);
 			}
+
 			const shellMs = performance.now() - shellStart;
 
 			const undergroundStart = performance.now();
+
 			this.ensureUndergroundBand(chunkX, chunkY, chunkZ, lodRuleSet);
+
 			const undergroundMs = performance.now() - undergroundStart;
 
 			const unloadBuffer = SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER + 8;
+
 			const unloadScanRadius = operationalRadius + unloadBuffer;
+
 			const unloadScanVertical = Math.max(
 				operationalVerticalRadius + unloadBuffer,
 				chunkY - SETTING_PARAMS.MIN_CHUNK_Y,
@@ -855,24 +946,29 @@ export class ChunkStreamingController {
 				_queryScratch,
 			);
 
-			const outerScan =
+			const includeOuterBands =
 				revision % ChunkStreamingController.OUTER_SCAN_INTERVAL === 0;
 
 			const refreshStart = performance.now();
+
 			this.enqueueLoadedChunksForRefresh(
 				chunkX,
 				chunkY,
 				chunkZ,
 				lodRuleSet,
-				outerScan,
+				includeOuterBands,
 			);
+
 			const refreshMs = performance.now() - refreshStart;
 
 			const sortStart = performance.now();
+
 			this.sortLoadQueue();
+
 			const sortMs = performance.now() - sortStart;
 
 			const unloadStart = performance.now();
+
 			this.queueUnloading(
 				chunkX,
 				chunkY,
@@ -881,6 +977,7 @@ export class ChunkStreamingController {
 				operationalVerticalRadius,
 				lodRuleSet,
 			);
+
 			const unloadMs = performance.now() - unloadStart;
 
 			this.lastTimings = {
@@ -902,7 +999,7 @@ export class ChunkStreamingController {
 			}
 
 			if (
-				this.desiredStates.size > 0 &&
+				this.desiredStates.size !== 0 &&
 				revision % ChunkStreamingController.DESIRED_STATE_REVISION_RETENTION ===
 					0
 			) {
@@ -1670,6 +1767,7 @@ export class ChunkStreamingController {
 					outsideVerticalBand ||
 					fullyBuriedAndCullable
 				) {
+					noteChunkEvicted(chunk, fullyBuriedAndCullable);
 					unloadQueueSet.add(chunk);
 				}
 
@@ -1689,6 +1787,7 @@ export class ChunkStreamingController {
 				absY > verticalRemoveRadius ||
 				fullyBuriedAndCullable
 			) {
+				noteChunkEvicted(chunk, fullyBuriedAndCullable);
 				unloadQueueSet.add(chunk);
 			}
 		}
@@ -1837,47 +1936,59 @@ export class ChunkStreamingController {
 	public recycleQueuedRequests(
 		requests: ReadonlyArray<QueuedChunkRequest>,
 	): void {
+		const freeRequests = this._freeRequests;
+		const requestMap = this.loadQueueRequestMap;
+		const inFlight = this._loadRequestsInFlight;
+		const maxPoolSize = ChunkStreamingController.FREE_REQUEST_POOL_MAX;
+
 		for (let i = 0; i < requests.length; i++) {
-			const r = requests[i] as QueuedChunkRequest;
+			const request = requests[i];
+			const chunk = request.chunk;
 
-			// The batch finished processing (or was recovered back onto
-			// loadQueue), so it is no longer in flight either way. Done before
-			// the pool-cap check so a full pool cannot leak in-flight ids.
-			if (r.chunk) {
-				this._loadRequestsInFlight.delete(r.chunk.numericId);
+			if (!chunk) {
+				continue;
 			}
 
-			// STALLFIX: do NOT null `chunk` here.
-			//
-			// ChunkProcessScheduler.recoverProcessState() pushes the in-flight
-			// batch back into `loadQueue`. clearLoadState recycles whatever is
-			// left in state.loadBatch on the next pass, and used to run against
-			// requests that were live in `loadQueue` again. Nulling their chunk
-			// made the next PrepareLoadBatch dereference null (TypeError), whose
-			// recovery path dereferenced null again and escaped the catch handler
-			// with shouldContinue still false — permanently stopping the rAF
-			// pump, so no chunk ever loaded again.
-			//
-			// Pooling one extra strong reference per free slot is bounded (see
-			// FREE_REQUEST_POOL_MAX) and cheap; a permanently dead loader is not.
-			//
-			// Bounded on purpose: clearLoadState recycles a whole batch (up to
-			// CHUNK_LOAD_BATCH_LIMIT) on every PrepareLoadBatch, while only a
-			// handful of those are ever handed back out by
-			// ensureChunkQueuedForLoad. Uncapped, the pool grew by hundreds of
-			// entries per pass for the life of the session.
-			if (
-				this._freeRequests.length <
-				ChunkStreamingController.FREE_REQUEST_POOL_MAX
-			) {
-				this._freeRequests.push(r);
+			const numericId = chunk.numericId;
+
+			// The scheduler has finished with this in-flight reference, regardless
+			// of whether the request completed or was recovered into loadQueue.
+			inFlight.delete(numericId);
+
+			/*
+			 * A recovered request may already be back in loadQueue and registered
+			 * in loadQueueRequestMap. It must not also enter the free pool because
+			 * ensureChunkQueuedForLoad could then reuse and mutate the same object
+			 * while it is still a live queue entry.
+			 */
+			if (requestMap.get(numericId) === request) {
+				continue;
 			}
+
+			if (freeRequests.length >= maxPoolSize) {
+				continue;
+			}
+
+			freeRequests.push(request);
 		}
 	}
 
 	public onChunkDisposed(numericId: number): void {
 		this.loadedRefreshQueueSet.delete(numericId);
 		this._loadRequestsInFlight.delete(numericId);
+	}
+
+	/**
+	 * Drop the residency record for a chunk that has been fully freed.
+	 *
+	 * Separate from the unload QUEUE decision on purpose: a chunk queued for
+	 * unload is still recoverable, so its record must survive. Forgetting it
+	 * here — once the chunk object is actually gone and no cached blob remains
+	 * to rebuild from — is what keeps the residency map bounded across a long
+	 * session.
+	 */
+	public forgetResidency(chunkX: number, chunkY: number, chunkZ: number): void {
+		forgetChunkResidency(packCoords(chunkX, chunkY, chunkZ));
 	}
 
 	private sortLoadQueue(): void {
@@ -1907,6 +2018,25 @@ export class ChunkStreamingController {
 		const dz = chunk.chunkZ - playerChunkZ;
 
 		let priority = desiredLod * 1_000_000 + dx * dx + dy * dy + dz * dz;
+
+		/*
+		 * Camera-forward term, from the shared priority module.
+		 *
+		 * Pure distance ranks a chunk dead ahead the same as one dead behind, but
+		 * the one in front is about to fill the screen while the one behind stays
+		 * invisible until the player turns. This is deliberately a MODIFIER
+		 * rather than a replacement for the existing formula: the 1M LOD band
+		 * and the column-ahead bonus carry tuning invariants that must survive,
+		 * so the forward term is scaled to stay well inside a single LOD band.
+		 *
+		 * See ChunkPriority for the full rationale and weights.
+		 */
+		const forwardScore = chunkForwardScore(
+			chunk.chunkX,
+			chunk.chunkY,
+			chunk.chunkZ,
+		);
+		priority -= forwardScore * CAMERA_FORWARD_BONUS;
 
 		// Column-ring bonus: approaching columns load first within their LOD
 		// band during fast fly. Stays below the 1M LOD band by construction.

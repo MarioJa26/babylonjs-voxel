@@ -11,6 +11,7 @@ import {
 	type SceneContext,
 	type Vec3,
 } from "@babylonjs/lite";
+import { FRAME_WORK_BUDGET } from "@/code/Lib/FrameWorkBudget";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
 import {
 	getBlockAndStateByWorldCoordsInto,
@@ -143,6 +144,9 @@ const SETTLED_BIT = 2;
 
 let aliveCount = 0;
 
+/** Voxel collision sweeps performed during the most recent tick. */
+let collisionQueries = 0;
+
 // Scratch props reused across every `addBillboardSpriteIndex` call so the
 // per-frame billboard rebuild allocates nothing.
 const scratchPos: [number, number, number] = [0, 0, 0];
@@ -210,6 +214,95 @@ function buildBlockFrameLUT(): Uint16Array {
 
 let billboard: FacingBillboardSpriteSystem | null = null;
 
+/** Unpacked colour triple, used by every emission path. */
+interface Rgb {
+	r: number;
+	g: number;
+	b: number;
+}
+
+/**
+ * Effect fidelity, chosen per emission rather than per system.
+ *
+ * PERF/RATIONALE: before this, every emitter ran at full fidelity and the only
+ * limits were the hard pool cap and per-emitter interval throttles. Neither
+ * scales with distance or with load. A remote block edit emitted `play()` +
+ * `playDebris()` = 230 particles, so a 2048-edit join snapshot asked for
+ * ~470k particles against an 8192-slot pool — the pool silently dropped them
+ * after doing the per-particle work, and the survivors were whichever arrived
+ * first rather than whichever mattered.
+ */
+export const enum ParticleQuality {
+	None,
+	/** A few particles, no debris, no collision. */
+	Minimal,
+	/** Full burst, debris without collision. */
+	Normal,
+	/** Full burst plus colliding, settling debris. */
+	Full,
+}
+
+/** Live particle count, for budget decisions made by other systems. */
+export function getAliveParticleCount(): number {
+	return aliveCount;
+}
+
+/**
+ * Voxel collision sweeps actually performed this frame.
+ *
+ * Kept distinct from `aliveParticleCount` because a saturated pool is a
+ * different problem from expensive collision: the first is emission volume, the
+ * second is simulation cost. HUD diagnostics read both.
+ */
+export function getParticleCollisionQueryCount(): number {
+	return collisionQueries;
+}
+
+/**
+ * Pick a fidelity for a block edit, given where it happened, how loaded the
+ * pool already is, and how many edits arrived together.
+ *
+ * The two independent axes matter: `distanceSq` bounds how much the player can
+ * see, `batchSize` bounds how many bursts the frame will contain. An explosion
+ * 30 blocks away is close but arrives as a 400-edit batch, so it degrades on
+ * the batch axis alone — the visibility tier would have allowed Full.
+ */
+export function chooseBlockEditParticleQuality(
+	distanceSq: number,
+	activeParticles: number,
+	batchSize: number,
+): ParticleQuality {
+	// Beyond the particle visibility horizon, emit nothing at all.
+	if (distanceSq > PARTICLE_CULL_DIST_SQ) return ParticleQuality.None;
+
+	// A large batch, or an already-saturated pool, collapses to Minimal. Both
+	// mean this burst is one of many competing for the same slots.
+	if (
+		batchSize > BATCH_PARTICLE_LIMIT ||
+		activeParticles > PARTICLE_SATURATION_COUNT
+	) {
+		return ParticleQuality.Minimal;
+	}
+
+	// Mid-range: the burst is visible but debris collision is not worth the
+	// voxel sweep for blocks the player will not walk up to.
+	if (distanceSq > PARTICLE_FULL_DIST_SQ) return ParticleQuality.Normal;
+
+	return ParticleQuality.Full;
+}
+
+/** Distance beyond which no particles are emitted at all. */
+const PARTICLE_CULL_DIST_SQ = 160 * 160;
+/** Inside this distance a single edit earns full fidelity. */
+const PARTICLE_FULL_DIST_SQ = 48 * 48;
+/** A batch larger than this is treated as a mass event. */
+const BATCH_PARTICLE_LIMIT = 128;
+/** Alive count above which new bursts degrade regardless of distance. */
+const PARTICLE_SATURATION_COUNT = 7000;
+
+/** Fraction of the burst emitted at each quality. `Full` is the reference. */
+const QUALITY_BURST_SCALE = [0, 0.06, 0.35, 1] as const;
+
 export function play(
 	position: Vec3,
 	blockId: number,
@@ -228,6 +321,35 @@ export function play(
 		light.r,
 		light.g,
 		light.b,
+	);
+}
+
+/**
+ * Quality-scaled break burst.
+ *
+ * Callers handling many edits at once should emit a few of these rather than
+ * one per block — see `NetworkManager.applyRemoteBlockEdits`.
+ */
+export function playScaled(
+	position: Vec3,
+	blockId: number,
+	packedLight: number,
+	quality: ParticleQuality,
+): void {
+	if (quality === ParticleQuality.None || !billboard) return;
+
+	const count = Math.max(
+		1,
+		Math.round(PARTICLES_PER_BREAK * QUALITY_BURST_SCALE[quality]),
+	);
+
+	spawnBurstCount(
+		position.x,
+		position.y,
+		position.z,
+		getBlockFrame(blockId),
+		computeLight(packedLight),
+		count,
 	);
 }
 
@@ -252,6 +374,29 @@ export function playDebris(
 }
 
 /**
+ * Quality-scaled debris.
+ *
+ * Debris is the expensive half of a break: every particle carries the collide
+ * flag, and each one runs a shape-aware voxel sweep every frame until it
+ * settles. Below `Full`, debris is suppressed entirely — the burst alone
+ * still reads as a break, and the voxel sweeps are what actually cost.
+ */
+export function playDebrisScaled(
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+	packedLight: number,
+	quality: ParticleQuality,
+): void {
+	if (quality !== ParticleQuality.Full || !billboard) return;
+
+	const light = computeLight(packedLight);
+
+	spawnDebrisBurst(x, y, z, getBlockFrame(blockId), light.r, light.g, light.b);
+}
+
+/**
  * Small dust puff when a block is placed. Deliberately subtler than the
  * break burst (fewer, smaller, slower, shorter-lived particles, no voxel
  * collision — the freshly placed block is solid, so colliding debris would
@@ -264,13 +409,30 @@ export function playPlace(
 	blockId: number,
 	packedLight: number,
 ): void {
-	if (!billboard) return;
+	playPlaceScaled(x, y, z, blockId, packedLight, ParticleQuality.Full);
+}
+
+/** Quality-scaled placement puff. */
+export function playPlaceScaled(
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+	packedLight: number,
+	quality: ParticleQuality,
+): void {
+	if (quality === ParticleQuality.None || !billboard) return;
 
 	const frame = getBlockFrame(blockId);
 	const light = computeLight(packedLight);
 	const shade = 0.85 + getPRNGUnit2() * 0.15;
 
-	for (let i = 0; i < PLACE_PARTICLES_PER_EMIT; i++) {
+	const count = Math.max(
+		1,
+		Math.round(PLACE_PARTICLES_PER_EMIT * QUALITY_BURST_SCALE[quality]),
+	);
+
+	for (let i = 0; i < count; i++) {
 		const angle = getPRNGUnit2() * Math.PI * 2;
 		const outSpeed = 1.7 + getPRNGUnit2();
 
@@ -865,6 +1027,7 @@ export function playExplosion(
 	z: number,
 	radius: number,
 	packedLight: number,
+	intensity = 1,
 ): void {
 	if (!billboard) return;
 
@@ -874,6 +1037,23 @@ export function playExplosion(
 	const lg = Math.min(1, light.g + 0.35);
 	const lb = Math.min(1, light.b + 0.35);
 	const speedScale = 0.7 + radius * 0.15;
+
+	/*
+	 * Fidelity multiplier, 0..1.
+	 *
+	 * An explosion emits ~350 particles: 1 flash + 24 sparks + ~114 fireball +
+	 * 48 ring + up to 110 smoke + 60 embers. At Medium distance none of that is
+	 * individually resolvable, but the cost is identical, and several
+	 * simultaneous blasts would each pay it in full.
+	 *
+	 * Scales the COUNT of every layer, not just the size, because size is
+	 * bounded by the shared pool either way while count is what competes for
+	 * slots and collision budget.
+	 */
+	const scale = intensity < 0 ? 0 : intensity > 1 ? 1 : intensity;
+
+	const scaled = (count: number): number =>
+		Math.max(1, Math.round(count * scale));
 
 	// --- 1. Core flash: one huge white billboard, gone in a blink. ---
 	addParticle(
@@ -896,7 +1076,7 @@ export function playExplosion(
 	);
 
 	// --- 2. Hot sparks: white-yellow, fast, very short. ---
-	for (let i = 0; i < 24; i++) {
+	for (let i = 0, n = scaled(24); i < n; i++) {
 		const theta = getPRNGUnit2() * Math.PI * 2;
 		const up = getPRNGUnit2() * 2 - 1;
 		const flat = Math.sqrt(Math.max(0, 1 - up * up));
@@ -927,7 +1107,7 @@ export function playExplosion(
 		y,
 		z,
 		frame,
-		30,
+		scaled(30),
 		1.3,
 		0.9,
 		0.45,
@@ -945,7 +1125,7 @@ export function playExplosion(
 		y,
 		z,
 		frame,
-		48,
+		scaled(48),
 		1.2,
 		0.55,
 		0.2,
@@ -963,7 +1143,7 @@ export function playExplosion(
 		y,
 		z,
 		frame,
-		36,
+		scaled(36),
 		0.9,
 		0.3,
 		0.12,
@@ -978,7 +1158,7 @@ export function playExplosion(
 	);
 
 	// --- 4. Shockwave ring: fast dusty disc hugging the ground. ---
-	for (let i = 0; i < EXPLOSION_RING_COUNT; i++) {
+	for (let i = 0, n = scaled(EXPLOSION_RING_COUNT); i < n; i++) {
 		const angle = getPRNGUnit2() * Math.PI * 2;
 		const speed = (7 + getPRNGUnit2() * 6) * speedScale;
 		const shade = 0.55 + getPRNGUnit2() * 0.25;
@@ -1003,9 +1183,11 @@ export function playExplosion(
 	}
 
 	// --- 5. Smoke column: dark, slow, long-lived, drifting up. ---
-	const smokeCount = Math.min(
-		EXPLOSION_SMOKE_MAX,
-		Math.max(8, Math.floor(radius * EXPLOSION_SMOKE_PER_RADIUS)),
+	const smokeCount = scaled(
+		Math.min(
+			EXPLOSION_SMOKE_MAX,
+			Math.max(8, Math.floor(radius * EXPLOSION_SMOKE_PER_RADIUS)),
+		),
 	);
 	for (let i = 0; i < smokeCount; i++) {
 		const angle = getPRNGUnit2() * Math.PI * 2;
@@ -1033,7 +1215,7 @@ export function playExplosion(
 	}
 
 	// --- 6. Embers: tiny bright sparks that arc out and bounce on landing. ---
-	for (let i = 0; i < EXPLOSION_EMBER_COUNT; i++) {
+	for (let i = 0, n = scaled(EXPLOSION_EMBER_COUNT); i < n; i++) {
 		const theta = getPRNGUnit2() * Math.PI * 2;
 		const flat = 0.4 + getPRNGUnit2() * 0.6;
 		const speed = (4 + getPRNGUnit2() * 7) * speedScale;
@@ -1167,6 +1349,11 @@ function flushDeferredRenderables(scene: SceneContext): Promise<void> {
 
 function tick(deltaMs: number): void {
 	const system = billboard;
+
+	// Reset before the early returns so the diagnostic always reflects the last
+	// completed tick rather than a stale count from whenever one last ran.
+	collisionQueries = 0;
+
 	if (system === null || aliveCount === 0) return;
 
 	const dt = Math.min(MAX_DT, deltaMs * 0.001);
@@ -1224,10 +1411,23 @@ function tick(deltaMs: number): void {
 
 		if ((flags & COLLIDE_BIT) !== 0) {
 			if ((flags & SETTLED_BIT) === 0) {
-				collideParticle(i, dt);
+				if (FRAME_WORK_BUDGET.takeCollisionChecks()) {
+					collideParticle(i, dt);
+					collisionQueries++;
 
-				// Collision may have settled the particle.
-				flags = lflags[i];
+					// Collision may have settled the particle.
+					flags = lflags[i];
+				} else {
+					// Budget exhausted: integrate without sweeping so the
+					// particle still falls instead of hanging. Slightly wrong
+					// for this one frame, which is far cheaper than the voxel
+					// sweeps. The next frame retries and corrects.
+					const vy = lpvy[i] + gravityDt * lpgrav[i];
+					lpvy[i] = vy;
+					lpx[i] += lpvx[i] * dt;
+					lpy[i] += vy * dt;
+					lpz[i] += lpvz[i] * dt;
+				}
 			}
 		} else {
 			const vy = lpvy[i] + gravityDt * lpgrav[i];
@@ -1289,7 +1489,19 @@ function spawnBurst(
 	g: number,
 	b: number,
 ): void {
-	for (let i = 0; i < PARTICLES_PER_BREAK; i++) {
+	spawnBurstCount(x, y, z, frame, { r, g, b }, PARTICLES_PER_BREAK);
+}
+
+/** Shared body of the break burst, parameterised by how many particles. */
+function spawnBurstCount(
+	x: number,
+	y: number,
+	z: number,
+	frame: number,
+	light: Rgb,
+	count: number,
+): void {
+	for (let i = 0; i < count; i++) {
 		const shade = 0.7 + getPRNGUnit2() * 0.3;
 		addParticle(
 			x + (getPRNGUnit2() - 0.5) * 0.8,
@@ -1303,9 +1515,9 @@ function spawnBurst(
 			getPRNGUnit2(),
 			getPRNGUnit2() - 0.5,
 			frame,
-			r * shade,
-			g * shade,
-			b * shade,
+			light.r * shade,
+			light.g * shade,
+			light.b * shade,
 			1,
 			1,
 		);
@@ -1514,11 +1726,7 @@ function getBlockFrame(blockId: number): number {
 	return blockFrameLUT[blockId] ?? 0;
 }
 
-function computeLight(packedLight: number): {
-	r: number;
-	g: number;
-	b: number;
-} {
+function computeLight(packedLight: number): Rgb {
 	const skyLight = ((packedLight >> 4) & 0xf) / 15;
 	const blockLight = (packedLight & 0xf) / 15;
 

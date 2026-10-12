@@ -16,11 +16,16 @@ import { type ChunkCensus, getChunkCensus } from "./Runtime/ChunkCensus";
 import { computeStoredFaceConnectivity } from "./Runtime/ChunkConnectivity";
 import { queueConnectivityRecompute } from "./Runtime/ChunkConnectivityQueue";
 import {
+	type BlockMutationResult,
 	beginChunkEditBatch,
+	beginMutationScope,
 	type ChunkLightPool,
 	discardChunkEditState,
 	endChunkEditBatch,
+	endMutationScope,
 	markChunkDirtyForRemesh,
+	noteMutationConnectivityChanged,
+	noteMutationLightingChanged,
 	recordLightMutation,
 } from "./Runtime/ChunkEditBatching";
 import { deferChunkMeshes } from "./Runtime/ChunkMeshDisposal";
@@ -231,6 +236,26 @@ export class Chunk {
 
 	public static endBlockEditBatch(): void {
 		endChunkEditBatch(Chunk._lightPool);
+	}
+
+	/**
+	 * Begin collecting the dirty footprint of subsequent mutations.
+	 *
+	 * Distinct from `beginBlockEditBatch`, which controls WHEN the accumulated
+	 * lighting and remesh work is flushed. This controls what is REPORTED, so a
+	 * caller can learn which chunks were touched and schedule work itself —
+	 * one remesh per merged group, or ranged GPU updates — instead of only
+	 * being able to let the default flush happen.
+	 *
+	 * Nestable and independent; may be used with or without an edit batch.
+	 */
+	public static beginMutationScope(): void {
+		beginMutationScope();
+	}
+
+	/** End a mutation scope. See {@link beginMutationScope}. */
+	public static endMutationScope(): BlockMutationResult {
+		return endMutationScope();
 	}
 
 	// -------------------------------------------------------------------------
@@ -1184,11 +1209,37 @@ export class Chunk {
 		this.blockRevision++;
 		queueConnectivityRecompute(this);
 
+		/*
+		 * Fences and other dynamic shapes depend on their neighbours, and a
+		 * mutation that crosses a chunk border drags a neighbour's lighting into
+		 * the same pass. Both facts are recorded here, at the only place either
+		 * is known, rather than inferred later by a consumer that would have to
+		 * re-derive them.
+		 */
+		noteMutationConnectivityChanged();
+
 		markChunkDirtyForRemesh(this);
 		Chunk.onBlockModified?.(this);
 
 		const last = Chunk.SM1;
 		const neighbors = this.neighborRefs;
+
+		/*
+		 * A boundary mutation changes the neighbour's exposed-face set, so the
+		 * neighbour is dirtied too. That is also a light-propagation event
+		 * across the border.
+		 */
+		if (localX === 0 || localX === last) {
+			noteMutationLightingChanged();
+		}
+
+		if (localY === 0 || localY === last) {
+			noteMutationLightingChanged();
+		}
+
+		if (localZ === 0 || localZ === last) {
+			noteMutationLightingChanged();
+		}
 
 		if (localX === 0) markChunkDirtyForRemesh(neighbors[1]);
 		else if (localX === last) markChunkDirtyForRemesh(neighbors[0]);

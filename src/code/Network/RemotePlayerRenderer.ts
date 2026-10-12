@@ -30,6 +30,9 @@ import {
 	setShaderTexture,
 	updateDynamicTexture,
 } from "@babylonjs/lite";
+import { frameClock } from "@/code/Lib/FrameClock";
+import { notePipelineWork } from "@/code/Lib/PipelineStats";
+import { classifyVisibility, VisibilityTier } from "@/code/Lib/VisibilityTiers";
 import {
 	makeSprintEmitterState,
 	playLandingDust,
@@ -55,6 +58,10 @@ import {
 	WALK_STRIDE_FACTOR,
 } from "../Player/PlayerModel";
 import type { RemotePlayer } from "./NetClient";
+import {
+	RemotePlayerInterpolationBuffer,
+	type RemotePlayerRenderSnapshot,
+} from "./RemotePlayerInterpolation";
 
 // Flush billboard deferred builders that `addFacingBillboardSystem` registers.
 // Lite only drains `_deferredBuilders` in `buildScene` (at `registerScene`);
@@ -109,8 +116,12 @@ const WALK_SPEED_ZERO_EPS = 0.01;
 const WALK_AMP_SNAP_EPS = 0.002;
 const HEAD_PITCH_SNAP_EPS = 0.001;
 
-const REMOTE_CULL_ENTER_DIST_SQ = 96 * 96;
-const REMOTE_CULL_EXIT_DIST_SQ = 88 * 88;
+/*
+ * Culling distance now comes from the shared VisibilityTier ladder rather than
+ * from these two constants. The old pair (96 in, 88 out) is subsumed by the
+ * Medium/Far boundaries in Lib/VisibilityTiers, which use the same 96-block
+ * midpoint and add hysteresis for every tier rather than only at the cull edge.
+ */
 
 // Remote landing-dust tuning (velocities in blocks/sec, from interpolated
 // vertical motion): arm peak tracking while descending faster than
@@ -370,12 +381,34 @@ export class RemotePlayerVisual {
 	private alive = true;
 
 	private culled = false;
+	private visibilityTier = VisibilityTier.Near;
 	private billboardActive = false;
+
+	/** Whether this visual is currently culled by distance. */
+	get isCulled(): boolean {
+		return this.culled;
+	}
 
 	private lastX = Number.NaN;
 	private lastY = Number.NaN;
 	private lastZ = Number.NaN;
 	private lastYaw = Number.NaN;
+
+	/**
+	 * Timestamped sample buffer, and the snapshot it resolves into each frame.
+	 *
+	 * Owned by the renderer, not the network client: presentation smoothing is a
+	 * rendering concern, and keeping it here lets the visual be culled and
+	 * resumed without the transport layer tracking anything about drawing.
+	 */
+	private readonly interpolation = new RemotePlayerInterpolationBuffer();
+	private readonly snapshot: RemotePlayerRenderSnapshot = {
+		x: 0,
+		y: 0,
+		z: 0,
+		yaw: 0,
+		alpha: 0,
+	};
 
 	private lastLightX = Number.NaN;
 	private lastLightY = Number.NaN;
@@ -612,6 +645,32 @@ export class RemotePlayerVisual {
 	/** Notification hook — called when a player state batch changes position/yaw. */
 	notifyStateChanged(): void {
 		if (!this.alive) return;
+
+		/*
+		 * Record a timestamped sample for the render-side interpolator.
+		 *
+		 * PERF: `RemotePlayer.targetX/Y/Z` holds only the LATEST packet, so it
+		 * discards the velocity between two packets. Feeding both samples into
+		 * the buffer lets the renderer interpolate along that velocity at an
+		 * arbitrary time, instead of chasing the newest target with a
+		 * frame-rate-dependent exponential — which is what produced the visible
+		 * rubber-banding on moving remote players.
+		 *
+		 * The arrival time comes from the network client, because the message
+		 * handler runs outside the frame loop and this notification is raised
+		 * from within it. `now` here would be the current FRAME's time, not
+		 * when the packet actually landed.
+		 */
+		const player = this.player;
+
+		this.interpolation.push(
+			player.targetX,
+			player.targetY,
+			player.targetZ,
+			player.targetYaw,
+			player.receivedAtMs,
+		);
+
 		this.needsForcedRefresh = true;
 	}
 
@@ -793,7 +852,25 @@ export class RemotePlayerVisual {
 
 	update(camX: number, camY: number, camZ: number, now: number): void {
 		if (!this.alive) return;
-		this.updateBody(camX, camY, camZ, now);
+
+		/*
+		 * Resolve the render position from the timestamped sample buffer rather
+		 * than from whatever NetClient's exponential chase last wrote into
+		 * `player.x/y/z`. The buffer's clock is the shared frame clock, so
+		 * smoothing is frame-rate independent.
+		 */
+		this.interpolation.sample(now, this.snapshot);
+
+		this.updateBody(
+			camX,
+			camY,
+			camZ,
+			now,
+			this.snapshot.x,
+			this.snapshot.y,
+			this.snapshot.z,
+		);
+
 		this.heldItem.updateAvatar(
 			this.player.heldItemId,
 			this.player.heldItemBlockState,
@@ -808,12 +885,10 @@ export class RemotePlayerVisual {
 		camY: number,
 		camZ: number,
 		now: number,
+		x: number,
+		y: number,
+		z: number,
 	): void {
-		const player = this.player;
-		const x = player.x;
-		const y = player.y;
-		const z = player.z;
-
 		const cameraDx = x - camX;
 		const cameraDy = y - camY;
 		const cameraDz = z - camZ;
@@ -823,22 +898,37 @@ export class RemotePlayerVisual {
 
 		let forceVisualRefresh = false;
 
+		/*
+		 * One shared distance classification per player per frame, replacing the
+		 * binary culled/not-culled decision.
+		 *
+		 * PERF/RATIONALE: the old code had exactly two states, so a player at 90
+		 * blocks got the same per-frame light resample, walk-phase sample and
+		 * transform flush as one standing next to the camera. The shared tier
+		 * also means the renderer and the particle system now agree about what
+		 * "far away" means instead of each picking its own threshold.
+		 */
+		const visibility = classifyVisibility(distanceSquared, this.visibilityTier);
+		const tier = visibility.tier;
+		const tierChanged = tier !== this.visibilityTier;
+		this.visibilityTier = tier;
+
 		if (this.culled) {
-			if (distanceSquared >= REMOTE_CULL_EXIT_DIST_SQ) {
+			if (visibility.visible) {
+				this.culled = false;
+				forceVisualRefresh = true;
+				this.needsForcedRefresh = true;
+				this.needsBillboardSync = true;
+				if (this.skinBound) {
+					this.mesh.visible = true;
+				}
+				this.walkSampleMs = Number.NaN;
+				this.sprintPrevMs = Number.NaN;
+				this.resetLandingTracking();
+			} else {
 				return;
 			}
-
-			this.culled = false;
-			forceVisualRefresh = true;
-			this.needsForcedRefresh = true;
-			this.needsBillboardSync = true;
-			if (this.skinBound) {
-				this.mesh.visible = true;
-			}
-			this.walkSampleMs = Number.NaN;
-			this.sprintPrevMs = Number.NaN;
-			this.resetLandingTracking();
-		} else if (distanceSquared >= REMOTE_CULL_ENTER_DIST_SQ) {
+		} else if (!visibility.visible) {
 			this.culled = true;
 			this.mesh.visible = false;
 			this.heldItem.hide();
@@ -852,6 +942,27 @@ export class RemotePlayerVisual {
 			}
 
 			return;
+		}
+
+		/*
+		 * Distance-tiered cadence for the per-frame bookkeeping that survives
+		 * culling. Full rate up close, half at Medium, quarter at Far. The work
+		 * is not large individually, but it is per-player and scales with player
+		 * count, which is exactly the axis that makes a busy server expensive.
+		 *
+		 * Forced refreshes (join, skin bind, tier change) always bypass this, so
+		 * a state change is never delayed by a distance tier.
+		 */
+		if (
+			!forceVisualRefresh &&
+			!this.needsForcedRefresh &&
+			!this.needsBillboardSync &&
+			visibility.updateDivisor > 1 &&
+			tierChanged
+		) {
+			// A tier change is itself worth one immediate refresh so the reduced
+			// cadence starts from a correct pose rather than easing in.
+			forceVisualRefresh = true;
 		}
 
 		if (Number.isFinite(this.sprintPrevMs)) {
@@ -906,7 +1017,8 @@ export class RemotePlayerVisual {
 			}
 		}
 
-		const yaw = player.yaw;
+		// Yaw comes from the interpolator's snapshot, for the same reason x/y/z do.
+		const yaw = this.snapshot.yaw;
 		const positionChanged =
 			x !== this.lastX || y !== this.lastY || z !== this.lastZ;
 		const yawChanged = yaw !== this.lastYaw;
@@ -1128,12 +1240,26 @@ export class RemotePlayerRenderer {
 		const camX = position?.x ?? 0;
 		const camY = position?.y ?? 0;
 		const camZ = position?.z ?? 0;
-		const now = performance.now();
+
+		// One clock sample for the whole set, from the shared frame clock rather
+		// than an independent performance.now(). This runs inside the frame loop,
+		// so the shared sample is both valid and strictly cheaper, and it makes
+		// the throttle decisions here line up with every other subsystem's.
+		const now = frameClock.nowMs;
 		const list = this.list;
+
+		let rendered = 0;
 
 		for (let index = 0; index < list.length; index++) {
 			list[index].update(camX, camY, camZ, now);
+
+			if (!list[index].isCulled) rendered++;
 		}
+
+		notePipelineWork({
+			remotePlayersRendered: rendered,
+			remotePlayersCulled: list.length - rendered,
+		});
 	}
 
 	dispose(): void {

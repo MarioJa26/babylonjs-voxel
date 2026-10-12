@@ -12,8 +12,12 @@ import { PLAYER_SKIN_PATH } from "../Player/PlayerModel";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
+	type BlockEditBatchView,
+	createBlockEditBatchView,
+	decodeBlockEditBatchInto,
 	decodeBlockEditBroadcastInto,
 	decodeBlockEditRejectedInto,
+	decodeExplosionBroadcastInto,
 	decodePlayerHeldItemInto,
 	decodePlayerJoinInto,
 	decodePlayerStateBatchEntriesInto,
@@ -29,12 +33,14 @@ import {
 	encodeStationOpen,
 	encodeStationSetSlot,
 	encodeStationUpgrade,
+	isSequenceNewer,
 	type WorldConfigData,
 } from "./protocol/encoder";
 import {
 	type BlockEditData,
 	type BlockEditRejectedData,
 	type ChatMessageData,
+	type ExplosionData,
 	MAX_SKIN_BYTES,
 	MessageType,
 	type PlayerHeldItemData,
@@ -42,6 +48,15 @@ import {
 	type PlayerStateBatchEntry,
 	type TntIgniteData,
 } from "./protocol/messages";
+
+/**
+ * Sentinel `lastSequence` meaning "no state received for this player yet".
+ *
+ * Must not be a real sequence value. `isSequenceNewer(0, 0)` is false, so
+ * initialising to 0 would cause every player's first state batch — which
+ * carries sequence 0 — to be discarded as stale.
+ */
+const NO_STATE_SEQUENCE = 0xffff;
 
 export interface RemotePlayer {
 	sessionId: string;
@@ -62,6 +77,22 @@ export interface RemotePlayer {
 	targetY: number;
 	targetZ: number;
 	targetYaw: number;
+	/**
+	 * Highest `PlayerStateBatch` sequence already applied for this player.
+	 *
+	 * Per-player rather than global, because a player omitted from some batches
+	 * must not be blocked by a batch that carried none of its state.
+	 */
+	lastSequence: number;
+	/**
+	 * Wall-clock arrival time of the most recent accepted state batch, ms.
+	 *
+	 * This runs in a Colyseus message task, OUTSIDE the frame loop, so it uses
+	 * `performance.now()` directly. The shared FrameClock is not valid here —
+	 * its sample belongs to the last completed frame, which for a message task
+	 * may be arbitrarily stale.
+	 */
+	receivedAtMs: number;
 }
 
 export interface NetClientCallbacks {
@@ -73,7 +104,30 @@ export interface NetClientCallbacks {
 	onPlayerSkin?: (player: RemotePlayer, png: Uint8Array) => void;
 	onPlayerStates?: (states: Map<string, RemotePlayer> | RemotePlayer[]) => void;
 	onBlockEdit?: (edit: BlockEditData) => void;
+	/**
+	 * Batched counterpart to `onBlockEdit`.
+	 *
+	 * When present it takes priority for `BlockEditBatch` messages and
+	 * `onBlockEdit` is NOT called for them. This is strongly preferred: a join
+	 * snapshot carries up to 2048 edits and an explosion crater carries its
+	 * whole sphere, and applying those one at a time means one lighting pass,
+	 * one neighbour walk and one remesh scheduling per edit instead of per
+	 * affected chunk.
+	 *
+	 * The view is a REUSED scratch buffer: read it synchronously and copy out
+	 * anything you need to keep.
+	 */
+	onBlockEditBatch?: (view: BlockEditBatchView) => void;
 	onBlockEditRejected?: (rejection: BlockEditRejectedData) => void;
+	/**
+	 * The server's authoritative record of an explosion: center, radius, a
+	 * dedup id, and a seed for deriving identical particles locally.
+	 *
+	 * Preferred over reacting to the craters' `BlockEditBatch`, because the
+	 * batch carries neither: it tells a client which blocks vanished but not
+	 * that they were one explosion, so a redelivery replays every effect.
+	 */
+	onExplosion?: (explosion: ExplosionData) => void;
 	/** Fired when another client ignites TNT (spawn a remote primed entity). */
 	onTntIgnite?: (ignite: TntIgniteData) => void;
 	onChatMessage?: (chat: ChatMessageData) => void;
@@ -120,6 +174,17 @@ export class NetClient {
 	private readonly disconnectListeners: (() => void)[] = [];
 
 	private readonly batchScratch: PlayerStateBatchEntry[] = [];
+	private readonly stateScratch = { sequence: 0 };
+	private readonly blockEditBatchView = createBlockEditBatchView();
+	private readonly explosionScratch: ExplosionData = {
+		x: 0,
+		y: 0,
+		z: 0,
+		radius: 0,
+		eventId: 0,
+		seed: 0,
+	};
+	private droppedStateBatches = 0;
 	private readonly warnedUnknownIndices = new Set<number>();
 	private readonly playerHeldItemScratch: PlayerHeldItemData = {
 		index: 0,
@@ -192,6 +257,36 @@ export class NetClient {
 	};
 
 	private roomGeneration = 0;
+
+	/**
+	 * Monotonic identity of the current room/connection.
+	 *
+	 * PERF/RATIONALE: async work started against one room can outlive it — an
+	 * inflate, a cache write, a skin decode, a deferred GPU replacement. All of
+	 * those must answer "which room produced this operation?" before applying
+	 * their result, or a late completion from a room you already left will
+	 * corrupt the new one.
+	 *
+	 * Two independent guards exist and they answer different questions:
+	 *
+	 * - `connectionGeneration` answers WHICH ROOM. Capture it before an await;
+	 *   if it changed, the result belongs to a superseded room and must be
+	 *   dropped regardless of what it contains.
+	 * - Request object identity answers IS THIS STILL THE EXACT REQUEST. Two
+	 *   requests for the same chunk coordinates can be live at once, so
+	 *   coordinates alone are ambiguous.
+	 *
+	 * Keep the pending-object checks too — generation alone would let a stale
+	 * response for a re-requested coordinate resolve the new request.
+	 */
+	get connectionGeneration(): number {
+		return this.roomGeneration;
+	}
+
+	/** Player-state batches rejected as stale since connect. HUD diagnostics. */
+	get droppedStateBatchCount(): number {
+		return this.droppedStateBatches;
+	}
 
 	worldName = "default";
 
@@ -423,30 +518,43 @@ export class NetClient {
 					}
 
 					case MessageType.BlockEditBatch: {
-						const count = dec.readUint16();
-						const callback = callbacks.onBlockEdit;
-						if (callback !== undefined) {
-							// Reused single scratch per iteration — safe: callback copies fields synchronously (NetworkManager.applyRemoteBlockEdit). No retain.
-							const scratch = this.blockEditBroadcastScratch;
-							for (let i = 0; i < count; i++) {
-								scratch.sessionId = "";
-								scratch.x = dec.readInt32();
-								scratch.y = dec.readInt32();
-								scratch.z = dec.readInt32();
-								scratch.blockId = dec.readUint16();
-								scratch.blockState = dec.readUint8();
-								scratch.action = dec.readUint8();
-								callback(scratch);
+						const batch = callbacks.onBlockEditBatch;
+
+						if (batch !== undefined) {
+							// Batch path: the consumer applies every edit inside one
+							// edit batch so lighting and remesh scheduling are
+							// deduplicated. See NetworkManager.applyRemoteBlockEdits.
+							const count = decodeBlockEditBatchInto(
+								dec,
+								this.blockEditBatchView,
+							);
+							if (count > 0) {
+								this.blockEditBatchView.count = count;
+								batch(this.blockEditBatchView);
 							}
-						} else {
-							for (let i = 0; i < count; i++) {
-								dec.readInt32();
-								dec.readInt32();
-								dec.readInt32();
-								dec.readUint16();
-								dec.readUint8();
-								dec.readUint8();
-							}
+							break;
+						}
+
+						// Legacy path: one callback per edit, for callers that have not
+						// migrated yet. Decoded as a view rather than per-edit objects
+						// so even this path stops allocating.
+						const count = decodeBlockEditBatchInto(
+							dec,
+							this.blockEditBatchView,
+						);
+						const view = this.blockEditBatchView;
+						const scratch = this.blockEditBroadcastScratch;
+						const single = callbacks.onBlockEdit;
+
+						for (let i = 0; i < count; i++) {
+							scratch.sessionId = "";
+							scratch.x = view.x[i];
+							scratch.y = view.y[i];
+							scratch.z = view.z[i];
+							scratch.blockId = view.blockId[i];
+							scratch.blockState = view.blockState[i];
+							scratch.action = view.action[i];
+							single?.(scratch);
 						}
 						break;
 					}
@@ -520,10 +628,21 @@ export class NetClient {
 						return;
 
 					case MessageType.TntIgnite: {
-						// Reused scratch — safe: the callback consumes fields
+						// Reused scratch - safe: the callback consumes fields
 						// synchronously (NetworkManager spawns the entity).
 						const ignite = decodeTntIgniteInto(dec, this.tntIgniteScratch);
 						callbacks.onTntIgnite?.(ignite);
+						break;
+					}
+
+					case MessageType.ExplosionBroadcast: {
+						// Reused scratch - safe: the callback copies what it needs
+						// synchronously (NetworkManager dedups and derives).
+						const explosion = decodeExplosionBroadcastInto(
+							dec,
+							this.explosionScratch,
+						);
+						callbacks.onExplosion?.(explosion);
 						break;
 					}
 
@@ -541,40 +660,87 @@ export class NetClient {
 	}
 
 	private handlePlayerStateBatch(dec: BinaryDecoder): void {
-		decodePlayerStateBatchEntriesInto(dec, this.batchScratch);
+		const states = this.batchScratch;
 
-		const scratch = this.batchScratch;
+		const sequence = decodePlayerStateBatchEntriesInto(
+			dec,
+			states,
+			this.stateScratch,
+		);
+
+		const stateCount = states.length;
+
+		if (stateCount === 0) {
+			return;
+		}
+
 		const players = this.playersByIndex;
 		const ownIndex = this.ownIndex;
+		const warnedUnknownIndices = this.warnedUnknownIndices;
 
-		for (let i = 0; i < scratch.length; i++) {
-			const state = scratch[i];
+		/*
+		 * Every entry in this packet has the same arrival time. Sampling once also
+		 * prevents players later in a large batch from receiving slightly newer
+		 * timestamps solely because of their position in the packet.
+		 */
+		const receivedAtMs = performance.now();
+		const yawScale = 360 / 255;
 
-			if (state.index === ownIndex) continue;
+		let acceptedCount = 0;
+		let droppedCount = 0;
 
-			const existing = players[state.index];
+		for (let i = 0; i < stateCount; i++) {
+			const state = states[i];
+			const index = state.index;
 
-			if (existing === undefined) {
-				if (!this.warnedUnknownIndices.has(state.index)) {
-					this.warnedUnknownIndices.add(state.index);
+			if (index === ownIndex) {
+				continue;
+			}
+
+			const player = players[index];
+
+			if (player === undefined) {
+				if (!warnedUnknownIndices.has(index)) {
+					warnedUnknownIndices.add(index);
 
 					console.warn(
-						`[NetClient] State for unknown player index ${state.index}, skipping`,
+						`[NetClient] State for unknown player index ${index}, skipping`,
 					);
 				}
 
 				continue;
 			}
 
-			existing.targetX = state.x;
-			existing.targetY = state.y;
-			existing.targetZ = state.z;
-			existing.targetYaw = state.yaw * (360 / 255);
-			existing.pitch = state.pitch;
-			existing.animation = state.animation;
+			if (!isSequenceNewer(sequence, player.lastSequence)) {
+				droppedCount++;
+				continue;
+			}
+
+			player.lastSequence = sequence;
+			player.receivedAtMs = receivedAtMs;
+
+			player.targetX = state.x;
+			player.targetY = state.y;
+			player.targetZ = state.z;
+			player.targetYaw = state.yaw * yawScale;
+
+			player.pitch = state.pitch;
+			player.animation = state.animation;
+
+			acceptedCount++;
 		}
 
-		this.callbacks.onPlayerStates?.(this.remotePlayers);
+		if (droppedCount !== 0) {
+			this.droppedStateBatches += droppedCount;
+		}
+
+		/*
+		 * Notify presentation code only when at least one remote player changed.
+		 * Unknown, local-only, and entirely stale batches need no renderer work.
+		 */
+		if (acceptedCount !== 0) {
+			this.callbacks.onPlayerStates?.(this.remotePlayers);
+		}
 	}
 
 	private handlePlayerJoin(dec: BinaryDecoder): void {
@@ -610,6 +776,10 @@ export class NetClient {
 			player.targetY = 80;
 			player.targetZ = 0;
 			player.targetYaw = 0;
+
+			// A rejoin starts a fresh server-side sequence stream, so the old
+			// high-water mark would reject the new room's first batches as stale.
+			player.lastSequence = NO_STATE_SEQUENCE;
 		} else {
 			player = {
 				sessionId: join.sessionId,
@@ -628,6 +798,12 @@ export class NetClient {
 				targetY: 80,
 				targetZ: 0,
 				targetYaw: 0,
+				// "Nothing received yet", not a real sequence. The server's first
+				// batch carries sequence 0, and isSequenceNewer(0, 0) is false —
+				// initialising to 0 would silently drop every player's first
+				// state. 0xffff makes 0 compare as newer instead.
+				lastSequence: NO_STATE_SEQUENCE,
+				receivedAtMs: 0,
 			};
 
 			this.remotePlayers.set(join.sessionId, player);
@@ -1036,6 +1212,16 @@ export class NetClient {
 		return this.remotePlayers.get(sessionId);
 	}
 
+	/**
+	 * Advance remote players toward their latest authoritative sample.
+	 *
+	 * @deprecated Presentation smoothing belongs to the renderer, not to the
+	 *   transport. This now only primes `player.x/y/z/yaw` so that a caller
+	 *   which has not yet adopted `RemotePlayerInterpolationBuffer` still sees a
+	 *   moving position. New code should read render snapshots instead — see
+	 *   Network/RemotePlayerInterpolation.ts for why the old in-place chase was
+	 *   both frame-rate dependent and jitter-prone.
+	 */
 	updateRemotePlayerInterpolation(dt: number): void {
 		if (!(dt > 0)) return;
 

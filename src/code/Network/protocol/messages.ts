@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Binary protocol definitions for b102 multiplayer.
  *
  * Message types are single-byte IDs. All multi-byte integers are little-endian.
@@ -34,6 +34,7 @@ export const MessageType = {
 	ArrowShoot: 0x2b, // Câ†’S: a player fired an arrow (cosmetic sync)
 	ArrowSpawn: 0x2c, // Sâ†’C: relay an arrow's trajectory to the other clients
 	Explosion: 0x2e, // Câ†’S: a primed TNT detonated (server applies the crater)
+	ExplosionBroadcast: 0x30, // S->C: the authoritative explosion event, with id + seed
 	TntIgnite: 0x2f, // Câ†’S ignite request / Sâ†’C relay: spawn a primed TNT entity
 
 	// Server â†’ Client
@@ -261,11 +262,11 @@ export interface MobDamageData {
 }
 
 /**
- * Câ†’S: a primed TNT detonated at (x, y, z). The server validates the blast
+ * C→S: a primed TNT detonated at (x, y, z). The server validates the blast
  * center against the sender's position (reach + fuse-travel slack) and the
  * radius against MAX_EXPLOSION_RADIUS, then applies the crater itself from
  * authoritative world state and relays the breaks as a BlockEditBatch.
- * Per-block Break messages for explosion craters must NOT be sent â€” blocks
+ * Per-block Break messages for explosion craters must NOT be sent — blocks
  * past the normal reach would be rejected as TooFar and rolled back.
  */
 export interface ExplosionData {
@@ -273,6 +274,30 @@ export interface ExplosionData {
 	y: number;
 	z: number;
 	radius: number;
+	/**
+	 * Server-assigned monotonic explosion id.
+	 *
+	 * PERF/RATIONALE: without it there is no way to tell a NEW explosion from a
+	 * redelivered one, so every visual effect — particles, sound, screen flash,
+	 * the terrain mutation — is replayed in full on a duplicate. With it, the
+	 * receiver keeps a small recent-id set and drops repeats cheaply, and the
+	 * whole crater becomes one idempotent unit.
+	 *
+	 * Echoed back from the client's own explosion so it can suppress the local
+	 * one it already played rather than playing it twice.
+	 */
+	eventId?: number;
+	/**
+	 * Seed for deriving visual effects locally.
+	 *
+	 * PERF/RATIONALE: particles are currently transmitted implicitly, via the
+	 * BlockEditBatch the crater produces — which means every client's debris is
+	 * an artifact of however IT happened to chunk and batch the edits, so no
+	 * two clients see the same explosion. A shared seed lets each client derive
+	 * identical visuals from identical inputs, cutting the payload to 4 bytes
+	 * and making the effect deterministic rather than incidental.
+	 */
+	seed?: number;
 }
 
 /**

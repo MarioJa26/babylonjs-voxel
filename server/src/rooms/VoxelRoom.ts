@@ -56,6 +56,7 @@ import {
 	encodeContainerRejected,
 	encodeContainerSlotUpdate,
 	encodeContainerState,
+	encodeExplosionBroadcast,
 	encodeItemDespawn,
 	encodeItemPickupRejected,
 	encodeItemSpawn,
@@ -137,8 +138,8 @@ import { serializeVoxelData } from "@/code/World/Storage/VoxelSerializer.ts";
 import { BlockType } from "@/code/World/Texture/BlockType.ts";
 import heldItemDefinitions from "../../../public/data/items.json";
 import { getServerConfig } from "../config/ServerConfig.ts";
-import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
 import { TaskPriority } from "../workers/ChunkWorkerPool.ts";
+import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
 import {
 	CONTAINER_HEIGHT,
 	CONTAINER_WIDTH,
@@ -463,6 +464,25 @@ export class VoxelRoom extends Room {
 	private statesScratch: PlayerStateBatchEntry[] = [];
 	private tickEncoder = new BinaryEncoder(2048);
 	private chunkBatchEncoder = new BinaryEncoder(65536);
+
+	/**
+	 * Wrapping 16-bit counter stamped onto every PlayerStateBatch.
+	 *
+	 * Clients use it to discard batches that arrive out of order, which would
+	 * otherwise snap a player backwards. 65535 ticks of headroom is far more
+	 * than can be in flight on a reliable transport, and the client's
+	 * `isSequenceNewer` uses serial-number arithmetic so the wrap itself is
+	 * handled correctly.
+	 */
+	private stateSequence = 0;
+
+	/**
+	 * Monotonic explosion id, echoed to clients for dedup.
+	 *
+	 * Wrapping u32 compared with serial-number arithmetic on the client, so the
+	 * wrap needs no reset and cannot silently collide with a recent id.
+	 */
+	private explosionSequence = 0;
 
 	private readonly singleChunkKeyScratch: number[] = [0];
 
@@ -1508,7 +1528,7 @@ export class VoxelRoom extends Room {
 		if (stateIdx === 0) return;
 
 		this.tickEncoder.reset();
-		writePlayerStateBatch(this.tickEncoder, stateScratch);
+		writePlayerStateBatch(this.tickEncoder, stateScratch, this.stateSequence++);
 		this.broadcastBytes("binary", this.tickEncoder.getBytes(), {});
 	}
 
@@ -1535,7 +1555,10 @@ export class VoxelRoom extends Room {
 		if (idx === 0) return;
 
 		this.tickEncoder.reset();
-		writePlayerStateBatch(this.tickEncoder, scratch);
+		// A join snapshot must CONSUME a sequence value, not reuse the pending
+		// one: if the next tick broadcast carried the same number, the joining
+		// client would reject it as stale and never see the player move again.
+		writePlayerStateBatch(this.tickEncoder, scratch, this.stateSequence++);
 		client.sendBytes("binary", this.tickEncoder.getBytes());
 	}
 
@@ -2423,6 +2446,47 @@ export class VoxelRoom extends Room {
 						except: client,
 					});
 				}
+
+				/*
+				 * Authoritative explosion record, broadcast to EVERYONE.
+				 *
+				 * The crater's block edits go to everyone EXCEPT the sender, who
+				 * already applied them locally. This record goes to everyone
+				 * INCLUDING the sender, because it carries things the block
+				 * edits cannot express:
+				 *
+				 * - eventId: makes the whole event idempotent. Without it a
+				 *   redelivered packet replays every particle, sound and flash.
+				 * - seed: lets each client derive identical particles. Currently
+				 *   each client's debris is an artifact of how IT happened to
+				 *   batch the block edits, so no two clients see the same blast.
+				 *
+				 * Sent AFTER the block edits so a client has the crater by the
+				 * time it renders the explosion.
+				 */
+				this.explosionSequence = (this.explosionSequence + 1) >>> 0;
+
+				// Seed from the id plus the centre, so two blasts at the same
+				// place in the same room still look different.
+				const blastSeed =
+					(this.explosionSequence * 2654435761 +
+						Math.round(boom.x * 16) * 73856093 +
+						Math.round(boom.y * 16) * 19349663 +
+						Math.round(boom.z * 16) * 83492791) >>>
+					0;
+
+				this.broadcastBytes(
+					"binary",
+					encodeExplosionBroadcast({
+						x: boom.x,
+						y: boom.y,
+						z: boom.z,
+						radius: boom.radius,
+						eventId: this.explosionSequence,
+						seed: blastSeed,
+					}),
+					{},
+				);
 
 				// Authoritative mob damage: MP clients simulate no local mobs
 				// (empty registry — mobs are server-owned), so without this,
@@ -3325,8 +3389,7 @@ export class VoxelRoom extends Room {
 					if (!this.isClientActive(client)) return;
 
 					try {
-						const generated =
-							await this.chunkGen.generateChunksBatch(group);
+						const generated = await this.chunkGen.generateChunksBatch(group);
 
 						if (!this.isClientActive(client)) return;
 
@@ -3341,31 +3404,27 @@ export class VoxelRoom extends Room {
 							groupError,
 						);
 
-						await runWithConcurrency(
-							group,
-							4,
-							async (coord): Promise<void> => {
+						await runWithConcurrency(group, 4, async (coord): Promise<void> => {
+							if (!this.isClientActive(client)) return;
+
+							try {
+								const data = await this.chunkGen.generateChunk(
+									coord.chunkX,
+									coord.chunkY,
+									coord.chunkZ,
+								);
 								if (!this.isClientActive(client)) return;
 
-								try {
-									const data = await this.chunkGen.generateChunk(
-										coord.chunkX,
-										coord.chunkY,
-										coord.chunkZ,
-									);
-									if (!this.isClientActive(client)) return;
+								await this.sendChunkDataBatch(client, [data]);
+							} catch (singleError) {
+								if (!this.isClientActive(client)) return;
 
-									await this.sendChunkDataBatch(client, [data]);
-								} catch (singleError) {
-									if (!this.isClientActive(client)) return;
-
-									console.error(
-										`[VoxelRoom] Single chunk gen failed: ${coord.chunkX},${coord.chunkY},${coord.chunkZ}`,
-										singleError,
-									);
-								}
-							},
-						);
+								console.error(
+									`[VoxelRoom] Single chunk gen failed: ${coord.chunkX},${coord.chunkY},${coord.chunkZ}`,
+									singleError,
+								);
+							}
+						});
 					}
 				},
 			);

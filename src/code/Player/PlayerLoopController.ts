@@ -28,6 +28,13 @@ import {
 	updateChunksAround,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
+import { setChunkPriorityContext } from "../World/Chunk/Loading/ChunkPriority";
+import {
+	ChunkPipelineStage,
+	getChunkLatencyPercentiles,
+	getChunkPipelineStats,
+} from "../World/Chunk/Loading/ChunkPipeline";
+import { getPipelineStats } from "../Lib/PipelineStats";
 import {
 	getMergedLayerMemoryStats,
 	getMergedMeshFlushStats,
@@ -668,6 +675,23 @@ export class PlayerLoopController {
 		const cameraYaw = _captureCameraScratch.yaw;
 		const cameraPitch = _captureCameraScratch.pitch;
 
+		/*
+		 * Publish the camera-derived streaming context.
+		 *
+		 * Must happen HERE, not at connect time: priority must reflect where the
+		 * player is looking THIS frame. Published after the camera state is
+		 * captured so no consumer can read a position from before the camera
+		 * moved with a forward vector from after it.
+		 */
+		setChunkPriorityContext(
+			playerX / Chunk.SIZE,
+			playerY / Chunk.SIZE,
+			playerZ / Chunk.SIZE,
+			_captureCameraScratch.forwardX,
+			_captureCameraScratch.forwardY,
+			_captureCameraScratch.forwardZ,
+		);
+
 		state.deltaMs = deltaMs;
 		state.dtSec = deltaMs * 0.001;
 
@@ -1288,6 +1312,9 @@ export class PlayerLoopController {
 		);
 
 		const meshStats = getMergedMeshFlushStats();
+
+		const mib = (b: number) => `${(b / 1048576).toFixed(1)}`;
+
 		PlayerHud.updateDebugInfo(
 			"Mesh Build",
 			`${meshStats.lastMs.toFixed(1)}ms (avg ${meshStats.avgMs.toFixed(1)}ms)` +
@@ -1295,7 +1322,46 @@ export class PlayerLoopController {
 			"workers",
 		);
 
-		const mib = (b: number) => `${(b / 1048576).toFixed(1)}`;
+		/*
+		 * PERF DIAGNOSTIC: end-to-end chunk pipeline.
+		 *
+		 * The per-stage upload rows above answer "how much are we uploading";
+		 * these answer "why is a chunk not on screen yet". The stage counts are
+		 * the useful part: a large gap between Requested/Received and
+		 * Meshing/Renderable means the data arrived and is waiting on inflate,
+		 * which is the opposite diagnosis from a network problem, and the two
+		 * look identical without this.
+		 *
+		 * `inflatePaced` and `meshBuildDeferred` being non-zero means the
+		 * frame-wide budget is throttling work. Inflates are only PACED (run with
+		 * more yields between them, never skipped), while a mesh build that is
+		 * deferred is genuinely waiting for the next flush. The distinction
+		 * matters: paced inflates still complete this frame, deferred builds do
+		 * not.
+		 */
+		const pipeline = getPipelineStats();
+		const latency = getChunkLatencyPercentiles();
+		const stageCounts = getChunkPipelineStats().counts;
+		PlayerHud.updateDebugInfo(
+			"Chunk Pipeline",
+			`req:${pipeline.chunksRequested} rcv:${stageCounts[ChunkPipelineStage.Received]} ` +
+				`val:${stageCounts[ChunkPipelineStage.Validated]} ` +
+				`mesh:${stageCounts[ChunkPipelineStage.Meshing]} ` +
+				`gpu:${stageCounts[ChunkPipelineStage.Renderable]} ` +
+				`store:${stageCounts[ChunkPipelineStage.Persisted]} ` +
+				`live:${getChunkPipelineStats().inFlight} ` +
+				`drop:${pipeline.chunksAbandoned}`,
+			"workers",
+		);
+		PlayerHud.updateDebugInfo(
+			"Chunk Latency",
+			`p50:${latency.p50.toFixed(0)} p90:${latency.p90.toFixed(0)} ` +
+				`p99:${latency.p99.toFixed(0)} max:${latency.max.toFixed(0)}ms ` +
+				`inflate:${pipeline.inflateMs.toFixed(0)}ms/` +
+				`${mib(pipeline.inflateBytes)}M ` +
+				`pace:${pipeline.inflatePaced}/${pipeline.meshBuildDeferred}d`,
+			"workers",
+		);
 
 		// PERF DIAGNOSTIC: separates call-bound uploads (many small ranges) from
 		// byte-bound ones (few huge ranges). `inst` is the thin-instance

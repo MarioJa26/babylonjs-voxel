@@ -1,5 +1,15 @@
 ﻿import type { Mesh } from "@babylonjs/lite";
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
+import { FRAME_WORK_BUDGET } from "@/code/Lib/FrameWorkBudget";
+import { frameClock } from "@/code/Lib/FrameClock";
+import { notePipelineWork } from "@/code/Lib/PipelineStats";
+import {
+	ChunkPipelineStage,
+	completeChunkLatency,
+	noteChunkRendered,
+	noteChunkStage,
+} from "@/code/World/Chunk/Loading/ChunkPipeline";
+import { packCoords } from "../DataStructures/ChunkCoords";
 import {
 	octreeClear,
 	octreeInsert,
@@ -852,6 +862,20 @@ export function assignChunkToGroup(
 	const lodBucket = getLodRenderBucket(chunkLod);
 	const groupKey = makeGroupKey(gx, gy, gz, lodBucket);
 
+	/*
+	 * Close the request → mesh pairing for this chunk.
+	 *
+	 * Returns -1 for a locally generated chunk or one whose request was already
+	 * reaped, which is expected and not an error. Sampled with the shared frame
+	 * clock: this runs inside the frame loop, unlike the provider's message
+	 * handlers.
+	 */
+	const latencyMs = completeChunkLatency(
+		packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ),
+		frameClock.nowMs,
+	);
+	if (latencyMs >= 0) noteChunkRendered(latencyMs);
+
 	if (chunk.mergedGroupKey !== null && chunk.mergedGroupKey !== groupKey) {
 		removeChunkFromGroup(chunk);
 	}
@@ -1163,6 +1187,55 @@ let _mergedFlushRafScheduled = false;
  */
 const DEFAULT_GPU_UPLOAD_BUDGET_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Bytes a group would upload if flushed now, estimated from its dirty ranges.
+ *
+ * PERF/RATIONALE — this must never OVER-charge:
+ *
+ * A layer with no dirty-range record is being fully rewritten, so it is charged
+ * that layer's own `appendedFaces`. Charging the sum of ALL THREE layers instead
+ * (an earlier version did exactly that) multiplies the estimate by the number of
+ * dirty layers, and most groups have dirty opaque but clean water and cutout.
+ * Against a 2 MiB frame budget that made `takeUploadBytes` fail for nearly every
+ * group, so `flushDirtyMergedGroups` stopped after its first group and chunks sat
+ * in `dirtyGroups` — which presents as "chunks load slowly".
+ *
+ * Under-charging is bounded: the estimate only gates whether to attempt a group
+ * now, and the flush's own time and byte deadlines still apply afterwards.
+ */
+function estimateGroupUploadBytes(group: MergedMeshGroup): number {
+	const rangeLists: (MergedFaceRange[] | null)[] = [
+		group.dirtyOpaqueRanges,
+		group.dirtyWaterRanges,
+		group.dirtyCutoutRanges,
+	];
+
+	// Per-layer full-rewrite cost. Indexed to match `rangeLists` so a missing
+	// range list charges ONLY its own layer.
+	const fullLayerFaces = [
+		group.opaqueSlots.appendedFaces,
+		group.waterSlots.appendedFaces,
+		group.cutoutSlots.appendedFaces,
+	];
+
+	let faces = 0;
+
+	for (let layer = 0; layer < rangeLists.length; layer++) {
+		const ranges = rangeLists[layer];
+
+		if (ranges === null || ranges === undefined || ranges.length === 0) {
+			faces += fullLayerFaces[layer];
+			continue;
+		}
+
+		for (let i = 0; i < ranges.length; i++) {
+			faces += ranges[i].count;
+		}
+	}
+
+	return faces * FACE_BYTES;
+}
+
 export function flushDirtyMergedGroups(
 	maxBudgetMs = 5,
 	maxGpuBytes = DEFAULT_GPU_UPLOAD_BUDGET_BYTES,
@@ -1187,6 +1260,7 @@ export function flushDirtyMergedGroups(
 	let processedCount = 0;
 	let budgetExhausted = false;
 	let gpuBudgetExhausted = false;
+	let frameBudgetExhausted = false;
 
 	for (const group of dirtyGroups) {
 		if (processedCount !== 0 && performance.now() >= deadline) {
@@ -1205,6 +1279,33 @@ export function flushDirtyMergedGroups(
 		) {
 			gpuBudgetExhausted = true;
 			break;
+		}
+
+		/*
+		 * Frame-wide allowance. This flush's own cap above bounds ONE flush;
+		 * these bound what every OTHER system may also spend in the same frame.
+		 * Without them, a reconnect's chunk uploads plus a particle burst plus a
+		 * fast-travel remesh can each individually respect their own budget and
+		 * still produce a 200 ms frame.
+		 *
+		 * Charged BEFORE `rebuildGroupData`, which is the point that matters:
+		 * nothing has been committed yet, so declining leaves the group dirty
+		 * and fully retryable. Deferring after the commit would strand the
+		 * group half-updated.
+		 *
+		 * Skipped for the first group, matching the guarantees above, so an
+		 * oversized group can never stall the pipeline forever.
+		 */
+		if (processedCount !== 0) {
+			if (!FRAME_WORK_BUDGET.takeMeshBuild()) {
+				frameBudgetExhausted = true;
+				break;
+			}
+
+			if (!FRAME_WORK_BUDGET.takeUploadBytes(estimateGroupUploadBytes(group))) {
+				frameBudgetExhausted = true;
+				break;
+			}
 		}
 
 		dirtyGroups.delete(group);
@@ -1231,6 +1332,22 @@ export function flushDirtyMergedGroups(
 				dirtyGroups.add(group);
 			}
 		} else {
+			/*
+			 * Counted here because this is the single point every completed group
+			 * build passes through, so the counter cannot drift from the work
+			 * actually done. Per-CHUNK, matching the chunk-level stage counters,
+			 * so the two can be reconciled.
+			 */
+			noteChunkStage(ChunkPipelineStage.Meshing, group.membersArray.length);
+
+			notePipelineWork({
+				chunksMeshed: group.membersArray.length,
+				facesGenerated:
+					group.totalOpaqueFaces +
+					group.totalWaterFaces +
+					group.totalCutoutFaces,
+			});
+
 			_onGroupMeshNeedsRebuild?.(group);
 		}
 
@@ -1246,7 +1363,7 @@ export function flushDirtyMergedGroups(
 		if (_requestFlush) {
 			_requestFlush();
 		} else if (
-			(budgetExhausted || gpuBudgetExhausted) &&
+			(budgetExhausted || gpuBudgetExhausted || frameBudgetExhausted) &&
 			!_mergedFlushRafScheduled
 		) {
 			_mergedFlushRafScheduled = true;
@@ -1261,7 +1378,8 @@ export function flushDirtyMergedGroups(
 	const elapsed = performance.now() - startedAt;
 	_lastMergedFlushMs = elapsed;
 	_lastMergedFlushGpuBytes = getTotalFaceUploadBytes() - gpuBytesAtEntry;
-	_lastMergedFlushExhausted = budgetExhausted || gpuBudgetExhausted;
+	_lastMergedFlushExhausted =
+		budgetExhausted || gpuBudgetExhausted || frameBudgetExhausted;
 	_mergedFlushTotalMs += elapsed;
 	_mergedFlushCount++;
 }

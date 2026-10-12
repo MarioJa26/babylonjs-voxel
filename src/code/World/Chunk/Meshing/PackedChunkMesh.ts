@@ -35,8 +35,6 @@ import {
 	addToScene,
 	createMeshFromData,
 	createStorageBuffer,
-	disposeMeshGpu,
-	disposeStorageBuffer,
 	type EngineContext,
 	type Mesh,
 	removeFromScene,
@@ -47,7 +45,12 @@ import {
 	setThinInstances,
 	updateStorageBuffer,
 } from "@babylonjs/lite";
-import { onGpuWorkDone } from "../../Light/liteGpuBuffer.js";
+import { GPU_RETIREMENT_QUEUE } from "@/code/Lib/GpuRetirementQueue";
+import { notePipelineWork } from "@/code/Lib/PipelineStats";
+import {
+	ChunkPipelineStage,
+	noteChunkStage,
+} from "@/code/World/Chunk/Loading/ChunkPipeline";
 import { setMeshBaseVisible } from "../../MeshVisibility.js";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import type { MergedFaceRange } from "./MergedMeshManager.js";
@@ -141,6 +144,24 @@ interface PackedMeshState {
 
 	faceWords?: Uint32Array;
 	_compactMoved?: boolean;
+
+	/**
+	 * Last revision observed per metadata aspect.
+	 *
+	 * PERF: `applyMeshMeta` used to re-derive and re-write bounds, material and
+	 * position on EVERY update, including the overwhelmingly common same-count
+	 * update where none of them had changed. That's 8 unconditional writes plus
+	 * a `setMeshBaseVisible` call per flush, for a group whose geometry alone
+	 * was updated.
+	 *
+	 * Separating the aspects matters more than the counters themselves: bounds,
+	 * material and position now change independently, so an update can skip any
+	 * subset that is genuinely untouched rather than re-deriving all three to
+	 * discover that.
+	 */
+	boundsRevision: number;
+	materialRevision: number;
+	positionRevision: number;
 }
 
 const meshState = new Map<Mesh, PackedMeshState>();
@@ -149,13 +170,16 @@ const meshState = new Map<Mesh, PackedMeshState>();
 let engineRef: EngineContext | null = null;
 let sceneRef: SceneContext | null = null;
 
-// PERF/BUGFIX: Deferred GPU resource disposal queue. disposeMeshGpu() destroys
-// GPU buffers immediately, but the GPU may still be rendering with them from
-// a previously-submitted command buffer. This causes "buffer used in submit
-// while destroyed" WebGPU validation errors. We queue meshes for disposal and
-// only dispose them after onGpuWorkDone() resolves.
-const _pendingDisposal: Mesh[] = [];
-let _disposalScheduled = false;
+// PERF/BUGFIX: Deferred GPU resource disposal. disposeMeshGpu() and
+// disposeStorageBuffer() destroy GPU buffers immediately, but the GPU may
+// still be rendering with them from a previously-submitted command buffer.
+// This causes "buffer used in submit while destroyed" WebGPU validation
+// errors, so every retired resource goes through the shared queue, which
+// coalesces them behind ONE onGpuWorkDone() fence per frame instead of one
+// promise and one fence per resource. Ordering is FIFO within a kind, which
+// arena growth depends on: a regrow installs the new buffer before freeing
+// the old one, and freeing out of order can strand a buffer still referenced
+// by the new mesh.
 
 function instanceCapacityFor(needLen: number): number {
 	if (needLen <= MIN_INSTANCE_DATA_ELEMENTS) {
@@ -171,22 +195,7 @@ function instanceCapacityFor(needLen: number): number {
 }
 
 function scheduleDeferredDisposal(mesh: Mesh): void {
-	_pendingDisposal.push(mesh);
-	if (_disposalScheduled) return;
-	_disposalScheduled = true;
-	const engine = engineRef;
-	if (!engine) {
-		// Engine gone — dispose immediately (no GPU to wait for).
-		for (const m of _pendingDisposal) disposeMeshGpu(m);
-		_pendingDisposal.length = 0;
-		_disposalScheduled = false;
-		return;
-	}
-	void onGpuWorkDone(engine).then(() => {
-		_disposalScheduled = false;
-		for (const m of _pendingDisposal) disposeMeshGpu(m);
-		_pendingDisposal.length = 0;
-	});
+	GPU_RETIREMENT_QUEUE.retireMesh(mesh);
 }
 
 // The face data is split across several storage buffers ("arenas"). A single
@@ -536,9 +545,8 @@ function growArena(arena: FaceArena, index: number): void {
 		cpuShadow: "source",
 	});
 	bindArenaToMaterials(arena, index);
-	if (engineRef && old) {
-		const e = engineRef;
-		void onGpuWorkDone(e).then(() => disposeStorageBuffer(old));
+	if (old) {
+		GPU_RETIREMENT_QUEUE.retireStorageBuffer(old);
 	}
 }
 
@@ -1035,9 +1043,8 @@ function growOffset(): void {
 		setShaderStorageBuffer(m, "chunkOffsets", offsetBuffer);
 		boundMaterials.add(m);
 	}
-	if (engineRef && old) {
-		const e = engineRef;
-		void onGpuWorkDone(e).then(() => disposeStorageBuffer(old));
+	if (old) {
+		GPU_RETIREMENT_QUEUE.retireStorageBuffer(old);
 	}
 }
 function uploadFaceRange(arena: number, base: number, count: number): void {
@@ -1049,6 +1056,8 @@ function uploadFaceRange(arena: number, base: number, count: number): void {
 	_totalFaceUploadBytes += bytes;
 	_faceUploadCalls++;
 	if (bytes > _peakFaceUploadBytes) _peakFaceUploadBytes = bytes;
+
+	notePipelineWork({ faceUploadBytes: bytes, faceUploadCalls: 1 });
 
 	writeBufferChunked(
 		a.buffer,
@@ -1231,6 +1240,19 @@ export interface PackedMeshInput {
 	position: [number, number, number];
 	boundsMin: [number, number, number];
 	boundsMax: [number, number, number];
+
+	/**
+	 * Optional revision stamps. A consumer that omits one gets the original
+	 * behaviour of always re-deriving that aspect, so adding these is purely
+	 * additive — no call site breaks by not supplying them.
+	 *
+	 * Must be strictly monotonic per mesh across calls. Reusing a stamp after a
+	 * real change would silently skip the write and leave stale metadata, which
+	 * is worse than the unconditional write this replaces.
+	 */
+	boundsRevision?: number;
+	materialRevision?: number;
+	positionRevision?: number;
 }
 
 function ensureFaceWordViews(
@@ -1599,6 +1621,12 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 		offsetBase,
 		instanceMatrices,
 		instanceLanesValid: faceCount,
+		// NaN never compares equal to an incoming number OR to undefined, so
+		// the first applyMeshMeta always writes every aspect regardless of what
+		// the caller supplied.
+		boundsRevision: Number.NaN,
+		materialRevision: Number.NaN,
+		positionRevision: Number.NaN,
 	};
 
 	packFaces(state, input);
@@ -1633,6 +1661,14 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 	meshState.set(mesh, state);
 	livePackedMeshes.add(mesh);
 	ensureInstancedBuild(input.material, mesh);
+
+	/*
+	 * The mesh is now in the scene with a real draw count and its face block
+	 * uploaded — this is the point where "on screen" becomes true, so this is
+	 * where end-to-end latency is meaningful.
+	 */
+	noteChunkStage(ChunkPipelineStage.UploadQueued);
+	noteChunkStage(ChunkPipelineStage.Renderable);
 
 	return mesh;
 }
@@ -1963,44 +1999,68 @@ function applyMeshMeta(
 ): void {
 	const anyMesh = mesh as PackedMesh;
 
-	let boundMin = state.boundMin;
-	if (boundMin) {
-		boundMin[0] = input.boundsMin[0];
-		boundMin[1] = input.boundsMin[1];
-		boundMin[2] = input.boundsMin[2];
-	} else {
-		boundMin = [input.boundsMin[0], input.boundsMin[1], input.boundsMin[2]];
-		state.boundMin = boundMin;
+	/*
+	 * Revision-gated, aspect by aspect.
+	 *
+	 * Each aspect is skipped when the consumer reports the same revision as
+	 * last time. A consumer that omits revisions passes `undefined`, which
+	 * never compares equal, so it keeps the original always-write behaviour —
+	 * this is additive and cannot silently skip a real change from a caller
+	 * that did not opt in.
+	 */
+	const boundsRevision = input.boundsRevision;
+
+	if (boundsRevision !== state.boundsRevision) {
+		state.boundsRevision = boundsRevision ?? Number.NaN;
+
+		let boundMin = state.boundMin;
+		if (boundMin) {
+			boundMin[0] = input.boundsMin[0];
+			boundMin[1] = input.boundsMin[1];
+			boundMin[2] = input.boundsMin[2];
+		} else {
+			boundMin = [input.boundsMin[0], input.boundsMin[1], input.boundsMin[2]];
+			state.boundMin = boundMin;
+		}
+
+		let boundMax = state.boundMax;
+		if (boundMax) {
+			boundMax[0] = input.boundsMax[0];
+			boundMax[1] = input.boundsMax[1];
+			boundMax[2] = input.boundsMax[2];
+		} else {
+			boundMax = [input.boundsMax[0], input.boundsMax[1], input.boundsMax[2]];
+			state.boundMax = boundMax;
+		}
+
+		anyMesh.boundMin = boundMin;
+		anyMesh.boundMax = boundMax;
+
+		// Respect the F7 diagnostic override: a rebuild must not silently
+		// re-show geometry the operator has switched off. This only re-asserts
+		// the `base` gate; a culled mesh stays culled.
+		setMeshBaseVisible(mesh, chunkMeshesVisible);
 	}
 
-	let boundMax = state.boundMax;
-	if (boundMax) {
-		boundMax[0] = input.boundsMax[0];
-		boundMax[1] = input.boundsMax[1];
-		boundMax[2] = input.boundsMax[2];
-	} else {
-		boundMax = [input.boundsMax[0], input.boundsMax[1], input.boundsMax[2]];
-		state.boundMax = boundMax;
+	if (input.materialRevision !== state.materialRevision) {
+		state.materialRevision = input.materialRevision ?? Number.NaN;
+
+		if (mesh.material !== input.material) {
+			mesh.material = input.material;
+		}
 	}
 
-	anyMesh.boundMin = boundMin;
-	anyMesh.boundMax = boundMax;
-	// Respect the F7 diagnostic override: a rebuild must not silently
-	// re-show geometry the operator has switched off. This only re-asserts
-	// the `base` gate; a culled mesh stays culled.
-	setMeshBaseVisible(mesh, chunkMeshesVisible);
+	if (input.positionRevision !== state.positionRevision) {
+		state.positionRevision = input.positionRevision ?? Number.NaN;
 
-	if (mesh.material !== input.material) {
-		mesh.material = input.material;
-	}
+		const position = mesh.position;
+		const x = input.position[0];
+		const y = input.position[1];
+		const z = input.position[2];
 
-	const position = mesh.position;
-	const x = input.position[0];
-	const y = input.position[1];
-	const z = input.position[2];
-
-	if (position.x !== x || position.y !== y || position.z !== z) {
-		position.set(x, y, z);
+		if (position.x !== x || position.y !== y || position.z !== z) {
+			position.set(x, y, z);
+		}
 	}
 }
 
@@ -2067,28 +2127,22 @@ export function destroyPackedArenas(): void {
 	meshState.clear();
 	livePackedMeshes.clear();
 
-	const engine = engineRef;
+	// Snapshot before the resets below. The queue holds its own references and
+	// flushes on a later fence, so the live arrays may be emptied here.
 	const arenas = faceArenas;
 	const offsets = offsetBuffer;
 
-	if (engine) {
-		void onGpuWorkDone(engine).then(() => {
-			for (let i = 0; i < arenas.length; i++) {
-				disposeStorageBuffer(arenas[i].buffer);
-			}
+	// The arenas and the offset set are torn down through the shared queue so
+	// they share ONE fence with the meshes retired just above. Previously this
+	// registered a second, independent onGpuWorkDone() continuation, which meant
+	// two fences whose completion order was arbitrary — and the offset buffer is
+	// still referenced by every packed material at this point.
+	for (let i = 0; i < arenas.length; i++) {
+		GPU_RETIREMENT_QUEUE.retireStorageBuffer(arenas[i].buffer);
+	}
 
-			if (offsets) {
-				disposeStorageBuffer(offsets);
-			}
-		});
-	} else {
-		for (let i = 0; i < arenas.length; i++) {
-			disposeStorageBuffer(arenas[i].buffer);
-		}
-
-		if (offsets) {
-			disposeStorageBuffer(offsets);
-		}
+	if (offsets) {
+		GPU_RETIREMENT_QUEUE.retireStorageBuffer(offsets);
 	}
 
 	faceArenas = [];
@@ -2106,9 +2160,10 @@ export function destroyPackedArenas(): void {
 	forcedBuilds.clear();
 
 	/*
-	 * Do not clear _pendingDisposal here. Those meshes are still awaiting
-	 * safe GPU disposal and must remain referenced until the submitted work
-	 * completes.
+	 * Nothing further to drain here: the retired meshes, arenas and offset
+	 * buffer are now referenced only by GPU_RETIREMENT_QUEUE, which keeps them
+	 * alive until its fence resolves. They must NOT be released synchronously,
+	 * because the GPU may still be reading them.
 	 */
 	engineRef = null;
 	sceneRef = null;

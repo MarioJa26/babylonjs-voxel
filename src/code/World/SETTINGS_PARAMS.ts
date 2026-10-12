@@ -114,4 +114,31 @@ export const SETTING_PARAMS = {
 	// each). Without it, every arena may legally grow to its own 128 MiB
 	// binding cap (~0.8 GB total with the usual 6 arenas).
 	ARENA_BUDGET_MB: 192,
+
+	// --- Frame-wide work budget ---
+	// PERF: every system below already had its own throttle, and every one of
+	// them stayed inside it during a frame spike. These caps bound the SUM, so
+	// a reconnect (many chunks inflating at once) cannot stack on top of a
+	// mesh flush and a particle burst and blow the frame.
+	//
+	// Deferral is safe for all four: decompression re-reads the pending map,
+	// mesh builds stay queued in `dirtyGroups`, uploads re-pack from the group
+	// CPU buffer, and collision retries next frame. Nothing is dropped.
+	//
+	// GPU upload bytes: matches the existing per-flush cap in
+	// MergedMeshManager.flushDirtyMergedGroups, so this does not tighten the
+	// mesh flush on its own — it stops OTHER systems spending the same frame's
+	// upload allowance as well.
+	FRAME_UPLOAD_BUDGET_BYTES: 2 * 1024 * 1024,
+	// Shape-aware voxel sweeps for debris particles. Each one is a small
+	// marching sweep through BlockShapes + BlockType, so this is the single
+	// largest particle cost.
+	FRAME_COLLISION_BUDGET_CHECKS: 512,
+	// Chunk inflates per frame. Each is a full chunk volume decode, so even a
+	// handful is tens of milliseconds; keep this low and let streaming spread
+	// the work out.
+	FRAME_DECOMPRESSION_BUDGET: 4,
+	// Merged-group mesh builds per frame. Builds are driven off-frame from the
+	// worker pool, so this bounds the ingest+upload side.
+	FRAME_MESH_BUILD_BUDGET: 2,
 };

@@ -58,8 +58,10 @@ const _textEncoder = new TextEncoder();
 const _textDecoder = new TextDecoder();
 
 const PLAYER_STATE_BATCH_ENTRY_BYTES = 16; // index:u8 + x/y/z:f32 + yaw/pitch/anim:u8
+const PLAYER_STATE_BATCH_HEADER_BYTES = 4; // type:u8 + count:u8 + sequence:u16
 const BLOCK_EDIT_ENTRY_BYTES = 16; // x/y/z:i32 + blockId:u16 + blockState:u8 + action:u8
 const CHUNK_REQUEST_ENTRY_BYTES = 17; // cx/cy/cz:i32 + lod:u8 + cachedVersion:u32
+const EXPLOSION_BROADCAST_BYTES = 1 + 4 + 4 + 4 * 4;
 const MOB_UPDATE_ENTRY_BYTES = 15; // mobId:u16 + x/y/z:f32 + yaw:u8
 const CHUNK_VOLUME = 32 * 32 * 32; // Chunk.SIZE^3 — light arrays are this size
 
@@ -480,11 +482,13 @@ export class BinaryDecoder {
 export function writePlayerStateBatch(
 	enc: BinaryEncoder,
 	states: PlayerStateBatchEntry[],
+	sequence: number,
 ): void {
 	const count = Math.min(states.length, 255);
 
 	enc.writeUint8(MessageType.PlayerStateBatch);
 	enc.writeUint8(count);
+	enc.writeUint16(sequence & 0xffff);
 
 	for (let i = 0; i < count; i++) {
 		const s = states[i];
@@ -500,10 +504,13 @@ export function writePlayerStateBatch(
 
 export function encodePlayerStateBatch(
 	states: PlayerStateBatchEntry[],
+	sequence: number,
 ): Uint8Array {
 	const count = Math.min(states.length, 255);
-	const enc = new BinaryEncoder(2 + count * PLAYER_STATE_BATCH_ENTRY_BYTES);
-	writePlayerStateBatch(enc, states);
+	const enc = new BinaryEncoder(
+		PLAYER_STATE_BATCH_HEADER_BYTES + count * PLAYER_STATE_BATCH_ENTRY_BYTES,
+	);
+	writePlayerStateBatch(enc, states, sequence);
 	return enc.getBytes();
 }
 
@@ -523,15 +530,39 @@ export function decodePlayerStateBatchInto(
 }
 
 /**
+ * True when `incoming` is strictly newer than `previous`, treating both as
+ * wrapping counters.
+ *
+ * A plain `>` comparison is wrong at the wrap point: with a 16-bit counter, a
+ * late packet with sequence 5 arriving after 65534 must be recognised as OLDER
+ * than it is not, so it gets rejected. The half-range rule is the standard
+ * serial-number arithmetic (RFC 1982) and is unambiguous as long as fewer than
+ * half the counter space can be in flight at once — trivially true for a
+ * per-tick counter on a reliable transport.
+ */
+export function isSequenceNewer(incoming: number, previous: number): boolean {
+	const a = incoming & 0xffff;
+	const b = previous & 0xffff;
+	return a !== b && ((a - b) & 0xffff) < 0x8000;
+}
+
+/**
  * Decoder-based variant of decodePlayerStateBatchInto — reads from an
  * already-positioned decoder (type byte already consumed) instead of
  * deriving a fresh one from the raw buffer.
+ *
+ * @param out Receives the batch sequence when provided.
  */
 export function decodePlayerStateBatchEntriesInto(
 	dec: BinaryDecoder,
 	target: PlayerStateBatchEntry[],
+	out?: { sequence: number },
 ): number {
 	const count = dec.readUint8();
+	const sequence = dec.readUint16();
+
+	if (out !== undefined) out.sequence = sequence;
+
 	for (let i = 0; i < count; i++) {
 		let entry = target[i];
 		if (!entry) {
@@ -593,6 +624,87 @@ export function decodeBlockEditBatch(buffer: Uint8Array): BlockEditData[] {
 	}
 
 	return edits;
+}
+
+/**
+ * Structure-of-arrays view over a decoded block edit batch.
+ *
+ * PERF: the alternative — one `BlockEditData` object per edit — allocates per
+ * edit on a path that fires with up to 2048 edits at once (the join snapshot)
+ * and again for every explosion crater. SoA keeps the decode allocation-free
+ * and makes the consumer's inner loop read contiguous typed arrays.
+ *
+ * The arrays are OVER-ALLOCATED to `capacity` and never resized; only indices
+ * `[0, count)` are meaningful. A batch of 2048 edits therefore allocates once
+ * per NetClient, not once per batch.
+ */
+export interface BlockEditBatchView {
+	/** Entries written by the most recent decode. */
+	count: number;
+	x: Int32Array;
+	y: Int32Array;
+	z: Int32Array;
+	blockId: Uint16Array;
+	blockState: Uint8Array;
+	action: Uint8Array;
+}
+
+/**
+ * Largest batch we will decode into a view.
+ *
+ * `BlockEditBatch.count` is a uint16 on the wire, so up to 65535 entries are
+ * representable. The server caps a join snapshot at 2048, but a hostile or
+ * corrupted server could still send more. Clamping bounds the allocation and
+ * keeps a malformed packet from requesting a multi-megabyte view; the decoder
+ * still CONSUMES every entry so the stream stays aligned.
+ */
+export const MAX_BLOCK_EDIT_BATCH = 4096;
+
+export function createBlockEditBatchView(): BlockEditBatchView {
+	return {
+		count: 0,
+		x: new Int32Array(MAX_BLOCK_EDIT_BATCH),
+		y: new Int32Array(MAX_BLOCK_EDIT_BATCH),
+		z: new Int32Array(MAX_BLOCK_EDIT_BATCH),
+		blockId: new Uint16Array(MAX_BLOCK_EDIT_BATCH),
+		blockState: new Uint8Array(MAX_BLOCK_EDIT_BATCH),
+		action: new Uint8Array(MAX_BLOCK_EDIT_BATCH),
+	};
+}
+
+/**
+ * Decode a `BlockEditBatch` message body into `view`.
+ *
+ * @param dec Positioned decoder with the message type byte already consumed.
+ * @returns The number of entries written, which is `min(count, MAX_BLOCK_EDIT_BATCH)`.
+ */
+export function decodeBlockEditBatchInto(
+	dec: BinaryDecoder,
+	view: BlockEditBatchView,
+): number {
+	const wireCount = dec.readUint16();
+	const accepted = Math.min(wireCount, MAX_BLOCK_EDIT_BATCH);
+
+	for (let i = 0; i < wireCount; i++) {
+		const x = dec.readInt32();
+		const y = dec.readInt32();
+		const z = dec.readInt32();
+		const blockId = dec.readUint16();
+		const blockState = dec.readUint8();
+		const action = dec.readUint8();
+
+		if (i < accepted) {
+			view.x[i] = x;
+			view.y[i] = y;
+			view.z[i] = z;
+			view.blockId[i] = blockId;
+			view.blockState[i] = blockState;
+			view.action[i] = action;
+		}
+	}
+
+	view.count = accepted;
+	return accepted;
 }
 
 /**
@@ -1709,6 +1821,40 @@ export function decodeExplosionInto(
 	dec: BinaryDecoder,
 	target: ExplosionData,
 ): typeof target {
+	target.x = dec.readFloat32();
+	target.y = dec.readFloat32();
+	target.z = dec.readFloat32();
+	target.radius = dec.readFloat32();
+	return target;
+}
+
+// ExplosionBroadcast (S->C): [type:1][eventId:u32][seed:u32][x:f32][y:f32][z:f32][radius:f32]
+//
+// The event id and seed are what make an explosion ONE idempotent operation
+// rather than a bag of independent messages: the id suppresses redelivery, and
+// the seed lets every client derive the same particles locally instead of each
+// arriving at a different visual via its own BlockEditBatch.
+
+export function encodeExplosionBroadcast(data: ExplosionData): Uint8Array {
+	const enc = new BinaryEncoder(EXPLOSION_BROADCAST_BYTES);
+
+	enc.writeUint8(MessageType.ExplosionBroadcast);
+	enc.writeUint32(data.eventId ?? 0);
+	enc.writeUint32(data.seed ?? 0);
+	enc.writeFloat32(data.x);
+	enc.writeFloat32(data.y);
+	enc.writeFloat32(data.z);
+	enc.writeFloat32(data.radius);
+
+	return enc.getBytes();
+}
+
+export function decodeExplosionBroadcastInto(
+	dec: BinaryDecoder,
+	target: ExplosionData,
+): typeof target {
+	target.eventId = dec.readUint32();
+	target.seed = dec.readUint32();
 	target.x = dec.readFloat32();
 	target.y = dec.readFloat32();
 	target.z = dec.readFloat32();

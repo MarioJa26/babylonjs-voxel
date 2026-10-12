@@ -17,6 +17,8 @@ import { preloadMobSkins } from "./Entities/Mobs/MobInstancePool";
 import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
 import { setTerrainSeed } from "./Generation/TerrainHeightMap";
 import { computeSeedAsInt } from "./Generation/WorldSeed";
+import { beginFrameClock } from "./Lib/FrameClock";
+import { FRAME_WORK_BUDGET } from "./Lib/FrameWorkBudget";
 import { initBlockBreakParticles } from "./Maps/BlockBreakParticles";
 import { Map1 } from "./Maps/Map1";
 import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
@@ -33,6 +35,7 @@ import { applyGameSettingsToEngine, loadGameSettings } from "./UI/GameSettings";
 import { installLightDebugTool } from "./World/Chunk/LightDebugTool";
 import { updateGlobalUniforms } from "./World/Chunk/Meshing/ChunkMesher";
 import { ensureDefaultInstance } from "./World/Chunk/Simulation/WaterSimulation";
+import { SETTING_PARAMS } from "./World/SETTINGS_PARAMS";
 import { createFallbackSpawn } from "./World/SpawnPoint";
 import { getServerNameFromUrl, worldSeedFor } from "./World/WorldContext";
 import { WorldStorage } from "./World/WorldStorage";
@@ -297,6 +300,19 @@ export class TestScene {
 		);
 
 		onBeforeRender(scene, (deltaMs: number): void => {
+			// Sample the clock and reset the frame budget BEFORE any subsystem
+			// runs. Everything downstream reads these two, so they must be set
+			// first or the first frame's consumers would see the previous
+			// frame's allowances (and, on frame one, zeros).
+			beginFrameClock(deltaMs);
+
+			FRAME_WORK_BUDGET.beginFrame(
+				SETTING_PARAMS.FRAME_UPLOAD_BUDGET_BYTES,
+				SETTING_PARAMS.FRAME_COLLISION_BUDGET_CHECKS,
+				SETTING_PARAMS.FRAME_DECOMPRESSION_BUDGET,
+				SETTING_PARAMS.FRAME_MESH_BUILD_BUDGET,
+			);
+
 			const frameCounter = ++this.#frameCounter;
 			const player = this.#player;
 

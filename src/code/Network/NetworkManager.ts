@@ -14,20 +14,34 @@
  */
 
 import type { Vec3 } from "@babylonjs/lite";
+import { playExplosionSound } from "@/code/Audio/TntAudio";
 import { spawnRemotePrimedTnt } from "@/code/Entities/PrimedTnt";
 import { resetDistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
 import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { debugLog } from "@/code/Lib/debugLog";
 import { setIsPaused } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
-import { play, playDebris, playPlace } from "@/code/Maps/BlockBreakParticles";
+import {
+	chooseBlockEditParticleQuality,
+	getAliveParticleCount,
+	ParticleQuality,
+	play,
+	playDebris,
+	playDebrisScaled,
+	playExplosion,
+	playPlace,
+	playPlaceScaled,
+	playScaled,
+} from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import {
 	currentWorldSeed,
 	runLocateCommand,
 } from "@/code/Player/LocateCommand";
 import type { Player } from "@/code/Player/Player";
+import type { CameraFrameState } from "@/code/Player/PlayerCamera";
 import { Gamemodes } from "@/code/Player/PlayerStats";
+import { Chunk } from "@/code/World/Chunk/Chunk";
 import {
 	deleteBlock,
 	getBlockByWorldCoords,
@@ -35,6 +49,14 @@ import {
 	setBlock,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
+import { resetChunkResidency } from "@/code/World/Chunk/Loading/ChunkResidency";
+import type { BlockMutationResult } from "@/code/World/Chunk/Runtime/ChunkEditBatching";
+import {
+	claimExplosionEvent,
+	ExplosionVisualTier,
+	explosionVisualTier,
+	resetExplosionDedup,
+} from "@/code/World/ExplosionEvents";
 import { FarTileManager } from "@/code/World/FarTiles/FarTileManager";
 import { setSpawnPosition } from "@/code/World/SpawnPoint";
 import { getWorldNameFromUrl, worldSeedFor } from "@/code/World/WorldContext";
@@ -42,7 +64,12 @@ import { WorldStorage } from "@/code/World/WorldStorage";
 import { RemoteChunkProvider } from "./chunk/RemoteChunkProvider";
 import { MultiplayerHUD } from "./MultiplayerHUD";
 import { NetClient, type RemotePlayer } from "./NetClient";
-import { BlockActionType, BlockEditRejectReason } from "./protocol/messages";
+import type { BlockEditBatchView } from "./protocol/encoder";
+import {
+	BlockActionType,
+	BlockEditRejectReason,
+	type ExplosionData,
+} from "./protocol/messages";
 import { RemoteContainerManager } from "./RemoteContainerManager";
 import { RemotePlayerRenderer } from "./RemotePlayerRenderer";
 import { RemoteStationManager } from "./RemoteStationManager";
@@ -51,6 +78,32 @@ const SEND_RATE = 20;
 const SEND_INTERVAL_MS = 1000 / SEND_RATE;
 
 const NET_DEBUG = false;
+
+/**
+ * Loudness for a remote explosion, from distance.
+ *
+ * Falls off to a floor rather than to silence: an explosion the player cannot
+ * see is still a world event, and cutting it off entirely makes distant fights
+ * feel like they are not happening.
+ */
+function audioIntensity(distanceSq: number): number {
+	const distance = Math.sqrt(distanceSq);
+	return Math.max(0.25, 1 - distance / 256);
+}
+
+/**
+ * Most particle bursts one batched edit may emit, regardless of how many edits
+ * it contains.
+ *
+ * A break burst is ~198 particles, so this caps a batch at roughly 5k particles
+ * against an 8192-slot pool — the rest of the pool stays available for ambient
+ * effects. Bursts are spread across the batch rather than taken from its
+ * prefix, so the visual still covers the whole edited region.
+ */
+const MAX_PARTICLE_BURSTS_PER_BATCH = 24;
+
+/** Upper bound on light samples held per batch. Matches the wire count cap. */
+const MAX_BLOCK_EDIT_BATCH_LIGHTS = 4096;
 
 const BREAK_LIGHT_OFFSET_X = [0.5, -0.5, 0, 0, 0, 0];
 const BREAK_LIGHT_OFFSET_Y = [0, 0, 0.5, -0.5, 0, 0];
@@ -120,6 +173,60 @@ export class NetworkManager {
 	private lastSentYawByte = 0;
 	private lastSentPitchByte = 0;
 	private _scratchVec: Vec3 = vec3Zero();
+
+	/**
+	 * Reused light samples for one block edit batch, indexed by edit.
+	 *
+	 * Sized for the worst case the server can legally send (a uint16 count).
+	 * Allocated once per NetworkManager, not once per batch.
+	 */
+	private readonly _batchLightScratch = new Uint8Array(
+		MAX_BLOCK_EDIT_BATCH_LIGHTS,
+	);
+
+	/** Emission position for one batched burst. Kept separate from the camera scratch. */
+	private readonly _batchVecScratch: Vec3 = vec3Zero();
+	/**
+	 * Visual block IDs for particle effects, captured before mutations.
+	 *
+	 * Break messages may contain air or another post-edit value, so break effects
+	 * prefer the locally resident pre-edit block. Uint16Array assumes protocol
+	 * block IDs are unsigned 16-bit values.
+	 */
+	private readonly _batchVisualBlockScratch = new Uint16Array(
+		MAX_BLOCK_EDIT_BATCH_LIGHTS,
+	);
+	/**
+	 * Dirty footprint of the most recent remote block edit batch.
+	 *
+	 * Retained rather than consumed because the batch handler and the particle
+	 * pass are separate concerns, and because retaining it lets the HUD and any
+	 * future ranged-upload scheduler observe the same result without having to
+	 * wrap the whole handler in a scope.
+	 */
+	private lastBatchMutation: BlockMutationResult | null = null;
+
+	/**
+	 * Dirty footprint of the most recent remote block edit batch, or null if no
+	 * batch has arrived. For diagnostics: a 2048-edit join snapshot reports how
+	 * many DISTINCT chunks it actually dirtied, which is the number that decides
+	 * whether the batch path is paying for itself.
+	 */
+	getBatchMutationResult(): BlockMutationResult | null {
+		return this.lastBatchMutation;
+	}
+
+	/** Camera snapshot for distance classification of batched effects. */
+	private readonly _batchCamScratch: CameraFrameState = {
+		x: 0,
+		y: 0,
+		z: 0,
+		yaw: 0,
+		pitch: 0,
+		forwardX: 0,
+		forwardY: 0,
+		forwardZ: 0,
+	};
 	private serverSeed: string | null = null;
 	private disposed = false;
 	private _canvas: HTMLCanvasElement | null = null;
@@ -210,7 +317,14 @@ export class NetworkManager {
 				}
 			},
 			onPlayerStates: () => {
-				// States are applied in tick() via interpolation.
+				/*
+				 * Positions themselves are applied by the renderer, from its own
+				 * timestamped sample buffer. This notification exists only to tell
+				 * it that NEW samples arrived, which is when it must push them
+				 * into that buffer — without it the buffer stays empty and every
+				 * remote player renders at its last-known coordinates.
+				 */
+				this.renderer.notifyPlayerStatesChanged();
 			},
 			onBlockEdit: (edit) => {
 				this.applyRemoteBlockEdit(
@@ -221,6 +335,9 @@ export class NetworkManager {
 					edit.action,
 					edit.blockState,
 				);
+			},
+			onBlockEditBatch: (view) => {
+				this.applyRemoteBlockEdits(view);
 			},
 			onBlockEditRejected: (rejection) => {
 				this.revertRejectedBlockEdit(rejection);
@@ -233,6 +350,9 @@ export class NetworkManager {
 					ignite.fuse,
 					ignite.radius,
 				);
+			},
+			onExplosion: (explosion) => {
+				this.onRemoteExplosion(explosion);
 			},
 			onChatMessage: (chat) => {
 				console.log(`[${chat.name}]: ${chat.message}`);
@@ -267,6 +387,10 @@ export class NetworkManager {
 
 		const workerPool = ChunkWorkerPool.getInstance();
 		workerPool?.enableRemoteMode();
+
+		// The batch handler's dedup history belongs to the old room's ids.
+		resetExplosionDedup();
+		resetChunkResidency();
 
 		const t0 = performance.now();
 		console.log(`[MP-connect] enableRemoteMode @ ${t0.toFixed(0)}ms`);
@@ -316,10 +440,23 @@ export class NetworkManager {
 			return;
 		}
 
-		const dtSec = deltaMs * 0.001;
-		if (dtSec > 0) {
-			client.updateRemotePlayerInterpolation(dtSec);
-		}
+		/*
+		 * Remote player smoothing deliberately does NOT happen here.
+		 *
+		 * It used to: `updateRemotePlayerInterpolation(dt)` chased each player
+		 * toward its latest packet target with a coefficient derived from the
+		 * RENDER frame delta. That made transport state advance at the render
+		 * rate — a dropped frame moved remote players further — and it gave the
+		 * renderer nothing but an already-chased value to draw.
+		 *
+		 * The renderer now owns a timestamped two-sample buffer per player and
+		 * resolves its own snapshot from the shared frame clock, which is
+		 * frame-rate independent and interpolates along real velocity instead of
+		 * toward a discarded target. See Network/RemotePlayerInterpolation.ts.
+		 *
+		 * `updateRemotePlayerInterpolation` is retained on NetClient only for
+		 * callers that have not migrated, and is NOT called on this path.
+		 */
 
 		const camera = this.player.playerCamera.playerCamera;
 
@@ -486,6 +623,266 @@ export class NetworkManager {
 	): void => {
 		this.client.sendTntIgnite(x, y, z, fuse, radius);
 	};
+
+	/**
+	 * Apply a batch of remote block edits within one lighting/remesh transaction.
+	 *
+	 * All mutation-sensitive visual data is captured before the first edit:
+	 * - light samples must observe the pre-edit world;
+	 * - break particle IDs must observe the block before it is deleted.
+	 *
+	 * The mutation and block-edit scopes are closed independently so an exception
+	 * in one cleanup operation cannot leave the other global scope active.
+	 */
+	private applyRemoteBlockEdits(view: BlockEditBatchView): void {
+		const count = view.count;
+
+		if (count <= 0) {
+			return;
+		}
+
+		const lights = this._batchLightScratch;
+		const visualBlockIds = this._batchVisualBlockScratch;
+
+		/*
+		 * Guard against malformed or future protocol batches exceeding the
+		 * preallocated scratch capacity. Silently writing past a TypedArray does
+		 * not extend it, which would otherwise produce missing lights and block IDs.
+		 */
+		if (count > lights.length || count > visualBlockIds.length) {
+			console.error(
+				`[NetworkManager] Ignoring oversized block-edit batch: ` +
+					`${count} edits, capacity ${lights.length}`,
+			);
+			return;
+		}
+
+		if (NET_DEBUG) {
+			console.log(`[NetworkManager] Applying block edit batch of ${count}`);
+		}
+
+		const xs = view.x;
+		const ys = view.y;
+		const zs = view.z;
+		const blockIds = view.blockId;
+		const blockStates = view.blockState;
+		const actions = view.action;
+
+		/*
+		 * Capture everything that depends on the pre-mutation world in one pass.
+		 *
+		 * This also removes getBlockByWorldCoords from the particle-emission pass,
+		 * where it previously ran after deletions and therefore usually observed
+		 * air rather than the broken block.
+		 */
+		for (let i = 0; i < count; i++) {
+			const x = xs[i];
+			const y = ys[i];
+			const z = zs[i];
+
+			lights[i] = this.sampleBreakLight(x + 0.5, y + 0.5, z + 0.5);
+
+			let visualBlockId = blockIds[i];
+
+			if (actions[i] === BlockActionType.Break) {
+				const localBlockId = getBlockByWorldCoords(x, y, z);
+
+				if (localBlockId !== undefined && localBlockId !== 0) {
+					visualBlockId = localBlockId;
+				}
+			}
+
+			visualBlockIds[i] = visualBlockId;
+		}
+
+		let mutation: BlockMutationResult | null = null;
+
+		Chunk.beginBlockEditBatch();
+		Chunk.beginMutationScope();
+
+		try {
+			for (let i = 0; i < count; i++) {
+				const action = actions[i];
+
+				if (action === BlockActionType.Place) {
+					setBlock(xs[i], ys[i], zs[i], blockIds[i], blockStates[i]);
+				} else if (action === BlockActionType.Break) {
+					deleteBlock(xs[i], ys[i], zs[i]);
+				}
+			}
+		} finally {
+			/*
+			 * Close both global scopes even if mutation finalization throws.
+			 * Leaving either scope open would cause later unrelated edits to be
+			 * accumulated into this batch indefinitely.
+			 */
+			try {
+				mutation = Chunk.endMutationScope();
+			} finally {
+				Chunk.endBlockEditBatch();
+			}
+		}
+
+		this.lastBatchMutation = mutation;
+
+		if (NET_DEBUG && mutation !== null) {
+			console.log(
+				`[NetworkManager] batch dirtied ` +
+					`${mutation.affectedChunks.length} chunk(s), ` +
+					`lighting=${mutation.lightingChanged} ` +
+					`connectivity=${mutation.connectivityChanged}`,
+			);
+		}
+
+		this.emitBlockEditParticles(view, lights, visualBlockIds);
+	}
+
+	/**
+	 * Emit representative break/place effects for a batch under a fixed budget.
+	 *
+	 * Light and visual block IDs were captured before mutation, so this pass does
+	 * not query the chunk system and is independent of the resulting world state.
+	 */
+	private emitBlockEditParticles(
+		view: BlockEditBatchView,
+		lights: Uint8Array,
+		visualBlockIds: Uint16Array,
+	): void {
+		const count = view.count;
+
+		if (count <= 0) {
+			return;
+		}
+
+		const budget = Math.min(count, MAX_PARTICLE_BURSTS_PER_BATCH);
+
+		/*
+		 * Equivalent to floor(burst * count / budget), but expressed directly to
+		 * avoid maintaining a floating-point stride and the redundant upper clamp.
+		 * For burst < budget, the result is always below count.
+		 */
+		const playerCamera = this.player.playerCamera;
+		const camera = this._batchCamScratch;
+
+		playerCamera.writeFrameState(camera);
+
+		const cameraX = camera.x;
+		const cameraY = camera.y;
+		const cameraZ = camera.z;
+
+		const xs = view.x;
+		const ys = view.y;
+		const zs = view.z;
+		const actions = view.action;
+
+		const burstPosition = this._batchVecScratch;
+		const activeParticleCount = getAliveParticleCount();
+
+		for (let burst = 0; burst < budget; burst++) {
+			const index = Math.floor((burst * count) / budget);
+
+			const px = xs[index] + 0.5;
+			const py = ys[index] + 0.5;
+			const pz = zs[index] + 0.5;
+
+			const dx = px - cameraX;
+			const dy = py - cameraY;
+			const dz = pz - cameraZ;
+			const distanceSq = dx * dx + dy * dy + dz * dz;
+
+			const quality = chooseBlockEditParticleQuality(
+				distanceSq,
+				activeParticleCount,
+				count,
+			);
+
+			if (quality === ParticleQuality.None) {
+				continue;
+			}
+
+			const visualBlockId = visualBlockIds[index];
+			const packedLight = lights[index];
+			const action = actions[index];
+
+			if (action === BlockActionType.Place) {
+				playPlaceScaled(px, py, pz, visualBlockId, packedLight, quality);
+				continue;
+			}
+
+			if (action !== BlockActionType.Break) {
+				continue;
+			}
+
+			playScaled(
+				setVec3(burstPosition, px, py, pz),
+				visualBlockId,
+				packedLight,
+				quality,
+			);
+
+			playDebrisScaled(px, py, pz, visualBlockId, packedLight, quality);
+		}
+	}
+
+	/**
+	 * Handle the server's authoritative explosion record.
+	 *
+	 * The crater's block edits arrive SEPARATELY as a `BlockEditBatch`, and are
+	 * applied by the normal path. This handler is responsible only for the
+	 * effects that are not implied by the block state: sound, screen flash, and
+	 * the seeded particle burst.
+	 *
+	 * Deduplicated by `eventId`, so a redelivered explosion costs one comparison
+	 * rather than a full replay of every effect.
+	 */
+	private onRemoteExplosion(explosion: ExplosionData): void {
+		if (!claimExplosionEvent(explosion.eventId ?? 0)) {
+			if (NET_DEBUG) {
+				console.log(
+					"[NetworkManager] dropped duplicate explosion",
+					explosion.eventId,
+				);
+			}
+			return;
+		}
+
+		const camera = this._batchCamScratch;
+		this.player.playerCamera.writeFrameState(camera);
+
+		const px = explosion.x;
+		const py = explosion.y;
+		const pz = explosion.z;
+
+		const dx = px - camera.x;
+		const dy = py - camera.y;
+		const dz = pz - camera.z;
+		const distanceSq = dx * dx + dy * dy + dz * dz;
+
+		const tier = explosionVisualTier(distanceSq);
+
+		// Out of visual range but still audible — a distant explosion that is
+		// completely silent reads as a bug rather than as distance.
+		if (tier === ExplosionVisualTier.Offscreen) {
+			playExplosionSound(audioIntensity(distanceSq));
+			return;
+		}
+
+		// Light is sampled at the blast, but the crater's block edits may have
+		// already landed and removed the blocks that carried it. Message order
+		// is not guaranteed, so this deliberately does not depend on it — an
+		// explosion is emissive anyway, so a dark sample only dims the tint.
+		const packedLight = getLightByWorldCoords(px, py, pz);
+
+		if (tier === ExplosionVisualTier.Near) {
+			playExplosion(px, py, pz, explosion.radius, packedLight);
+		} else {
+			// Distant: the same explosion at reduced fidelity. Recognisably the
+			// same event, at a fraction of the ~350 particles.
+			playExplosion(px, py, pz, explosion.radius, packedLight, 0.35);
+		}
+
+		playExplosionSound(audioIntensity(distanceSq));
+	}
 
 	/**
 	 * Apply a block edit received from another client.

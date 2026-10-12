@@ -29,6 +29,15 @@
  */
 
 import { DEBUG_ENABLED, debugLog } from "../../Lib/debugLog";
+import { FRAME_WORK_BUDGET } from "../../Lib/FrameWorkBudget";
+import { notePipelineWork } from "../../Lib/PipelineStats";
+import {
+	ChunkPipelineStage,
+	noteChunkRequested,
+	noteChunkStage,
+	reapStaleLatencyTracks,
+} from "../../World/Chunk/Loading/ChunkPipeline";
+import { priorityForChunk } from "../../World/Chunk/Loading/ChunkPriority";
 import type { Chunk } from "../../World/Chunk/Chunk";
 import { packCoords } from "../../World/Chunk/DataStructures/ChunkCoords";
 import {
@@ -114,6 +123,15 @@ type PendingChunk = {
 	reject: (error: Error) => void;
 	deadline: number;
 	epoch: number;
+	/**
+	 * `NetClient.roomGeneration` at the moment this request was created.
+	 *
+	 * Distinguishes "the cache was reset" (`epoch`) from "the room was replaced"
+	 * (`connectionGeneration`). Both are needed: a room swap can happen without
+	 * a cache clear, and in that case epoch alone would let a stale in-flight
+	 * result through.
+	 */
+	connectionGeneration: number;
 	/** Exact cachedVersion sent with this request. */
 	cachedVersion: number;
 	/** True when the sent cachedVersion referenced a real local payload
@@ -123,6 +141,18 @@ type PendingChunk = {
 
 type InflatedResult = ChunkWrite | null;
 const DEFAULT_LOD = 0;
+
+/** Wire shape of one chunk request. Structurally matches NetClient's ChunkRequest. */
+type ChunkRequestEntry = {
+	cx: number;
+	cy: number;
+	cz: number;
+	lod: number;
+	cachedVersion: number;
+};
+
+/** Below this batch size, priority ordering is not worth its overhead. */
+const MIN_BATCH_TO_SORT = 8;
 
 // See Lib/yieldToEventLoop.ts for the shared zero-delay event-loop yield
 // (MessageChannel macrotask, no setTimeout(0) clamp).
@@ -159,6 +189,28 @@ export class RemoteChunkProvider {
 	// requests created before the increment can no longer be resolved by
 	// (potentially stale) late responses.
 	private epoch = 0;
+
+	/**
+	 * Inflates that ran at reduced concurrency because the frame budget was
+	 * already spent.
+	 *
+	 * These are NOT deferred — they completed normally, just with more event-loop
+	 * yields between them. A non-zero value means the frame budget is throttling
+	 * inflate throughput, which is the intended behaviour during a reconnect.
+	 */
+	private budgetPacedInflates = 0;
+
+	private noteBudgetPaced(count: number): void {
+		if (count <= 0) return;
+
+		this.budgetPacedInflates += count;
+		notePipelineWork({ inflatePaced: count });
+	}
+
+	/** Inflates that ran under reduced concurrency since connect. */
+	get budgetPacedInflateCount(): number {
+		return this.budgetPacedInflates;
+	}
 	/*
 	 * STALLFIX — heartbeat sweep, not a scheduled one-shot.
 	 *
@@ -331,6 +383,10 @@ export class RemoteChunkProvider {
 
 		void this.store.writeChunks(writes).then(
 			() => {
+				for (let i = 0; i < writeCount; i++) {
+					noteChunkStage(ChunkPipelineStage.Persisted);
+				}
+
 				if (this.epoch !== responseEpoch) return;
 
 				for (let i = 0; i < writeCount; i++) {
@@ -374,14 +430,30 @@ export class RemoteChunkProvider {
 		if (pending === undefined) return;
 		if (!this.acceptFreshVersion(key, entry.version)) return;
 
+		noteChunkStage(ChunkPipelineStage.Received);
+
+		// Inflate is the single most expensive thing this provider does, so it
+		// is timed directly rather than inferred from the frame delta. The
+		// `performance.now()` pair here is intentional: this runs in a message
+		// task, outside the frame loop, so the shared FrameClock has no valid
+		// sample for it.
+		const inflateStartMs = performance.now();
+
 		let blob: Uint8Array;
 		try {
 			blob = await inflateInto(entry.deflated, entry.origLen);
 		} catch (error) {
+			notePipelineWork({
+				inflateBytes: entry.origLen,
+				inflateMs: performance.now() - inflateStartMs,
+				chunksAbandoned: 1,
+			});
+
 			console.warn(
 				`[RemoteChunkProvider] failed to inflate chunk ${key}:`,
 				error,
 			);
+			noteChunkStage(ChunkPipelineStage.Abandoned);
 			this.rejectPendingIfCurrent(
 				key,
 				pending,
@@ -390,9 +462,18 @@ export class RemoteChunkProvider {
 			return;
 		}
 
-		// clearCache(), timeout, or another response may have removed/replaced
-		// this request while decompression was running.
-		if (!this.isPendingCurrent(key, pending)) return;
+		notePipelineWork({
+			inflateBytes: entry.origLen,
+			inflateMs: performance.now() - inflateStartMs,
+			chunkResponses: 1,
+		});
+
+		// clearCache(), a room swap, timeout, or another response may have
+		// removed/replaced this request while decompression was running.
+		if (!this.isPendingCurrent(key, pending)) {
+			noteChunkStage(ChunkPipelineStage.Abandoned);
+			return;
+		}
 
 		const chunk = this.deserializeCached(
 			blob,
@@ -404,6 +485,7 @@ export class RemoteChunkProvider {
 			console.warn(
 				`[RemoteChunkProvider] corrupt deflated chunk ${key} (dropped)`,
 			);
+			noteChunkStage(ChunkPipelineStage.Abandoned);
 			this.rejectPendingIfCurrent(
 				key,
 				pending,
@@ -411,6 +493,8 @@ export class RemoteChunkProvider {
 			);
 			return;
 		}
+
+		noteChunkStage(ChunkPipelineStage.Validated);
 
 		if (!this.resolvePendingIfCurrent(key, pending, chunk)) return;
 		this.persistChunk(
@@ -479,6 +563,34 @@ export class RemoteChunkProvider {
 
 		const windowSize = this.windowSize;
 		let writeCount = 0;
+		const tasks = new Array<Promise<InflatedResult>>(this.windowSize);
+
+		/*
+		 * Frame-wide decompression allowance.
+		 *
+		 * A single deflated chunk inflates to a full 32^3 volume, so a
+		 * reconnect that resolves 30 pending requests at once would run 30
+		 * inflates back to back. The window loop bounds the SIZE of each burst;
+		 * this bounds how MANY bursts a single frame is expected to absorb, by
+		 * yielding more often once the frame's allowance is spent.
+		 *
+		 * It deliberately does NOT skip entries.
+		 *
+		 * An earlier version of this code broke out of the loop when the budget
+		 * ran out, leaving the remaining requests pending on the assumption
+		 * that "the next response or retry picks them up". That assumption is
+		 * wrong: the server sent this batch once. The deflated bytes are in hand,
+		 * skipping them throws them away, and the requests then sit until the
+		 * 30s deadline before failing and being retried — which turned the
+		 * budget into a 30-second stall on exactly the reconnects it was meant
+		 * to protect. Yielding instead of skipping keeps the frame responsive
+		 * AND loses nothing.
+		 *
+		 * Budget exhaustion therefore only changes the YIELD GRANULARITY:
+		 * normally one yield per window of 4, then one yield per entry.
+		 */
+		let yieldPerEntry = false;
+		let budgetPacedEntries = 0;
 
 		for (
 			let windowStart = 0;
@@ -487,9 +599,17 @@ export class RemoteChunkProvider {
 		) {
 			const windowEnd = Math.min(windowStart + windowSize, acceptedCount);
 			const taskCount = windowEnd - windowStart;
-			const tasks = new Array<Promise<InflatedResult>>(taskCount);
 
 			for (let i = windowStart; i < windowEnd; i++) {
+				// Once the frame's allowance is gone, drop to one inflate per
+				// macrotask instead of four. Nothing is skipped.
+				if (yieldPerEntry) {
+					if (i !== windowStart) await yieldToEventLoop();
+
+					FRAME_WORK_BUDGET.takeDecompression();
+					budgetPacedEntries++;
+				}
+
 				tasks[i - windowStart] = this.inflateAndValidateEntry(
 					entries[sourceIndices[i]],
 					keys[i],
@@ -510,9 +630,22 @@ export class RemoteChunkProvider {
 
 			if (windowEnd < acceptedCount) {
 				await yieldToEventLoop();
+
+				// Checked at the window BOUNDARY, after the previous window's
+				// inflates have been charged. The first window always runs at
+				// full granularity so progress is guaranteed.
+				if (windowStart !== 0 && !FRAME_WORK_BUDGET.takeDecompression()) {
+					yieldPerEntry = true;
+				}
 			}
 		}
 
+		if (budgetPacedEntries > 0) {
+			this.noteBudgetPaced(budgetPacedEntries);
+		}
+
+		// Safe to call unconditionally: every accepted entry was resolved or
+		// rejected above, so this only clears the sweep if the map is truly empty.
 		this.clearSweepIfEmpty();
 
 		if (writeCount === 0) return;
@@ -529,6 +662,10 @@ export class RemoteChunkProvider {
 
 		void this.store.writeChunks(writes).then(
 			() => {
+				for (let i = 0; i < writeCount; i++) {
+					noteChunkStage(ChunkPipelineStage.Persisted);
+				}
+
 				if (this.epoch !== responseEpoch) return;
 
 				for (let i = 0; i < writeCount; i++) {
@@ -630,7 +767,7 @@ export class RemoteChunkProvider {
 	}
 
 	/**
-	 * Tests both epoch and object identity.
+	 * Tests epoch, connection generation, AND object identity.
 	 *
 	 * Object identity protects against the ABA case:
 	 * 1. request A exists for key K;
@@ -638,9 +775,21 @@ export class RemoteChunkProvider {
 	 * 3. request A is removed;
 	 * 4. request B is created for K;
 	 * 5. request A's inflation completes.
+	 *
+	 * The generation check answers a different question that epoch cannot: a
+	 * room can be replaced WITHOUT clearing the cache. `clearCache()` bumps the
+	 * epoch, but `detachCurrentRoom()` bumps only `roomGeneration`. Without this
+	 * check, a chunk that was mid-inflate when the client left room A could
+	 * resolve a request that was created after joining room B — the epoch
+	 * matches, the pending object matches, and the data is still from the old
+	 * room.
 	 */
 	private isPendingCurrent(key: bigint, expected: PendingChunk): boolean {
-		return expected.epoch === this.epoch && this.pending.get(key) === expected;
+		return (
+			expected.epoch === this.epoch &&
+			this.client.connectionGeneration === expected.connectionGeneration &&
+			this.pending.get(key) === expected
+		);
 	}
 
 	/**
@@ -1219,6 +1368,7 @@ export class RemoteChunkProvider {
 				reject,
 				deadline,
 				epoch: requestEpoch,
+				connectionGeneration: this.client.connectionGeneration,
 				cachedVersion,
 				hasCachedPayload,
 			});
@@ -1262,7 +1412,79 @@ export class RemoteChunkProvider {
 				`[RemoteChunkProvider] requestChunk ${cx},${cy},${cz} cachedVersion=${cachedVersion}`,
 			);
 		}
+		noteChunkStage(ChunkPipelineStage.Requested);
+		notePipelineWork({ chunksRequested: 1 });
+		noteChunkRequested(packCoords(cx, cy, cz), performance.now());
 		this.client.sendChunkRequest(cx, cy, cz, 0, cachedVersion);
+	}
+
+	/** Reused score buffer for {@link sortRequestsByPriority}. */
+	private _priorityScratch = new Float64Array(MIN_BATCH_TO_SORT);
+
+	/**
+	 * Sort an outgoing request batch into streaming-priority order, in place.
+	 *
+	 * `requests` and `createdKeys` are parallel arrays — the send-failure path
+	 * zips them together — so both are permuted together. `results` is indexed by
+	 * the CALLER's original order and is deliberately left untouched.
+	 *
+	 * Cache hits sort ahead of misses: the server answers those from its own
+	 * version map without generating anything, so their wire position cannot
+	 * affect arrival order. Sorting them first stops a hit from displacing a real
+	 * fetch.
+	 *
+	 * Skipped below {@link MIN_BATCH_TO_SORT}, where sorting costs more than the
+	 * reordering saves.
+	 */
+	private sortRequestsByPriority(
+		requests: ChunkRequestEntry[],
+		createdKeys: bigint[],
+	): void {
+		const count = requests.length;
+
+		if (count < MIN_BATCH_TO_SORT) return;
+
+		if (this._priorityScratch.length < count) {
+			this._priorityScratch = new Float64Array(count);
+		}
+
+		const scores = this._priorityScratch;
+
+		for (let i = 0; i < count; i++) {
+			const request = requests[i];
+
+			scores[i] = priorityForChunk(
+				request.cx,
+				request.cy,
+				request.cz,
+				DEFAULT_LOD,
+				0,
+			);
+		}
+
+		/*
+		 * Insertion sort. Batches are small — the worker pool caps outstanding
+		 * remote requests at MAX_OUTSTANDING_REMOTE — so this avoids allocating
+		 * an index permutation and paying a comparator call per comparison.
+		 */
+		for (let i = 1; i < count; i++) {
+			const score = scores[i];
+			const request = requests[i];
+			const key = createdKeys[i];
+
+			let j = i - 1;
+
+			while (j >= 0 && scores[j] > score) {
+				scores[j + 1] = scores[j];
+				requests[j + 1] = requests[j];
+				createdKeys[j + 1] = createdKeys[j];
+				j--;
+			}
+
+			scores[j + 1] = score;
+			requests[j + 1] = request;
+			createdKeys[j + 1] = key;
+		}
 	}
 
 	/**
@@ -1288,13 +1510,7 @@ export class RemoteChunkProvider {
 		 * Allocate request storage lazily. A batch can consist entirely of
 		 * requests already represented in inFlight.
 		 */
-		let requests: Array<{
-			cx: number;
-			cy: number;
-			cz: number;
-			lod: number;
-			cachedVersion: number;
-		}> | null = null;
+		let requests: ChunkRequestEntry[] | null = null;
 
 		let createdKeys: bigint[] | null = null;
 		let requestCount = 0;
@@ -1331,6 +1547,7 @@ export class RemoteChunkProvider {
 					reject,
 					deadline,
 					epoch: requestEpoch,
+					connectionGeneration: this.client.connectionGeneration,
 					cachedVersion,
 					hasCachedPayload,
 				});
@@ -1380,6 +1597,26 @@ export class RemoteChunkProvider {
 		}
 
 		this.scheduleSweep();
+
+		/*
+		 * Order the outgoing batch by the SAME shared priority that the streaming
+		 * controller uses for its queue, and that decompression and meshing will
+		 * use downstream.
+		 *
+		 * The provider previously forwarded whatever order the caller supplied,
+		 * which made the server generate and respond in arbitrary order. Sending
+		 * the most-visible chunk first means the response that arrives first is
+		 * also the one worth inflating first.
+		 *
+		 * `results` is indexed by the caller's original order, so the sort is
+		 * applied to the parallel `requests`/`createdKeys` arrays only — the
+		 * caller's promises stay correctly aligned.
+		 *
+		 * The cache-hit check comes first: a request the server can answer from
+		 * its own version map needs no priority, so it must not displace a real
+		 * fetch.
+		 */
+		this.sortRequestsByPriority(requests, createdKeys);
 
 		try {
 			this.client.sendChunkRequestBatch(requests);
@@ -1633,6 +1870,11 @@ export class RemoteChunkProvider {
 	 */
 	private sweepPending(): void {
 		const now = performance.now();
+
+		// Reap latency pairings that will never complete, so a chunk requested
+		// but never meshed cannot accumulate a Map entry indefinitely.
+		reapStaleLatencyTracks(now);
+
 		const pending = this.pending;
 		const deadlines = this.heapDeadlines;
 		const keys = this.heapKeys;
