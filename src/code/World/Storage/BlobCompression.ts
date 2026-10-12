@@ -1,70 +1,87 @@
 /**
- * BlobCompression — zlib ("deflate") compression for chunk blobs.
+ * BlobCompression: zlib "deflate" compression for chunk blobs.
  *
- * Shared by the browser IndexedDB store (shrinks the value an IDB put() has
- * to structured-clone synchronously — the bulk of the per-put cost) and the
- * server→client wire format (bandwidth).
+ * Uses a dedicated codec worker when available and falls back to native stream
+ * codecs inline. Stored values are framed as either:
  *
- * Engine Optimizations:
- * 1. Direct codec feeding: each op writes into the CompressionStream/
- *    DecompressionStream writable and drains the readable via
- *    Response.arrayBuffer() — no custom ReadableStream, no pipeThrough
- *    pumping loop, minimal promise/microtask hops per blob.
- * 2. Bounded concurrency: callers batch compress/inflate fan-outs through
- *    mapInWaves (Lib/yieldToEventLoop.ts) so hundreds of concurrent
- *    pipelines cannot monopolize the main thread with one giant microtask
- *    drain (the "Run microtasks" profile hotspot).
+ *   [0x00][raw payload]
+ *   [0x01][original length:u32 LE][deflated payload]
  */
 
 export const BLOB_MARKER_RAW = 0x00;
 export const BLOB_MARKER_DEFLATE = 0x01;
 
-/** Below this size compression is not worth the CPU — store raw. */
+/** Below this size, compression is unlikely to recover its CPU cost. */
 const MIN_COMPRESSIBLE_BYTES = 128;
 
-/** origLen is untrusted (corrupt payloads) — bound the preallocation. */
+/** Maximum accepted decompressed size from untrusted framing metadata. */
 const MAX_INFLATE_BYTES = 1 << 26; // 64 MiB
 
+const DEFLATE_HEADER_BYTES = 5;
 const FORMAT = "deflate";
 
 /**
- * Blob() and some stream implementations only accept views backed by a plain
- * ArrayBuffer. A value backed by a SharedArrayBuffer (or resizable buffer)
- * must be copied first to prevent detached-buffer errors downstream.
+ * Blob and stream APIs require an ArrayBuffer-backed view. Shared or resizable
+ * buffers are copied before being passed to the native codec.
  */
 function toPlainBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
-	if (bytes.buffer instanceof ArrayBuffer) {
+	const buffer = bytes.buffer;
+
+	if (buffer instanceof ArrayBuffer && !isResizableArrayBuffer(buffer)) {
 		return bytes as Uint8Array<ArrayBuffer>;
 	}
+
 	return new Uint8Array(bytes);
 }
 
-/** True when both streams exist AND accept our "deflate" format. */
+/**
+ * Resizable ArrayBuffers are not available in every runtime, so inspect the
+ * optional property without requiring a newer TypeScript library definition.
+ */
+function isResizableArrayBuffer(buffer: ArrayBuffer): boolean {
+	return (buffer as ArrayBuffer & { resizable?: boolean }).resizable === true;
+}
+
+let cachedDeflateSupport: boolean | undefined;
+
+/**
+ * True when both native codec streams exist and accept the "deflate" format.
+ *
+ * The constructors are probed only once. Repeated capability checks otherwise
+ * create and discard two stream pipelines each time.
+ */
 export function deflateSupported(): boolean {
+	const cached = cachedDeflateSupport;
+
+	if (cached !== undefined) {
+		return cached;
+	}
+
 	if (
 		typeof CompressionStream === "undefined" ||
 		typeof DecompressionStream === "undefined"
 	) {
+		cachedDeflateSupport = false;
 		return false;
 	}
 
 	try {
 		new CompressionStream(FORMAT);
 		new DecompressionStream(FORMAT);
+
+		cachedDeflateSupport = true;
 		return true;
 	} catch {
+		cachedDeflateSupport = false;
 		return false;
 	}
 }
 
 /**
- * Feed a single-chunk payload straight into a codec's writable and drain its
- * readable via Response. Going through `source.pipeThrough(codec)` instead
- * would run the streams-spec pumping loop — several promise/microtask hops
- * per chunk plus a custom ReadableStream allocation — and when a batch of
- * hundreds of small blobs compresses concurrently, those hops dominate the
- * profile (`Run microtasks`). A direct write+close keeps each pipeline at
- * the minimum number of hops.
+ * Feed one payload directly into a native stream codec and combine its output.
+ *
+ * Reading begins before writing so codec backpressure cannot deadlock when the
+ * readable side fills.
  */
 async function runCodec(
 	codec: {
@@ -74,41 +91,66 @@ async function runCodec(
 	bytes: Uint8Array,
 ): Promise<Uint8Array> {
 	const reader = codec.readable.getReader();
-	const chunks: Uint8Array[] = [];
-	let totalLength = 0;
+	const writer = codec.writable.getWriter();
 
-	const readPromise = (async () => {
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			chunks.push(value);
-			totalLength += value.byteLength;
+	const outputChunks: Uint8Array[] = [];
+	let outputLength = 0;
+
+	const readPromise = (async (): Promise<void> => {
+		for (;;) {
+			const result = await reader.read();
+
+			if (result.done) {
+				return;
+			}
+
+			const value = result.value;
+			outputChunks.push(value);
+			outputLength += value.byteLength;
 		}
 	})();
 
-	const writer = codec.writable.getWriter();
 	try {
 		await writer.write(toPlainBytes(bytes));
 		await writer.close();
+		await readPromise;
 	} catch (error) {
-		readPromise.catch(() => {});
+		/*
+		 * Abort/cancel both halves. Promise rejections are deliberately observed
+		 * because the original codec error is the one exposed to the caller.
+		 */
+		void writer.abort(error).catch(() => {});
+		void reader.cancel(error).catch(() => {});
+		void readPromise.catch(() => {});
+
 		throw error;
 	} finally {
 		writer.releaseLock();
+		reader.releaseLock();
 	}
 
-	await readPromise;
+	if (outputChunks.length === 1) {
+		/*
+		 * The stream owns this chunk, so returning it directly avoids one result
+		 * allocation and copy in the common single-output case.
+		 */
+		return outputChunks[0];
+	}
 
-	const result = new Uint8Array(totalLength);
+	const output = new Uint8Array(outputLength);
 	let offset = 0;
-	for (const chunk of chunks) {
-		result.set(chunk, offset);
+
+	for (let i = 0; i < outputChunks.length; i++) {
+		const chunk = outputChunks[i];
+
+		output.set(chunk, offset);
 		offset += chunk.byteLength;
 	}
-	return result;
+
+	return output;
 }
 
-/** Compress bytes with zlib "deflate". */
+/** Compress bytes using zlib "deflate". */
 export async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
 	if (typeof CompressionStream === "undefined") {
 		throw new Error("CompressionStream is not available");
@@ -117,35 +159,62 @@ export async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
 	return runCodec(new CompressionStream(FORMAT), bytes);
 }
 
-// ---------------------------------------------------------------------------
-// Optional dedicated codec worker.
-//
-// The native codecs run off-thread, but DRIVING them from the main thread
-// costs a burst of stream machinery + Response/arrayBuffer work per blob —
-// visible as jank during bulk load/save waves. When a dedicated worker is
-// available, the pipelines run there instead; any failure (no Worker support,
-// construction error, runtime codec error) rejects with
-// CodecWorkerUnavailable and the caller transparently falls back to the
-// inline streams below.
-//
-// Inputs are structured-cloned (callers keep their references); outputs are
-// transferred back zero-copy.
-// ---------------------------------------------------------------------------
-
-/** Signals "the worker path could not service this op" — retry inline. */
-class CodecWorkerUnavailable extends Error {}
+/** Signals that the worker path failed and the inline codec should be used. */
+class CodecWorkerUnavailable extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "CodecWorkerUnavailable";
+	}
+}
 
 type PendingCodecRequest = {
 	resolve: (bytes: Uint8Array) => void;
 	reject: (error: Error) => void;
 };
 
-let codecWorker: Worker | null | undefined; // undefined = not tried yet
+type CodecWorkerResponse = {
+	id: number;
+	ok: boolean;
+	result?: Uint8Array;
+};
+
+let codecWorker: Worker | null | undefined;
 let nextCodecRequestId = 1;
+
 const pendingCodecRequests = new Map<number, PendingCodecRequest>();
 
+function rejectAllCodecRequests(message: string): void {
+	if (pendingCodecRequests.size === 0) {
+		return;
+	}
+
+	const error = new CodecWorkerUnavailable(message);
+
+	for (const pending of pendingCodecRequests.values()) {
+		pending.reject(error);
+	}
+
+	pendingCodecRequests.clear();
+}
+
+function disableCodecWorker(worker: Worker, message: string): void {
+	/*
+	 * Ignore errors from an obsolete worker after a replacement attempt.
+	 */
+	if (codecWorker !== worker) {
+		return;
+	}
+
+	codecWorker = null;
+	rejectAllCodecRequests(message);
+	worker.terminate();
+}
+
 function ensureCodecWorker(): Worker | null {
-	if (codecWorker !== undefined) return codecWorker;
+	if (codecWorker !== undefined) {
+		return codecWorker;
+	}
+
 	if (typeof Worker === "undefined") {
 		codecWorker = null;
 		return null;
@@ -154,33 +223,40 @@ function ensureCodecWorker(): Worker | null {
 	try {
 		const worker = new Worker(
 			new URL("./blobCodec.worker.ts", import.meta.url),
-			{ type: "module", name: "blob-codec" },
+			{
+				type: "module",
+				name: "blob-codec",
+			},
 		);
-		worker.onmessage = (
-			event: MessageEvent<{
-				id: number;
-				ok: boolean;
-				result?: Uint8Array;
-			}>,
-		) => {
-			const pending = pendingCodecRequests.get(event.data.id);
-			if (!pending) return;
-			pendingCodecRequests.delete(event.data.id);
-			if (event.data.ok && event.data.result) {
-				pending.resolve(event.data.result);
-			} else {
-				pending.reject(new CodecWorkerUnavailable("codec op failed"));
+
+		worker.onmessage = (event: MessageEvent<CodecWorkerResponse>): void => {
+			const response = event.data;
+			const pending = pendingCodecRequests.get(response.id);
+
+			if (pending === undefined) {
+				return;
 			}
-		};
-		worker.onerror = () => {
-			const pending = Array.from(pendingCodecRequests.values());
-			pendingCodecRequests.clear();
-			for (const entry of pending) {
-				entry.reject(new CodecWorkerUnavailable("codec worker error"));
+
+			pendingCodecRequests.delete(response.id);
+
+			if (response.ok && response.result instanceof Uint8Array) {
+				pending.resolve(response.result);
+				return;
 			}
-			codecWorker = null;
-			worker.terminate();
+
+			pending.reject(
+				new CodecWorkerUnavailable("Codec worker operation failed"),
+			);
 		};
+
+		worker.onerror = (): void => {
+			disableCodecWorker(worker, "Codec worker error");
+		};
+
+		worker.onmessageerror = (): void => {
+			disableCodecWorker(worker, "Codec worker message error");
+		};
+
 		codecWorker = worker;
 		return worker;
 	} catch {
@@ -189,46 +265,101 @@ function ensureCodecWorker(): Worker | null {
 	}
 }
 
+/**
+ * Run one operation through the dedicated codec worker.
+ *
+ * Inputs are cloned because callers retain their buffers. Outputs are expected
+ * to be transferred back by the worker.
+ */
 function codecWorkerRun(
 	compress: boolean,
 	bytes: Uint8Array,
 ): Promise<Uint8Array> {
 	const worker = ensureCodecWorker();
-	if (!worker) {
-		return Promise.reject(new CodecWorkerUnavailable("unavailable"));
+
+	if (worker === null) {
+		return Promise.reject(
+			new CodecWorkerUnavailable("Codec worker unavailable"),
+		);
 	}
 
 	const id = nextCodecRequestId++;
-	return new Promise((resolve, reject) => {
-		pendingCodecRequests.set(id, { resolve, reject });
-		worker.postMessage({ id, compress, bytes });
+
+	/*
+	 * Avoid reaching an unsafe integer after an extremely long session. Reuse
+	 * starts only when no practical request can still carry the old ID.
+	 */
+	if (nextCodecRequestId > Number.MAX_SAFE_INTEGER) {
+		nextCodecRequestId = 1;
+	}
+
+	return new Promise<Uint8Array>((resolve, reject) => {
+		pendingCodecRequests.set(id, {
+			resolve,
+			reject,
+		});
+
+		try {
+			worker.postMessage({
+				id,
+				compress,
+				bytes,
+			});
+		} catch (error) {
+			/*
+			 * postMessage can throw synchronously, for example during worker
+			 * termination or structured cloning. Remove the pending entry so it
+			 * cannot leak forever.
+			 */
+			pendingCodecRequests.delete(id);
+
+			reject(
+				new CodecWorkerUnavailable(
+					error instanceof Error
+						? error.message
+						: "Codec worker postMessage failed",
+				),
+			);
+		}
 	});
 }
 
 /**
- * Decompress bytes produced by deflate into a buffer of exactly outLen bytes.
+ * Decompress a deflated payload and require exactly `outLen` output bytes.
  */
 export async function inflateInto(
 	data: Uint8Array,
 	outLen: number,
 ): Promise<Uint8Array> {
-	if (outLen < 0 || outLen > MAX_INFLATE_BYTES) {
-		throw new Error(`Invalid inflated size: ${outLen}`);
-	}
+	validateInflatedLength(outLen);
 
 	if (typeof DecompressionStream === "undefined") {
 		throw new Error("DecompressionStream is not available");
 	}
 
-	const out = await runCodec(new DecompressionStream(FORMAT), data);
+	const output = await runCodec(new DecompressionStream(FORMAT), data);
 
-	if (out.byteLength !== outLen) {
+	validateDecodedSize(output.byteLength, outLen);
+
+	return output;
+}
+
+function validateInflatedLength(outLen: number): void {
+	if (!Number.isInteger(outLen) || outLen < 0 || outLen > MAX_INFLATE_BYTES) {
+		throw new Error(`Invalid inflated size: ${outLen}`);
+	}
+}
+
+function validateDecodedSize(
+	actualLength: number,
+	expectedLength: number,
+): void {
+	if (actualLength !== expectedLength) {
 		throw new Error(
-			`Decompressed size mismatch: expected ${outLen}, got ${out.byteLength}`,
+			`Decompressed size mismatch: expected ` +
+				`${expectedLength}, got ${actualLength}`,
 		);
 	}
-
-	return out;
 }
 
 function writeUint32LE(bytes: Uint8Array, offset: number, value: number): void {
@@ -250,83 +381,120 @@ function readUint32LE(bytes: Uint8Array, offset: number): number {
 
 function frameRaw(bytes: Uint8Array): Uint8Array {
 	const framed = new Uint8Array(bytes.byteLength + 1);
+
 	framed[0] = BLOB_MARKER_RAW;
 	framed.set(bytes, 1);
+
 	return framed;
 }
 
 /**
- * Frame a value for storage: raw payload prefixed with 0x00 when it is too
- * small to be worth compressing or the runtime lacks the codec, otherwise
- * [0x01][origLen:u32][deflated] when the payload actually shrinks.
+ * Frame a payload for storage, compressing it only when doing so saves space.
  */
 export async function compressBlob(bytes: Uint8Array): Promise<Uint8Array> {
-	if (bytes.byteLength < MIN_COMPRESSIBLE_BYTES) {
+	const originalLength = bytes.byteLength;
+
+	if (originalLength < MIN_COMPRESSIBLE_BYTES || !deflateSupported()) {
 		return frameRaw(bytes);
 	}
 
 	let compressed: Uint8Array;
+
 	try {
 		compressed = await codecWorkerRun(true, bytes);
 	} catch (error) {
-		if (!(error instanceof CodecWorkerUnavailable)) throw error;
+		if (!(error instanceof CodecWorkerUnavailable)) {
+			throw error;
+		}
+
 		compressed = await deflate(bytes);
 	}
 
-	if (compressed.byteLength >= bytes.byteLength) {
+	/*
+	 * A deflated frame has five bytes of metadata. Compression must beat the
+	 * complete framed raw representation, not merely the unframed payload.
+	 *
+	 * Raw size:       originalLength + 1
+	 * Deflated size:  compressedLength + 5
+	 */
+	if (compressed.byteLength + DEFLATE_HEADER_BYTES >= originalLength + 1) {
 		return frameRaw(bytes);
 	}
 
-	return frameDeflated(bytes.byteLength, compressed);
+	return frameDeflated(originalLength, compressed);
 }
 
 /**
- * Frame an already-deflated payload for storage: [0x01][origLen:u32 LE][deflate].
+ * Frame an already-deflated payload:
+ *
+ * [0x01][original length:u32 LE][deflated bytes]
  */
 export function frameDeflated(
 	origLen: number,
 	deflated: Uint8Array,
 ): Uint8Array {
-	const framed = new Uint8Array(deflated.byteLength + 5);
+	validateInflatedLength(origLen);
+
+	const framed = new Uint8Array(deflated.byteLength + DEFLATE_HEADER_BYTES);
+
 	framed[0] = BLOB_MARKER_DEFLATE;
 	writeUint32LE(framed, 1, origLen);
-	framed.set(deflated, 5);
+	framed.set(deflated, DEFLATE_HEADER_BYTES);
+
 	return framed;
 }
 
 /**
- * Undo compressBlob framing. Values without the marker prefix (legacy raw)
- * are returned unchanged.
+ * Undo storage framing.
+ *
+ * Values without a recognized marker are treated as legacy unframed raw blobs.
  */
 export async function decompressBlob(bytes: Uint8Array): Promise<Uint8Array> {
-	if (bytes.byteLength === 0) return bytes;
+	const byteLength = bytes.byteLength;
+
+	if (byteLength === 0) {
+		return bytes;
+	}
 
 	const marker = bytes[0];
-
-	if (marker === BLOB_MARKER_DEFLATE) {
-		const origLen = readUint32LE(bytes, 1);
-		const payload = bytes.subarray(5);
-
-		try {
-			const out = await codecWorkerRun(false, payload);
-			// Same validation inflateInto applies — corrupt payloads must
-			// still surface as errors, not silently wrong data.
-			if (out.byteLength !== origLen) {
-				throw new Error(
-					`Decompressed size mismatch: expected ${origLen}, got ${out.byteLength}`,
-				);
-			}
-			return out;
-		} catch (error) {
-			if (!(error instanceof CodecWorkerUnavailable)) throw error;
-		}
-
-		return inflateInto(payload, origLen);
-	}
 
 	if (marker === BLOB_MARKER_RAW) {
 		return bytes.subarray(1);
 	}
 
-	return bytes;
+	if (marker !== BLOB_MARKER_DEFLATE) {
+		return bytes;
+	}
+
+	/*
+	 * A deflated frame requires one marker byte and four original-length bytes.
+	 * Validate before readUint32LE to prevent truncated data from being read as
+	 * an accidental length.
+	 */
+	if (byteLength < DEFLATE_HEADER_BYTES) {
+		throw new Error(`Truncated deflated blob header: ${byteLength} bytes`);
+	}
+
+	const originalLength = readUint32LE(bytes, 1);
+	validateInflatedLength(originalLength);
+
+	const payload = bytes.subarray(DEFLATE_HEADER_BYTES);
+
+	if (payload.byteLength === 0 && originalLength !== 0) {
+		throw new Error("Deflated blob contains no compressed payload");
+	}
+
+	try {
+		const output = await codecWorkerRun(false, payload);
+
+		validateDecodedSize(output.byteLength, originalLength);
+
+		return output;
+	} catch (error) {
+		if (!(error instanceof CodecWorkerUnavailable)) {
+			throw error;
+		}
+	}
+
+	return inflateInto(payload, originalLength);
 }

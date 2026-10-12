@@ -292,42 +292,123 @@ export class ChunkGenerationService {
 		return data;
 	}
 
+	/**
+	 * Add one generated chunk to bounded background persistence.
+	 *
+	 * Background writes must stay BOUNDED.
+	 *
+	 * Delivery no longer waits on persistence, which means writes now run
+	 * concurrently with generation and with each other. Unbounded, a cold
+	 * join launches one serialize+compress per chunk with nothing holding
+	 * it back — and since writeChunkUnlocked now compresses, that is real
+	 * CPU (deflate over 32-98 KB) on the same box as the generation workers
+	 * and the game client. An unbounded write firehout starves exactly the
+	 * work that makes chunks appear.
+	 *
+	 * A small FIFO with a fixed number of concurrent writers bounds both
+	 * memory and CPU while keeping writes strictly behind the chunks the
+	 * client is actually waiting for.
+	 */
 	private schedulePersist(data: ChunkData): void {
-		const storage = this.storage;
-
-		if (storage === null) {
+		if (this.terminating || this.storage === null) {
 			return;
 		}
 
-		/*
-		 * Background writes must stay BOUNDED.
-		 *
-		 * Delivery no longer waits on persistence, which means writes now run
-		 * concurrently with generation and with each other. Unbounded, a cold
-		 * join launches one serialize+compress per chunk with nothing holding
-		 * it back — and since writeChunkUnlocked now compresses, that is real
-		 * CPU (deflate over 32-98 KB) on the same box as the generation workers
-		 * and the game client. An unbounded write firehout starves exactly the
-		 * work that makes chunks appear.
-		 *
-		 * A small FIFO with a fixed number of concurrent writers bounds both
-		 * memory and CPU while keeping writes strictly behind the chunks the
-		 * client is actually waiting for.
-		 */
 		this.persistQueue.push(data);
 		this.drainPersistQueue();
 	}
 
+	/**
+	 * Background persistence queue.
+	 *
+	 * A head index is used instead of Array.shift(), which moves every remaining
+	 * element on each dequeue and turns a large generation burst into O(n²) array
+	 * work.
+	 */
 	private readonly persistQueue: ChunkData[] = [];
+	private persistQueueHead = 0;
 	private persistWriters = 0;
+
 	private static readonly PERSIST_CONCURRENCY = 2;
 
-	private drainPersistQueue(): void {
-		while (
-			this.persistWriters < ChunkGenerationService.PERSIST_CONCURRENCY &&
-			this.persistQueue.length > 0
+	/**
+	 * Resolvers waiting for the persistence pipeline to become idle.
+	 */
+	private persistIdleWaiters: Array<() => void> = [];
+
+	private hasQueuedPersists(): boolean {
+		return this.persistQueueHead < this.persistQueue.length;
+	}
+
+	/**
+	 * Release callers waiting for all queued and active persistence work to finish.
+	 */
+	private notifyPersistIdle(): void {
+		if (
+			this.hasQueuedPersists() ||
+			this.persistWriters !== 0 ||
+			this.persistIdleWaiters.length === 0
 		) {
-			const data = this.persistQueue.shift()!;
+			return;
+		}
+
+		/*
+		 * The queue is fully consumed. Reset it here rather than retaining references
+		 * to every previously persisted chunk through the consumed array prefix.
+		 */
+		this.persistQueue.length = 0;
+		this.persistQueueHead = 0;
+
+		const waiters = this.persistIdleWaiters;
+		this.persistIdleWaiters = [];
+
+		for (let i = 0; i < waiters.length; i++) {
+			waiters[i]();
+		}
+	}
+
+	/**
+	 * Resolve once all queued and active persistence work has finished.
+	 */
+	private awaitPersistIdle(): Promise<void> {
+		if (!this.hasQueuedPersists() && this.persistWriters === 0) {
+			/*
+			 * Release consumed entries even when there are no registered waiters.
+			 * This prevents an idle service from retaining the entire processed
+			 * queue until another persistence burst arrives.
+			 */
+			this.persistQueue.length = 0;
+			this.persistQueueHead = 0;
+
+			return Promise.resolve();
+		}
+
+		return new Promise<void>((resolve) => {
+			this.persistIdleWaiters.push(resolve);
+		});
+	}
+
+	/**
+	 * Submit queued persistence work while respecting the global writer limit.
+	 *
+	 * Queue removal is O(1). Each completion re-enters this method to claim the next
+	 * item, keeping no more than PERSIST_CONCURRENCY storage writes active.
+	 */
+	private drainPersistQueue(): void {
+		const queue = this.persistQueue;
+		const maxWriters = ChunkGenerationService.PERSIST_CONCURRENCY;
+
+		while (
+			this.persistWriters < maxWriters &&
+			this.persistQueueHead < queue.length
+		) {
+			const data = queue[this.persistQueueHead++]!;
+
+			/*
+			 * Read storage when the item is dispatched, preserving the previous
+			 * behavior when setStorage() replaces or removes the backend after the
+			 * chunk was queued.
+			 */
 			const storage = this.storage;
 
 			if (storage === null) {
@@ -336,20 +417,84 @@ export class ChunkGenerationService {
 
 			this.persistWriters++;
 
-			void storage
-				.writeChunk(data)
-				.catch((error: unknown) => {
-					console.warn(
-						`[ChunkGeneration] background persist failed for ` +
-							`${data.chunkX},${data.chunkY},${data.chunkZ}:`,
-						error,
-					);
-				})
-				.finally(() => {
-					this.persistWriters--;
-					this.drainPersistQueue();
-				});
+			void storage.writeChunk(data).then(
+				() => {
+					this.onPersistSettled();
+				},
+				(error: unknown) => {
+					/*
+					 * Losing a cached copy is harmless — the chunk is regenerated
+					 * on the next request. Losing it to a storage that is already
+					 * closing is the expected shape of shutdown, not a fault, so
+					 * it gets one line instead of a stack trace per chunk.
+					 */
+					const storageClosed =
+						error instanceof Error &&
+						error.message.includes("closing or closed");
+
+					if (storageClosed) {
+						console.warn(
+							`[ChunkGeneration] dropped background persist for ` +
+								`${data.chunkX},${data.chunkY},${data.chunkZ}: ` +
+								`storage closed`,
+						);
+					} else {
+						console.warn(
+							`[ChunkGeneration] background persist failed for ` +
+								`${data.chunkX},${data.chunkY},${data.chunkZ}:`,
+							error,
+						);
+					}
+
+					this.onPersistSettled();
+				},
+			);
 		}
+
+		/*
+		 * If queued entries were discarded because storage became unavailable, the
+		 * loop may reach idle without starting a promise whose completion would
+		 * otherwise perform this notification.
+		 */
+		this.notifyPersistIdle();
+	}
+
+	/**
+	 * Shared completion path for successful and failed background writes.
+	 */
+	private onPersistSettled(): void {
+		this.persistWriters--;
+		this.compactPersistQueue();
+		this.drainPersistQueue();
+	}
+
+	/**
+	 * Periodically remove the consumed prefix so completed ChunkData objects do not
+	 * stay strongly referenced during long-running generation sessions.
+	 *
+	 * Compaction is amortized rather than performed for every item.
+	 */
+	private compactPersistQueue(): void {
+		const head = this.persistQueueHead;
+		const queue = this.persistQueue;
+
+		if (head === queue.length) {
+			queue.length = 0;
+			this.persistQueueHead = 0;
+			return;
+		}
+
+		/*
+		 * Compact only after a substantial consumed prefix exists and it represents
+		 * at least half the array. This keeps total copy work amortized O(n).
+		 */
+		if (head < 1024 || head * 2 < queue.length) {
+			return;
+		}
+
+		queue.copyWithin(0, head);
+		queue.length -= head;
+		this.persistQueueHead = 0;
 	}
 
 	/**
@@ -561,8 +706,9 @@ export class ChunkGenerationService {
 		}
 	}
 
-	/*
-	 * Batch persistence shares the same bounded writer budget as single chunks.
+	/**
+	 * Add a generated batch to the same bounded persistence pipeline used by
+	 * single-chunk generation.
 	 *
 	 * schedulePersistBatch deliberately funnels into the SAME queue rather than
 	 * calling persistChunks directly: persistChunks has its own concurrency of 8,
@@ -571,12 +717,18 @@ export class ChunkGenerationService {
 	 * budget keeps the total bounded regardless of which path enqueued the work.
 	 */
 	private schedulePersistBatch(chunks: readonly ChunkData[]): void {
-		if (this.storage === null) {
+		if (
+			this.terminating ||
+			this.storage === null ||
+			chunks.length === 0
+		) {
 			return;
 		}
 
+		const queue = this.persistQueue;
+
 		for (let i = 0; i < chunks.length; i++) {
-			this.persistQueue.push(chunks[i]);
+			queue.push(chunks[i]);
 		}
 
 		this.drainPersistQueue();
@@ -694,5 +846,20 @@ export class ChunkGenerationService {
 			this.initPromise = null;
 			this.initialized = false;
 		}
+
+		/*
+		 * Background writes are fire-and-forget, so terminating the pool does
+		 * NOT quiesce them. schedulePersist refuses new work once terminating
+		 * is set, but the queue can still hold chunks enqueued earlier, and every
+		 * in-flight writer re-enters drainPersistQueue as it settles — which
+		 * would submit MORE writes after the caller has moved on to
+		 * worldStorage.dispose().
+		 *
+		 * Draining here keeps that ordering intact: every background write is
+		 * handed to a still-active storage before terminate() resolves, so
+		 * dispose() sees the full mutation set instead of racing it.
+		 */
+		this.drainPersistQueue();
+		await this.awaitPersistIdle();
 	}
 }

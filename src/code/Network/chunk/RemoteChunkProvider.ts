@@ -31,6 +31,8 @@
 import { DEBUG_ENABLED, debugLog } from "../../Lib/debugLog";
 import { FRAME_WORK_BUDGET } from "../../Lib/FrameWorkBudget";
 import { notePipelineWork } from "../../Lib/PipelineStats";
+import type { Chunk } from "../../World/Chunk/Chunk";
+import { packCoords } from "../../World/Chunk/DataStructures/ChunkCoords";
 import {
 	ChunkPipelineStage,
 	noteChunkRequested,
@@ -38,8 +40,6 @@ import {
 	reapStaleLatencyTracks,
 } from "../../World/Chunk/Loading/ChunkPipeline";
 import { priorityForChunk } from "../../World/Chunk/Loading/ChunkPriority";
-import type { Chunk } from "../../World/Chunk/Chunk";
-import { packCoords } from "../../World/Chunk/DataStructures/ChunkCoords";
 import {
 	frameDeflated,
 	inflateInto,
@@ -234,7 +234,12 @@ export class RemoteChunkProvider {
 	// Reused decoder + scratch for chunk messages — avoids per-packet
 	// BinaryDecoder + per-entry {cx,cy,cz,version} allocations on the hot path.
 	private readonly chunkDecoder = new BinaryDecoder(new Uint8Array(0));
-	private readonly unchangedSingleScratch = { cx: 0, cy: 0, cz: 0, version: 0 };
+	private readonly unchangedSingleScratch = {
+		cx: 0,
+		cy: 0,
+		cz: 0,
+		version: 0,
+	};
 	private readonly unchangedBatchScratch: Array<{
 		cx: number;
 		cy: number;
@@ -516,12 +521,15 @@ export class RemoteChunkProvider {
 		entries: readonly DeflatedChunk[],
 	): Promise<void> {
 		const entryCount = entries.length;
-		if (entryCount === 0) return;
+
+		if (entryCount === 0) {
+			return;
+		}
 
 		/*
-		 * Parallel arrays avoid allocating one wrapper object per accepted entry.
-		 * The pending identity is required to prevent async ABA races where an old
-		 * response resolves a newer request for the same key.
+		 * Parallel arrays avoid one wrapper-object allocation per accepted entry.
+		 * Pending identity is retained to protect against timeout, reconnect, cache
+		 * reset, and same-coordinate request replacement while inflation is active.
 		 */
 		const sourceIndices = new Array<number>(entryCount);
 		const keys = new Array<bigint>(entryCount);
@@ -529,16 +537,21 @@ export class RemoteChunkProvider {
 
 		let acceptedCount = 0;
 
-		for (let i = 0; i < entryCount; i++) {
-			const entry = entries[i];
+		for (let sourceIndex = 0; sourceIndex < entryCount; sourceIndex++) {
+			const entry = entries[sourceIndex];
 			const key = packCoords(entry.chunkX, entry.chunkY, entry.chunkZ);
+
 			const pending = this.getCurrentPending(key);
 
-			// Avoid decompression for unsolicited, timed-out, or stale-epoch data.
-			if (pending === undefined) continue;
-			if (!this.acceptFreshVersion(key, entry.version)) continue;
+			if (pending === undefined) {
+				continue;
+			}
 
-			sourceIndices[acceptedCount] = i;
+			if (!this.acceptFreshVersion(key, entry.version)) {
+				continue;
+			}
+
+			sourceIndices[acceptedCount] = sourceIndex;
 			keys[acceptedCount] = key;
 			pendingEntries[acceptedCount] = pending;
 			acceptedCount++;
@@ -553,125 +566,148 @@ export class RemoteChunkProvider {
 		keys.length = acceptedCount;
 		pendingEntries.length = acceptedCount;
 
+		noteChunkStage(ChunkPipelineStage.Received, acceptedCount);
+
 		const writes = new Array<ChunkWrite>(acceptedCount);
 
 		/*
-		 * Records positions in the accepted-entry arrays. This avoids separate
-		 * arrays for persisted keys, versions, and source entries.
+		 * Index into sourceIndices/keys/pendingEntries for every successful write.
+		 * This avoids separate persisted-key, version, and source-entry arrays.
 		 */
 		const successfulIndices = new Array<number>(acceptedCount);
 
-		const windowSize = this.windowSize;
-		let writeCount = 0;
-		const tasks = new Array<Promise<InflatedResult>>(this.windowSize);
+		const maxWindowSize = this.windowSize;
+		const tasks = new Array<Promise<InflatedResult>>(maxWindowSize);
 
-		/*
-		 * Frame-wide decompression allowance.
-		 *
-		 * A single deflated chunk inflates to a full 32^3 volume, so a
-		 * reconnect that resolves 30 pending requests at once would run 30
-		 * inflates back to back. The window loop bounds the SIZE of each burst;
-		 * this bounds how MANY bursts a single frame is expected to absorb, by
-		 * yielding more often once the frame's allowance is spent.
-		 *
-		 * It deliberately does NOT skip entries.
-		 *
-		 * An earlier version of this code broke out of the loop when the budget
-		 * ran out, leaving the remaining requests pending on the assumption
-		 * that "the next response or retry picks them up". That assumption is
-		 * wrong: the server sent this batch once. The deflated bytes are in hand,
-		 * skipping them throws them away, and the requests then sit until the
-		 * 30s deadline before failing and being retried — which turned the
-		 * budget into a 30-second stall on exactly the reconnects it was meant
-		 * to protect. Yielding instead of skipping keeps the frame responsive
-		 * AND loses nothing.
-		 *
-		 * Budget exhaustion therefore only changes the YIELD GRANULARITY:
-		 * normally one yield per window of 4, then one yield per entry.
-		 */
-		let yieldPerEntry = false;
+		let writeCount = 0;
 		let budgetPacedEntries = 0;
+		let yieldPerEntry = false;
 
 		for (
 			let windowStart = 0;
 			windowStart < acceptedCount;
-			windowStart += windowSize
+			windowStart += maxWindowSize
 		) {
-			const windowEnd = Math.min(windowStart + windowSize, acceptedCount);
+			const windowEnd = Math.min(windowStart + maxWindowSize, acceptedCount);
 			const taskCount = windowEnd - windowStart;
 
-			for (let i = windowStart; i < windowEnd; i++) {
-				// Once the frame's allowance is gone, drop to one inflate per
-				// macrotask instead of four. Nothing is skipped.
-				if (yieldPerEntry) {
-					if (i !== windowStart) await yieldToEventLoop();
+			if (yieldPerEntry) {
+				/*
+				 * Once the frame allowance is exhausted, process one inflate per
+				 * macrotask. Entries are never skipped because the server may send
+				 * this payload only once.
+				 */
+				for (let i = windowStart; i < windowEnd; i++) {
+					if (i !== windowStart) {
+						await yieldToEventLoop();
+					}
 
 					FRAME_WORK_BUDGET.takeDecompression();
 					budgetPacedEntries++;
+
+					const write = await this.inflateAndValidateEntry(
+						entries[sourceIndices[i]],
+						keys[i],
+						pendingEntries[i],
+					);
+
+					if (write === null) {
+						continue;
+					}
+
+					writes[writeCount] = write;
+					successfulIndices[writeCount] = i;
+					writeCount++;
+				}
+			} else {
+				/*
+				 * Normal mode runs a small bounded window concurrently.
+				 *
+				 * Set the active length explicitly before Promise.all. Without this,
+				 * the final short window retains promises from the previous full
+				 * window in the reusable task array and waits on them again.
+				 */
+				tasks.length = taskCount;
+
+				for (let offset = 0; offset < taskCount; offset++) {
+					const acceptedIndex = windowStart + offset;
+
+					tasks[offset] = this.inflateAndValidateEntry(
+						entries[sourceIndices[acceptedIndex]],
+						keys[acceptedIndex],
+						pendingEntries[acceptedIndex],
+					);
 				}
 
-				tasks[i - windowStart] = this.inflateAndValidateEntry(
-					entries[sourceIndices[i]],
-					keys[i],
-					pendingEntries[i],
-				);
-			}
+				const windowResults = await Promise.all(tasks);
 
-			const windowResults = await Promise.all(tasks);
+				for (let offset = 0; offset < taskCount; offset++) {
+					const write = windowResults[offset];
 
-			for (let i = 0; i < taskCount; i++) {
-				const write = windowResults[i];
-				if (write === null) continue;
+					if (write === null) {
+						continue;
+					}
 
-				writes[writeCount] = write;
-				successfulIndices[writeCount] = windowStart + i;
-				writeCount++;
-			}
-
-			if (windowEnd < acceptedCount) {
-				await yieldToEventLoop();
-
-				// Checked at the window BOUNDARY, after the previous window's
-				// inflates have been charged. The first window always runs at
-				// full granularity so progress is guaranteed.
-				if (windowStart !== 0 && !FRAME_WORK_BUDGET.takeDecompression()) {
-					yieldPerEntry = true;
+					writes[writeCount] = write;
+					successfulIndices[writeCount] = windowStart + offset;
+					writeCount++;
 				}
+			}
+
+			if (windowEnd >= acceptedCount) {
+				break;
+			}
+
+			await yieldToEventLoop();
+
+			/*
+			 * Charge/check the completed window at the first boundary. The previous
+			 * `windowStart !== 0` condition allowed two full windows before checking
+			 * the frame allowance.
+			 */
+			if (!yieldPerEntry && !FRAME_WORK_BUDGET.takeDecompression()) {
+				yieldPerEntry = true;
 			}
 		}
 
-		if (budgetPacedEntries > 0) {
+		if (budgetPacedEntries !== 0) {
 			this.noteBudgetPaced(budgetPacedEntries);
 		}
 
-		// Safe to call unconditionally: every accepted entry was resolved or
-		// rejected above, so this only clears the sweep if the map is truly empty.
+		/*
+		 * Every accepted response has now either resolved, rejected, or become
+		 * stale while asynchronous work was running.
+		 */
 		this.clearSweepIfEmpty();
 
-		if (writeCount === 0) return;
+		if (writeCount === 0) {
+			return;
+		}
 
 		writes.length = writeCount;
 		successfulIndices.length = writeCount;
 
 		/*
-		 * Capture the epoch before submitting the write. clearCache() serializes
-		 * its clear operation through the store and increments the epoch.
+		 * Persistence is intentionally detached from request resolution. Capture
+		 * the epoch so a write racing with clearCache cannot repopulate the version
+		 * map after the cache has been reset.
 		 */
 		const responseEpoch = this.epoch;
 		const versions = this.chunkVersions;
 
 		void this.store.writeChunks(writes).then(
 			() => {
-				for (let i = 0; i < writeCount; i++) {
-					noteChunkStage(ChunkPipelineStage.Persisted);
-				}
+				noteChunkStage(ChunkPipelineStage.Persisted, writeCount);
 
-				if (this.epoch !== responseEpoch) return;
+				if (this.epoch !== responseEpoch) {
+					return;
+				}
 
 				for (let i = 0; i < writeCount; i++) {
 					const acceptedIndex = successfulIndices[i];
 					const key = keys[acceptedIndex];
 					const entry = entries[sourceIndices[acceptedIndex]];
+
 					const currentVersion = versions.get(key);
 
 					if (currentVersion === undefined || entry.version >= currentVersion) {
@@ -679,8 +715,11 @@ export class RemoteChunkProvider {
 					}
 				}
 			},
-			(error) => {
-				if (isCacheResetError(error)) return;
+			(error: unknown) => {
+				if (isCacheResetError(error)) {
+					return;
+				}
+
 				console.warn("[RemoteChunkProvider] batch persistence failed:", error);
 			},
 		);

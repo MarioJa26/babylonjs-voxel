@@ -1,28 +1,36 @@
 import type { Chunk } from "../Chunk";
 
-// PERF: 8-chunk cells instead of 32-chunk ones. With 32-chunk cells a
-// radius query's AABB covered only 1-2 cells per axis, so unload scans and
-// LOD refreshes collected essentially EVERY loaded chunk regardless of the
-// actual radius. Smaller cells multiply the number of Map probes (cheap)
-// while cutting the collected-set noise dramatically.
+/*
+ * Eight-chunk cells provide substantially tighter spatial queries than the old
+ * 32-chunk cells. More hash probes are traded for far fewer unrelated chunks
+ * returned by unload and LOD-refresh scans.
+ */
 const CELL_SHIFT = 3;
 
-const HASH_X = 73856093;
-const HASH_Y = 19349663;
-const HASH_Z = 83492791;
+const HASH_X = 73_856_093;
+const HASH_Y = 19_349_663;
+const HASH_Z = 83_492_791;
 
 type LoadedChunkCell = {
 	hash: number;
 	cx: number;
 	cy: number;
 	cz: number;
-	chunks: Set<Chunk>;
-	chunkList: Chunk[];
+
+	/**
+	 * Dense chunk storage.
+	 *
+	 * A chunk's position in this array is stored in chunkSlots, allowing O(1)
+	 * swap-removal without maintaining a duplicated Set<Chunk>.
+	 */
+	chunks: Chunk[];
 };
 
 function chunkCoordToCell(coord: number): number {
-	// Same as Math.floor(coord / 2^CELL_SHIFT) for signed 32-bit coordinates.
-	// Arithmetic shift correctly floors negative coordinates.
+	/*
+	 * Equivalent to Math.floor(coord / 2^CELL_SHIFT) for signed 32-bit chunk
+	 * coordinates. Arithmetic right shift correctly floors negative values.
+	 */
 	return coord >> CELL_SHIFT;
 }
 
@@ -30,63 +38,76 @@ function hashCellKey(cx: number, cy: number, cz: number): number {
 	return Math.imul(cx, HASH_X) ^ Math.imul(cy, HASH_Y) ^ Math.imul(cz, HASH_Z);
 }
 
-function chunkCellX(chunk: Chunk): number {
-	return chunk.chunkX >> CELL_SHIFT;
-}
-
-function chunkCellY(chunk: Chunk): number {
-	return chunk.chunkY >> CELL_SHIFT;
-}
-
-function chunkCellZ(chunk: Chunk): number {
-	return chunk.chunkZ >> CELL_SHIFT;
-}
-
 export class LoadedChunkIndex {
-	// hash -> one or more exact cells.
-	// Multiple exact cells are only needed when the integer hash collides.
+	/**
+	 * Integer hash to one or more exact cells.
+	 *
+	 * Arrays are needed only for genuine integer-hash collisions. Cell
+	 * coordinates are always checked before a bucket entry is used.
+	 */
 	private readonly cells = new Map<number, LoadedChunkCell[]>();
 
-	// numericId -> exact cell object.
-	// Storing the cell object makes unregister O(1) and avoids the old key=0 bug.
+	/**
+	 * Chunk numeric ID to its exact cell.
+	 *
+	 * Storing the cell object avoids recomputing coordinates during unregister
+	 * and prevents sentinel-key ambiguity.
+	 */
 	private readonly chunkCells = new Map<number, LoadedChunkCell>();
 
-	// P0-3: pooled empty cells to avoid `new Set` + object churn per streaming burst.
-	// Cells are recycled when their chunk count drops to zero.
-	private readonly _freeCells: LoadedChunkCell[] = [];
+	/**
+	 * Chunk numeric ID to its slot in LoadedChunkCell.chunks.
+	 *
+	 * Together with chunkCells, this makes removal O(1). The moved chunk's slot
+	 * is updated during swap-removal.
+	 */
+	private readonly chunkSlots = new Map<number, number>();
 
-	private _allocCell(
+	/**
+	 * Recycled empty cells.
+	 *
+	 * Each pooled object retains its chunks array and therefore avoids repeated
+	 * cell-object and array allocation during unload/reload bursts.
+	 */
+	private readonly freeCells: LoadedChunkCell[] = [];
+
+	private allocateCell(
 		hash: number,
 		cx: number,
 		cy: number,
 		cz: number,
 	): LoadedChunkCell {
-		const pooled = this._freeCells.pop();
+		const pooled = this.freeCells.pop();
+
 		if (pooled !== undefined) {
 			pooled.hash = hash;
 			pooled.cx = cx;
 			pooled.cy = cy;
 			pooled.cz = cz;
-			// Set and list are already cleared on recycle.
+
+			// Cleared before recycling.
 			return pooled;
 		}
+
 		return {
 			hash,
 			cx,
 			cy,
 			cz,
-			chunks: new Set<Chunk>(),
-			chunkList: [],
+			chunks: [],
 		};
 	}
 
+	/**
+	 * Register a loaded chunk or move its existing registration to the correct
+	 * spatial cell.
+	 */
 	register(chunk: Chunk): void {
 		const numericId = chunk.numericId;
 
-		const cx = chunkCellX(chunk);
-		const cy = chunkCellY(chunk);
-		const cz = chunkCellZ(chunk);
-		const hash = hashCellKey(cx, cy, cz);
+		const cx = chunk.chunkX >> CELL_SHIFT;
+		const cy = chunk.chunkY >> CELL_SHIFT;
+		const cz = chunk.chunkZ >> CELL_SHIFT;
 
 		const previousCell = this.chunkCells.get(numericId);
 
@@ -96,23 +117,47 @@ export class LoadedChunkIndex {
 			previousCell.cy === cy &&
 			previousCell.cz === cz
 		) {
-			if (!previousCell.chunks.has(chunk)) {
-				previousCell.chunks.add(chunk);
-				previousCell.chunkList.push(chunk);
+			/*
+			 * Already registered in the correct cell. The slot identity check
+			 * repairs missing slot bookkeeping without duplicating the chunk.
+			 */
+			const previousSlot = this.chunkSlots.get(numericId);
+
+			if (
+				previousSlot !== undefined &&
+				previousCell.chunks[previousSlot] === chunk
+			) {
+				return;
 			}
+
+			const recoveredSlot = previousCell.chunks.indexOf(chunk);
+
+			if (recoveredSlot !== -1) {
+				this.chunkSlots.set(numericId, recoveredSlot);
+				return;
+			}
+
+			const slot = previousCell.chunks.length;
+
+			previousCell.chunks.push(chunk);
+			this.chunkSlots.set(numericId, slot);
+
 			return;
 		}
 
 		if (previousCell !== undefined) {
-			this.removeFromCell(chunk, previousCell);
+			this.removeFromCell(numericId, chunk, previousCell);
 		}
 
-		const bucket = this.cells.get(hash);
+		const hash = hashCellKey(cx, cy, cz);
+		let bucket = this.cells.get(hash);
 		let cell: LoadedChunkCell | undefined;
 
 		if (bucket === undefined) {
-			cell = this._allocCell(hash, cx, cy, cz);
-			this.cells.set(hash, [cell]);
+			cell = this.allocateCell(hash, cx, cy, cz);
+
+			bucket = [cell];
+			this.cells.set(hash, bucket);
 		} else {
 			for (let i = 0; i < bucket.length; i++) {
 				const candidate = bucket[i];
@@ -124,27 +169,40 @@ export class LoadedChunkIndex {
 			}
 
 			if (cell === undefined) {
-				cell = this._allocCell(hash, cx, cy, cz);
+				cell = this.allocateCell(hash, cx, cy, cz);
+
 				bucket.push(cell);
 			}
 		}
 
-		cell.chunks.add(chunk);
-		cell.chunkList.push(chunk);
+		const slot = cell.chunks.length;
+
+		cell.chunks.push(chunk);
 		this.chunkCells.set(numericId, cell);
+		this.chunkSlots.set(numericId, slot);
 	}
 
+	/**
+	 * Remove a chunk from the index.
+	 */
 	unregister(chunk: Chunk): void {
-		const cell = this.chunkCells.get(chunk.numericId);
+		const numericId = chunk.numericId;
+		const cell = this.chunkCells.get(numericId);
 
 		if (cell === undefined) {
 			return;
 		}
 
-		this.chunkCells.delete(chunk.numericId);
-		this.removeFromCell(chunk, cell);
+		this.removeFromCell(numericId, chunk, cell);
 	}
 
+	/**
+	 * Yield all chunks in spatial cells intersecting the supplied chunk-space
+	 * bounding box.
+	 *
+	 * As in the original implementation, this performs cell-level filtering.
+	 * Consumers may apply exact distance checks afterward.
+	 */
 	*query(
 		centerX: number,
 		centerY: number,
@@ -159,6 +217,8 @@ export class LoadedChunkIndex {
 		const minCZ = chunkCoordToCell(centerZ - horizontalRadius);
 		const maxCZ = chunkCoordToCell(centerZ + horizontalRadius);
 
+		const cells = this.cells;
+
 		for (let cx = minCX; cx <= maxCX; cx++) {
 			const hx = Math.imul(cx, HASH_X);
 
@@ -166,22 +226,29 @@ export class LoadedChunkIndex {
 				const hxy = hx ^ Math.imul(cy, HASH_Y);
 
 				for (let cz = minCZ; cz <= maxCZ; cz++) {
-					const bucket = this.cells.get(hxy ^ Math.imul(cz, HASH_Z));
+					const hash = hxy ^ Math.imul(cz, HASH_Z);
+
+					const bucket = cells.get(hash);
 
 					if (bucket === undefined) {
 						continue;
 					}
 
-					for (let i = 0; i < bucket.length; i++) {
-						const cell = bucket[i];
+					for (
+						let bucketIndex = 0;
+						bucketIndex < bucket.length;
+						bucketIndex++
+					) {
+						const cell = bucket[bucketIndex];
 
 						if (cell.cx !== cx || cell.cy !== cy || cell.cz !== cz) {
 							continue;
 						}
 
-						const list = cell.chunkList;
-						for (let j = 0; j < list.length; j++) {
-							yield list[j];
+						const chunks = cell.chunks;
+
+						for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+							yield chunks[chunkIndex];
 						}
 
 						break;
@@ -191,6 +258,12 @@ export class LoadedChunkIndex {
 		}
 	}
 
+	/**
+	 * Append all chunks in intersecting spatial cells to `out`.
+	 *
+	 * The destination is not cleared. This allows callers to reuse a scratch
+	 * array and control its lifetime.
+	 */
 	queryCollect(
 		centerX: number,
 		centerY: number,
@@ -206,6 +279,9 @@ export class LoadedChunkIndex {
 		const minCZ = chunkCoordToCell(centerZ - horizontalRadius);
 		const maxCZ = chunkCoordToCell(centerZ + horizontalRadius);
 
+		const cells = this.cells;
+		let outIndex = out.length;
+
 		for (let cx = minCX; cx <= maxCX; cx++) {
 			const hx = Math.imul(cx, HASH_X);
 
@@ -213,22 +289,34 @@ export class LoadedChunkIndex {
 				const hxy = hx ^ Math.imul(cy, HASH_Y);
 
 				for (let cz = minCZ; cz <= maxCZ; cz++) {
-					const bucket = this.cells.get(hxy ^ Math.imul(cz, HASH_Z));
+					const hash = hxy ^ Math.imul(cz, HASH_Z);
+
+					const bucket = cells.get(hash);
 
 					if (bucket === undefined) {
 						continue;
 					}
 
-					for (let i = 0; i < bucket.length; i++) {
-						const cell = bucket[i];
+					for (
+						let bucketIndex = 0;
+						bucketIndex < bucket.length;
+						bucketIndex++
+					) {
+						const cell = bucket[bucketIndex];
 
 						if (cell.cx !== cx || cell.cy !== cy || cell.cz !== cz) {
 							continue;
 						}
 
-						const list = cell.chunkList;
-						for (let j = 0; j < list.length; j++) {
-							out.push(list[j]);
+						const chunks = cell.chunks;
+
+						/*
+						 * Indexed assignment avoids a function call to push()
+						 * for every collected chunk and updates array length
+						 * naturally.
+						 */
+						for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+							out[outIndex++] = chunks[chunkIndex];
 						}
 
 						break;
@@ -238,48 +326,102 @@ export class LoadedChunkIndex {
 		}
 	}
 
+	/**
+	 * Iterate every indexed chunk.
+	 */
 	*all(): IterableIterator<Chunk> {
 		for (const bucket of this.cells.values()) {
-			for (let i = 0; i < bucket.length; i++) {
-				const list = bucket[i].chunkList;
-				for (let j = 0; j < list.length; j++) {
-					yield list[j];
+			for (let bucketIndex = 0; bucketIndex < bucket.length; bucketIndex++) {
+				const chunks = bucket[bucketIndex].chunks;
+
+				for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+					yield chunks[chunkIndex];
 				}
 			}
 		}
 	}
 
-	private removeFromCell(chunk: Chunk, cell: LoadedChunkCell): void {
-		cell.chunks.delete(chunk);
-		// P1-5: keep array in sync via swap-remove (O(n) but cell avg < 16).
-		const list = cell.chunkList;
-		const idx = list.indexOf(chunk);
-		if (idx >= 0) {
-			list[idx] = list[list.length - 1];
-			list.pop();
+	/**
+	 * Remove one chunk using its recorded dense-array slot.
+	 *
+	 * Normal removal is O(1). A linear recovery scan is retained only for
+	 * defensive repair if slot bookkeeping is inconsistent.
+	 */
+	private removeFromCell(
+		numericId: number,
+		chunk: Chunk,
+		cell: LoadedChunkCell,
+	): void {
+		const chunks = cell.chunks;
+		let slot = this.chunkSlots.get(numericId);
+
+		if (slot === undefined || chunks[slot] !== chunk) {
+			/*
+			 * Bookkeeping drift should not happen, but recovering here is safer
+			 * than removing a different chunk or leaving a duplicate behind.
+			 */
+			slot = chunks.indexOf(chunk);
 		}
 
-		if (cell.chunks.size !== 0) {
+		this.chunkCells.delete(numericId);
+		this.chunkSlots.delete(numericId);
+
+		if (slot !== -1 && slot !== undefined) {
+			const lastIndex = chunks.length - 1;
+			const movedChunk = chunks[lastIndex];
+
+			if (slot !== lastIndex) {
+				chunks[slot] = movedChunk;
+				this.chunkSlots.set(movedChunk.numericId, slot);
+			}
+
+			chunks.pop();
+		}
+
+		if (chunks.length !== 0) {
 			return;
 		}
 
-		const bucket = this.cells.get(cell.hash);
+		this.removeEmptyCell(cell);
+	}
+
+	/**
+	 * Remove an empty exact cell from its hash bucket and recycle it.
+	 */
+	private removeEmptyCell(cell: LoadedChunkCell): void {
+		const cells = this.cells;
+		const bucket = cells.get(cell.hash);
 
 		if (bucket === undefined) {
 			return;
 		}
 
 		if (bucket.length === 1) {
-			this.cells.delete(cell.hash);
+			/*
+			 * Verify identity defensively before deleting the complete bucket.
+			 */
+			if (bucket[0] !== cell) {
+				return;
+			}
+
+			cells.delete(cell.hash);
 		} else {
 			const index = bucket.indexOf(cell);
-			if (index >= 0) {
-				bucket[index] = bucket[bucket.length - 1];
-				bucket.pop();
+
+			if (index === -1) {
+				return;
 			}
+
+			const lastIndex = bucket.length - 1;
+
+			if (index !== lastIndex) {
+				bucket[index] = bucket[lastIndex];
+			}
+
+			bucket.pop();
 		}
-		// P0-3: recycle empty cell (Set + list cleared) to avoid GC.
-		// Chunks already removed, set is empty, list is empty.
-		this._freeCells.push(cell);
+
+		// The dense list is already empty and ready for reuse.
+		this.freeCells.push(cell);
 	}
 }

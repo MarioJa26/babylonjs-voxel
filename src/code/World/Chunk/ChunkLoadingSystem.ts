@@ -79,8 +79,6 @@ const dynamicBlockProviders: DynamicBlockProviderEntry[] = [];
 
 const debug = new ChunkLoadingDebug();
 
-const _neighborBuffer: (Chunk | undefined)[] = new Array(6);
-
 const _queuedIdSet: Set<bigint> = new Set();
 
 const _entityPayloadMap = new Map<bigint, SavedChunkEntityData[]>();
@@ -346,19 +344,6 @@ function getUnloadBatchSize(): number {
 
 function getProcessFrameBudgetMs(): number {
 	return Math.max(0.5, SETTING_PARAMS.CHUNK_LOADING_FRAME_BUDGET_MS);
-}
-
-function getNeighbors(chunk: Chunk): (Chunk | undefined)[] {
-	const n = _neighborBuffer;
-
-	n[0] = chunk.getNeighbor(-1, 0, 0);
-	n[1] = chunk.getNeighbor(1, 0, 0);
-	n[2] = chunk.getNeighbor(0, -1, 0);
-	n[3] = chunk.getNeighbor(0, 1, 0);
-	n[4] = chunk.getNeighbor(0, 0, -1);
-	n[5] = chunk.getNeighbor(0, 0, 1);
-
-	return n;
 }
 
 function refreshQueueDebugSnapshot(): void {
@@ -680,14 +665,35 @@ function scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
 
 	pool.scheduleRemesh(chunk, true);
 
-	const n = getNeighbors(chunk);
+	let neighbor = chunk.getNeighbor(-1, 0, 0);
+	if (neighbor !== undefined) {
+		pool.scheduleRemesh(neighbor, true);
+	}
 
-	if (n[0]) pool.scheduleRemesh(n[0], true);
-	if (n[1]) pool.scheduleRemesh(n[1], true);
-	if (n[2]) pool.scheduleRemesh(n[2], true);
-	if (n[3]) pool.scheduleRemesh(n[3], true);
-	if (n[4]) pool.scheduleRemesh(n[4], true);
-	if (n[5]) pool.scheduleRemesh(n[5], true);
+	neighbor = chunk.getNeighbor(1, 0, 0);
+	if (neighbor !== undefined) {
+		pool.scheduleRemesh(neighbor, true);
+	}
+
+	neighbor = chunk.getNeighbor(0, -1, 0);
+	if (neighbor !== undefined) {
+		pool.scheduleRemesh(neighbor, true);
+	}
+
+	neighbor = chunk.getNeighbor(0, 1, 0);
+	if (neighbor !== undefined) {
+		pool.scheduleRemesh(neighbor, true);
+	}
+
+	neighbor = chunk.getNeighbor(0, 0, -1);
+	if (neighbor !== undefined) {
+		pool.scheduleRemesh(neighbor, true);
+	}
+
+	neighbor = chunk.getNeighbor(0, 0, 1);
+	if (neighbor !== undefined) {
+		pool.scheduleRemesh(neighbor, true);
+	}
 }
 
 export async function updateChunksAround(
@@ -1026,8 +1032,3 @@ function collectChunkEntityPayloads(): ReadonlyMap<
 
 	return entitiesByChunk;
 }
-
-export {
-	areChunksLoadedAround,
-	areChunksLod0ReadyAround,
-} from "./Loading/ChunkReadiness";

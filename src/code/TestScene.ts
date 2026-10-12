@@ -164,30 +164,54 @@ export class TestScene {
 		const playerName =
 			savedPlayerName || `Player${Math.floor(Math.random() * 1000)}`;
 
+		/*
+		 * Map initialization and skin preloading are independent. Start both before
+		 * constructing the networking systems so their asynchronous work overlaps.
+		 */
 		const map = new Map1(engine, scene, player);
-
-		await preloadMobSkins();
+		const mapReady = map.initPromise;
+		const mobSkinsReady = preloadMobSkins();
 
 		const networkManager = new NetworkManager(player, serverUrl);
 
 		this.#networkManager = networkManager;
+
 		player.networkManager = networkManager;
 		player.setDefaultBlockEditCallbacks(networkManager);
 
-		void networkManager.connect(playerName, MULTIPLAYER_ROOM_NAME);
+		/*
+		 * Connection deliberately remains outside the scene-startup critical path.
+		 * Observe rejection explicitly so a failed join cannot become an unhandled
+		 * promise rejection.
+		 */
+		void networkManager
+			.connect(playerName, MULTIPLAYER_ROOM_NAME)
+			.catch((error: unknown) => {
+				console.error("[TestScene] Multiplayer connection failed:", error);
+
+				networkManager.notifySystemMessage(
+					"Unable to connect to the multiplayer server.",
+				);
+			});
 
 		const netClient = networkManager.netClient;
 
 		const remoteMobManager = new RemoteMobManager(netClient);
+
 		this.#remoteMobManager = remoteMobManager;
 		Map1.remoteMobManager = remoteMobManager;
 
 		const remoteItemManager = new RemoteItemManager(netClient);
+
 		this.#remoteItemManager = remoteItemManager;
 
 		Arrow.ensureNetworkHandler(netClient);
 
-		await map.initPromise;
+		/*
+		 * Both operations were started near the beginning of initialization. Wait
+		 * for them together rather than paying their latency sequentially.
+		 */
+		await Promise.all([mapReady, mobSkinsReady]);
 
 		this.initSharedPlayerSystems(scene, player);
 		player.respawn();
@@ -196,15 +220,16 @@ export class TestScene {
 			scene,
 			player,
 			this.worldName,
-			{ persistPosition: false },
+			{
+				persistPosition: false,
+			},
 		);
 
 		this.#playerStatePersistence = persistence;
 
 		/*
-		 * Capture initialized instances directly. This avoids repeated private
-		 * field lookups and optional-chain checks in the per-frame hot path.
-		 * These objects already remain alive for the registered scene callback.
+		 * Capture initialized instances once. The per-frame callback performs no
+		 * optional chaining, manager lookup, or temporary allocation.
 		 */
 		this.registerFrameUpdate(scene, playerCamera, (deltaMs: number): void => {
 			persistence.update();
@@ -213,7 +238,6 @@ export class TestScene {
 			remoteItemManager.update(deltaMs);
 		});
 	}
-
 	private async initSingleplayer(
 		engine: EngineContext,
 		scene: SceneContext,

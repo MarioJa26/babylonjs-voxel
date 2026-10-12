@@ -1,11 +1,11 @@
 import { CHUNK_SIZE, worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { getFinalTerrainHeight } from "../Generation/TerrainHeightMap";
 import {
-	areChunksLoadedAround,
 	getBlockByWorldCoords,
 	getLightByWorldCoords,
 	setBlock,
 } from "./Chunk/ChunkLoadingSystem";
+import { areChunksLoadedAround } from "./Chunk/Loading/ChunkReadiness";
 import { WATER_BLOCK_ID } from "./Chunk/Worker/ChunkMesherConstants";
 
 export interface SpawnPosition {

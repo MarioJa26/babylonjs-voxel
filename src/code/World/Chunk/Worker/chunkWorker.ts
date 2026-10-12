@@ -56,47 +56,86 @@ function lodStepOfLod(lod: number | null | undefined): number {
 }
 
 /**
- * Decide which horizontal borders this chunk owns skirts for, so two chunks
- * never wall the same boundary plane (coplanar z-fighting). A side gets a
- * skirt only when its neighbor is MISSING or FINER; same-level boundaries
- * are seamless via padded slabs and coarser neighbors own their own side.
+ * Decide which horizontal borders this chunk owns skirts for.
  *
- * When a far (+X/+Z) skirt is owned, the skirt replaces the greedy far
- * slice on that plane (see VoxelMaskExtractor skirtOwnsPosX/Z) — the two
- * would otherwise sit bit-exact coplanar at x/z=size.
+ * A side receives a skirt when its neighboring chunk is:
+ * - missing;
+ * - not loaded; or
+ * - finer than this chunk.
  *
- * Near (-X/-Z) skirts sit exactly on x/z=0: the greedy extractor never
- * emits a slice -1 wall (bank stays zero), so no inset is needed. The old
- * 1-block inset only recessed the wall inside the chunk and left a gap.
+ * Same-level boundaries are joined through padded slabs. Coarser neighbors own
+ * their side of the boundary, preventing duplicate coplanar skirts.
  *
- * PERF: returns one packed int — low nibble = sides, high nibble = near-inset
- * sides (always 0 now, kept for worker-protocol compat) — instead of a
- * fresh {sides, nearInset} literal per remesh/relight dispatch.
+ * Packed result:
+ * - bits 0..3: -X, +X, -Z, +Z skirt ownership;
+ * - bits 4..7: near-inset flags, currently always zero for protocol
+ *   compatibility.
  */
 export function computeBorderSkirtMasks(chunk: Chunk): number {
 	const myStep = lodStepOfLod(chunk.lodLevel);
-	if (myStep <= 1) return 0;
+
+	/*
+	 * LOD0-3 use a one-voxel step and therefore do not need coarse-boundary
+	 * skirts.
+	 */
+	if (myStep <= 1) {
+		return 0;
+	}
+
+	const chunkX = chunk.chunkX;
+	const chunkY = chunk.chunkY;
+	const chunkZ = chunk.chunkZ;
 
 	let sides = 0;
 
-	const check = (dx: number, dz: number, bit: number): void => {
-		const n = getChunk(chunk.chunkX + dx, chunk.chunkY, chunk.chunkZ + dz);
+	// -X
+	const negativeX = getChunk(chunkX - 1, chunkY, chunkZ);
 
-		if (!n?.isLoaded) {
-			sides |= bit;
-			return;
-		}
+	if (
+		negativeX === undefined ||
+		!negativeX.isLoaded ||
+		lodStepOfLod(negativeX.lodLevel) < myStep
+	) {
+		sides |= 0b0001;
+	}
 
-		if (lodStepOfLod(n.lodLevel) < myStep) {
-			sides |= bit;
-		}
-	};
+	// +X
+	const positiveX = getChunk(chunkX + 1, chunkY, chunkZ);
 
-	check(-1, 0, 1);
-	check(1, 0, 2);
-	check(0, -1, 4);
-	check(0, 1, 8);
+	if (
+		positiveX === undefined ||
+		!positiveX.isLoaded ||
+		lodStepOfLod(positiveX.lodLevel) < myStep
+	) {
+		sides |= 0b0010;
+	}
 
+	// -Z
+	const negativeZ = getChunk(chunkX, chunkY, chunkZ - 1);
+
+	if (
+		negativeZ === undefined ||
+		!negativeZ.isLoaded ||
+		lodStepOfLod(negativeZ.lodLevel) < myStep
+	) {
+		sides |= 0b0100;
+	}
+
+	// +Z
+	const positiveZ = getChunk(chunkX, chunkY, chunkZ + 1);
+
+	if (
+		positiveZ === undefined ||
+		!positiveZ.isLoaded ||
+		lodStepOfLod(positiveZ.lodLevel) < myStep
+	) {
+		sides |= 0b1000;
+	}
+
+	/*
+	 * The high nibble remains zero because near-side skirts now sit directly
+	 * on x/z = 0 rather than being inset.
+	 */
 	return sides;
 }
 

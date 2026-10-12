@@ -2,10 +2,8 @@ import type { SceneContext } from "@babylonjs/lite";
 import { onBeforeRender } from "@babylonjs/lite";
 import { getFinalTerrainHeight } from "../Generation/TerrainHeightMap";
 import { worldToChunkCoord } from "../Lib/VoxelMath";
-import {
-	areChunksLoadedAround,
-	updateChunksAround,
-} from "../World/Chunk/ChunkLoadingSystem";
+import { updateChunksAround } from "../World/Chunk/ChunkLoadingSystem";
+import { areChunksLoadedAround } from "../World/Chunk/Loading/ChunkReadiness";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import {
 	getSpawnPosition,
@@ -17,165 +15,265 @@ import type { Player } from "./Player";
 const PREFIX = "[PlayerLoadingGate]";
 
 /**
- * Lite (native) port of PlayerLoadingGate.
- * Reuses the core-free ChunkLoadingSystem streaming logic.
+ * Holds player movement until a valid spawn has been selected and nearby
+ * collision chunks are available.
  *
- * The world spawn point is generated once on the server at world creation
- * (VoxelRoom.ensureWorldSpawn) and delivered to the client via the
- * SpawnPosition message, which sets it via setSpawnPosition(). This gate waits
- * for that spawn, teleports the player to it, and unlocks movement once the
- * spawn-area chunk is loaded (collision present) so the player can't fall
- * through. A surface fallback covers the no-server (singleplayer) case.
+ * Streaming is requested only when the target chunk changes. Repeated frames at
+ * the same locked position perform only the inexpensive readiness check.
  */
 export class PlayerLoadingGate {
 	private static readonly SPAWN_CHUNK_RADIUS = 1;
 	private static readonly SPAWN_READY_FRAME_THRESHOLD = 10;
-	// Short safety net: unlock even if the spawn-area chunks are slow to load
-	// so the player is never stuck behind a long loading screen.
-	private static readonly SPAWN_PROTECTION_TIMEOUT_MS = 5000;
-	// If the world-spawn preparation stalls, force a fallback so the player is
-	// never permanently stuck at the loading screen.
-	private static readonly GATE_FALLBACK_TIMEOUT_MS = 30000;
 
-	private spawnReadyFrames = 0;
+	/**
+	 * Maximum time to protect the player after reaching the spawn position.
+	 *
+	 * This starts after the player is teleported or a saved position is
+	 * restored, not when the gate object is constructed.
+	 */
+	private static readonly SPAWN_PROTECTION_TIMEOUT_MS = 5_000;
+
+	/**
+	 * Maximum time to wait for authoritative spawn preparation before creating
+	 * the single-player terrain fallback.
+	 */
+	private static readonly GATE_FALLBACK_TIMEOUT_MS = 30_000;
+
 	private isActive = true;
-	private readonly startMs: number;
+	private spawnReadyFrames = 0;
+
+	private readonly gateStartedMs: number;
+	private spawnProtectionStartedMs = -1;
+
 	private teleported = false;
 	private fallbackForced = false;
 
-	// Last chunk coordinate handed to updateChunksAround(). Seeded to an
-	// impossible value so the first real call always runs.
-	private lastStreamedCx = Number.NaN;
-	private lastStreamedCy = Number.NaN;
-	private lastStreamedCz = Number.NaN;
+	/**
+	 * A streaming update may be asynchronous. While one is outstanding, retain
+	 * only the latest requested coordinate rather than starting overlapping
+	 * updates for intermediate positions.
+	 */
+	private streamUpdatePending = false;
+	private queuedStreamUpdate = false;
+
+	private queuedChunkX = 0;
+	private queuedChunkY = 0;
+	private queuedChunkZ = 0;
+	private queuedWorldX = 0;
+	private queuedWorldZ = 0;
+
+	/** Last coordinates submitted to updateChunksAround. */
+	private hasStreamedCoordinates = false;
+	private lastStreamedCx = 0;
+	private lastStreamedCy = 0;
+	private lastStreamedCz = 0;
 
 	constructor(
 		private readonly scene: SceneContext,
 		private readonly player: Player,
 	) {
-		this.startMs = performance.now();
+		this.gateStartedMs = performance.now();
+
 		this.player.playerVehicle.lockMovementAtCurrentPosition();
+
 		onBeforeRender(this.scene, () => {
 			try {
 				this.update();
-			} catch (err) {
-				console.error(PREFIX, "update threw:", err);
+			} catch (error) {
+				console.error(PREFIX, "update threw:", error);
 			}
 		});
 	}
 
 	public dispose(): void {
-		if (!this.isActive) return;
-		this.isActive = false;
-		if (this.player.playerVehicle.isMovementLocked) {
-			this.player.playerVehicle.unlockMovement();
+		if (!this.isActive) {
+			return;
 		}
-		//console.log(PREFIX, "disposed (player unlocked)");
+
+		this.isActive = false;
+		this.queuedStreamUpdate = false;
+
+		const vehicle = this.player.playerVehicle;
+
+		if (vehicle.isMovementLocked) {
+			vehicle.unlockMovement();
+		}
 	}
 
 	private update(): void {
-		if (!this.isActive) return;
+		if (!this.isActive) {
+			return;
+		}
 
-		// Wait until the world spawn has been prepared (and persisted) before
-		// moving the player there. If preparation stalls, force a fallback.
+		const nowMs = performance.now();
+
+		/*
+		 * Wait for the authoritative spawn. In single-player or after a failed
+		 * spawn preparation, install a deterministic terrain-surface fallback.
+		 */
 		if (!isSpawnPrepared()) {
-			const stalled =
-				performance.now() - this.startMs >
-				PlayerLoadingGate.GATE_FALLBACK_TIMEOUT_MS;
-			if (stalled && !this.fallbackForced) {
-				// Last-resort fallback for the no-server (singleplayer) case:
-				// drop the player onto the terrain surface near the origin.
-				// In multiplayer the server's SpawnPosition message sets the
-				// spawn well before this timeout, so this path is not taken.
-				console.warn(PREFIX, "spawn prep stalled -> surface fallback");
+			if (
+				!this.fallbackForced &&
+				nowMs - this.gateStartedMs > PlayerLoadingGate.GATE_FALLBACK_TIMEOUT_MS
+			) {
+				console.warn(PREFIX, "spawn preparation stalled -> surface fallback");
+
 				setSpawnPosition({
 					x: 0,
-					y: getFinalTerrainHeight(0, 0) + 2 + 0.9,
+					y: getFinalTerrainHeight(0, 0) + 2.9,
 					z: 0,
 				});
+
 				this.fallbackForced = true;
 			} else {
 				return;
 			}
 		}
 
-		if (
-			!this.teleported &&
-			!this.player.playerVehicle.hasRestoredSavedPosition()
-		) {
-			const p = getSpawnPosition();
-			console.log(PREFIX, "teleporting player to spawn", p);
-			this.player.playerVehicle.teleportTo(p.x, p.y, p.z);
+		const vehicle = this.player.playerVehicle;
+
+		if (!this.teleported) {
+			if (!vehicle.hasRestoredSavedPosition()) {
+				const spawn = getSpawnPosition();
+
+				console.log(PREFIX, "teleporting player to spawn", spawn);
+
+				vehicle.teleportTo(spawn.x, spawn.y, spawn.z);
+			}
+
+			/*
+			 * A restored position is just as valid as an explicit spawn
+			 * teleport. Mark initialization complete in either case so this
+			 * branch is never reconsidered on later frames.
+			 */
 			this.teleported = true;
+			this.spawnProtectionStartedMs = nowMs;
 		}
 
-		// Only stream chunks once the player is at the real spawn — loading
-		// around the pre-teleport (origin) position leaves residual chunks at
-		// 0,0. Chunk coords are derived from the post-teleport position.
-		const playerPos = this.player.position;
-		const chunkX = worldToChunkCoord(playerPos.x);
-		const chunkY = worldToChunkCoord(playerPos.y);
-		const chunkZ = worldToChunkCoord(playerPos.z);
+		const position = this.player.position;
 
-		/*
-		 * PERF: this used to re-run the full updateChunksAround() reconcile +
-		 * shell + underground + refresh + sort on EVERY frame until the spawn
-		 * chunk loaded — up to 300 frames at the 5s fallback timeout, and for
-		 * the whole window it duplicated the same call in streamTick (which is
-		 * chunk-change gated). Reconcile is a ~539-chunk scan, so during load-in
-		 * it was pure per-frame overhead on a thread that is already the
-		 * bottleneck. Gate it on the chunk coordinate changing, which is all
-		 * it ever needed to do: the shell is derived from the coords, and
-		 * standing still has nothing new to reconcile.
-		 */
+		const chunkX = worldToChunkCoord(position.x);
+		const chunkY = worldToChunkCoord(position.y);
+		const chunkZ = worldToChunkCoord(position.z);
+
 		if (
+			!this.hasStreamedCoordinates ||
 			chunkX !== this.lastStreamedCx ||
 			chunkY !== this.lastStreamedCy ||
 			chunkZ !== this.lastStreamedCz
 		) {
-			this.lastStreamedCx = chunkX;
-			this.lastStreamedCy = chunkY;
-			this.lastStreamedCz = chunkZ;
-
-			void updateChunksAround(
+			this.requestStreamingUpdate(
 				chunkX,
 				chunkY,
 				chunkZ,
-				SETTING_PARAMS.RENDER_DISTANCE,
-				SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
-				undefined,
-				undefined,
-				undefined,
-				playerPos.x,
-				playerPos.z,
+				position.x,
+				position.z,
 			);
 		}
+
+		const radius = PlayerLoadingGate.SPAWN_CHUNK_RADIUS;
 
 		const chunksReady = areChunksLoadedAround(
 			chunkX,
 			chunkY,
 			chunkZ,
-			PlayerLoadingGate.SPAWN_CHUNK_RADIUS,
-			PlayerLoadingGate.SPAWN_CHUNK_RADIUS,
+			radius,
+			radius,
 		);
-		const timedOut =
-			performance.now() - this.startMs >
-			PlayerLoadingGate.SPAWN_PROTECTION_TIMEOUT_MS;
 
-		// Unlock once the spawn chunk is loaded (collision data present) so the
-		// player won't fall through. We intentionally do NOT wait for the visual
-		// mesh — that can lag far behind and was keeping the player locked for
-		// up to two minutes.
+		const protectionStartedMs = this.spawnProtectionStartedMs;
+
+		const timedOut =
+			protectionStartedMs >= 0 &&
+			nowMs - protectionStartedMs >
+				PlayerLoadingGate.SPAWN_PROTECTION_TIMEOUT_MS;
+
 		if (!chunksReady && !timedOut) {
 			this.spawnReadyFrames = 0;
 			return;
 		}
 
 		this.spawnReadyFrames++;
+
 		if (this.spawnReadyFrames < PlayerLoadingGate.SPAWN_READY_FRAME_THRESHOLD) {
 			return;
 		}
 
 		this.dispose();
+	}
+
+	/**
+	 * Queue the latest streaming coordinate.
+	 *
+	 * At most one updateChunksAround call is active for this gate. If the target
+	 * changes while it is running, intermediate coordinates are collapsed into
+	 * one follow-up request for the newest position.
+	 */
+	private requestStreamingUpdate(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		worldX: number,
+		worldZ: number,
+	): void {
+		this.lastStreamedCx = chunkX;
+		this.lastStreamedCy = chunkY;
+		this.lastStreamedCz = chunkZ;
+		this.hasStreamedCoordinates = true;
+
+		if (this.streamUpdatePending) {
+			this.queuedChunkX = chunkX;
+			this.queuedChunkY = chunkY;
+			this.queuedChunkZ = chunkZ;
+			this.queuedWorldX = worldX;
+			this.queuedWorldZ = worldZ;
+			this.queuedStreamUpdate = true;
+			return;
+		}
+
+		this.startStreamingUpdate(chunkX, chunkY, chunkZ, worldX, worldZ);
+	}
+
+	private startStreamingUpdate(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		worldX: number,
+		worldZ: number,
+	): void {
+		this.streamUpdatePending = true;
+
+		void updateChunksAround(
+			chunkX,
+			chunkY,
+			chunkZ,
+			SETTING_PARAMS.RENDER_DISTANCE,
+			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
+			undefined,
+			undefined,
+			undefined,
+			worldX,
+			worldZ,
+		)
+			.catch((error: unknown) => {
+				console.error(PREFIX, "updateChunksAround failed:", error);
+			})
+			.finally(() => {
+				this.streamUpdatePending = false;
+
+				if (!this.isActive || !this.queuedStreamUpdate) {
+					return;
+				}
+
+				this.queuedStreamUpdate = false;
+
+				this.startStreamingUpdate(
+					this.queuedChunkX,
+					this.queuedChunkY,
+					this.queuedChunkZ,
+					this.queuedWorldX,
+					this.queuedWorldZ,
+				);
+			});
 	}
 }
