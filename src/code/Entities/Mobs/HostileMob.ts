@@ -12,7 +12,8 @@ import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
 import {
 	getBlockByWorldCoords,
 	getLightByWorldCoords,
-	resolveBlockAtWorldCoords,
+	type ResolvedBlock,
+	resolveBlockAtWorldCoordsInto,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
@@ -56,6 +57,16 @@ const WATER_MAX_DOWN_SPEED = -0.35;
 const WATER_HORIZONTAL_DAMPING = 2.0;
 const WATER_VERTICAL_DAMPING = 3.3;
 const SWIM_BUOYANCY = 6.0;
+
+// PERF: shared scratch for the cliff-guard column scan. Each scan probes up to
+// LEDGE_WATER_SCAN_DEPTH voxels; the result is consumed within the iteration,
+// so one object keeps the scan allocation-free.
+const _ledgeScratch: ResolvedBlock = {
+	blockId: 0,
+	blockState: 0,
+	loaded: false,
+	unloaded: false,
+};
 
 const enum HostileMobState {
 	Idle,
@@ -605,13 +616,15 @@ export abstract class HostileMob extends BaseMob {
 	#scanLedgeDropAhead(px: number, feetY: number, pz: number): boolean {
 		const solidScanDepth = MAX_SAFE_LEDGE_DROP + LEDGE_SCAN_SLACK;
 		for (let dy = 0; dy <= solidScanDepth; dy++) {
-			const r = resolveBlockAtWorldCoords(px, feetY - dy, pz);
+			resolveBlockAtWorldCoordsInto(px, feetY - dy, pz, _ledgeScratch);
+			const r = _ledgeScratch;
 			if (r.unloaded) return false;
 			if (r.blockId === BlockType.Water) return false;
 			if (isCollidableBlock(r.blockId)) return dy > MAX_SAFE_LEDGE_DROP;
 		}
 		for (let dy = solidScanDepth + 1; dy <= LEDGE_WATER_SCAN_DEPTH; dy++) {
-			const r = resolveBlockAtWorldCoords(px, feetY - dy, pz);
+			resolveBlockAtWorldCoordsInto(px, feetY - dy, pz, _ledgeScratch);
+			const r = _ledgeScratch;
 			if (r.unloaded) return false;
 			if (r.blockId === BlockType.Water) return false;
 			if (isCollidableBlock(r.blockId)) return true;

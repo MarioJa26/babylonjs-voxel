@@ -2,7 +2,7 @@
  * One authoritative clock sample per frame, shared by every system that needs
  * to make a time-based decision.
  *
- * PERF/RATIONALE: before this, ~114 call sites across 32 files called
+ * PERF/RATIONALE: before this, ~130 call sites across 33 files called
  * `performance.now()` independently. The cost is not the call itself — it is
  * that subsystems reached *different* conclusions from the same frame. A chunk
  * request deadline, a particle throttle, and a network interpolation step all
@@ -13,10 +13,21 @@
  * makes timeout and interpolation decisions mutually consistent and lets the
  * profiler correlate cross-system work by `frameId`.
  *
- * IMPORTANT: network receive handlers legitimately run OUTSIDE the frame loop
- * (they fire in Colyseus message tasks). Those must keep using
- * `performance.now()` directly — they are not part of any frame, and stamping
- * them with the last frame's clock would make request deadlines wrong.
+ * IMPORTANT — TWO RULES, both easy to get wrong:
+ *
+ * 1. Network receive handlers legitimately run OUTSIDE the frame loop (they
+ *    fire in Colyseus message tasks). Those must keep using
+ *    `performance.now()` directly — they are not part of any frame, and
+ *    stamping them with the last frame's clock would make request deadlines
+ *    wrong.
+ *
+ * 2. `nowMs` is ONE sample per frame, so it must NEVER be used to measure
+ *    elapsed time *within* a frame. A deadline written as
+ *    `frameClock.nowMs - startMs` is always 0 and never fires. Sub-frame
+ *    duration measurement stays on `performance.now()`; `frameClock` is for
+ *    agreeing on "now" across subsystems, not for timing. Budget loops in
+ *    ChunkStreamingController, ChunkWorkerPool and ChunkProcessScheduler all
+ *    use `performance.now()` for this reason.
  */
 export interface FrameClock {
 	/** Wall-clock sample taken once at the top of the frame. */

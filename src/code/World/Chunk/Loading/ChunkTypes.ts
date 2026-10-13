@@ -56,6 +56,17 @@ export type InFlightProcessState = {
 	hydrateIndex: number;
 
 	/**
+	 * Hydration targets skipped because the Chunk object they referenced had
+	 * been disposed and recycled onto different coordinates while the storage
+	 * read was in flight.
+	 *
+	 * Should be zero in normal operation. A rising count means chunks are being
+	 * unloaded faster than hydration resolves, which is the same pressure that
+	 * produces orphan chunks — worth surfacing rather than silently dropping.
+	 */
+	hydrationRecycledDrops: number;
+
+	/**
 	 * Caller-owned scratch set used while rebuilding the load queue after
 	 * processing fails. It is reused instead of allocating a new Set for
 	 * every recovery.
@@ -80,6 +91,10 @@ export type ChunkLoadingDebugStats = {
 	// controller is dropping requests; "total" climbing steadily is the stall.
 	lastOrphanRescued: number;
 	totalOrphanRescued: number;
+	// Hydration writes skipped because the Chunk object was recycled onto
+	// different coordinates mid-read. Zero in normal operation; a climbing total
+	// means unloads are outrunning hydration.
+	hydrationRecycledDrops: number;
 	lastLoadedFromStorage: number;
 	lastGenerated: number;
 	lastHydrated: number;

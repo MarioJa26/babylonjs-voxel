@@ -30,9 +30,10 @@ import type { Mount } from "../Entities/Mount";
 import { playLandingDust } from "../Maps/BlockBreakParticles";
 import type { BoatChunk } from "../World/Boat/BoatChunk";
 import {
-	getBlockAndStateByWorldCoords,
+	type ResolvedBlock,
+	getBlockAndStateByWorldCoordsInto,
 	getBlockByWorldCoords,
-	resolveBlockAtWorldCoords,
+	resolveBlockAtWorldCoordsInto,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
 import {
@@ -72,6 +73,27 @@ type PlayerVehicleMotorOptions = {
 const _scratchA: Vec3 = vec3(0, 0, 0);
 const _scratchB: Vec3 = vec3(0, 0, 0);
 const _scratchC: Vec3 = vec3(0, 0, 0);
+
+// PERF: scratch for the per-voxel player collision sampler.
+// createVoxelColliderBlockSampler destructures the sampler's result
+// immediately, so nothing retains it and a shared scratch is safe here.
+const _playerVoxelScratch: ResolvedBlock = {
+	blockId: 0,
+	blockState: 0,
+	loaded: false,
+	unloaded: false,
+};
+
+// PERF: scratch pair for #isClimbableWall. These two MUST be separate objects —
+// the method compares the cell above the contact against the cell below it.
+const _climbAbove: { blockId: number; blockState: number } = {
+	blockId: 0,
+	blockState: 0,
+};
+const _climbBelow: { blockId: number; blockState: number } = {
+	blockId: 0,
+	blockState: 0,
+};
 
 // PERF: Inline quaternion rotation to avoid `applyRotationQuaternion`
 // allocating a new Vector3 on every call. Uses the standard Hamilton product.
@@ -282,9 +304,10 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			createVoxelColliderBlockSampler(
 				(x, y, z) => {
 					// PERF: single chunk resolution per voxel (was two: a loaded
-					// check via getChunk + a block/state read). resolveBlockAtWorldCoords
+					// check via getChunk + a block/state read). resolveBlockAtWorldCoordsInto
 					// resolves once and reports unloaded so we can treat it as solid.
-					const r = resolveBlockAtWorldCoords(x, y, z);
+					resolveBlockAtWorldCoordsInto(x, y, z, _playerVoxelScratch);
+					const r = _playerVoxelScratch;
 					if (r.unloaded) {
 						// Chunk under this probe is not loaded: treat it as solid
 						// terrain so the player collides with / rests on it instead
@@ -970,10 +993,14 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			aboveCollidable = isCollidableBlock(above);
 			belowCollidable = isCollidableBlock(below);
 		} else {
-			const above = getBlockAndStateByWorldCoords(v.x, v.y + 1, v.z);
-			const below = getBlockAndStateByWorldCoords(v.x, v.y - 1, v.z);
-			aboveCollidable = isCollidableBlock(above.blockId);
-			belowCollidable = isCollidableBlock(below.blockId);
+			// Two DISTINCT cells. These used to share one scratch result, so
+			// aboveCollidable and belowCollidable were always identical and the
+			// `above || !below` return below was unconditionally true — every
+			// contacted block counted as a climbable wall.
+			getBlockAndStateByWorldCoordsInto(v.x, v.y + 1, v.z, _climbAbove);
+			aboveCollidable = isCollidableBlock(_climbAbove.blockId);
+			getBlockAndStateByWorldCoordsInto(v.x, v.y - 1, v.z, _climbBelow);
+			belowCollidable = isCollidableBlock(_climbBelow.blockId);
 		}
 		return aboveCollidable || !belowCollidable;
 	}

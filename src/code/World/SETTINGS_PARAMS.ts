@@ -141,4 +141,18 @@ export const SETTING_PARAMS = {
 	// Merged-group mesh builds per frame. Builds are driven off-frame from the
 	// worker pool, so this bounds the ingest+upload side.
 	FRAME_MESH_BUILD_BUDGET: 2,
+	// Aggregate millisecond ceiling for all frame-owned chunk-pipeline work.
+	//
+	// This is the axis that fixes the "each subsystem is inside its own budget
+	// but the frame is still long" failure. Roughly a dozen places enforce a
+	// private 2-5 ms deadline (loaded refresh, mesh ingest, merged-group flush,
+	// queue slice, orphan sweep, deferred lighting, …). Each one still keeps its
+	// own deadline as a secondary cap; this is the shared pool they all draw
+	// from, so the SUM is what gets bounded.
+	//
+	// Must stay comfortably below the frame time so rendering, physics and the
+	// UI still fit. 4 ms leaves ~12 ms at 60 Hz for everything that is not
+	// chunk pipeline. Raise it only if the HUD shows the pipeline idling while
+	// frames are still long — that would mean the ceiling is not the bottleneck.
+	FRAME_STREAMING_TIME_BUDGET_MS: 4.0,
 };

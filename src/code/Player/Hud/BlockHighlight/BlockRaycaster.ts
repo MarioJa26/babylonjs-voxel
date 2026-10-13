@@ -10,7 +10,8 @@ import {
 import { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import {
-	getBlockAndStateByWorldCoords,
+	type BlockAndStateOut,
+	getBlockAndStateByWorldCoordsInto,
 	getTerrainBlockByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getBlockStateByWorldCoords } from "@/code/World/Chunk/Loading/ChunkWorldMutations";
@@ -57,9 +58,13 @@ const FULL_BLOCK_YES = 2;
 const _fullBlockBaseCache: number[] = [];
 
 // Capture-free module-level fence neighbor lookup — a fresh closure used to
-// be allocated for every fence voxel the DDA visited.
+// be allocated for every fence voxel the DDA visited. The scratch keeps this
+// allocation-free per fence voxel, of which the DDA visits four neighbors.
+const _fenceNeighborScratch: BlockAndStateOut = { blockId: 0, blockState: 0 };
+
 function fenceNeighborIdLookup(wx: number, wy: number, wz: number): number {
-	return getBlockAndStateByWorldCoords(wx, wy, wz).blockId;
+	getBlockAndStateByWorldCoordsInto(wx, wy, wz, _fenceNeighborScratch);
+	return _fenceNeighborScratch.blockId;
 }
 
 const CUBE_SHAPE_INDEX = getCubeShapeIndex();

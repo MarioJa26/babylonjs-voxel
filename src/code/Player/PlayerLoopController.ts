@@ -34,6 +34,10 @@ import {
 	getChunkLatencyPercentiles,
 	getChunkPipelineStats,
 } from "../World/Chunk/Loading/ChunkPipeline";
+import {
+	FRAME_WORK_BUDGET,
+	FrameWorkKind,
+} from "../Lib/FrameWorkBudget";
 import { getPipelineStats } from "../Lib/PipelineStats";
 import {
 	getMergedLayerMemoryStats,
@@ -1280,6 +1284,16 @@ export class PlayerLoopController {
 			`${loadStats.lastOrphanRescued} (total ${loadStats.totalOrphanRescued})`,
 			"chunks",
 		);
+		// Non-zero means a Chunk object was disposed and recycled onto other
+		// coordinates while its hydration read was in flight, so the write was
+		// dropped rather than corrupting a neighbour. Should always be 0.
+		if (loadStats.hydrationRecycledDrops > 0) {
+			PlayerHud.updateDebugInfo(
+				"Hydration Recycled",
+				`${loadStats.hydrationRecycledDrops} [press P]`,
+				"chunks",
+			);
+		}
 		// IO timeouts mean a storage await never settled and had to be abandoned.
 		// Any non-zero value is a bug worth reporting — press P for the full dump.
 		const ioTimeouts = getChunkIoTimeoutCount();
@@ -1342,6 +1356,22 @@ export class PlayerLoopController {
 		const pipeline = getPipelineStats();
 		const latency = getChunkLatencyPercentiles();
 		const stageCounts = getChunkPipelineStats().counts;
+		// Aggregate frame budget. Every chunk-pipeline subsystem draws from this
+		// one pool, so a low number here with a long frame means the cost is
+		// somewhere else; a zero number with a long frame means the pool is the
+		// binding constraint and FRAME_STREAMING_TIME_BUDGET_MS is the knob.
+		const kindMs = FRAME_WORK_BUDGET.readKindElapsed();
+		PlayerHud.updateDebugInfo(
+			"Frame Budget",
+			`left:${FRAME_WORK_BUDGET.remainingMs().toFixed(2)}ms ` +
+				`str:${kindMs[FrameWorkKind.Streaming].toFixed(2)} ` +
+				`sto:${kindMs[FrameWorkKind.Storage].toFixed(2)} ` +
+				`dec:${kindMs[FrameWorkKind.Decompression].toFixed(2)} ` +
+				`mes:${kindMs[FrameWorkKind.Meshing].toFixed(2)} ` +
+				`lit:${kindMs[FrameWorkKind.Lighting].toFixed(2)}`,
+			"workers",
+		);
+
 		PlayerHud.updateDebugInfo(
 			"Chunk Pipeline",
 			`req:${pipeline.chunksRequested} rcv:${stageCounts[ChunkPipelineStage.Received]} ` +

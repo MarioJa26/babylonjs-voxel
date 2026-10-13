@@ -6,7 +6,7 @@ import type { Player } from "@/code/Player/Player";
 import {
 	getBlockByWorldCoords,
 	registerChunkBoundEntity,
-	resolveBlockAtWorldCoords,
+	resolveBlockAtWorldCoordsInto,
 	unregisterChunkBoundEntity,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
@@ -190,13 +190,16 @@ export abstract class BaseMob implements Mob {
 					// leaving the mob accumulating fall velocity forever.
 					// Once the chunk streams in the collider snaps down to
 					// the real surface.
-					const r = resolveBlockAtWorldCoords(wx, wy, wz);
-					if (r.unloaded) return UNLOADED_SOLID_RESOLVE;
-					if (!isCollidableBlock(r.blockId)) return null;
+					resolveBlockAtWorldCoordsInto(
+						wx,
+						wy,
+						wz,
+						_voxelResolveScratch,
+					);
+					if (_voxelResolveScratch.unloaded) return UNLOADED_SOLID_RESOLVE;
+					if (!isCollidableBlock(_voxelResolveScratch.blockId)) return null;
 
 					// Shared scratch — consumed immediately by the sampler.
-					_voxelResolveScratch.blockId = r.blockId;
-					_voxelResolveScratch.blockState = r.blockState;
 					return _voxelResolveScratch;
 				},
 				{

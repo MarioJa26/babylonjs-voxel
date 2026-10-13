@@ -7,7 +7,8 @@ import { Map1 } from "@/code/Maps/Map1";
 import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
 import {
 	getBlockByWorldCoords,
-	resolveBlockAtWorldCoords,
+	type ResolvedBlock,
+	resolveBlockAtWorldCoordsInto,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
@@ -33,6 +34,22 @@ const TARGET_VERTICAL_DISTANCE = 0.5;
 
 const CHUNK_SHIFT = 5;
 const CHUNK_MASK = Chunk.SIZE - 1;
+
+// PERF: distinct scratches for the target cell and the cell above it. These
+// must not share an object — the check rejects a mob whose head cell is solid,
+// which is only meaningful if the two results came from different voxels.
+const _waterTarget: ResolvedBlock = {
+	blockId: 0,
+	blockState: 0,
+	loaded: false,
+	unloaded: false,
+};
+const _waterHead: ResolvedBlock = {
+	blockId: 0,
+	blockState: 0,
+	loaded: false,
+	unloaded: false,
+};
 
 /**
  * Result of sampling the mob's water occupancy.
@@ -506,23 +523,32 @@ export abstract class AquaticMob extends BaseMob {
 				continue;
 			}
 
-			const targetBlock = resolveBlockAtWorldCoords(targetX, targetY, targetZ);
-
-			if (targetBlock.unloaded || targetBlock.blockId !== BlockType.Water) {
-				continue;
-			}
-
-			const headBlock = resolveBlockAtWorldCoords(
+			resolveBlockAtWorldCoordsInto(
 				targetX,
-				targetY + 1,
+				targetY,
 				targetZ,
+				_waterTarget,
 			);
 
 			if (
-				!headBlock.unloaded &&
-				headBlock.blockId !== BlockType.Water &&
-				headBlock.blockId !== BlockType.Air &&
-				isCollidableBlock(headBlock.blockId)
+				_waterTarget.unloaded ||
+				_waterTarget.blockId !== BlockType.Water
+			) {
+				continue;
+			}
+
+			resolveBlockAtWorldCoordsInto(
+				targetX,
+				targetY + 1,
+				targetZ,
+				_waterHead,
+			);
+
+			if (
+				!_waterHead.unloaded &&
+				_waterHead.blockId !== BlockType.Water &&
+				_waterHead.blockId !== BlockType.Air &&
+				isCollidableBlock(_waterHead.blockId)
 			) {
 				continue;
 			}

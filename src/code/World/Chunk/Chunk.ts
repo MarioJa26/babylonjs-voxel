@@ -303,6 +303,18 @@ export class Chunk {
 		null;
 	public static onLightChunkDisposed: ((chunk: Chunk) => void) | null = null;
 
+	/**
+	 * Fired when a chunk stops contributing to any neighbour's cached 26-bit
+	 * presence mask without going through the light-worker registration path.
+	 *
+	 * Separate from {@link onLightChunkLoaded} because the two do different jobs.
+	 * That one publishes voxel/light backing to the worker and therefore needs a
+	 * chunk that actually has voxel data; this one only means "the surrounding
+	 * masks are stale, drop them". Firing the light hook for a LOD-only chunk
+	 * would register a chunk the worker cannot read.
+	 */
+	public static onChunkPresenceChanged: ((chunk: Chunk) => void) | null = null;
+
 	private _block_array: Uint8Array | Uint16Array | null = null;
 	private _isUniform = true;
 	private _uniformBlockId = 0;
@@ -687,6 +699,7 @@ export class Chunk {
 	}
 
 	public loadLodOnlyFromStorage(scheduleRemesh = false): void {
+		const hadVoxelData = this._hasVoxelData;
 		this.resetVoxelState();
 		this.resetLightState();
 		this.updateLightView();
@@ -696,6 +709,28 @@ export class Chunk {
 		Chunk.loadedChunks.add(this);
 		Chunk.loadedChunkIndex.register(this);
 		this.isTerrainScheduled = false;
+
+		/*
+		 * A chunk re-loaded at far LOD goes (isLoaded && hasVoxelData) ->
+		 * (isLoaded && !hasVoxelData). That flips its bit in all 26 neighbours'
+		 * cached presence masks, so those masks are now stale and the border
+		 * faces derived from them will be wrong until something else clears
+		 * them — which previously meant a corrective remesh per neighbour.
+		 *
+		 * onLightChunkLoaded is deliberately NOT fired here: a LOD-only chunk
+		 * has no voxel data and must not be registered with the light worker.
+		 * The mask invalidation therefore needs its own hook.
+		 *
+		 * The common case (a freshly obtained shell, hadVoxelData === false)
+		 * changes no mask at all, because the predicate is
+		 * `isLoaded && hasVoxelData` and the chunk counts either way. Firing
+		 * unconditionally would cost 27 map lookups per far-LOD load for
+		 * nothing, so the transition is tested rather than assumed.
+		 */
+		if (hadVoxelData) {
+			Chunk.onChunkPresenceChanged?.(this);
+		}
+
 		this.linkNeighbors();
 		if (scheduleRemesh) this.scheduleRemesh();
 	}

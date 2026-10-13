@@ -10,6 +10,10 @@ import {
 	isOceanFloorBandChunk,
 } from "@/code/Generation/TerrainHeightMap";
 import { isInCave } from "@/code/Lib/GameRuntimeState";
+import {
+	FRAME_WORK_BUDGET,
+	FrameWorkKind,
+} from "@/code/Lib/FrameWorkBudget";
 import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
 import { FarTileManager } from "../../FarTiles/FarTileManager";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
@@ -1129,12 +1133,31 @@ export class ChunkStreamingController {
 		// time keeps the worst-case frame contribution inside the same budget the
 		// mesh drain already uses. `processed !== 0` keeps a minimum of one chunk
 		// per frame so the queue can never stall on budget alone.
+		//
+		// Two deadlines apply, and both must pass: this drain's own local
+		// ceiling, and the frame-wide aggregate pool every other chunk-pipeline
+		// subsystem also draws from. Checking only the local one is what let a
+		// frame run the loaded refresh AND the mesh ingest AND the orphan sweep
+		// AND a queue slice, each inside its own limit.
+		//
+		// NOTE: elapsed time here uses performance.now(), NOT frameClock.
+		// frameClock is one sample per frame by design, so every read within a
+		// single frame returns the same value and a deadline built on it never
+		// fires. It is for agreeing on "now" across subsystems, not for measuring
+		// duration. See Lib/FrameClock.
 		const startMs = performance.now();
 		const budgetMs = ChunkStreamingController.LOADED_REFRESH_FRAME_BUDGET_MS;
 
 		try {
 			while (processed < maxChunks) {
-				if (processed !== 0 && performance.now() - startMs >= budgetMs) {
+				if (
+					processed !== 0 &&
+					(!FRAME_WORK_BUDGET.canContinue(
+						FrameWorkKind.Streaming,
+						budgetMs,
+					) ||
+						performance.now() - startMs >= budgetMs)
+				) {
 					break;
 				}
 
@@ -1147,6 +1170,8 @@ export class ChunkStreamingController {
 					continue;
 				}
 
+				const workStartMs = performance.now();
+
 				this.processTargetChunkCoordinate(
 					chunk.chunkX,
 					chunk.chunkY,
@@ -1157,6 +1182,10 @@ export class ChunkStreamingController {
 					lodRuleSet,
 				);
 
+				FRAME_WORK_BUDGET.record(
+					FrameWorkKind.Streaming,
+					performance.now() - workStartMs,
+				);
 				processed++;
 			}
 		} finally {
@@ -1221,8 +1250,23 @@ export class ChunkStreamingController {
 		let rescued = 0;
 
 		for (const chunk of Chunk.chunkInstances.values()) {
-			if (rescued >= ChunkStreamingController.ORPHAN_SWEEP_MAX_PER_PASS) break;
-			if (rescued !== 0 && performance.now() - startedMs >= budgetMs) break;
+			if (rescued >= ChunkStreamingController.ORPHAN_SWEEP_MAX_PER_PASS) {
+				break;
+			}
+			// Same two-deadline rule as the loaded-refresh drain: the sweep's own
+			// 3.5 ms ceiling AND the shared frame pool. This runs on the same frame
+			// as the refresh drain and the queue slice, so leaving it on its local
+			// budget alone lets those three stack.
+			if (
+				rescued !== 0 &&
+				(!FRAME_WORK_BUDGET.canContinue(
+					FrameWorkKind.Streaming,
+					budgetMs,
+				) ||
+					performance.now() - startedMs >= budgetMs)
+			) {
+				break;
+			}
 
 			// Only chunks that still claim to want loading are candidates; a
 			// chunk with the flag clear is either unloaded-by-design (culled) or

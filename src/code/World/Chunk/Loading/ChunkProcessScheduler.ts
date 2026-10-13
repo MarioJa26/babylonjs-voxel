@@ -1,6 +1,10 @@
+import {
+	FRAME_WORK_BUDGET,
+	FrameWorkKind,
+} from "@/code/Lib/FrameWorkBudget";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
-import type { Chunk } from "../Chunk";
+import { Chunk } from "../Chunk";
 import type { QueuedChunkRequest } from "./ChunkStreamingController";
 import { type InFlightProcessState, ProcessStage } from "./ChunkTypes";
 
@@ -121,8 +125,18 @@ export class ChunkProcessScheduler {
 		return this._ioTimedOut.count;
 	}
 
+	/**
+	 * Hydration writes skipped because the Chunk object had been recycled onto
+	 * different coordinates mid-read. Zero in normal operation; see
+	 * InFlightProcessState.hydrationRecycledDrops.
+	 */
+	public getHydrationRecycledDropCount(): number {
+		return this._totalHydrationRecycledDrops;
+	}
+
 	private isProcessing = false;
 	private inFlightProcessState: InFlightProcessState | null = null;
+	private _totalHydrationRecycledDrops = 0;
 	private readonly _state: InFlightProcessState =
 		this.createReusableProcessState();
 	private processContinuationScheduled = false;
@@ -198,6 +212,7 @@ export class ChunkProcessScheduler {
 			hydrateChunks: [],
 			hydrateMap: new Map(),
 			hydrateIndex: 0,
+			hydrationRecycledDrops: 0,
 
 			queuedLoadIdsScratch: new Set<bigint>(),
 		};
@@ -246,6 +261,7 @@ export class ChunkProcessScheduler {
 		state.hydrateChunks.length = 0;
 		state.hydrateMap.clear();
 		state.hydrateIndex = 0;
+		state.hydrationRecycledDrops = 0;
 	}
 
 	public async processQueues(): Promise<void> {
@@ -716,28 +732,50 @@ export class ChunkProcessScheduler {
 					}
 
 					case ProcessStage.ApplyHydration: {
-						while (
-							state.hydrateIndex < state.hydrateChunks.length &&
-							this.hasBudget(state)
-						) {
-							const chunk = state.hydrateChunks[state.hydrateIndex++];
+					while (
+						state.hydrateIndex < state.hydrateChunks.length &&
+						this.hasBudget(state)
+					) {
+						const chunk = state.hydrateChunks[state.hydrateIndex++];
 
-							if (!chunk.isTerrainScheduled) {
-								if (!chunk.isLoaded) {
-									this.queueGeneration(state, chunk);
-								}
-								continue;
-							}
-
-							const savedData = state.hydrateMap.get(chunk.id);
-							if (!savedData) {
-								this.queueGeneration(state, chunk);
-								continue;
-							}
-
-							this.adapter.applyHydratedChunkFromSavedData(chunk, savedData);
-							state.hydratedCount++;
+						/*
+						 * `hydrateChunks` holds Chunk OBJECT references captured
+						 * before the storage read, and the read is awaited. Chunk
+						 * objects are pooled: one disposed during that await is
+						 * unlinked from the registry and may be re-registered at
+						 * entirely different coordinates. Everything below keys off
+						 * `chunk`, so without this fence a recycled object could be
+						 * handed another chunk's saved data — installing coordinate
+						 * K's voxels into coordinate J's buffers — or queued for
+						 * generation as if it were still the chunk that was asked
+						 * for.
+						 *
+						 * The registry lookup answers both halves at once: disposed
+						 * objects are unlinked, and a recycled object registers under
+						 * its new id, so neither still maps to itself.
+						 */
+						if (Chunk.chunkInstances.get(chunk.id) !== chunk) {
+							state.hydrationRecycledDrops++;
+							this._totalHydrationRecycledDrops++;
+							continue;
 						}
+
+						if (!chunk.isTerrainScheduled) {
+							if (!chunk.isLoaded) {
+								this.queueGeneration(state, chunk);
+							}
+							continue;
+						}
+
+						const savedData = state.hydrateMap.get(chunk.id);
+						if (!savedData) {
+							this.queueGeneration(state, chunk);
+							continue;
+						}
+
+						this.adapter.applyHydratedChunkFromSavedData(chunk, savedData);
+						state.hydratedCount++;
+					}
 
 						if (state.hydrateIndex >= state.hydrateChunks.length) {
 							state.stage = ProcessStage.ScheduleGeneration;
@@ -826,6 +864,14 @@ export class ChunkProcessScheduler {
 			if (offFrameMs > 0) {
 				frameProfiler.noteOffFrameValue("streamAsync", offFrameMs);
 			}
+
+			// Book the slice's own synchronous cost against the shared frame pool.
+			// `offFrameMs` above covers the awaited storage reads, which happen
+			// outside any frame and so must NOT be charged here.
+			FRAME_WORK_BUDGET.record(
+				FrameWorkKind.Streaming,
+				performance.now() - state.sliceStartMs - offFrameMs,
+			);
 
 			this.isProcessing = false;
 
@@ -967,11 +1013,23 @@ export class ChunkProcessScheduler {
 		const now = performance.now();
 
 		state.sliceStartMs = now;
-		state.sliceDeadlineMs = now + budget;
+		// The slice deadline is the MINIMUM of this subsystem's own ceiling and
+		// what the frame-wide pool still has. Both draw on the same frame, and
+		// the loaded-refresh drain, orphan sweep and mesh ingest are all competing
+		// for it — capping only locally is what let their sum overrun the frame.
+		state.sliceDeadlineMs =
+			now +
+			Math.min(budget, FRAME_WORK_BUDGET.remainingMs() || budget);
 	}
 
 	public hasBudget(state: InFlightProcessState): boolean {
-		return performance.now() < state.sliceDeadlineMs;
+		// Both conditions: the slice's own deadline, and the aggregate frame
+		// pool. A slice that started while the pool had room can still be cut
+		// short by work another subsystem did after it began.
+		return (
+			performance.now() < state.sliceDeadlineMs &&
+			FRAME_WORK_BUDGET.canContinue(FrameWorkKind.Streaming)
+		);
 	}
 
 	public scheduleProcessContinuation(): void {

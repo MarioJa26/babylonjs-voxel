@@ -1,3 +1,7 @@
+import {
+	FRAME_WORK_BUDGET,
+	FrameWorkKind,
+} from "@/code/Lib/FrameWorkBudget";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { estimatePhysicalCores } from "@/code/Lib/estimatePhysicalCores";
 import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
@@ -1714,6 +1718,11 @@ export class ChunkWorkerPool {
 		Chunk.onLightChunkLayoutChanged = (chunk) =>
 			this.onLightChunkLayoutChanged(chunk);
 		Chunk.onLightChunkDisposed = (chunk) => this.onLightChunkDisposed(chunk);
+		// A chunk re-loaded at far LOD loses its voxel data without ever
+		// touching the light-worker path, so its neighbours' presence masks have
+		// to be dropped explicitly.
+		Chunk.onChunkPresenceChanged = (chunk) =>
+			this.invalidateNeighborMasks(chunk);
 		Chunk._lightPool = {
 			postLightMutate: (req) => this.postLightMutate(req),
 			postLightMutateBatch: (req) => this.postLightMutateBatch(req),
@@ -2004,13 +2013,23 @@ export class ChunkWorkerPool {
 			 * against a 5.5ms target. That single overrun is what Chrome's
 			 * Frames track records as a dropped frame.
 			 *
-			 * `processed !== 0` keeps a minimum of one result per drain so the
+		 * `processed !== 0` keeps a minimum of one result per drain so the
 			 * pipeline can never stall on an empty-but-nonempty queue.
+			 *
+			 * The shared frame pool is consulted alongside the local ceiling.
+			 * This drain, flushDirtyMergedGroups below, the loaded-refresh sweep
+			 * and the queue slice all fire on the same frame, and each was
+			 * previously free to spend its full local budget.
 			 */
 			while (this.meshResultQueueReadIdx < this.meshResultQueue.length) {
 				if (
 					processed !== 0 &&
-					performance.now() - start >= ChunkWorkerPool.MESH_INGEST_BUDGET_MS
+					(!FRAME_WORK_BUDGET.canContinue(
+						FrameWorkKind.Meshing,
+						ChunkWorkerPool.MESH_INGEST_BUDGET_MS,
+					) ||
+						performance.now() - start >=
+							ChunkWorkerPool.MESH_INGEST_BUDGET_MS)
 				) {
 					break;
 				}
@@ -2080,7 +2099,12 @@ export class ChunkWorkerPool {
 
 			this.debugStats.lastMeshProcessed = processed;
 			this.debugStats.totalMeshProcessed += processed;
-			this.debugStats.lastMeshDrainMs = performance.now() - start;
+			const drainMs = performance.now() - start;
+			this.debugStats.lastMeshDrainMs = drainMs;
+			// Book the ingest half against the shared frame pool. The flush below
+			// books its own cost, so the two are attributed separately but drawn
+			// from the same millisecond pool.
+			FRAME_WORK_BUDGET.record(FrameWorkKind.Meshing, drainMs);
 
 			if (
 				this.meshResultQueueReadIdx > 64 &&
@@ -2093,10 +2117,25 @@ export class ChunkWorkerPool {
 				this.meshResultQueueReadIdx = 0;
 			}
 
+			// Whatever is left of this drain's own 5.5 ms is offered to the upload
+			// flush, capped by what the frame-wide pool still has — otherwise a
+			// drain that ran long would hand the flush a fresh budget and the
+			// pair would overshoot the frame anyway.
+			//
+			// The `|| MIN` floor is deliberate: if ingest consumed the whole pool,
+			// the flush still gets MESH_FLUSH_MIN_BUDGET_MS rather than a zero
+			// budget. A zero budget makes flushDirtyMergedGroups process nothing and
+			// re-arm, which under sustained ingest starves GPU upload indefinitely
+			// and the merged groups pile up dirty. 2 ms is small enough not to
+			// matter and bounded enough to break the starvation.
 			flushDirtyMergedGroups(
-				Math.max(
-					ChunkWorkerPool.MESH_FLUSH_MIN_BUDGET_MS,
-					ChunkWorkerPool.MESH_DRAIN_BUDGET_MS - (performance.now() - start),
+				Math.min(
+					Math.max(
+						ChunkWorkerPool.MESH_FLUSH_MIN_BUDGET_MS,
+						ChunkWorkerPool.MESH_DRAIN_BUDGET_MS - drainMs,
+					),
+					FRAME_WORK_BUDGET.remainingMs() ||
+						ChunkWorkerPool.MESH_FLUSH_MIN_BUDGET_MS,
 				),
 			);
 

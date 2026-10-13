@@ -1,6 +1,9 @@
 ﻿import type { Mesh } from "@babylonjs/lite";
 import { frameClock } from "@/code/Lib/FrameClock";
-import { FRAME_WORK_BUDGET } from "@/code/Lib/FrameWorkBudget";
+import {
+	FRAME_WORK_BUDGET,
+	FrameWorkKind,
+} from "@/code/Lib/FrameWorkBudget";
 import { notePipelineWork } from "@/code/Lib/PipelineStats";
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import {
@@ -1382,6 +1385,11 @@ export function flushDirtyMergedGroups(
 		budgetExhausted || gpuBudgetExhausted || frameBudgetExhausted;
 	_mergedFlushTotalMs += elapsed;
 	_mergedFlushCount++;
+	// Charge the upload work to the shared millisecond pool. The count and byte
+	// reservations above already gate admission; this makes the flush's actual
+	// cost visible to the other subsystems that share the frame, which is what
+	// bounds the SUM rather than each part.
+	FRAME_WORK_BUDGET.record(FrameWorkKind.Meshing, elapsed);
 }
 
 export function disposeAll(): void {

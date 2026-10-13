@@ -112,8 +112,21 @@ function resolveCoords(
 		if (_rcx[i] === chunkX && _rcy[i] === chunkY && _rcz[i] === chunkZ) {
 			const c = _rchunk[i];
 			if (c && c.isLoaded) {
-				scratch.chunk = c;
-				return scratch;
+				// The slot is keyed by coordinate but holds an object reference,
+				// and Chunk objects are pooled: a disposed chunk is unlinked and
+				// may be re-registered at entirely different coordinates. A slot
+				// can therefore hold a chunk that has since moved, in which case
+				// the key still looks correct while the value is wrong. Verify
+				// the chunk still lives at the coordinates it is filed under.
+				if (
+					c.chunkX === chunkX &&
+					c.chunkY === chunkY &&
+					c.chunkZ === chunkZ
+				) {
+					scratch.chunk = c;
+					return scratch;
+				}
+				break;
 			}
 			// Stale/disposed entry — fall through and refresh this slot.
 		}

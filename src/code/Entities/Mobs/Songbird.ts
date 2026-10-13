@@ -1,6 +1,9 @@
 import { type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
 import { Color3 } from "@/code/Lib/Math";
-import { resolveBlockAtWorldCoords } from "../../World/Chunk/ChunkLoadingSystem";
+import {
+	type ResolvedBlock,
+	resolveBlockAtWorldCoordsInto,
+} from "../../World/Chunk/ChunkLoadingSystem";
 import { BlockType, isCollidableBlock } from "../../World/Texture/BlockType";
 import { getMobStats, LEAF_BLOCK_IDS, MobTypeId } from "../MobConfig";
 import { FlyingMob } from "./FlyingMob";
@@ -124,6 +127,32 @@ const PERCH_SCAN_RADIUS = 20;
 const PERCH_SCAN_ATTEMPTS = 8;
 const PERCH_SCAN_BELOW = 10;
 const PERCH_SCAN_ABOVE = 12;
+
+// PERF: the perch and ground scans each probe three stacked cells per height
+// across up to PERCH_SCAN_ATTEMPTS columns, so a single search is ~200
+// lookups. One scratch per cell keeps that allocation-free.
+//
+// These MUST stay distinct objects. Each scan tests "below is solid while head
+// and head2 are air"; when the three results aliased one object, all three
+// comparisons read the same cell and the head-clearance test vanished.
+const _groundBelow: ResolvedBlock = {
+	blockId: 0,
+	blockState: 0,
+	loaded: false,
+	unloaded: false,
+};
+const _groundHead: ResolvedBlock = {
+	blockId: 0,
+	blockState: 0,
+	loaded: false,
+	unloaded: false,
+};
+const _groundHead2: ResolvedBlock = {
+	blockId: 0,
+	blockState: 0,
+	loaded: false,
+	unloaded: false,
+};
 /** Perch rest duration range (seconds). */
 const PERCH_REST_MIN = 4;
 const PERCH_REST_MAX = 10;
@@ -307,17 +336,17 @@ export class Songbird extends FlyingMob {
 			const cz = Math.floor(pos.z + Math.cos(angle) * dist);
 
 			for (let y = baseY + 2; y >= baseY - 8; y--) {
-				const below = resolveBlockAtWorldCoords(cx, y, cz);
-				if (!below.loaded) break;
-				const head = resolveBlockAtWorldCoords(cx, y + 1, cz);
-				if (!head.loaded) break;
-				const head2 = resolveBlockAtWorldCoords(cx, y + 2, cz);
-				if (!head2.loaded) break;
+				resolveBlockAtWorldCoordsInto(cx, y, cz, _groundBelow);
+				if (!_groundBelow.loaded) break;
+				resolveBlockAtWorldCoordsInto(cx, y + 1, cz, _groundHead);
+				if (!_groundHead.loaded) break;
+				resolveBlockAtWorldCoordsInto(cx, y + 2, cz, _groundHead2);
+				if (!_groundHead2.loaded) break;
 
 				if (
-					isCollidableBlock(below.blockId) &&
-					head.blockId === BlockType.Air &&
-					head2.blockId === BlockType.Air
+					isCollidableBlock(_groundBelow.blockId) &&
+					_groundHead.blockId === BlockType.Air &&
+					_groundHead2.blockId === BlockType.Air
 				) {
 					return vec3(cx + 0.5, y + 1 + SONGBIRD_STATS.feetHeight, cz + 0.5);
 				}
@@ -345,17 +374,17 @@ export class Songbird extends FlyingMob {
 				y >= baseY - PERCH_SCAN_BELOW;
 				y--
 			) {
-				const below = resolveBlockAtWorldCoords(cx, y, cz);
-				if (!below.loaded) break;
-				const head = resolveBlockAtWorldCoords(cx, y + 1, cz);
-				if (!head.loaded) break;
-				const head2 = resolveBlockAtWorldCoords(cx, y + 2, cz);
-				if (!head2.loaded) break;
+				resolveBlockAtWorldCoordsInto(cx, y, cz, _groundBelow);
+				if (!_groundBelow.loaded) break;
+				resolveBlockAtWorldCoordsInto(cx, y + 1, cz, _groundHead);
+				if (!_groundHead.loaded) break;
+				resolveBlockAtWorldCoordsInto(cx, y + 2, cz, _groundHead2);
+				if (!_groundHead2.loaded) break;
 
 				if (
-					LEAF_BLOCK_IDS.has(below.blockId) &&
-					head.blockId === BlockType.Air &&
-					head2.blockId === BlockType.Air
+					LEAF_BLOCK_IDS.has(_groundBelow.blockId) &&
+					_groundHead.blockId === BlockType.Air &&
+					_groundHead2.blockId === BlockType.Air
 				) {
 					return vec3(cx + 0.5, y + 1 + SONGBIRD_STATS.feetHeight, cz + 0.5);
 				}

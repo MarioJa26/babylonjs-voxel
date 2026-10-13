@@ -240,10 +240,14 @@ export class MayaDungeonEncounter {
 		for (let dy = 0; dy >= -2; dy--) {
 			const probeY = y + dy;
 			const below = resolveBlockAtWorldCoords(x, probeY - 1, z);
-			if (below === null || !VALID_FLOOR_BLOCKS.has(below.blockId)) continue;
+			if (!below.loaded || !VALID_FLOOR_BLOCKS.has(below.blockId)) continue;
 			const feet = resolveBlockAtWorldCoords(x, probeY, z);
 			const head = resolveBlockAtWorldCoords(x, probeY + 1, z);
-			if (feet?.blockId === BlockType.Air && head?.blockId === BlockType.Air) {
+			// Each lookup returns its own object, so these are genuinely
+			// distinct cells. They used to share one scratch result, which made
+			// both comparisons below read the head cell — so a solid head block
+			// never rejected the spot and mobs spawned inside rock.
+			if (feet.blockId === BlockType.Air && head.blockId === BlockType.Air) {
 				return probeY;
 			}
 		}

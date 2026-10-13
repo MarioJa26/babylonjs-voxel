@@ -46,8 +46,10 @@ export const NEIGHBOR_OFFSETS_26: readonly {
 
 // Cached 26-bit neighbor presence masks, keyed by chunk. Invalidation is
 // exact: a mask only depends on each neighbor's isLoaded && hasVoxelData,
-// both of which flip solely on load/dispose (the pool's onLightChunkLoaded /
-// onLightChunkDisposed hooks delete the affected entries). WeakMap = no leaks.
+// which flips only on load, dispose, or a far-LOD reload. The pool routes
+// onLightChunkLoaded / onLightChunkDisposed / onChunkPresenceChanged all to
+// invalidateNeighborMasks, which drops all 27 affected entries.
+// WeakMap = no leaks.
 export const neighborMaskCache = new WeakMap<Chunk, number>();
 
 /** Mirrors MeshBuildSession's lodStep derivation. */

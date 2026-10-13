@@ -47,9 +47,22 @@ type VoxelAabbDebugOptions = {
 // write their { blockId, blockState } pair here instead of allocating a fresh
 // literal per collidable voxel. Safe because createVoxelColliderBlockSampler
 // destructures the resolver result immediately.
-export const _voxelResolveScratch: { blockId: number; blockState: number } = {
+//
+// Carries the full ResolvedBlock shape so it can be handed straight to
+// resolveBlockAtWorldCoordsInto as the `out` argument. That lets a collision
+// sampler do one allocation-free voxel resolve instead of resolving into a
+// throwaway object and copying the two fields across. Readers that only care
+// about blockId/blockState are unaffected by the extra fields.
+export const _voxelResolveScratch: {
+	blockId: number;
+	blockState: number;
+	loaded: boolean;
+	unloaded: boolean;
+} = {
 	blockId: 0,
 	blockState: 0,
+	loaded: false,
+	unloaded: false,
 };
 
 /**

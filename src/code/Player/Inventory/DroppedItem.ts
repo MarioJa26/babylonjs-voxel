@@ -22,7 +22,7 @@ import { vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import {
 	getLightByWorldCoords,
-	resolveBlockAtWorldCoords,
+	resolveBlockAtWorldCoordsInto,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	_voxelResolveScratch,
@@ -523,11 +523,9 @@ const SHARED_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
 		// through into the void. Without this, dropped items fall
 		// indefinitely at the render-distance edge and at every newly
 		// discovered chunk seam.
-		const r = resolveBlockAtWorldCoords(x, y, z);
-		if (r.unloaded) return UNLOADED_SOLID_RESOLVE;
-		if (!isCollidableBlock(r.blockId)) return null;
-		_voxelResolveScratch.blockId = r.blockId;
-		_voxelResolveScratch.blockState = r.blockState;
+		resolveBlockAtWorldCoordsInto(x, y, z, _voxelResolveScratch);
+		if (_voxelResolveScratch.unloaded) return UNLOADED_SOLID_RESOLVE;
+		if (!isCollidableBlock(_voxelResolveScratch.blockId)) return null;
 		return _voxelResolveScratch;
 	},
 	{

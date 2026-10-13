@@ -79,6 +79,11 @@ function bossDistanceSq(
 	return dx * dx + dy * dy + dz * dz;
 }
 
+type CrateCellSnapshot = {
+	itemId: number;
+	stackSize: number;
+};
+
 export class PlayerHud {
 	#scene: SceneContext;
 	readonly #player: Player;
@@ -124,7 +129,7 @@ export class PlayerHud {
 	#woodCrateLoading = false;
 	#woodCrateVersion = 0;
 	#woodCrateApplyingRemote = false;
-	#woodCrateLastSent: { itemId: number; stackSize: number }[][] | null = null;
+	#woodCrateLastSent: CrateCellSnapshot[][] | null = null;
 	#woodCrateInventoryObserverId: number | null = null;
 
 	#selectedHotbarSlot = 0;
@@ -133,11 +138,26 @@ export class PlayerHud {
 	#heldItemNameTimeout?: number;
 	// PERF: Cache held item name div width to avoid redundant getBoundingClientRect().
 	#heldItemNameDivCachedWidth = 0;
-	// PERF: Cache previous stat percentages to skip DOM writes when unchanged.
+	// PERF: Cache raw stat inputs so per-frame percentage math and DOM
+	// writes are skipped entirely when nothing changed.
+	#prevHealthValue = Number.NaN;
+	#prevMaxHealthValue = Number.NaN;
 	#prevHealthPct = -1;
+
+	#prevHungerValue = Number.NaN;
+	#prevMaxHungerValue = Number.NaN;
 	#prevHungerPct = -1;
+
+	#prevStaminaValue = Number.NaN;
+	#prevMaxStaminaValue = Number.NaN;
 	#prevStaminaPct = -1;
+
+	#prevManaValue = Number.NaN;
+	#prevMaxManaValue = Number.NaN;
 	#prevManaPct = -1;
+
+	#prevXpValue = Number.NaN;
+	#prevXpNeed = Number.NaN;
 	#prevXpPct = -1;
 	#prevXpLevel = -1;
 
@@ -731,7 +751,10 @@ export class PlayerHud {
 			this.#woodCrateSavedState = empty;
 			this.#woodCrateSlots = buildBlockInventorySlots(empty);
 			this.#attachCrateSlotListeners();
-			this.#woodCrateLastSent = PlayerHud.emptyCrateSnapshot();
+			this.#woodCrateLastSent = PlayerHud.createCrateSnapshot(
+				empty.width,
+				empty.height,
+			);
 		} else {
 			// Load saved state and build live slots. ensureSeededLoot fills the
 			// crate first if it turns out to be a worldgen loot cache.
@@ -948,29 +971,77 @@ export class PlayerHud {
 
 	// â”€â”€â”€ Server-authoritative crate sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-	private static emptyCrateSnapshot(): {
-		itemId: number;
-		stackSize: number;
-	}[][] {
-		const rows: { itemId: number; stackSize: number }[][] = [];
-		for (let r = 0; r < 6; r++) {
-			const row: { itemId: number; stackSize: number }[] = [];
-			for (let c = 0; c < 3; c++) row.push({ itemId: 0, stackSize: 0 });
-			rows.push(row);
+	/**
+	 * Creates a snapshot matching the container's actual dimensions.
+	 * Rows correspond to `height`; cells within each row correspond to `width`.
+	 */
+	private static createCrateSnapshot(
+		width: number,
+		height: number,
+	): CrateCellSnapshot[][] {
+		const snapshot = new Array<CrateCellSnapshot[]>(height);
+
+		for (let row = 0; row < height; row++) {
+			const snapshotRow = new Array<CrateCellSnapshot>(width);
+
+			for (let col = 0; col < width; col++) {
+				snapshotRow[col] = { itemId: 0, stackSize: 0 };
+			}
+
+			snapshot[row] = snapshotRow;
 		}
-		return rows;
+
+		return snapshot;
+	}
+
+	/**
+	 * Captures the current crate grid without creating intermediate arrays.
+	 */
+	private static snapshotCrateSlots(
+		grid: ItemSlot[][],
+	): CrateCellSnapshot[][] {
+		const snapshot = new Array<CrateCellSnapshot[]>(grid.length);
+
+		for (let row = 0; row < grid.length; row++) {
+			const gridRow = grid[row];
+			const snapshotRow = new Array<CrateCellSnapshot>(gridRow.length);
+
+			for (let col = 0; col < gridRow.length; col++) {
+				const item = gridRow[col].item;
+
+				snapshotRow[col] = {
+					itemId: item?.itemId ?? 0,
+					stackSize: item?.stackSize ?? 0,
+				};
+			}
+
+			snapshot[row] = snapshotRow;
+		}
+
+		return snapshot;
 	}
 
 	/** Attach live-delta listeners to the current crate grid. */
 	#attachCrateSlotListeners(): void {
 		const grid = this.#woodCrateSlots;
 		if (!grid) return;
-		for (const row of grid) {
-			for (const slot of row) {
-				slot.onChanged = () => this.#pushCrateDiff();
+
+		for (let row = 0; row < grid.length; row++) {
+			const slots = grid[row];
+
+			for (let col = 0; col < slots.length; col++) {
+				slots[col].onChanged = this.#onCrateSlotChanged;
 			}
 		}
 	}
+
+	/**
+	 * One shared callback avoids allocating a new closure for every crate slot
+	 * each time an authoritative snapshot rebuilds the grid.
+	 */
+	readonly #onCrateSlotChanged = (): void => {
+		this.#pushCrateDiff();
+	};
 
 	/**
 	 * Diff the live crate grid against the last-sent snapshot and push every
@@ -986,124 +1057,191 @@ export class PlayerHud {
 		) {
 			return;
 		}
-		const net = this.#player.networkManager;
-		if (net?.isConnected !== true) return;
-		const pos = this.#woodCrateBlockPos;
+
+		const network = this.#player.networkManager;
+		if (network?.isConnected !== true) return;
+
+		const position = this.#woodCrateBlockPos;
 		const grid = this.#woodCrateSlots;
-		const last = this.#woodCrateLastSent;
-		if (!pos || !grid || !last) return;
-		for (let r = 0; r < grid.length; r++) {
-			const gridRow = grid[r];
-			const lastRow = last[r];
-			if (!gridRow || !lastRow) continue;
-			for (let c = 0; c < gridRow.length; c++) {
-				const slot = gridRow[c];
-				const prev = lastRow[c];
-				if (!slot || !prev) continue;
-				const item = slot.item;
-				const curItemId = item?.itemId ?? 0;
-				const curStack = item?.stackSize ?? 0;
-				if (prev.itemId === curItemId && prev.stackSize === curStack) {
+		const lastSent = this.#woodCrateLastSent;
+
+		if (!position || !grid || !lastSent) return;
+
+		const { x, y, z } = position;
+
+		for (let row = 0; row < grid.length; row++) {
+			const gridRow = grid[row];
+			const lastRow = lastSent[row];
+
+			/*
+			 * A dimension mismatch means the snapshot is stale or corrupt.
+			 * Rebuilding it is safer than silently ignoring cells.
+			 */
+			if (!lastRow || lastRow.length !== gridRow.length) {
+				this.#woodCrateLastSent = PlayerHud.snapshotCrateSlots(grid);
+				return;
+			}
+
+			for (let col = 0; col < gridRow.length; col++) {
+				const item = gridRow[col].item;
+				const itemId = item?.itemId ?? 0;
+				const stackSize = item?.stackSize ?? 0;
+				const previous = lastRow[col];
+
+				if (
+					previous.itemId === itemId &&
+					previous.stackSize === stackSize
+				) {
 					continue;
 				}
-				lastRow[c] = { itemId: curItemId, stackSize: curStack };
-				net.containers.sendSetSlot(
-					pos.x,
-					pos.y,
-					pos.z,
-					r,
-					c,
-					curItemId,
-					curStack,
+
+				/*
+				 * Update the existing object instead of allocating a replacement
+				 * object for every slot mutation.
+				 */
+				previous.itemId = itemId;
+				previous.stackSize = stackSize;
+
+				network.containers.sendSetSlot(
+					x,
+					y,
+					z,
+					row,
+					col,
+					itemId,
+					stackSize,
 				);
 			}
 		}
 	}
 
-	/** Apply a full authoritative snapshot (open response / re-sync). */
+	/** Apply a full authoritative snapshot from an open response or re-sync. */
 	#onRemoteCrateState(state: RemoteContainerState): void {
 		if (!this.#woodCrateOpen || !this.#woodCrateRemote) return;
-		const pos = this.#woodCrateBlockPos;
-		if (!pos || state.x !== pos.x || state.y !== pos.y || state.z !== pos.z) {
+
+		const position = this.#woodCrateBlockPos;
+
+		if (
+			!position ||
+			state.x !== position.x ||
+			state.y !== position.y ||
+			state.z !== position.z
+		) {
 			return;
 		}
+
 		if (
 			!this.#woodCrateLoading &&
-			state.version <= this.#woodCrateVersion &&
-			this.#woodCrateSlots
+			this.#woodCrateSlots &&
+			state.version <= this.#woodCrateVersion
 		) {
 			return;
 		}
+
+		const { width, height, slots } = state;
+
 		if (
-			state.width < 1 ||
-			state.width > 8 ||
-			state.height < 1 ||
-			state.height > 8 ||
-			state.slots.length !== state.width * state.height
+			width < 1 ||
+			width > 8 ||
+			height < 1 ||
+			height > 8 ||
+			slots.length !== width * height
 		) {
 			return;
 		}
-		this.#woodCrateVersion = state.version;
-		const saved: SavedBlockInventory = {
-			width: state.width,
-			height: state.height,
-			slots: [],
-		};
-		const last = PlayerHud.emptyCrateSnapshot();
-		for (let r = 0; r < state.height; r++) {
-			const savedRow: SavedBlockInventory["slots"][number] = [];
-			for (let c = 0; c < state.width; c++) {
-				const s = state.slots[r * state.width + c];
-				if (r < 6 && c < 3)
-					last[r][c] = { itemId: s.itemId, stackSize: s.stackSize };
-				savedRow.push(
-					s.itemId === 0 ? null : { itemId: s.itemId, stackSize: s.stackSize },
-				);
+
+		const savedSlots =
+			new Array<SavedBlockInventory["slots"][number]>(height);
+		const lastSent = PlayerHud.createCrateSnapshot(width, height);
+
+		for (let row = 0; row < height; row++) {
+			const savedRow =
+				new Array<SavedBlockInventory["slots"][number][number]>(width);
+			const snapshotRow = lastSent[row];
+			const rowOffset = row * width;
+
+			for (let col = 0; col < width; col++) {
+				const remoteSlot = slots[rowOffset + col];
+				const { itemId, stackSize } = remoteSlot;
+
+				snapshotRow[col].itemId = itemId;
+				snapshotRow[col].stackSize = stackSize;
+
+				savedRow[col] =
+					itemId === 0
+						? null
+						: { itemId, stackSize };
 			}
-			saved.slots.push(savedRow);
+
+			savedSlots[row] = savedRow;
 		}
+
+		const saved: SavedBlockInventory = {
+			width,
+			height,
+			slots: savedSlots,
+		};
+
+		this.#woodCrateVersion = state.version;
 		this.#woodCrateSavedState = saved;
 		this.#woodCrateSlots = buildBlockInventorySlots(saved);
-		this.#attachCrateSlotListeners();
-		this.#woodCrateLastSent = last;
+		this.#woodCrateLastSent = lastSent;
 		this.#woodCrateLoading = false;
+
+		this.#attachCrateSlotListeners();
 		this.#refreshWoodCrateContent();
 	}
 
 	/** Apply one authoritative slot delta from another viewer (or our echo). */
 	#applyRemoteCrateCell(update: RemoteContainerSlotUpdate): void {
 		if (!this.#woodCrateOpen || !this.#woodCrateRemote) return;
-		const pos = this.#woodCrateBlockPos;
+
+		const position = this.#woodCrateBlockPos;
+
 		if (
-			!pos ||
-			update.x !== pos.x ||
-			update.y !== pos.y ||
-			update.z !== pos.z
+			!position ||
+			update.x !== position.x ||
+			update.y !== position.y ||
+			update.z !== position.z ||
+			update.version < this.#woodCrateVersion
 		) {
 			return;
 		}
-		if (update.version < this.#woodCrateVersion) return;
-		this.#woodCrateVersion = update.version;
+
 		const slot = this.#woodCrateSlots?.[update.row]?.[update.col];
-		const lastRow = this.#woodCrateLastSent?.[update.row];
-		if (!slot || !lastRow?.[update.col]) return;
-		lastRow[update.col] = {
-			itemId: update.itemId,
-			stackSize: update.stackSize,
-		};
+		const previous = this.#woodCrateLastSent?.[update.row]?.[update.col];
+
+		if (!slot || !previous) return;
+
+		this.#woodCrateVersion = update.version;
+		previous.itemId = update.itemId;
+		previous.stackSize = update.stackSize;
+
 		this.#woodCrateApplyingRemote = true;
+
 		try {
-			if (update.itemId === 0) {
+			if (update.itemId === 0 || update.stackSize <= 0) {
 				slot.clearItemSlots();
-			} else {
-				try {
-					const item = Item.createById(update.itemId, update.row, update.col);
-					item.stackSize = update.stackSize;
-					slot.item = item;
-				} catch {
-					// Unknown item id â€” render empty rather than crashing.
-					slot.clearItemSlots();
-				}
+				return;
+			}
+
+			try {
+				const item = Item.createById(
+					update.itemId,
+					update.row,
+					update.col,
+				);
+
+				item.stackSize = update.stackSize;
+				slot.item = item;
+			} catch {
+				/*
+				 * Unknown item IDs are represented as empty slots rather than
+				 * leaving an older, incorrect item visible.
+				 */
+				previous.itemId = 0;
+				previous.stackSize = 0;
+				slot.clearItemSlots();
 			}
 		} finally {
 			this.#woodCrateApplyingRemote = false;
@@ -2024,37 +2162,93 @@ export class PlayerHud {
 		const stats = this.#player.stats;
 		if (!stats) return;
 
-		this.#prevHealthPct = setBar(
-			this.#healthBarFill,
-			this.#prevHealthPct,
-			statPct(stats.health, stats.maxHealth),
-		);
-		this.#prevHungerPct = setBar(
-			this.#hungerBarFill,
-			this.#prevHungerPct,
-			statPct(stats.hunger, stats.maxHunger),
-		);
-		this.#prevStaminaPct = setBar(
-			this.#staminaBarFill,
-			this.#prevStaminaPct,
-			statPct(stats.stamina, stats.maxStamina),
-		);
-		this.#prevManaPct = setBar(
-			this.#manaBarFill,
-			this.#prevManaPct,
-			statPct(stats.mana, stats.maxMana),
-		);
+		const health = stats.health;
+		const maxHealth = stats.maxHealth;
 
-		const xpNeed = stats.xpForNextLevel();
-		this.#prevXpPct = setBar(
-			this.#xpBarFill,
-			this.#prevXpPct,
-			statPct(stats.xp, xpNeed),
-		);
+		if (
+			health !== this.#prevHealthValue ||
+			maxHealth !== this.#prevMaxHealthValue
+		) {
+			this.#prevHealthValue = health;
+			this.#prevMaxHealthValue = maxHealth;
+			this.#prevHealthPct = setBar(
+				this.#healthBarFill,
+				this.#prevHealthPct,
+				statPct(health, maxHealth),
+			);
+		}
 
-		if (stats.xpLevel !== this.#prevXpLevel) {
-			this.#prevXpLevel = stats.xpLevel;
-			this.#xpLevelLabel.textContent = `Lv ${stats.xpLevel}`;
+		const hunger = stats.hunger;
+		const maxHunger = stats.maxHunger;
+
+		if (
+			hunger !== this.#prevHungerValue ||
+			maxHunger !== this.#prevMaxHungerValue
+		) {
+			this.#prevHungerValue = hunger;
+			this.#prevMaxHungerValue = maxHunger;
+			this.#prevHungerPct = setBar(
+				this.#hungerBarFill,
+				this.#prevHungerPct,
+				statPct(hunger, maxHunger),
+			);
+		}
+
+		const stamina = stats.stamina;
+		const maxStamina = stats.maxStamina;
+
+		if (
+			stamina !== this.#prevStaminaValue ||
+			maxStamina !== this.#prevMaxStaminaValue
+		) {
+			this.#prevStaminaValue = stamina;
+			this.#prevMaxStaminaValue = maxStamina;
+			this.#prevStaminaPct = setBar(
+				this.#staminaBarFill,
+				this.#prevStaminaPct,
+				statPct(stamina, maxStamina),
+			);
+		}
+
+		const mana = stats.mana;
+		const maxMana = stats.maxMana;
+
+		if (
+			mana !== this.#prevManaValue ||
+			maxMana !== this.#prevMaxManaValue
+		) {
+			this.#prevManaValue = mana;
+			this.#prevMaxManaValue = maxMana;
+			this.#prevManaPct = setBar(
+				this.#manaBarFill,
+				this.#prevManaPct,
+				statPct(mana, maxMana),
+			);
+		}
+
+		const xp = stats.xp;
+		const xpLevel = stats.xpLevel;
+
+		/*
+		 * xpForNextLevel() only needs to run when XP or level changes. Level is
+		 * included because the requirement commonly depends on the current level.
+		 */
+		if (xp !== this.#prevXpValue || xpLevel !== this.#prevXpLevel) {
+			const xpNeed = stats.xpForNextLevel();
+
+			this.#prevXpValue = xp;
+			this.#prevXpNeed = xpNeed;
+
+			this.#prevXpPct = setBar(
+				this.#xpBarFill,
+				this.#prevXpPct,
+				statPct(xp, xpNeed),
+			);
+		}
+
+		if (xpLevel !== this.#prevXpLevel) {
+			this.#prevXpLevel = xpLevel;
+			this.#xpLevelLabel.textContent = `Lv ${xpLevel}`;
 		}
 
 		this.updateBossBar();

@@ -26,7 +26,7 @@ import {
 	deleteBlock,
 	getBlockByWorldCoords,
 	getLightByWorldCoords,
-	resolveBlockAtWorldCoords,
+	resolveBlockAtWorldCoordsInto,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	_voxelResolveScratch,
@@ -161,18 +161,15 @@ const DETONATION_FLASH = 0.75;
 
 const TNT_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
 	(x, y, z) => {
-		const resolved = resolveBlockAtWorldCoords(x, y, z);
+		resolveBlockAtWorldCoordsInto(x, y, z, _voxelResolveScratch);
 
-		if (resolved.unloaded) {
+		if (_voxelResolveScratch.unloaded) {
 			return UNLOADED_SOLID_RESOLVE;
 		}
 
-		if (!isCollidableBlock(resolved.blockId)) {
+		if (!isCollidableBlock(_voxelResolveScratch.blockId)) {
 			return null;
 		}
-
-		_voxelResolveScratch.blockId = resolved.blockId;
-		_voxelResolveScratch.blockState = resolved.blockState;
 
 		return _voxelResolveScratch;
 	},

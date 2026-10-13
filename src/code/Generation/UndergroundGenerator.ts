@@ -15,16 +15,29 @@ import { fillSealColumnMask } from "./Structure/StructureSeal";
 const MIN_SOLID_NEIGHBORS = 5;
 const SMOOTHING_PASSES = 2;
 
-const MAX_CHUNK_VOLUME = 32 * 32 * 32;
+const MAX_CHUNK_EDGE = 32;
+const MAX_CHUNK_VOLUME = MAX_CHUNK_EDGE * MAX_CHUNK_EDGE * MAX_CHUNK_EDGE;
+
 const _carve = new Uint8Array(MAX_CHUNK_VOLUME);
 const _caveSample = new Float32Array(3);
+
 const _carvedIndices = new Uint32Array(MAX_CHUNK_VOLUME);
 
+/*
+ * Store voxel coordinates alongside each carved index.
+ *
+ * This costs about 96 KiB of persistent scratch storage, but removes index
+ * division and remainder operations from both smoothing passes and final
+ * block placement.
+ */
+const _carvedX = new Uint8Array(MAX_CHUNK_VOLUME);
+const _carvedY = new Uint8Array(MAX_CHUNK_VOLUME);
+const _carvedZ = new Uint8Array(MAX_CHUNK_VOLUME);
+
 /**
- * Per-column "inside a structure seal" flag, indexed `localX + localZ * size`.
- * See Structure/StructureSeal — a Maya temple's dungeon is written before this
- * pass runs, so without the seal the cave carve would chew holes straight
- * through it. MineshaftSeal ORs its own columns into the same buffer.
+ * Per-column seal flag, indexed as localX + localZ * chunkSize.
+ * The larger fixed allocation is retained for compatibility with the seal
+ * helpers, which may clear or address the supplied scratch buffer directly.
  */
 const _sealColumns = new Uint8Array(MAX_CHUNK_VOLUME);
 
@@ -34,12 +47,14 @@ export class UndergroundGenerator {
 	private readonly LAVA_LEVEL: number;
 
 	private readonly cheeseNoise: (x: number, y: number, z: number) => number;
+
 	private readonly tunnelNoise: (x: number, y: number, z: number) => number;
+
 	private readonly detailNoise: (x: number, y: number, z: number) => number;
 
 	private readonly caveGrid: CaveNoiseGrid;
 
-	constructor(
+	public constructor(
 		params: GenerationParamsType,
 		cheeseNoise: (x: number, y: number, z: number) => number,
 		tunnelNoise: (x: number, y: number, z: number) => number,
@@ -62,9 +77,9 @@ export class UndergroundGenerator {
 			0,
 			this.CHUNK_SIZE,
 			4,
-			this.cheeseNoise,
-			this.tunnelNoise,
-			this.detailNoise,
+			cheeseNoise,
+			tunnelNoise,
+			detailNoise,
 			cheeseInstance,
 			tunnelInstance,
 			detailInstance,
@@ -86,115 +101,169 @@ export class UndergroundGenerator {
 		blocks?: Uint8Array,
 		seedAsInt?: number,
 	): boolean {
-		const LAVA_LEVEL = this.LAVA_LEVEL;
-		const params = this.params;
-
-		const cs = CHUNK_SIZE;
-		const cs2 = cs * cs;
-		const vol = cs * cs2;
-		const chunkWorldY = chunkY * cs;
-
-		// Preserve existing behavior: without a block buffer, the old code found no
-		// solid voxels and returned before doing cave work.
-		if (!blocks) {
+		if (blocks === undefined) {
 			return false;
 		}
 
-		// PERF: Caves only matter if the chunk contains at least one non-air,
-		// non-water block. This skips cave-grid sampling for empty/water chunks.
-		let hasSolid = false;
-		for (let i = 0; i < vol; i++) {
-			const block = blocks[i];
-			if (block !== 0 && block !== WATER_BLOCK_ID) {
-				hasSolid = true;
+		const params = this.params;
+		const chunkSize = this.CHUNK_SIZE;
+		const chunkSizeSq = chunkSize * chunkSize;
+		const chunkVolume = chunkSizeSq * chunkSize;
+
+		if (chunkVolume > MAX_CHUNK_VOLUME) {
+			throw new Error(
+				`UndergroundGenerator chunk volume ${chunkVolume} exceeds ` +
+					`scratch capacity ${MAX_CHUNK_VOLUME}.`,
+			);
+		}
+
+		if (topSurfaceYMap.length < chunkSizeSq) {
+			throw new Error(
+				`UndergroundGenerator topSurfaceYMap is too small. ` +
+					`Expected at least ${chunkSizeSq}, got ${topSurfaceYMap.length}.`,
+			);
+		}
+
+		if (blocks.length < chunkVolume) {
+			throw new Error(
+				`UndergroundGenerator block buffer is too small. ` +
+					`Expected at least ${chunkVolume}, got ${blocks.length}.`,
+			);
+		}
+
+		/*
+		 * Avoid constructing the cave-noise grid for chunks containing only
+		 * air and water.
+		 */
+		let hasSolidBlock = false;
+
+		for (let index = 0; index < chunkVolume; index++) {
+			const blockId = blocks[index];
+
+			if (blockId !== 0 && blockId !== WATER_BLOCK_ID) {
+				hasSolidBlock = true;
 				break;
 			}
 		}
 
-		if (!hasSolid) {
+		if (!hasSolidBlock) {
 			return false;
 		}
 
-		// Structure seal. A Maya temple writes its multi-level dungeon before
-		// this pass, so cave carving has to step around the protected columns.
-		// The mask is derived purely from world coordinates + seed, so the seal
-		// agrees with the structure pass without the two talking to each other.
+		/*
+		 * Build the structure protection mask before evaluating caves.
+		 */
 		let sealActive = false;
 		let sealMinY = 0;
 		let sealMaxY = -1;
 
 		if (seedAsInt !== undefined) {
-			const temple = fillSealColumnMask(
+			const templeSeal = fillSealColumnMask(
 				chunkX,
 				chunkZ,
-				cs,
+				chunkSize,
 				seedAsInt,
 				_sealColumns,
 			);
-			sealActive = temple.hasSeal;
-			sealMinY = temple.minY;
-			sealMaxY = temple.maxY;
 
-			// Mineshafts seal the same way, and OR into the same column buffer —
-			// hence OR-only in fillMineshaftSealMask. Without this a cave pass
-			// would leave a mineshaft as a ragged hole in the rock, and a cave
-			// that happened to reach daylight would pour skylight into a shaft
-			// that is required to be dark.
-			const mineshaft = fillMineshaftSealMask(
+			if (templeSeal.hasSeal) {
+				sealActive = true;
+				sealMinY = templeSeal.minY;
+				sealMaxY = templeSeal.maxY;
+			}
+
+			const mineshaftSeal = fillMineshaftSealMask(
 				chunkX,
 				chunkZ,
-				cs,
+				chunkSize,
 				seedAsInt,
 				_sealColumns,
 			);
-			if (mineshaft.hasSeal) {
-				sealActive = true;
-				if (mineshaft.minY < sealMinY) sealMinY = mineshaft.minY;
-				if (mineshaft.maxY > sealMaxY) sealMaxY = mineshaft.maxY;
+
+			if (mineshaftSeal.hasSeal) {
+				if (!sealActive) {
+					sealActive = true;
+					sealMinY = mineshaftSeal.minY;
+					sealMaxY = mineshaftSeal.maxY;
+				} else {
+					if (mineshaftSeal.minY < sealMinY) {
+						sealMinY = mineshaftSeal.minY;
+					}
+
+					if (mineshaftSeal.maxY > sealMaxY) {
+						sealMaxY = mineshaftSeal.maxY;
+					}
+				}
 			}
 		}
 
-		// PERF: Reuse pre-sampled cave noise grid instead of allocating per chunk.
-		this.caveGrid.reset(chunkX, chunkY, chunkZ, cs);
+		this.caveGrid.reset(chunkX, chunkY, chunkZ, chunkSize);
 
-		_carve.fill(0, 0, vol);
+		_carve.fill(0, 0, chunkVolume);
 
-		const fullDepthDenom = Math.max(
+		const chunkWorldY = chunkY * chunkSize;
+
+		const caveFullDensityDepth = params.CAVE_FULL_DENSITY_DEPTH;
+
+		const caveDensityMin = params.CAVE_DENSITY_MIN;
+
+		const caveDensityDelta = params.CAVE_DENSITY_MAX - caveDensityMin;
+
+		const fullDepthDenominator = Math.max(
 			1,
-			params.CAVE_SURFACE_BLEND_UPPER - params.CAVE_FULL_DENSITY_DEPTH,
+			params.CAVE_SURFACE_BLEND_UPPER - caveFullDensityDepth,
 		);
+
+		const inverseFullDepthDenominator = 1 / fullDepthDenominator;
 
 		let carvedCount = 0;
 
-		for (let localY = 0; localY < cs; localY++) {
-			const worldY = chunkWorldY + localY;
-			const yBase = localY * cs;
+		/*
+		 * Memory layout:
+		 *
+		 * index = localX
+		 *       + localY * chunkSize
+		 *       + localZ * chunkSizeSq
+		 *
+		 * The loop order retains contiguous X traversal while incrementally
+		 * maintaining index bases.
+		 */
+		let yBase = 0;
 
-			// Hoisted out of the inner loop: the whole Y slice is either inside
-			// the sealed band or entirely outside it.
+		for (let localY = 0; localY < chunkSize; localY++, yBase += chunkSize) {
+			const worldY = chunkWorldY + localY;
+
 			const ySealed = sealActive && worldY >= sealMinY && worldY <= sealMaxY;
 
-			const depthT = clamp01(
-				(worldY - params.CAVE_FULL_DENSITY_DEPTH) / fullDepthDenom,
-			);
+			const unclampedDepthT =
+				(worldY - caveFullDensityDepth) * inverseFullDepthDenominator;
 
-			const caveDensity =
-				params.CAVE_DENSITY_MIN * (1 - depthT) +
-				params.CAVE_DENSITY_MAX * depthT;
+			const depthT =
+				unclampedDepthT <= 0 ? 0 : unclampedDepthT >= 1 ? 1 : unclampedDepthT;
 
-			for (let localZ = 0; localZ < cs; localZ++) {
-				const yzBase = yBase + localZ * cs2;
-				const surfaceMapBase = localZ * cs;
+			const caveDensity = caveDensityMin + caveDensityDelta * depthT;
 
-				for (let localX = 0; localX < cs; localX++) {
-					const idx = yzBase + localX;
+			let voxelBase = yBase;
+			let surfaceMapBase = 0;
 
-					// PERF: Skip voxels already carved to air by terrain generation.
-					if (blocks[idx] === 0) {
+			for (
+				let localZ = 0;
+				localZ < chunkSize;
+				localZ++, voxelBase += chunkSizeSq, surfaceMapBase += chunkSize
+			) {
+				let index = voxelBase;
+
+				for (let localX = 0; localX < chunkSize; localX++, index++) {
+					/*
+					 * Preserve the existing behavior: water and other non-air
+					 * blocks remain eligible for cave evaluation. Only voxels
+					 * already carved to air are skipped.
+					 */
+					if (blocks[index] === 0) {
 						continue;
 					}
 
-					if (ySealed && _sealColumns[localX + surfaceMapBase] === 1) {
+					if (ySealed && _sealColumns[surfaceMapBase + localX] !== 0) {
 						continue;
 					}
 
@@ -215,10 +284,15 @@ export class UndergroundGenerator {
 						continue;
 					}
 
-					_carve[idx] =
+					_carve[index] =
 						CAVE_FLAG_CARVED | (cave.tunnelCore ? CAVE_FLAG_TUNNEL_CORE : 0);
 
-					_carvedIndices[carvedCount++] = idx;
+					_carvedIndices[carvedCount] = index;
+					_carvedX[carvedCount] = localX;
+					_carvedY[carvedCount] = localY;
+					_carvedZ[carvedCount] = localZ;
+
+					carvedCount++;
 				}
 			}
 		}
@@ -227,84 +301,94 @@ export class UndergroundGenerator {
 			return sealActive;
 		}
 
-		const inner = cs - 1;
+		const lastLocal = chunkSize - 1;
 
-		for (let pass = 0; pass < SMOOTHING_PASSES; pass++) {
-			let writeCount = 0;
-			let changed = false;
+		/*
+		 * Compact surviving carved voxels in place after every smoothing pass.
+		 *
+		 * The original three non-tunnel-core removal conditions simplify to:
+		 *
+		 *     carvedNeighbors <= 2
+		 *
+		 * because solidNeighbors is always 6 - carvedNeighbors.
+		 */
+		for (let pass = 0; pass < SMOOTHING_PASSES && carvedCount > 0; pass++) {
+			let survivorCount = 0;
+			let removedAny = false;
 
-			for (let i = 0; i < carvedCount; i++) {
-				const idx = _carvedIndices[i];
+			for (let readIndex = 0; readIndex < carvedCount; readIndex++) {
+				const voxelIndex = _carvedIndices[readIndex];
+				const flags = _carve[voxelIndex];
 
-				if ((_carve[idx] & CAVE_FLAG_CARVED) === 0) {
-					changed = true;
+				if ((flags & CAVE_FLAG_CARVED) === 0) {
+					removedAny = true;
 					continue;
 				}
 
-				const localZ = (idx / cs2) | 0;
-				const rem = idx - localZ * cs2;
-				const localY = (rem / cs) | 0;
-				const localX = rem - localY * cs;
+				const localX = _carvedX[readIndex];
+				const localY = _carvedY[readIndex];
+				const localZ = _carvedZ[readIndex];
 
-				// Match the original smoother: only interior cells are smoothed.
+				/*
+				 * Boundary voxels must remain untouched because neighboring
+				 * chunks are evaluated independently.
+				 */
 				if (
-					localX <= 0 ||
-					localX >= inner ||
-					localY <= 0 ||
-					localY >= inner ||
-					localZ <= 0 ||
-					localZ >= inner
+					localX === 0 ||
+					localX === lastLocal ||
+					localY === 0 ||
+					localY === lastLocal ||
+					localZ === 0 ||
+					localZ === lastLocal
 				) {
-					_carvedIndices[writeCount++] = idx;
+					_carvedIndices[survivorCount] = voxelIndex;
+					_carvedX[survivorCount] = localX;
+					_carvedY[survivorCount] = localY;
+					_carvedZ[survivorCount] = localZ;
+					survivorCount++;
 					continue;
 				}
 
 				const carvedNeighbors =
-					((_carve[idx - 1] & CAVE_FLAG_CARVED) !== 0 ? 1 : 0) +
-					((_carve[idx + 1] & CAVE_FLAG_CARVED) !== 0 ? 1 : 0) +
-					((_carve[idx - cs2] & CAVE_FLAG_CARVED) !== 0 ? 1 : 0) +
-					((_carve[idx + cs2] & CAVE_FLAG_CARVED) !== 0 ? 1 : 0) +
-					((_carve[idx - cs] & CAVE_FLAG_CARVED) !== 0 ? 1 : 0) +
-					((_carve[idx + cs] & CAVE_FLAG_CARVED) !== 0 ? 1 : 0);
+					((_carve[voxelIndex - 1] & CAVE_FLAG_CARVED) !== 0 ? 1 : 0) +
+					((_carve[voxelIndex + 1] & CAVE_FLAG_CARVED) !== 0 ? 1 : 0) +
+					((_carve[voxelIndex - chunkSize] & CAVE_FLAG_CARVED) !== 0 ? 1 : 0) +
+					((_carve[voxelIndex + chunkSize] & CAVE_FLAG_CARVED) !== 0 ? 1 : 0) +
+					((_carve[voxelIndex - chunkSizeSq] & CAVE_FLAG_CARVED) !== 0
+						? 1
+						: 0) +
+					((_carve[voxelIndex + chunkSizeSq] & CAVE_FLAG_CARVED) !== 0 ? 1 : 0);
 
-				const solidNeighbors = 6 - carvedNeighbors;
-				const tunnelCore =
-					(_carve[idx] & CAVE_FLAG_TUNNEL_CORE) === CAVE_FLAG_TUNNEL_CORE;
+				const tunnelCore = (flags & CAVE_FLAG_TUNNEL_CORE) !== 0;
 
-				if (
-					(!tunnelCore && carvedNeighbors <= 1) ||
-					(!tunnelCore && solidNeighbors >= MIN_SOLID_NEIGHBORS) ||
-					(!tunnelCore && solidNeighbors >= 3 && carvedNeighbors <= 2)
-				) {
-					_carve[idx] = 0;
-					changed = true;
+				if (!tunnelCore && carvedNeighbors <= 2) {
+					_carve[voxelIndex] = 0;
+					removedAny = true;
 					continue;
 				}
 
-				_carvedIndices[writeCount++] = idx;
+				_carvedIndices[survivorCount] = voxelIndex;
+				_carvedX[survivorCount] = localX;
+				_carvedY[survivorCount] = localY;
+				_carvedZ[survivorCount] = localZ;
+				survivorCount++;
 			}
 
-			carvedCount = writeCount;
+			carvedCount = survivorCount;
 
-			if (!changed || carvedCount === 0) {
+			if (!removedAny) {
 				break;
 			}
 		}
 
+		const lavaLevel = this.LAVA_LEVEL;
+
 		for (let i = 0; i < carvedCount; i++) {
-			const idx = _carvedIndices[i];
+			const localX = _carvedX[i];
+			const localY = _carvedY[i];
+			const localZ = _carvedZ[i];
 
-			if ((_carve[idx] & CAVE_FLAG_CARVED) === 0) {
-				continue;
-			}
-
-			const localZ = (idx / cs2) | 0;
-			const rem = idx - localZ * cs2;
-			const localY = (rem / cs) | 0;
-			const localX = rem - localY * cs;
-
-			const worldY = chunkWorldY + localY;
-			const blockId = worldY < LAVA_LEVEL ? 24 : 0;
+			const blockId = chunkWorldY + localY < lavaLevel ? 24 : 0;
 
 			placeBlockLocal(localX, localY, localZ, blockId, true);
 		}

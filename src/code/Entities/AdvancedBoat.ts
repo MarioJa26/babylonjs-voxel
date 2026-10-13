@@ -27,8 +27,7 @@ import { PaddleBoatControls } from "../Player/Controls/PaddleBoatControls";
 import type { Player } from "../Player/Player";
 import {
 	getBlockByWorldCoords,
-	getBlockStateByWorldCoords,
-	resolveBlockAtWorldCoords,
+	resolveBlockAtWorldCoordsInto,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
 import {
@@ -128,18 +127,18 @@ export class AdvancedBoat implements IUsable {
 			this.#collisionHalfExtents,
 			createVoxelColliderBlockSampler(
 				(x, y, z) => {
-					// resolveBlockAtWorldCoords resolves the chunk once and reports
+					// resolveBlockAtWorldCoordsInto resolves the chunk once and reports
 					// unloaded so we can treat it as solid terrain — otherwise the
 					// boat falls through the world while chunks stream in.
-					const r = resolveBlockAtWorldCoords(x, y, z);
-					if (r.unloaded) {
+					resolveBlockAtWorldCoordsInto(x, y, z, _voxelResolveScratch);
+					if (_voxelResolveScratch.unloaded) {
 						_voxelResolveScratch.blockId = BlockType.Cobble;
 						_voxelResolveScratch.blockState = 0;
 						return _voxelResolveScratch;
 					}
-					if (!isCollidableBlock(r.blockId)) return null;
-					_voxelResolveScratch.blockId = r.blockId;
-					_voxelResolveScratch.blockState = getBlockStateByWorldCoords(x, y, z);
+					if (!isCollidableBlock(_voxelResolveScratch.blockId)) return null;
+					// blockState already came back from this same single resolve;
+					// it used to issue a second getBlockStateByWorldCoords per voxel.
 					return _voxelResolveScratch;
 				},
 				{

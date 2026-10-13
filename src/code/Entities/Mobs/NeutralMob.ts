@@ -5,7 +5,8 @@ import { playLandingDust } from "@/code/Maps/BlockBreakParticles";
 import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
 import {
 	getBlockByWorldCoords,
-	resolveBlockAtWorldCoords,
+	type ResolvedBlock,
+	resolveBlockAtWorldCoordsInto,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import {
@@ -43,6 +44,16 @@ const LEDGE_SCAN_SLACK = 2;
 /** Deepest water landing the guard still treats as a safe splash-down. */
 const LEDGE_WATER_SCAN_DEPTH = 12;
 const SWIM_BUOYANCY = 6.0;
+
+// PERF: shared scratch for the cliff-guard column scan. Each scan probes up to
+// LEDGE_WATER_SCAN_DEPTH voxels; the result is consumed within the iteration,
+// so one object keeps the scan allocation-free.
+const _ledgeScratch: ResolvedBlock = {
+	blockId: 0,
+	blockState: 0,
+	loaded: false,
+	unloaded: false,
+};
 const SWIM_SPEED_FACTOR = 0.75;
 const WATER_ESCAPE_BUOYANCY = 3.5;
 const WATER_ESCAPE_MAX_UP_SPEED = 1.6;
@@ -694,7 +705,8 @@ export abstract class NeutralMob extends BaseMob {
 	#scanLedgeDropAhead(px: number, feetY: number, pz: number): boolean {
 		const solidScanDepth = MAX_SAFE_LEDGE_DROP + LEDGE_SCAN_SLACK;
 		for (let dy = 0; dy <= solidScanDepth; dy++) {
-			const r = resolveBlockAtWorldCoords(px, feetY - dy, pz);
+			resolveBlockAtWorldCoordsInto(px, feetY - dy, pz, _ledgeScratch);
+			const r = _ledgeScratch;
 			if (r.unloaded) return false;
 			if (r.blockId === BlockType.Water) return false;
 			if (isCollidableBlock(r.blockId)) return dy > MAX_SAFE_LEDGE_DROP;
@@ -702,7 +714,8 @@ export abstract class NeutralMob extends BaseMob {
 
 		// No support in range — still safe if it's a splash-down into water.
 		for (let dy = solidScanDepth + 1; dy <= LEDGE_WATER_SCAN_DEPTH; dy++) {
-			const r = resolveBlockAtWorldCoords(px, feetY - dy, pz);
+			resolveBlockAtWorldCoordsInto(px, feetY - dy, pz, _ledgeScratch);
+			const r = _ledgeScratch;
 			if (r.unloaded) return false;
 			if (r.blockId === BlockType.Water) return false;
 			if (isCollidableBlock(r.blockId)) return true;

@@ -1,5 +1,5 @@
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
-import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
+import { worldToBlockCoord, worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import {
 	type SavedChunkData,
@@ -99,6 +99,7 @@ const debugStats: ChunkLoadingDebugStats = {
 	totalProcessLoops: 0,
 	lastOrphanRescued: 0,
 	totalOrphanRescued: 0,
+	hydrationRecycledDrops: 0,
 	lastLoadedFromStorage: 0,
 	lastGenerated: 0,
 	lastHydrated: 0,
@@ -758,6 +759,8 @@ function updateSliceDebugStats(state: InFlightProcessState): void {
 		streamingController.getLastOrphanSweepRescued();
 	debugStats.totalOrphanRescued =
 		streamingController.getTotalOrphanSweepRescued();
+	debugStats.hydrationRecycledDrops =
+		processScheduler.getHydrationRecycledDropCount();
 
 	refreshQueueDebugSnapshot();
 }
@@ -929,44 +932,71 @@ export type ResolvedBlock = {
 	unloaded: boolean;
 };
 
-const _resolvedBlockScratch: ResolvedBlock = {
-	blockId: 0,
-	blockState: 0,
-	loaded: false,
-	unloaded: false,
-};
-
-// PERF: single-resolve collidable-block lookup for the player collision
-// sampler.  Resolves the chunk once (cached) and reports whether it is
-// unloaded so the caller can treat it as solid terrain — replacing the old
+// PERF: single-resolve collidable-block lookup for the collision samplers.
+// Resolves the chunk once (cached) and reports whether it is unloaded so the
+// caller can treat it as solid terrain — replacing the old
 // isChunkLoadedAtWorldCoords() + getBlockAndStateByWorldCoords() pair, which
 // resolved the chunk twice per voxel.
+//
+// CORRECTNESS: this writes into a caller-supplied `out`. The previous shape
+// returned a module-level singleton, so two calls' results aliased each other.
+// Several call sites held `below`/`head`/`head2` from three consecutive
+// lookups and compared them as if they were distinct cells; they were the same
+// object, so each guard silently collapsed to a single-cell test. The allocating
+// wrapper below makes that mistake impossible. Per-voxel callers that must not
+// allocate own an `out` and call this directly.
+export function resolveBlockAtWorldCoordsInto(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+	out: ResolvedBlock,
+	options?: DynamicBlockQueryOptions,
+): ResolvedBlock {
+	const sample = sampleDynamicBlock(worldX, worldY, worldZ, options);
+	if (sample) {
+		out.blockId = sample.blockId;
+		out.blockState = sample.blockState;
+		out.loaded = true;
+		out.unloaded = false;
+		return out;
+	}
+	worldMutations.getBlockAndStateAtWorldCoordsInto(
+		worldX,
+		worldY,
+		worldZ,
+		out,
+	);
+	out.unloaded = !out.loaded;
+	return out;
+}
+
+/**
+ * Allocating convenience wrapper.
+ *
+ * Returns a fresh object per call, so holding several results across
+ * intervening lookups is safe. Hot paths (collision sweeps, raycast steps,
+ * column scans) should call {@link resolveBlockAtWorldCoordsInto} with their
+ * own scratch instead — this allocates one small object per voxel.
+ */
 export function resolveBlockAtWorldCoords(
 	worldX: number,
 	worldY: number,
 	worldZ: number,
 	options?: DynamicBlockQueryOptions,
 ): ResolvedBlock {
-	const sample = sampleDynamicBlock(worldX, worldY, worldZ, options);
-	if (sample) {
-		_resolvedBlockScratch.blockId = sample.blockId;
-		_resolvedBlockScratch.blockState = sample.blockState;
-		_resolvedBlockScratch.loaded = true;
-		_resolvedBlockScratch.unloaded = false;
-		return _resolvedBlockScratch;
-	}
-	worldMutations.getBlockAndStateAtWorldCoordsInto(
+	return resolveBlockAtWorldCoordsInto(
 		worldX,
 		worldY,
 		worldZ,
-		_resolvedBlockScratch,
+		{ blockId: 0, blockState: 0, loaded: false, unloaded: false },
+		options,
 	);
-	_resolvedBlockScratch.unloaded = !_resolvedBlockScratch.loaded;
-	return _resolvedBlockScratch;
 }
 
-const _blockAndStateScratch: BlockAndStateOut = { blockId: 0, blockState: 0 };
-
+/**
+ * Allocating convenience wrapper — see {@link resolveBlockAtWorldCoords}.
+ * Per-voxel callers should use {@link getBlockAndStateByWorldCoordsInto}.
+ */
 export function getBlockAndStateByWorldCoords(
 	worldX: number,
 	worldY: number,
@@ -977,7 +1007,7 @@ export function getBlockAndStateByWorldCoords(
 		worldX,
 		worldY,
 		worldZ,
-		_blockAndStateScratch,
+		{ blockId: 0, blockState: 0 },
 		options,
 	);
 }
@@ -1004,7 +1034,17 @@ export function getLightByWorldCoords(
 		return 15 << Chunk.SKY_LIGHT_SHIFT;
 	}
 
-	return worldMutations.getLightByWorldCoords(worldX, worldY, worldZ);
+	// PERF: read straight from the chunk resolved above.  Delegating to
+	// worldMutations.getLightByWorldCoords threw this resolution away and
+	// repeated it — three more worldToChunkCoord/worldToBlockCoord pairs plus a
+	// second ring-cache probe, for every light sample.  Particles, HUD, mob
+	// lighting and arrow trails all sample light per entity per frame, so the
+	// duplicate work is not amortised by anything.
+	return chunk.getLight(
+		worldToBlockCoord(worldX),
+		worldToBlockCoord(worldY),
+		worldToBlockCoord(worldZ),
+	);
 }
 
 function collectChunkEntityPayloads(): ReadonlyMap<

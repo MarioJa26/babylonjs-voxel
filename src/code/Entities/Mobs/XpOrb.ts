@@ -22,7 +22,7 @@ import {
 	getBillboardQuadGeometry,
 	releaseSpriteMaterial,
 } from "@/code/Player/Inventory/DroppedItem";
-import { resolveBlockAtWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { resolveBlockAtWorldCoordsInto } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	_voxelResolveScratch,
 	Axis as ColliderAxis,
@@ -65,18 +65,15 @@ const BOB_HEIGHT = 0.05;
 
 const ORB_SAMPLER = createVoxelColliderBlockSampler(
 	(x, y, z) => {
-		const result = resolveBlockAtWorldCoords(x, y, z);
+		resolveBlockAtWorldCoordsInto(x, y, z, _voxelResolveScratch);
 
-		if (result.unloaded) {
+		if (_voxelResolveScratch.unloaded) {
 			return UNLOADED_SOLID_RESOLVE;
 		}
 
-		if (!isCollidableBlock(result.blockId)) {
+		if (!isCollidableBlock(_voxelResolveScratch.blockId)) {
 			return null;
 		}
-
-		_voxelResolveScratch.blockId = result.blockId;
-		_voxelResolveScratch.blockState = result.blockState;
 
 		return _voxelResolveScratch;
 	},
