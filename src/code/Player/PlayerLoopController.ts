@@ -10,7 +10,9 @@ import {
 } from "../Generation/TerrainHeightMap";
 import type { IControls } from "../Interface/IControls";
 import { frameProfiler } from "../Lib/FrameProfiler";
+import { FRAME_WORK_BUDGET, FrameWorkKind } from "../Lib/FrameWorkBudget";
 import { getIsPaused, isUiOpen, setInCave } from "../Lib/GameRuntimeState";
+import { getPipelineStats } from "../Lib/PipelineStats";
 import { worldToChunkCoord } from "../Lib/VoxelMath";
 import {
 	makeSprintEmitterState,
@@ -28,14 +30,12 @@ import {
 	updateChunksAround,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
-import { setChunkPriorityContext } from "../World/Chunk/Loading/ChunkPriority";
 import {
 	ChunkPipelineStage,
 	getChunkLatencyPercentiles,
 	getChunkPipelineStats,
 } from "../World/Chunk/Loading/ChunkPipeline";
-import { FRAME_WORK_BUDGET, FrameWorkKind } from "../Lib/FrameWorkBudget";
-import { getPipelineStats } from "../Lib/PipelineStats";
+import { setChunkPriorityContext } from "../World/Chunk/Loading/ChunkPriority";
 import {
 	getMergedLayerMemoryStats,
 	getMergedMeshFlushStats,

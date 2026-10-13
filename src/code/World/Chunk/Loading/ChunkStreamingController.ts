@@ -9,8 +9,8 @@ import {
 	getFinalTerrainHeight,
 	isOceanFloorBandChunk,
 } from "@/code/Generation/TerrainHeightMap";
-import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
+import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
 import { FarTileManager } from "../../FarTiles/FarTileManager";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";

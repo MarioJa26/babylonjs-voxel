@@ -1,9 +1,7 @@
-import { CHUNK_SIZE } from "../Lib/VoxelMath";
 import { WATER_BLOCK_ID } from "../World/Chunk/Worker/ChunkMesherConstants";
 import {
 	CAVE_FLAG_CARVED,
 	CAVE_FLAG_TUNNEL_CORE,
-	clamp01,
 	evaluateCaveCarve,
 } from "./CaveCarver";
 import { CaveNoiseGrid } from "./CaveNoiseGrid";
