@@ -315,6 +315,17 @@ export class Chunk {
 	 */
 	public static onChunkPresenceChanged: ((chunk: Chunk) => void) | null = null;
 
+	/**
+	 * Register a chunk whose load request was lost, so the orphan sweep can
+	 * rescue it. Wired to ChunkStreamingController's candidate registry.
+	 *
+	 * A static hook rather than a direct import because ChunkWorkerPool needs to
+	 * register from its worker-failure path and cannot import the streaming
+	 * controller — the controller already imports the pool. Same indirection the
+	 * onLightChunkLoaded family uses.
+	 */
+	public static markOrphanCandidate: ((chunk: Chunk) => void) | null = null;
+
 	private _block_array: Uint8Array | Uint16Array | null = null;
 	private _isUniform = true;
 	private _uniformBlockId = 0;

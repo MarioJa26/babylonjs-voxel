@@ -62,7 +62,24 @@ interface OwnedBatchEntry extends UniqueBatchEntry {
 	promise: Promise<ChunkData>;
 	resolve(value: ChunkData): void;
 	reject(reason?: unknown): void;
+	/**
+	 * The dedup entry registered for this chunk.
+	 *
+	 * Its `persisted` field starts as NEVER_SETTLED and is replaced with the
+	 * real write settlement once the batch has been scheduled. That ordering is
+	 * deliberate: between registration and scheduling there is no write that
+	 * could release the entry, so a premature release would reopen the
+	 * duplicate-generation window this dedup map exists to close.
+	 */
+	dedup: DedupEntry;
 }
+
+/**
+ * A promise that never settles, used as a placeholder before the real write
+ * settlement is known. A release handler attached to it never fires, which is
+ * exactly the required behaviour: do not release until a write exists.
+ */
+const NEVER_SETTLED = new Promise<void>(() => {});
 
 function createOwnedBatchEntry(entry: UniqueBatchEntry): OwnedBatchEntry {
 	let resolve!: (value: ChunkData) => void;
@@ -73,6 +90,8 @@ function createOwnedBatchEntry(entry: UniqueBatchEntry): OwnedBatchEntry {
 		reject = rej;
 	});
 
+	const dedup: DedupEntry = { chunk: promise, persisted: NEVER_SETTLED };
+
 	return {
 		key: entry.key,
 		chunkX: entry.chunkX,
@@ -81,6 +100,7 @@ function createOwnedBatchEntry(entry: UniqueBatchEntry): OwnedBatchEntry {
 		promise,
 		resolve,
 		reject,
+		dedup,
 	};
 }
 
@@ -120,6 +140,42 @@ function compareOwnedEntries(
 	return left.chunkY - right.chunkY;
 }
 
+/**
+ * One in-flight generation, plus the write that follows it.
+ *
+ * `chunk` is what callers await. `persisted` settles only after the background
+ * write completes, which is what the dedup entry's lifetime is keyed to — see
+ * generateChunk for why releasing on `chunk` alone was wrong.
+ */
+type DedupEntry = {
+	chunk: Promise<ChunkData>;
+	persisted: Promise<void>;
+};
+
+/**
+ * One queued background write.
+ *
+ * The entry owns the settlement signal so the queue can both hand a promise to
+ * `generateChunk` (which keeps the dedup entry open) and answer a later lookup
+ * for the same chunk with the same handle. `settle()` is idempotent because a
+ * discarded entry (storage removed) and a written one can both be reached.
+ */
+type PersistQueueEntry = {
+	data: ChunkData;
+	settled: Promise<void>;
+	settle: () => void;
+};
+
+function createPersistQueueEntry(data: ChunkData): PersistQueueEntry {
+	let settle: () => void = () => {};
+
+	const settled = new Promise<void>((resolve) => {
+		settle = resolve;
+	});
+
+	return { data, settled, settle };
+}
+
 export class ChunkGenerationService {
 	private readonly pool = new ChunkWorkerPool();
 
@@ -135,9 +191,10 @@ export class ChunkGenerationService {
 	/**
 	 * Keyed by packChunkKeyFast(chunkX, chunkY, chunkZ).
 	 *
-	 * Every value is removed after settlement, provided it still owns its key.
+	 * Every value is removed once its background WRITE settles, provided it
+	 * still owns its key.
 	 */
-	private readonly dedupMap = new Map<number, Promise<ChunkData>>();
+	private readonly dedupMap = new Map<number, DedupEntry>();
 
 	/**
 	 * Configure terrain generation before initialization starts.
@@ -233,34 +290,54 @@ export class ChunkGenerationService {
 		const existing = this.dedupMap.get(key);
 
 		if (existing !== undefined) {
-			return existing;
+			return existing.chunk;
 		}
 
-		const generation = this.generateAndPersist(
+		const dataPromise = this.generateChunkData(
 			chunkX,
 			chunkY,
 			chunkZ,
 			priority,
 		);
 
-		this.dedupMap.set(key, generation);
-
 		/*
-		 * Using then(success, failure) creates one derived promise instead of
-		 * the finally().catch() chain, which created two.
+		 * The dedup entry is held until the BACKGROUND WRITE settles, not until
+		 * generation settles.
+		 *
+		 * Releasing it on generation settlement closed the dedup window while the
+		 * write was still only QUEUED. With PERSIST_CONCURRENCY = 2, a burst of
+		 * more than two chunks leaves the rest sitting in persistQueue, so any
+		 * client that re-requested one of those coordinates in that window got a
+		 * fresh full worker dispatch instead of the result already in hand — and
+		 * the duplicate write then raced the original for the same key.
+		 *
+		 * Chaining persistence OFF delivery, and the dedup release off
+		 * persistence, keeps delivery off the write's critical path while closing
+		 * the window at exactly the right moment.
 		 */
-		const removeDedupEntry = (): void => {
-			if (this.dedupMap.get(key) === generation) {
+		const entry: DedupEntry = {
+			chunk: dataPromise,
+			persisted: dataPromise.then(
+				(data) => this.schedulePersist(data),
+				// Generation failed, so nothing was queued. Release immediately.
+				() => Promise.resolve(),
+			),
+		};
+
+		this.dedupMap.set(key, entry);
+
+		const releaseDedupEntry = (): void => {
+			if (this.dedupMap.get(key) === entry) {
 				this.dedupMap.delete(key);
 			}
 		};
 
-		void generation.then(removeDedupEntry, removeDedupEntry);
+		void entry.persisted.then(releaseDedupEntry, releaseDedupEntry);
 
-		return generation;
+		return entry.chunk;
 	}
 
-	private async generateAndPersist(
+	private async generateChunkData(
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
@@ -270,26 +347,43 @@ export class ChunkGenerationService {
 
 		const raw = await this.pool.dispatch(chunkX, chunkY, chunkZ, priority);
 
-		const data = toChunkData(chunkX, chunkY, chunkZ, raw);
+		return toChunkData(chunkX, chunkY, chunkZ, raw);
+	}
 
-		/*
-		 * PERSISTENCE IS OFF THE DELIVERY CRITICAL PATH.
-		 *
-		 * This used to `await this.persistChunk(data)` before returning, which
-		 * put a full storage round-trip (serialize 32-98 KB, enqueue, LevelDB
-		 * batch commit) inside the time-to-first-byte for every chunk the client
-		 * is waiting on. Storage is not the throughput bottleneck, so paying for
-		 * it before responding only added latency to every chunk.
-		 *
-		 * Fire-and-forget is safe because the dedupMap entry for this key is
-		 * owned by the returned promise and removed on settlement, so a
-		 * concurrent request cannot slip past the write. A failure is logged and
-		 * the chunk is simply regenerated on next request — losing a cached copy
-		 * is strictly better than making the player wait for it.
-		 */
-		this.schedulePersist(data);
+	/**
+	 * Add one generated chunk to bounded background persistence.
+	 *
+	 * Background writes must stay BOUNDED.
+	 *
+	 * Delivery no longer waits on persistence, which means writes now run
+	 * concurrently with generation and with each other. Unbounded, a cold
+	 * join launches one serialize+compress per chunk with nothing holding
+	 * it back — and since writeChunkUnlocked now compresses, that is real
+	 * CPU (deflate over 32-98 KB) on the same box as the generation workers
+	 * and the game client. An unbounded write firehout starves exactly the
+	 * work that makes chunks appear.
+	 *
+	 * A small FIFO with a fixed number of concurrent writers bounds both
+	 * memory and CPU while keeping writes strictly behind the chunks the
+	 * client is actually waiting for.
+	 *
+	 * Returns a promise that settles with the write. Callers use it to keep a
+	 * dedup entry alive for the write's lifetime; delivery ignores it.
+	 */
+	private schedulePersist(data: ChunkData): Promise<void> {
+		if (this.terminating || this.storage === null) {
+			/*
+			 * No write will happen, so resolve immediately rather than leaving a
+			 * dedup entry pinned to a settlement that never arrives. The chunk is
+			 * simply not cached; the next request regenerates it.
+			 */
+			return Promise.resolve();
+		}
 
-		return data;
+		const entry = createPersistQueueEntry(data);
+		this.persistQueue.push(entry);
+		this.drainPersistQueue();
+		return entry.settled;
 	}
 
 	/**
@@ -309,23 +403,15 @@ export class ChunkGenerationService {
 	 * memory and CPU while keeping writes strictly behind the chunks the
 	 * client is actually waiting for.
 	 */
-	private schedulePersist(data: ChunkData): void {
-		if (this.terminating || this.storage === null) {
-			return;
-		}
-
-		this.persistQueue.push(data);
-		this.drainPersistQueue();
-	}
 
 	/**
-	 * Background persistence queue.
+	 * Background persistence queue entry.
 	 *
-	 * A head index is used instead of Array.shift(), which moves every remaining
-	 * element on each dequeue and turns a large generation burst into O(n²) array
-	 * work.
+	 * `settle` is the promise handed back to generateChunk so it can hold the
+	 * dedup entry open until the write finishes, and `settled` is that promise
+	 * itself, for callers that arrive later and need the same handle.
 	 */
-	private readonly persistQueue: ChunkData[] = [];
+	private readonly persistQueue: PersistQueueEntry[] = [];
 	private persistQueueHead = 0;
 	private persistWriters = 0;
 
@@ -402,7 +488,8 @@ export class ChunkGenerationService {
 			this.persistWriters < maxWriters &&
 			this.persistQueueHead < queue.length
 		) {
-			const data = queue[this.persistQueueHead++]!;
+			const entry = queue[this.persistQueueHead++]!;
+			const data = entry.data;
 
 			/*
 			 * Read storage when the item is dispatched, preserving the previous
@@ -412,6 +499,7 @@ export class ChunkGenerationService {
 			const storage = this.storage;
 
 			if (storage === null) {
+				entry.settle();
 				continue;
 			}
 
@@ -419,6 +507,7 @@ export class ChunkGenerationService {
 
 			void storage.writeChunk(data).then(
 				() => {
+					entry.settle();
 					this.onPersistSettled();
 				},
 				(error: unknown) => {
@@ -446,6 +535,7 @@ export class ChunkGenerationService {
 						);
 					}
 
+					entry.settle();
 					this.onPersistSettled();
 				},
 			);
@@ -469,14 +559,29 @@ export class ChunkGenerationService {
 	}
 
 	/**
-	 * Periodically remove the consumed prefix so completed ChunkData objects do not
-	 * stay strongly referenced during long-running generation sessions.
+	 * Release the consumed prefix so completed ChunkData objects do not stay
+	 * strongly referenced during long-running generation sessions.
 	 *
-	 * Compaction is amortized rather than performed for every item.
+	 * Each entry holds a decoded chunk (32-98 KB of typed arrays), so a consumed
+	 * prefix is not free memory — it is the dominant retention in a long
+	 * session. Dropping the reference is O(1) per slot and runs on every
+	 * completion; the expensive array compaction below is separate and remains
+	 * amortized.
 	 */
 	private compactPersistQueue(): void {
 		const head = this.persistQueueHead;
 		const queue = this.persistQueue;
+
+		/*
+		 * Null the consumed slots first. `queue.length = 0` below handles the
+		 * fully-drained case, and `copyWithin` handles the partial case, but
+		 * between the write finishing and either of those running, the prefix is
+		 * still live. ChunkData holds decoded block and light arrays, so those
+		 * are the largest single allocations the service makes.
+		 */
+		for (let i = 0; i < head; i++) {
+			queue[i] = undefined as unknown as PersistQueueEntry;
+		}
 
 		if (head === queue.length) {
 			queue.length = 0;
@@ -575,7 +680,7 @@ export class ChunkGenerationService {
 			const existing = this.dedupMap.get(entry.key);
 
 			if (existing !== undefined) {
-				promises[uniqueIndex] = existing;
+				promises[uniqueIndex] = existing.chunk;
 				continue;
 			}
 
@@ -583,7 +688,7 @@ export class ChunkGenerationService {
 
 			promises[uniqueIndex] = ownedEntry.promise;
 			owned.push(ownedEntry);
-			this.dedupMap.set(ownedEntry.key, ownedEntry.promise);
+			this.dedupMap.set(ownedEntry.key, ownedEntry.dedup);
 		}
 
 		if (owned.length !== 0) {
@@ -675,15 +780,39 @@ export class ChunkGenerationService {
 			 * the client already streams sub-batches as they complete, so paying
 			 * it up front only added latency to everything.
 			 *
-			 * Safe because the dedupMap entry for each key is owned by that
-			 * entry's promise and removed on settlement: a concurrent request
-			 * cannot slip past the write, and a failed write degrades to
-			 * regenerating the chunk rather than to dropping it.
+			 * Safe because the dedupMap entry for each key is held open until
+			 * that chunk's background write settles — see generateChunk. A
+			 * concurrent request inside that window joins this batch's entry
+			 * instead of dispatching a second worker, and a failed write
+			 * degrades to regenerating the chunk rather than to dropping it.
 			 */
-			this.schedulePersistBatch(chunks);
+			const settlements = this.schedulePersistBatch(chunks);
 
 			for (let index = 0; index < ownedCount; index++) {
 				owned[index].resolve(chunks[index]);
+			}
+
+			/*
+			 * Release each dedup entry when THAT chunk's write settles, not when
+			 * the batch resolves. A batch of 32 against PERSIST_CONCURRENCY = 2
+			 * means the tail sits in persistQueue for many frames; releasing all
+			 * entries at delivery time would reopen exactly the duplicate-
+			 * generation window that generateChunk now closes.
+			 */
+			for (let index = 0; index < ownedCount; index++) {
+				const entry = owned[index];
+				if (!entry) continue;
+
+				const settlement = settlements[index] ?? Promise.resolve();
+				entry.dedup.persisted = settlement;
+
+				const releaseDedupEntry = (): void => {
+					if (this.dedupMap.get(entry.key) === entry.dedup) {
+						this.dedupMap.delete(entry.key);
+					}
+				};
+
+				void settlement.then(releaseDedupEntry, releaseDedupEntry);
 			}
 		} catch (error: unknown) {
 			/*
@@ -692,14 +821,13 @@ export class ChunkGenerationService {
 			for (let index = 0; index < ownedCount; index++) {
 				owned[index].reject(error);
 			}
-		} finally {
-			/*
-			 * Remove only keys still owned by this dispatch.
-			 */
+
+			// A throw before schedulePersistBatch means nothing was queued, so
+			// these entries are safe to release now.
 			for (let index = 0; index < ownedCount; index++) {
 				const entry = owned[index];
 
-				if (this.dedupMap.get(entry.key) === entry.promise) {
+				if (this.dedupMap.get(entry.key) === entry.dedup) {
 					this.dedupMap.delete(entry.key);
 				}
 			}
@@ -715,23 +843,31 @@ export class ChunkGenerationService {
 	 * which combined with the single-chunk writers meant up to 10 concurrent
 	 * serialize+compress operations competing with generation for CPU. One shared
 	 * budget keeps the total bounded regardless of which path enqueued the work.
+	 *
+	 * Returns one settlement promise per chunk, in order, so the caller can hold
+	 * each chunk's dedup entry open until its own write lands.
 	 */
-	private schedulePersistBatch(chunks: readonly ChunkData[]): void {
+	private schedulePersistBatch(chunks: readonly ChunkData[]): Promise<void>[] {
 		if (
 			this.terminating ||
 			this.storage === null ||
 			chunks.length === 0
 		) {
-			return;
+			return chunks.map(() => Promise.resolve());
 		}
 
 		const queue = this.persistQueue;
+		const settlements: Promise<void>[] = new Array(chunks.length);
 
 		for (let i = 0; i < chunks.length; i++) {
-			queue.push(chunks[i]);
+			const entry = createPersistQueueEntry(chunks[i]!);
+			queue.push(entry);
+			settlements[i] = entry.settled;
 		}
 
 		this.drainPersistQueue();
+
+		return settlements;
 	}
 
 	private persistChunk(data: ChunkData): Promise<void> {

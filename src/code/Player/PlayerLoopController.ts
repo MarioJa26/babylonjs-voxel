@@ -1284,6 +1284,15 @@ export class PlayerLoopController {
 			`${loadStats.lastOrphanRescued} (total ${loadStats.totalOrphanRescued})`,
 			"chunks",
 		);
+		// Orphan candidates waiting to be swept. The sweep only inspects these,
+		// so the set's size is the sweep's per-frame cost — it should hover near
+		// zero. A count that climbs without dropping means requests are being
+		// lost faster than the sweep rescues them.
+		PlayerHud.updateDebugInfo(
+			"Orphan Candidates",
+			`${loadStats.orphanCandidates} (inspected ${loadStats.totalOrphanCandidatesInspected})`,
+			"chunks",
+		);
 		// Non-zero means a Chunk object was disposed and recycled onto other
 		// coordinates while its hydration read was in flight, so the write was
 		// dropped rather than corrupting a neighbour. Should always be 0.

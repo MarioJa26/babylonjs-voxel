@@ -38,6 +38,15 @@ export interface ChunkProcessSchedulerAdapter {
 
 	getDesiredState(numericId: number): number | undefined;
 
+	/**
+	 * Register a chunk whose load request was abandoned without a re-queue.
+	 *
+	 * The orphan sweep only inspects registered candidates, so every branch that
+	 * drops a request for a chunk that still wants loading MUST call this or the
+	 * chunk becomes permanently invisible and its world hole never heals.
+	 */
+	markPotentialOrphan(chunk: Chunk): void;
+
 	unloadChunkBoundEntitiesForChunk(chunk: Chunk): Promise<void>;
 
 	applyLoadedChunkFromSavedData(
@@ -536,15 +545,20 @@ export class ChunkProcessScheduler {
 
 							const desired = this.adapter.getDesiredState(chunk.numericId);
 
-							// No recorded desire at all: the chunk is not known to be
-							// wanted (its state was pruned or never recorded), so drop
-							// the request. `isTerrainScheduled` is intentionally left
-							// set — ChunkStreamingController.sweepOrphanedChunks picks
-							// such chunks up and re-queues them with a fresh desired
-							// state. Clearing the flag here would strand them instead.
-							if (desired === undefined) {
-								continue;
-							}
+						// No recorded desire at all: the chunk is not known to be
+						// wanted (its state was pruned or never recorded), so drop
+						// the request. `isTerrainScheduled` is intentionally left
+						// set — the chunk is registered as an orphan candidate
+						// below and sweepOrphanedChunks re-queues it with a fresh
+						// desired state. Clearing the flag here would strand it.
+						//
+						// The registration is what makes that rescue reachable: the
+						// sweep only walks its candidate set, so without this line
+						// the chunk would be invisible and its world hole permanent.
+						if (desired === undefined) {
+							this.adapter.markPotentialOrphan(chunk);
+							continue;
+						}
 
 							const desiredLod = desired & 0b111;
 							const desiredRevision = desired >>> 3;
@@ -675,9 +689,22 @@ export class ChunkProcessScheduler {
 						) {
 							const request = state.validLoadBatch[state.applyLoadedIndex++];
 
-							if (!this.isStillDesired(request)) {
-								continue;
-							}
+						if (!this.isStillDesired(request)) {
+							/*
+							 * The chunk stopped being desired while its storage read
+							 * was in flight, so isStillDesired sent the request back
+							 * around instead of consuming it. That re-queue keeps the
+							 * request alive, so the chunk is NOT an orphan yet.
+							 *
+							 * The dangerous variant is the opposite outcome: a chunk
+							 * that still wants loading but whose request is being
+							 * dropped without a re-queue. Those are registered by the
+							 * branches that actually abandon a request —
+							 * onLoadRequestsAbandoned, and the desired-state drop in
+							 * PrepareLoadBatch above.
+							 */
+							continue;
+						}
 
 							const savedData = request.includeVoxelData
 								? state.nearLoadedDataMap.get(request.chunk.id)
@@ -769,6 +796,17 @@ export class ChunkProcessScheduler {
 
 						const savedData = state.hydrateMap.get(chunk.id);
 						if (!savedData) {
+							/*
+							 * The hydration read came back without this chunk's data
+							 * — the request disappeared between being issued and
+							 * being answered. queueGeneration below still produces
+							 * the voxels, so this is not an orphan yet; it only
+							 * becomes one if that generation task is also lost,
+							 * which the worker-failure path registers separately.
+							 * Registering it here as well would be harmless but
+							 * would grow the candidate set on every far-LOD chunk,
+							 * which is the common case, not an anomaly.
+							 */
 							this.queueGeneration(state, chunk);
 							continue;
 						}

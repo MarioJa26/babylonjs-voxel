@@ -91,6 +91,10 @@ export type ChunkLoadingDebugStats = {
 	// controller is dropping requests; "total" climbing steadily is the stall.
 	lastOrphanRescued: number;
 	totalOrphanRescued: number;
+	// Size of the orphan candidate set, which is now exactly what the sweep
+	// inspects. Should hover near zero; its cost replaces an O(all chunks) walk.
+	orphanCandidates: number;
+	totalOrphanCandidatesInspected: number;
 	// Hydration writes skipped because the Chunk object was recycled onto
 	// different coordinates mid-read. Zero in normal operation; a climbing total
 	// means unloads are outrunning hydration.

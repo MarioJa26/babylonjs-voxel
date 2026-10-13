@@ -99,6 +99,8 @@ const debugStats: ChunkLoadingDebugStats = {
 	totalProcessLoops: 0,
 	lastOrphanRescued: 0,
 	totalOrphanRescued: 0,
+	orphanCandidates: 0,
+	totalOrphanCandidatesInspected: 0,
 	hydrationRecycledDrops: 0,
 	lastLoadedFromStorage: 0,
 	lastGenerated: 0,
@@ -146,8 +148,29 @@ const streamingController = new ChunkStreamingController({
 });
 
 addChunkDisposeHook((chunk) => {
-	streamingController.onChunkDisposed(chunk.numericId);
+	streamingController.onChunkDisposed(chunk);
+
+	/*
+	 * Drop the residency record once the chunk object is genuinely gone.
+	 *
+	 * Without this the map only ever grows: `setChunkResidency` writes on every
+	 * unload, and nothing removed it, so a long session accumulated one entry
+	 * per coordinate ever visited. `forgetResidency` existed for exactly this and
+	 * had no callers.
+	 *
+	 * Separate from the unload QUEUE decision on purpose. A chunk queued for
+	 * unload is still recoverable, so its record must survive until the object
+	 * itself is disposed.
+	 */
+	streamingController.forgetResidency(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 });
+
+// Worker-failure re-queues are best-effort, so the pool registers the chunk
+// there. Routed through a static hook because ChunkWorkerPool cannot import the
+// streaming controller (the controller already imports the pool).
+Chunk.markOrphanCandidate = (chunk) => {
+	streamingController.markPotentialOrphan(chunk);
+};
 
 const worldMutations = new ChunkWorldMutations({
 	onBoundaryMutation: ({ chunk }) => {
@@ -228,6 +251,7 @@ const processScheduler = new ChunkProcessScheduler({
 		streamingController.onLoadRequestsAbandoned(requests),
 	recycleQueuedRequests: (requests) =>
 		streamingController.recycleQueuedRequests(requests),
+	markPotentialOrphan: (chunk) => streamingController.markPotentialOrphan(chunk),
 });
 
 // After each processQueues continuation slice, pump remote generation.
@@ -401,6 +425,8 @@ export function validateChunksAround(
 		isQueued: boolean;
 		isUnloading: boolean;
 		hasDesiredState: boolean;
+		/** False means the orphan registry would never have examined this chunk. */
+		inOrphanRegistry: boolean;
 	}> = [];
 
 	/*
@@ -417,7 +443,18 @@ export function validateChunksAround(
 		chunkId: bigint;
 		lodLevel: number;
 		isQueued: boolean;
+		inOrphanRegistry: boolean;
 	}> = [];
+
+	/*
+	 * The production orphan sweep only walks `_orphanCandidates`, so this
+	 * validator is what proves that set is complete. Any genuinely orphaned
+	 * chunk with `inOrphanRegistry === false` is a code path that abandons a
+	 * request without calling markPotentialOrphan — a bug the sweep can no
+	 * longer see on its own.
+	 */
+	const untracked: Array<{ chunkX: number; chunkY: number; chunkZ: number }> =
+		[];
 
 	const minChunkY = SETTING_PARAMS.MIN_CHUNK_Y;
 	const maxChunkY = minChunkY + SETTING_PARAMS.MAX_CHUNK_HEIGHT - 1;
@@ -452,6 +489,10 @@ export function validateChunksAround(
 
 				if (chunk.isLoaded) {
 					if (chunk.lodLevel <= 1 && !chunk.hasVoxelData && !isQueued) {
+						const tracked = streamingController.isOrphanCandidate(chunk);
+						if (!tracked) {
+							untracked.push({ chunkX: x, chunkY: y, chunkZ: z });
+						}
 						unHydrated.push({
 							chunkX: x,
 							chunkY: y,
@@ -459,6 +500,7 @@ export function validateChunksAround(
 							chunkId,
 							lodLevel: chunk.lodLevel,
 							isQueued,
+							inOrphanRegistry: tracked,
 						});
 					}
 					continue;
@@ -466,6 +508,11 @@ export function validateChunksAround(
 
 				if (isQueued) {
 					continue;
+				}
+
+				const trackedMissing = streamingController.isOrphanCandidate(chunk);
+				if (!trackedMissing) {
+					untracked.push({ chunkX: x, chunkY: y, chunkZ: z });
 				}
 
 				missing.push({
@@ -477,6 +524,7 @@ export function validateChunksAround(
 					isQueued: false,
 					isUnloading: false,
 					hasDesiredState: true,
+					inOrphanRegistry: trackedMissing,
 				});
 			}
 		}
@@ -490,6 +538,17 @@ export function validateChunksAround(
 		console.warn(
 			"[ChunkLoadingSystem] Stuck un-hydrated chunks (loaded at near LOD with no voxel data and no pending load request):",
 			unHydrated,
+		);
+	}
+
+	if (untracked.length > 0) {
+		// Loud on purpose. The production sweep cannot see these chunks, so this
+		// is the only report that a request-abandonment path forgot to register.
+		console.error(
+			`[ChunkLoadingSystem] ${untracked.length} orphaned chunk(s) MISSING from the orphan candidate registry. ` +
+				"The sweep only inspects registered candidates, so these will never be rescued. " +
+				"Find the code path that drops the request without calling markPotentialOrphan():",
+			untracked,
 		);
 	}
 }
@@ -759,6 +818,9 @@ function updateSliceDebugStats(state: InFlightProcessState): void {
 		streamingController.getLastOrphanSweepRescued();
 	debugStats.totalOrphanRescued =
 		streamingController.getTotalOrphanSweepRescued();
+	debugStats.orphanCandidates = streamingController.getOrphanCandidateCount();
+	debugStats.totalOrphanCandidatesInspected =
+		streamingController.getTotalOrphanCandidatesInspected();
 	debugStats.hydrationRecycledDrops =
 		processScheduler.getHydrationRecycledDropCount();
 

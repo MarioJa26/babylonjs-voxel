@@ -249,6 +249,18 @@ export class LevelDbChunkStore implements ChunkStorage {
 	private static readonly MAX_TRANSACTION_OPS = 256;
 	private static readonly COALESCE_MS = 2;
 
+	/**
+	 * Inflates in flight for read-cache warming.
+	 *
+	 * Small on purpose. The point is to keep the write pump from stalling on
+	 * them, not to run a decompression backlog in the background; letting this
+	 * grow would just move the same CPU cost off the commit path and onto
+	 * whatever frame happens to run next.
+	 */
+	private static readonly MAX_PENDING_CACHE_INFLATES = 4;
+
+	private pendingCacheInflates = 0;
+
 	private readonly preparedJobsScratch: WriteJob[] = new Array(
 		LevelDbChunkStore.MAX_TRANSACTION_OPS,
 	);
@@ -257,7 +269,20 @@ export class LevelDbChunkStore implements ChunkStorage {
 		LevelDbChunkStore.MAX_TRANSACTION_OPS,
 	);
 
-	constructor(worldName: string, basePath: string, maxCacheSize = 2048) {
+	/**
+	 * @param maxCacheSize Maximum number of chunk blobs held in memory.
+	 *
+	 * PERF: the default was 2048, which is 67-200 MB of DECODED chunk blobs
+	 * (33-98 KB each). Neither WorldStorage nor RemoteChunkStorage overrode it,
+	 * so a full render distance parked that much resident heap for the whole
+	 * session.
+	 *
+	 * 512 still covers the working set — the streaming radius is far smaller than
+	 * 512 chunks in vertical extent — while capping retention at roughly
+	 * 17-50 MB. Raise it deliberately if profiling shows cache misses on the
+	 * streaming path.
+	 */
+	constructor(worldName: string, basePath: string, maxCacheSize = 512) {
 		this.dbPath = this.isBrowser
 			? `b102:worlds:${worldName}`
 			: `${basePath}/worlds/${worldName}/db`;
@@ -1547,6 +1572,42 @@ export class LevelDbChunkStore implements ChunkStorage {
 		this.skipCancelledEntries();
 	}
 
+	/**
+	 * Warm the read cache from a committed compressed payload, off the write
+	 * pump's critical path.
+	 *
+	 * The write has already committed by the time this runs, so the cache is
+	 * purely an optimisation: if it is not filled, the next read misses and
+	 * fetches the same bytes from the store. Bounded by
+	 * MAX_PENDING_CACHE_INFLATES — once saturated we skip caching rather than
+	 * accumulate work the pump does not need done.
+	 */
+	private scheduleCacheInflate(nk: number, compressed: Uint8Array): void {
+		if (this.pendingCacheInflates >= LevelDbChunkStore.MAX_PENDING_CACHE_INFLATES) {
+			return;
+		}
+
+		this.pendingCacheInflates++;
+
+		const finish = (decoded: Uint8Array | null): void => {
+			this.pendingCacheInflates--;
+
+			/*
+			 * A delete may have been queued for this key while the inflate was in
+			 * flight. Caching now would resurrect the entry and the read path
+			 * would serve a chunk that no longer exists.
+			 */
+			if (decoded !== null && !this.pendingDeletes.has(nk)) {
+				this.addToCache(nk, decoded);
+			}
+		};
+
+		void decompressBlob(compressed).then(
+			(decoded) => finish(decoded),
+			() => finish(null),
+		);
+	}
+
 	private async publishCommittedOperations(
 		preparedJobs: readonly WriteJob[],
 		preparedOps: readonly WriteOperation[],
@@ -1581,12 +1642,29 @@ export class LevelDbChunkStore implements ChunkStorage {
 					continue;
 				}
 
-				try {
-					const decompressed = await decompressBlob(operation.value);
-					this.addToCache(nk, decompressed);
-				} catch {
-					// Preserve the original behavior.
-				}
+				/*
+				 * A preCompressed write is the REMOTE CHUNK path: these are the
+				 * compressed wire bytes the chunk provider deliberately kept
+				 * compressed (see RemoteChunkProvider's deflated handlers —
+				 * queueing the decoded arrays instead would pin 33-98 KB of typed
+				 * arrays per chunk until the write landed).
+				 *
+				 * This inflate used to be AWAITED here, which is the expensive
+				 * part: the write pump is strictly sequential, so a transaction of
+				 * N remote chunks performed N full-chunk inflates before the next
+				 * transaction could even be prepared. On a reconnect that is
+				 * hundreds of decodes on the frame thread, all to populate a read
+				 * cache.
+				 *
+				 * It is now filled asynchronously under a small in-flight bound.
+				 * The write has already committed, so nothing depends on the cache
+				 * being warm; every read site falls through to the store on a miss
+				 * (see getChunk — it awaits the pending write, re-checks, then
+				 * reads). The bound stops a fast pump from queueing inflates
+				 * faster than they retire, in which case we simply skip caching
+				 * and accept the read.
+				 */
+				this.scheduleCacheInflate(nk, operation.value);
 			} else {
 				pendingDeletes.delete(nk);
 				cache.delete(nk);

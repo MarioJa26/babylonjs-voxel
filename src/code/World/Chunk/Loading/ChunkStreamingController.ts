@@ -188,6 +188,11 @@ const _queryScratch: Chunk[] = [];
 // Reused so the sweep allocates nothing.
 const _orphanSweepQueuedIds = new Set<number>();
 
+// Scratch list for sweepOrphanedChunks: candidates that were inspected and found
+// healthy (or no longer wanting loading) and so should leave the candidate set.
+// Reused across passes so the sweep allocates nothing. See sweepOrphanedChunks.
+const _orphanSweepResolved: Chunk[] = [];
+
 // PERF: relative-offset key for the refresh decision cache.
 // Multiplicative fields stay float-exact (< 2^53) while widening the ranges:
 // rx/rz hold ±2047 (render radii beyond that are unrealistic), ry ±127, and
@@ -469,6 +474,85 @@ export class ChunkStreamingController {
 	/** Chunks rescued by the last orphan sweep pass, and the running total. */
 	private _lastOrphanSweepRescued = 0;
 	private _totalOrphanSweepRescued = 0;
+
+	/**
+	 * Candidates the sweep has inspected and found healthy, cumulative.
+	 *
+	 * Exists to prove the candidate set is doing its job: this number grows by
+	 * roughly the same amount the OLD full-registry scan would have walked, and
+	 * the per-frame cost of the sweep is now bounded by THAT instead of by world
+	 * residency. If this stays at zero the candidates are never being registered
+	 * and orphans would go unnoticed.
+	 */
+	private _totalOrphanCandidatesInspected = 0;
+
+	/** Cumulative count, for HUD diagnostics. */
+	public getTotalOrphanCandidatesInspected(): number {
+		return this._totalOrphanCandidatesInspected;
+	}
+
+	/**
+	 * Chunks that have lost track of their load request.
+	 *
+	 * PERF/RATIONALE: the sweep used to walk every entry in
+	 * `Chunk.chunkInstances`, which holds both loaded and unloaded chunks and
+	 * grows with world residency — tens of thousands under a large render
+	 * distance, all re-examined 4x/second. Orphans are rare by construction, so
+	 * the scan was O(residency) to find O(anomalies).
+	 *
+	 * This set is the fix: every code path that abandons a request marks the
+	 * chunk here, and the sweep inspects only these. Registration is O(1) on a
+	 * path that is already doing work, so marking costs nothing measurable.
+	 *
+	 * Correctness rests on every abandonment path marking, which is why the
+	 * marks live next to the abandon branches rather than being inferred. A
+	 * chunk can only become an orphan by losing a request, and a request is only
+	 * ever removed from `loadQueueRequestMap` in four places, all of which mark.
+	 */
+	private readonly _orphanCandidates = new Set<Chunk>();
+
+	/**
+	 * Flag a chunk whose load request vanished without completing.
+	 *
+	 * Only chunks that still claim to want loading are registered: a chunk with
+	 * `isTerrainScheduled` clear is culled by design, and re-queuing it would
+	 * resurrect dead terrain.
+	 */
+	public markPotentialOrphan(chunk: Chunk): void {
+		if (chunk.isTerrainScheduled) {
+			this._orphanCandidates.add(chunk);
+		}
+	}
+
+	/**
+	 * Clear the orphan flag — the chunk's request is accounted for again
+	 * (queued, in flight, or deliberately given up).
+	 */
+	public clearPotentialOrphan(chunk: Chunk): void {
+		this._orphanCandidates.delete(chunk);
+	}
+
+	/**
+	 * Is this chunk currently registered as an orphan candidate?
+	 *
+	 * Diagnostics only — the sweep reads the set directly. Exists so
+	 * `validateChunksAround` can prove the registry is complete, which is the
+	 * whole safety argument for narrowing the sweep.
+	 */
+	public isOrphanCandidate(chunk: Chunk): boolean {
+		return this._orphanCandidates.has(chunk);
+	}
+
+	/**
+	 * Size of the orphan candidate set.
+	 *
+	 * A count that grows without bound means requests are being lost faster than
+	 * the sweep can rescue them — the "chunk loading stopped" symptom, visible
+	 * here before it shows up as a stalled world.
+	 */
+	public getOrphanCandidateCount(): number {
+		return this._orphanCandidates.size;
+	}
 
 	private _cachedCaveLodRuleSet: ChunkLodRuleSet | null = null;
 	private _cachedOutdoorLodRuleSet: ChunkLodRuleSet | null = null;
@@ -1222,6 +1306,12 @@ export class ChunkStreamingController {
 	 * This is a safety net, not the primary path: it is throttled
 	 * (ORPHAN_SWEEP_INTERVAL_MS), capped per pass (ORPHAN_SWEEP_MAX_PER_PASS),
 	 * and bounded by wall-clock, so it can never dominate a frame.
+	 *
+	 * SCOPE: only chunks in `_orphanCandidates` are examined. See that field for
+	 * why, and {@link markPotentialOrphan} for where candidates come from. A
+	 * candidate that turns out to be healthy, or that no longer wants loading,
+	 * is REMOVED as it is inspected — so the set is a work list, not a
+	 * permanent record, and it self-prunes every pass.
 	 */
 	public sweepOrphanedChunks(): number {
 		const nowMs = performance.now();
@@ -1232,6 +1322,15 @@ export class ChunkStreamingController {
 			return this._lastOrphanSweepRescued;
 		}
 		this._lastOrphanSweepMs = nowMs;
+
+		const candidates = this._orphanCandidates;
+
+		// Nothing was lost since the last pass — by far the common case, and now
+		// a single size check instead of a walk of the whole chunk registry.
+		if (candidates.size === 0) {
+			this._lastOrphanSweepRescued = 0;
+			return 0;
+		}
 
 		const loadQueue = this.adapter.getLoadQueue();
 		const queuedIds = _orphanSweepQueuedIds;
@@ -1248,8 +1347,14 @@ export class ChunkStreamingController {
 		const startedMs = nowMs;
 
 		let rescued = 0;
+		let inspected = 0;
+		// Rescued chunks are dropped by ensureChunkQueuedForLoad; every other
+		// outcome means this candidate is healthy or dead, so collect it here and
+		// delete after the walk (deleting during Set iteration is legal in JS but
+		// making it explicit keeps the intent readable).
+		const resolved = _orphanSweepResolved;
 
-		for (const chunk of Chunk.chunkInstances.values()) {
+		for (const chunk of candidates) {
 			if (rescued >= ChunkStreamingController.ORPHAN_SWEEP_MAX_PER_PASS) {
 				break;
 			}
@@ -1268,25 +1373,40 @@ export class ChunkStreamingController {
 				break;
 			}
 
-			// Only chunks that still claim to want loading are candidates; a
-			// chunk with the flag clear is either unloaded-by-design (culled) or
-			// already resolved, and re-queuing it would resurrect dead chunks.
-			if (!chunk.isTerrainScheduled) continue;
-			if (queuedIds.has(chunk.numericId)) continue;
+			// A candidate no longer wanting to load is culled-by-design or already
+			// resolved; drop it rather than re-queuing, which would resurrect dead
+			// terrain.
+			if (!chunk.isTerrainScheduled) {
+				resolved.push(chunk);
+				continue;
+			}
+			if (queuedIds.has(chunk.numericId)) {
+				resolved.push(chunk);
+				continue;
+			}
 
 			// An unload in progress wins: rescuing would pull the chunk straight
 			// back off the dispose queue (ensureChunkQueuedForLoad deletes it from
 			// the unload set), so the chunk could never be freed.
-			if (unloadQueueSet.has(chunk)) continue;
+			if (unloadQueueSet.has(chunk)) {
+				resolved.push(chunk);
+				continue;
+			}
 
 			// The scheduler already dequeued this chunk's request and is awaiting
 			// its storage read — re-queueing now would load it twice per pass.
-			if (this._loadRequestsInFlight.has(chunk.numericId)) continue;
+			if (this._loadRequestsInFlight.has(chunk.numericId)) {
+				resolved.push(chunk);
+				continue;
+			}
 
 			if (!chunk.isLoaded) {
 				// Already handed to a terrain worker — leave it alone, otherwise
 				// the chunk becomes both a storage load and a generation task.
-				if (pool.isTerrainTaskQueued(chunk)) continue;
+				if (pool.isTerrainTaskQueued(chunk)) {
+					resolved.push(chunk);
+					continue;
+				}
 
 				this.rescueChunkLoad(chunk, revision);
 				rescued++;
@@ -1297,13 +1417,24 @@ export class ChunkStreamingController {
 			if (chunk.lodLevel <= 1 && !chunk.hasVoxelData) {
 				this.rescueChunkLoad(chunk, revision);
 				rescued++;
+				continue;
 			}
+
+			// Loaded, has voxels, wants nothing more — healthy.
+			resolved.push(chunk);
+			inspected++;
 		}
+
+		for (let i = 0; i < resolved.length; i++) {
+			candidates.delete(resolved[i]);
+		}
+		resolved.length = 0;
 
 		queuedIds.clear();
 
 		this._lastOrphanSweepRescued = rescued;
 		this._totalOrphanSweepRescued += rescued;
+		this._totalOrphanCandidatesInspected += inspected;
 
 		if (rescued > 0) {
 			this.adapter.onQueueSnapshotChanged?.();
@@ -1921,6 +2052,11 @@ export class ChunkStreamingController {
 			unloadSet.delete(chunk);
 		}
 
+		// The chunk has a request again, so it is no longer an orphan. This is
+		// the single place every load request passes through, so clearing here
+		// covers the rescue path, the recovery path and every normal caller.
+		this._orphanCandidates.delete(chunk);
+
 		chunk.isTerrainScheduled = true;
 	}
 
@@ -1932,6 +2068,8 @@ export class ChunkStreamingController {
 			if (request.chunk) {
 				this.loadQueueRequestMap.delete(request.chunk.numericId);
 				this._loadRequestsInFlight.add(request.chunk.numericId);
+				// The request is being serviced, so it is not an orphan.
+				this._orphanCandidates.delete(request.chunk);
 			}
 		}
 	}
@@ -1950,6 +2088,8 @@ export class ChunkStreamingController {
 			if (request.chunk) {
 				this.loadQueueRequestMap.set(request.chunk.numericId, request);
 				this._loadRequestsInFlight.delete(request.chunk.numericId);
+				// Back on loadQueue with a live request — not an orphan.
+				this._orphanCandidates.delete(request.chunk);
 			}
 		}
 	}
@@ -1974,6 +2114,10 @@ export class ChunkStreamingController {
 			if (this.loadQueueRequestMap.get(numericId) === request) {
 				this.loadQueueRequestMap.delete(numericId);
 			}
+
+			// The request is gone and will not be retried by the scheduler, so
+			// nothing but the sweep can bring this chunk back. Register it.
+			this.markPotentialOrphan(request.chunk);
 		}
 	}
 
@@ -2017,11 +2161,19 @@ export class ChunkStreamingController {
 		}
 	}
 
-	public onChunkDisposed(numericId: number): void {
-		this.loadedRefreshQueueSet.delete(numericId);
-		this._loadRequestsInFlight.delete(numericId);
+	/**
+	 * Terminal cleanup for a disposed chunk.
+	 *
+	 * The candidate set holds strong references, so a disposed chunk left in it
+	 * would pin its voxel arrays for the rest of the session. Dropping it here
+	 * is the primary defence; the sweep additionally prunes, so a disposal that
+	 * somehow bypasses the hook still self-heals within one sweep interval.
+	 */
+	public onChunkDisposed(chunk: Chunk): void {
+		this.loadedRefreshQueueSet.delete(chunk.numericId);
+		this._loadRequestsInFlight.delete(chunk.numericId);
+		this._orphanCandidates.delete(chunk);
 	}
-
 	/**
 	 * Drop the residency record for a chunk that has been fully freed.
 	 *

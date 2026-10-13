@@ -939,6 +939,25 @@ export class ChunkWorkerPool {
 			// times out and re-requests. Nothing to restore here.
 		}
 
+		/*
+		 * A worker dying mid-task is the "cancelled worker task" anomaly. Every
+		 * branch above re-queues, so the chunk normally recovers on its own — but
+		 * those re-queues are best-effort: the task queue can be compacted or the
+		 * chunk disposed between the crash and the re-queue.
+		 *
+		 * Registering here costs one Set insert on a path that already tears down
+		 * and restarts a worker (i.e. once per crash, not per task) and makes the
+		 * chunk visible to the orphan sweep if the re-queue did not take. Without
+		 * it, a lost re-queue after a worker crash is unrecoverable, because the
+		 * sweep no longer walks the whole registry.
+		 *
+		 * Registered rather than relied upon: if the re-queue worked, the chunk
+		 * re-enters the load/generate path and the sweep prunes it as healthy.
+		 */
+		if (context?.chunk) {
+			Chunk.markOrphanCandidate?.(context.chunk);
+		}
+
 		// Remove from idle structures using the safe helper.
 		this._removeWorkerFromIdle(workerIndex);
 		this.distantTerrainReadyWorkers.delete(workerIndex);
