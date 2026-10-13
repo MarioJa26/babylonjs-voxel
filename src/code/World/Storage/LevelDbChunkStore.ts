@@ -1583,7 +1583,9 @@ export class LevelDbChunkStore implements ChunkStorage {
 	 * accumulate work the pump does not need done.
 	 */
 	private scheduleCacheInflate(nk: number, compressed: Uint8Array): void {
-		if (this.pendingCacheInflates >= LevelDbChunkStore.MAX_PENDING_CACHE_INFLATES) {
+		if (
+			this.pendingCacheInflates >= LevelDbChunkStore.MAX_PENDING_CACHE_INFLATES
+		) {
 			return;
 		}
 

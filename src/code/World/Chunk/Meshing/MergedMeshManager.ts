@@ -1,9 +1,6 @@
 ﻿import type { Mesh } from "@babylonjs/lite";
 import { frameClock } from "@/code/Lib/FrameClock";
-import {
-	FRAME_WORK_BUDGET,
-	FrameWorkKind,
-} from "@/code/Lib/FrameWorkBudget";
+import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
 import { notePipelineWork } from "@/code/Lib/PipelineStats";
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import {

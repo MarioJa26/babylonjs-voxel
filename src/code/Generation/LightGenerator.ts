@@ -85,15 +85,21 @@ export class LightGenerator {
 	private readonly chunkSize: number;
 	private readonly chunkSizeSq: number;
 	private readonly chunkVolume: number;
-	private readonly csShift: number;
-	private readonly csShift2: number;
-	private readonly queueCapacity: number;
-	private readonly queueMask: number;
 
 	/**
-	 * Reused by initial seeding and the immediate propagation path.
+	 * Reused by initial seeding and the immediate propagation path. Sized to
+	 * exactly `chunkVolume`: with the deduplicated `queued` stamp set a voxel
+	 * can never be pending twice, so the ring can never wrap around and
+	 * overwrite an unprocessed entry.
 	 */
 	private readonly lightQueue: Uint16Array;
+
+	/**
+	 * Stamp set: `queued[i] !== 0` means voxel `i` already has a pending
+	 * queue entry. Enqueueing a voxel that is already pending is a no-op —
+	 * its (possibly increased) light value is read fresh when it is popped.
+	 */
+	private readonly queued: Uint8Array;
 
 	/**
 	 * Allocated only if deferred propagation is actually used.
@@ -101,6 +107,12 @@ export class LightGenerator {
 	 * Immediate-only generators therefore retain one queue rather than two.
 	 */
 	private scratchQueue: Uint16Array | null = null;
+
+	/**
+	 * Epoch used to clear the `queued` stamp set without a full O(volume)
+	 * reset; wraps to a fresh fill after it would overflow.
+	 */
+	private queuedEpoch = 1;
 
 	public static setClosedFaceMaskLUT(lut: Uint8Array | null): void {
 		LightGenerator.closedFaceMaskLUT = lut;
@@ -114,23 +126,12 @@ export class LightGenerator {
 		const chunkSize = params.CHUNK_SIZE;
 		const chunkSizeSq = chunkSize * chunkSize;
 		const chunkVolume = chunkSizeSq * chunkSize;
-		const queueCapacity = nextPowerOfTwo(chunkVolume * 2);
 
 		this.chunkSize = chunkSize;
 		this.chunkSizeSq = chunkSizeSq;
 		this.chunkVolume = chunkVolume;
-		this.queueCapacity = queueCapacity;
-		this.queueMask = queueCapacity - 1;
-
-		let csShift = 0;
-
-		for (let value = chunkSize; value > 1; value >>= 1) {
-			csShift++;
-		}
-
-		this.csShift = csShift;
-		this.csShift2 = csShift * 2;
-		this.lightQueue = new Uint16Array(queueCapacity);
+		this.lightQueue = new Uint16Array(chunkVolume);
+		this.queued = new Uint8Array(chunkVolume);
 	}
 
 	/**
@@ -154,6 +155,21 @@ export class LightGenerator {
 	 * which `relightChunk` and friends bail out entirely.
 	 */
 	public static readonly SEALED_EMISSION_MIN_WORLD_Y = -96;
+
+	/**
+	 * Clears the pending-voxel stamp set. Bumps the epoch instead of doing an
+	 * O(volume) fill so repeated seeding stays cheap; because the stamps are
+	 * stored in a Uint8Array the epoch must stay in 1..255, so the array is
+	 * zeroed and the epoch reset before it would overflow.
+	 */
+	private resetQueued(): void {
+		this.queuedEpoch++;
+
+		if (this.queuedEpoch > 255) {
+			this.queued.fill(0);
+			this.queuedEpoch = 1;
+		}
+	}
 
 	/**
 	 * Performs initial top-down seeding and returns an independently owned
@@ -204,13 +220,18 @@ export class LightGenerator {
 		let queue = this.scratchQueue;
 
 		if (queue === null) {
-			queue = new Uint16Array(this.queueCapacity);
+			queue = new Uint16Array(this.chunkVolume);
 			this.scratchQueue = queue;
 		}
 
-		// LightSeedState.queue is produced at exactly `length`, so no temporary
-		// subarray view is required here.
+		// Clear the pending stamp set, copy the saved seeds in, then mark each
+		// copied index as queued so propagation never enqueues a seed twice.
+		this.resetQueued();
 		queue.set(seedState.queue, 0);
+
+		for (let i = 0; i < initialTail; i++) {
+			this.queued[queue[i]] = this.queuedEpoch;
+		}
 
 		this.propagateLightFromQueue(blocks, light, queue, initialTail);
 	}
@@ -273,11 +294,9 @@ export class LightGenerator {
 		tail: number,
 	): number {
 		const queue = this.lightQueue;
-		const queueMask = this.queueMask;
 		const chunkSize = this.chunkSize;
+		const chunkSizeSq = this.chunkSizeSq;
 		const chunkVolume = this.chunkVolume;
-		const csShift = this.csShift;
-		const csShift2 = this.csShift2;
 		const csMask = chunkSize - 1;
 		const transparentLUT = LightGenerator._transparentLUT;
 		const closedFaceMaskLUT = LightGenerator.closedFaceMaskLUT;
@@ -294,44 +313,44 @@ export class LightGenerator {
 			const enterBit = BORDER_ENTER_BITS[face];
 
 			for (let a = 0; a < chunkSize; a++) {
-				const aY = a << csShift;
+				const aY = a * chunkSize;
 
 				for (let b = 0; b < chunkSize; b++) {
-					const bY = b << csShift;
-					const bZ = b << csShift2;
+					const bY = b * chunkSize;
+					const bZ = b * chunkSizeSq;
 
 					let targetIndex: number;
 					let sourceIndex: number;
 
 					switch (face) {
 						case 0:
-							targetIndex = csMask | aY | bZ;
-							sourceIndex = aY | bZ;
+							targetIndex = csMask + aY + bZ;
+							sourceIndex = aY + bZ;
 							break;
 
 						case 1:
-							targetIndex = aY | bZ;
-							sourceIndex = csMask | aY | bZ;
+							targetIndex = aY + bZ;
+							sourceIndex = csMask + aY + bZ;
 							break;
 
 						case 2:
-							targetIndex = a | (csMask << csShift) | bZ;
-							sourceIndex = a | bZ;
+							targetIndex = a + csMask * chunkSize + bZ;
+							sourceIndex = a + bZ;
 							break;
 
 						case 3:
-							targetIndex = a | bZ;
-							sourceIndex = a | (csMask << csShift) | bZ;
+							targetIndex = a + bZ;
+							sourceIndex = a + csMask * chunkSize + bZ;
 							break;
 
 						case 4:
-							targetIndex = a | bY | (csMask << csShift2);
-							sourceIndex = a | bY;
+							targetIndex = a + bY + csMask * chunkSizeSq;
+							sourceIndex = a + bY;
 							break;
 
 						default:
-							targetIndex = a | bY;
-							sourceIndex = a | bY | (csMask << csShift2);
+							targetIndex = a + bY;
+							sourceIndex = a + bY + csMask * chunkSizeSq;
 							break;
 					}
 
@@ -369,8 +388,13 @@ export class LightGenerator {
 
 					light[targetIndex] = (nextSky << 4) | nextBlock;
 
-					queue[writeTail & queueMask] = targetIndex;
-					writeTail++;
+					writeTail = enqueue(
+						queue,
+						writeTail,
+						targetIndex,
+						this.queued,
+						this.queuedEpoch,
+					);
 				}
 			}
 		}
@@ -390,6 +414,7 @@ export class LightGenerator {
 		const queue = this.lightQueue;
 		const chunkSize = this.chunkSize;
 		const chunkSizeSq = this.chunkSizeSq;
+		const chunkVolume = this.chunkVolume;
 		const transparentLUT = LightGenerator._transparentLUT;
 		const filtersFullSunLUT = LightGenerator._filtersFullSunLUT;
 		const emissionLUT = LightGenerator._emissionLUT;
@@ -399,6 +424,7 @@ export class LightGenerator {
 		const chunkWorldY = chunkY * chunkSize;
 		let tail = 0;
 
+		this.resetQueued();
 		light.fill(0);
 
 		if (chunkWorldY + chunkSize - 1 < minimumWorldY) {
@@ -443,7 +469,7 @@ export class LightGenerator {
 
 						if (blockId === 24) {
 							light[index] = (light[index] & 0xf0) | 15;
-							queue[tail++] = index;
+							tail = enqueue(queue, tail, index, this.queued, this.queuedEpoch);
 						}
 
 						continue;
@@ -472,7 +498,7 @@ export class LightGenerator {
 					light[index] = (light[index] & 0x0f) | (cellSkyLight << 4);
 
 					if (blockFiltersFullSun === 0 || sourceFiltersFullSun === 0) {
-						queue[tail++] = index;
+						tail = enqueue(queue, tail, index, this.queued, this.queuedEpoch);
 					}
 
 					if (closedFaceMaskLUT && (closedFaces & FACE_NY) !== 0) {
@@ -486,12 +512,12 @@ export class LightGenerator {
 			}
 		}
 
-		for (let index = 0; index < blocks.length; index++) {
+		for (let index = 0; index < chunkVolume; index++) {
 			const emission = emissionLUT[blocks[index] & PACKED_ID_MASK];
 
 			if (emission > 0 && (light[index] & 0x0f) < emission) {
 				light[index] = (light[index] & 0xf0) | emission;
-				queue[tail++] = index;
+				tail = enqueue(queue, tail, index, this.queued, this.queuedEpoch);
 			}
 		}
 
@@ -504,26 +530,39 @@ export class LightGenerator {
 		queue: Uint16Array,
 		initialTail: number,
 	): void {
-		const mask = this.queueMask;
+		const volume = this.chunkVolume;
 		const chunkSize = this.chunkSize;
 		const chunkSizeSq = this.chunkSizeSq;
-		const csShift = this.csShift;
-		const csShift2 = this.csShift2;
-		const csMask = chunkSize - 1;
+		const maxCoordinate = chunkSize - 1;
+
+		const queued = this.queued;
+		const epoch = this.queuedEpoch;
+
 		const transparentLUT = LightGenerator._transparentLUT;
 		const filtersFullSunLUT = LightGenerator._filtersFullSunLUT;
 		const emissionLUT = LightGenerator._emissionLUT;
 		const closedFaceMaskLUT = LightGenerator.closedFaceMaskLUT;
 
 		let head = 0;
+		let headSlot = 0;
 		let tail = initialTail;
 
 		while (head < tail) {
-			const index = queue[head & mask];
+			const index = queue[headSlot];
+
 			head++;
+			headSlot++;
+
+			if (headSlot === volume) {
+				headSlot = 0;
+			}
+
+			// Allow this voxel to be queued again if a stronger light value reaches
+			// it after the current entry has been processed.
+			queued[index] = 0;
 
 			const sourceLight = light[index];
-			const skyLight = sourceLight >> 4;
+			const skyLight = sourceLight >>> 4;
 			const blockLight = sourceLight & 0x0f;
 
 			if (skyLight <= 1 && blockLight <= 1) {
@@ -537,7 +576,22 @@ export class LightGenerator {
 			const reducedSky = skyLight - 1;
 			const reducedBlock = blockLight - 1;
 
-			if ((index & csMask) !== csMask) {
+			/*
+			 * Convert the linear index without leaving fractional intermediate
+			 * values. The previous expressions:
+			 *
+			 *   (index / chunkSize) % chunkSize
+			 *   index / chunkSizeSq
+			 *
+			 * produced non-integer coordinates for most voxels, so boundary
+			 * comparisons such as `y !== maxCoordinate` were incorrect.
+			 */
+			const x = index % chunkSize;
+			const yz = (index - x) / chunkSize;
+			const y = yz % chunkSize;
+			const z = (yz - y) / chunkSize;
+
+			if (x < maxCoordinate) {
 				tail = tryPropagate(
 					index + 1,
 					reducedSky,
@@ -551,7 +605,8 @@ export class LightGenerator {
 					light,
 					queue,
 					tail,
-					mask,
+					queued,
+					epoch,
 					transparentLUT,
 					filtersFullSunLUT,
 					emissionLUT,
@@ -559,7 +614,7 @@ export class LightGenerator {
 				);
 			}
 
-			if ((index & csMask) !== 0) {
+			if (x > 0) {
 				tail = tryPropagate(
 					index - 1,
 					reducedSky,
@@ -573,7 +628,8 @@ export class LightGenerator {
 					light,
 					queue,
 					tail,
-					mask,
+					queued,
+					epoch,
 					transparentLUT,
 					filtersFullSunLUT,
 					emissionLUT,
@@ -581,9 +637,7 @@ export class LightGenerator {
 				);
 			}
 
-			const y = (index >> csShift) & csMask;
-
-			if (y !== csMask) {
+			if (y < maxCoordinate) {
 				tail = tryPropagate(
 					index + chunkSize,
 					reducedSky,
@@ -597,7 +651,8 @@ export class LightGenerator {
 					light,
 					queue,
 					tail,
-					mask,
+					queued,
+					epoch,
 					transparentLUT,
 					filtersFullSunLUT,
 					emissionLUT,
@@ -605,7 +660,7 @@ export class LightGenerator {
 				);
 			}
 
-			if (y !== 0) {
+			if (y > 0) {
 				const belowIndex = index - chunkSize;
 				const belowPacked = blocks[belowIndex];
 				const belowBlockId = belowPacked & PACKED_ID_MASK;
@@ -629,7 +684,8 @@ export class LightGenerator {
 					light,
 					queue,
 					tail,
-					mask,
+					queued,
+					epoch,
 					transparentLUT,
 					filtersFullSunLUT,
 					emissionLUT,
@@ -637,9 +693,7 @@ export class LightGenerator {
 				);
 			}
 
-			const z = index >> csShift2;
-
-			if (z !== csMask) {
+			if (z < maxCoordinate) {
 				tail = tryPropagate(
 					index + chunkSizeSq,
 					reducedSky,
@@ -653,7 +707,8 @@ export class LightGenerator {
 					light,
 					queue,
 					tail,
-					mask,
+					queued,
+					epoch,
 					transparentLUT,
 					filtersFullSunLUT,
 					emissionLUT,
@@ -661,7 +716,7 @@ export class LightGenerator {
 				);
 			}
 
-			if (z !== 0) {
+			if (z > 0) {
 				tail = tryPropagate(
 					index - chunkSizeSq,
 					reducedSky,
@@ -675,7 +730,8 @@ export class LightGenerator {
 					light,
 					queue,
 					tail,
-					mask,
+					queued,
+					epoch,
 					transparentLUT,
 					filtersFullSunLUT,
 					emissionLUT,
@@ -739,7 +795,8 @@ function tryPropagate(
 	light: Uint8Array,
 	queue: Uint16Array,
 	tail: number,
-	queueMask: number,
+	queued: Uint8Array,
+	epoch: number,
 	transparentLUT: Uint8Array,
 	filtersFullSunLUT: Uint8Array,
 	emissionLUT: Uint8Array,
@@ -786,22 +843,34 @@ function tryPropagate(
 	}
 
 	light[targetIndex] = (nextSky << 4) | nextBlock;
-	queue[tail & queueMask] = targetIndex;
 
-	return tail + 1;
+	return enqueue(queue, tail, targetIndex, queued, epoch);
 }
 
-/** Returns the smallest power of two greater than or equal to n. */
-function nextPowerOfTwo(n: number): number {
-	if (n <= 1) {
-		return 1;
+/**
+ * Appends `index` to the volume-bounded queue only if it is not already
+ * pending, stamping it as queued.
+ *
+ * A voxel is therefore held at most once at a time: if its light value rises
+ * while it is pending, the duplicate write is dropped and the latest value is
+ * read when the voxel is eventually popped. Because the number of *simultaneously
+ * pending* voxels can never exceed the chunk volume, the `volume`-sized ring
+ * can never wrap around and clobber an unprocessed entry. The ring wraps with
+ * `% volume` (not a power-of-two mask) so it stays correct for any chunk size.
+ */
+function enqueue(
+	queue: Uint16Array,
+	tail: number,
+	index: number,
+	queued: Uint8Array,
+	epoch: number,
+): number {
+	if (queued[index] === epoch) {
+		return tail;
 	}
 
-	let power = 1;
+	queued[index] = epoch;
+	queue[tail % queue.length] = index;
 
-	while (power < n) {
-		power *= 2;
-	}
-
-	return power;
+	return tail + 1;
 }

@@ -190,12 +190,7 @@ export abstract class BaseMob implements Mob {
 					// leaving the mob accumulating fall velocity forever.
 					// Once the chunk streams in the collider snaps down to
 					// the real surface.
-					resolveBlockAtWorldCoordsInto(
-						wx,
-						wy,
-						wz,
-						_voxelResolveScratch,
-					);
+					resolveBlockAtWorldCoordsInto(wx, wy, wz, _voxelResolveScratch);
 					if (_voxelResolveScratch.unloaded) return UNLOADED_SOLID_RESOLVE;
 					if (!isCollidableBlock(_voxelResolveScratch.blockId)) return null;
 

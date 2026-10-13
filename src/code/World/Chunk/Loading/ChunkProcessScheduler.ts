@@ -1,7 +1,4 @@
-import {
-	FRAME_WORK_BUDGET,
-	FrameWorkKind,
-} from "@/code/Lib/FrameWorkBudget";
+import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
 import { Chunk } from "../Chunk";
@@ -545,20 +542,20 @@ export class ChunkProcessScheduler {
 
 							const desired = this.adapter.getDesiredState(chunk.numericId);
 
-						// No recorded desire at all: the chunk is not known to be
-						// wanted (its state was pruned or never recorded), so drop
-						// the request. `isTerrainScheduled` is intentionally left
-						// set — the chunk is registered as an orphan candidate
-						// below and sweepOrphanedChunks re-queues it with a fresh
-						// desired state. Clearing the flag here would strand it.
-						//
-						// The registration is what makes that rescue reachable: the
-						// sweep only walks its candidate set, so without this line
-						// the chunk would be invisible and its world hole permanent.
-						if (desired === undefined) {
-							this.adapter.markPotentialOrphan(chunk);
-							continue;
-						}
+							// No recorded desire at all: the chunk is not known to be
+							// wanted (its state was pruned or never recorded), so drop
+							// the request. `isTerrainScheduled` is intentionally left
+							// set — the chunk is registered as an orphan candidate
+							// below and sweepOrphanedChunks re-queues it with a fresh
+							// desired state. Clearing the flag here would strand it.
+							//
+							// The registration is what makes that rescue reachable: the
+							// sweep only walks its candidate set, so without this line
+							// the chunk would be invisible and its world hole permanent.
+							if (desired === undefined) {
+								this.adapter.markPotentialOrphan(chunk);
+								continue;
+							}
 
 							const desiredLod = desired & 0b111;
 							const desiredRevision = desired >>> 3;
@@ -689,22 +686,22 @@ export class ChunkProcessScheduler {
 						) {
 							const request = state.validLoadBatch[state.applyLoadedIndex++];
 
-						if (!this.isStillDesired(request)) {
-							/*
-							 * The chunk stopped being desired while its storage read
-							 * was in flight, so isStillDesired sent the request back
-							 * around instead of consuming it. That re-queue keeps the
-							 * request alive, so the chunk is NOT an orphan yet.
-							 *
-							 * The dangerous variant is the opposite outcome: a chunk
-							 * that still wants loading but whose request is being
-							 * dropped without a re-queue. Those are registered by the
-							 * branches that actually abandon a request —
-							 * onLoadRequestsAbandoned, and the desired-state drop in
-							 * PrepareLoadBatch above.
-							 */
-							continue;
-						}
+							if (!this.isStillDesired(request)) {
+								/*
+								 * The chunk stopped being desired while its storage read
+								 * was in flight, so isStillDesired sent the request back
+								 * around instead of consuming it. That re-queue keeps the
+								 * request alive, so the chunk is NOT an orphan yet.
+								 *
+								 * The dangerous variant is the opposite outcome: a chunk
+								 * that still wants loading but whose request is being
+								 * dropped without a re-queue. Those are registered by the
+								 * branches that actually abandon a request —
+								 * onLoadRequestsAbandoned, and the desired-state drop in
+								 * PrepareLoadBatch above.
+								 */
+								continue;
+							}
 
 							const savedData = request.includeVoxelData
 								? state.nearLoadedDataMap.get(request.chunk.id)
@@ -759,61 +756,61 @@ export class ChunkProcessScheduler {
 					}
 
 					case ProcessStage.ApplyHydration: {
-					while (
-						state.hydrateIndex < state.hydrateChunks.length &&
-						this.hasBudget(state)
-					) {
-						const chunk = state.hydrateChunks[state.hydrateIndex++];
+						while (
+							state.hydrateIndex < state.hydrateChunks.length &&
+							this.hasBudget(state)
+						) {
+							const chunk = state.hydrateChunks[state.hydrateIndex++];
 
-						/*
-						 * `hydrateChunks` holds Chunk OBJECT references captured
-						 * before the storage read, and the read is awaited. Chunk
-						 * objects are pooled: one disposed during that await is
-						 * unlinked from the registry and may be re-registered at
-						 * entirely different coordinates. Everything below keys off
-						 * `chunk`, so without this fence a recycled object could be
-						 * handed another chunk's saved data — installing coordinate
-						 * K's voxels into coordinate J's buffers — or queued for
-						 * generation as if it were still the chunk that was asked
-						 * for.
-						 *
-						 * The registry lookup answers both halves at once: disposed
-						 * objects are unlinked, and a recycled object registers under
-						 * its new id, so neither still maps to itself.
-						 */
-						if (Chunk.chunkInstances.get(chunk.id) !== chunk) {
-							state.hydrationRecycledDrops++;
-							this._totalHydrationRecycledDrops++;
-							continue;
-						}
-
-						if (!chunk.isTerrainScheduled) {
-							if (!chunk.isLoaded) {
-								this.queueGeneration(state, chunk);
-							}
-							continue;
-						}
-
-						const savedData = state.hydrateMap.get(chunk.id);
-						if (!savedData) {
 							/*
-							 * The hydration read came back without this chunk's data
-							 * — the request disappeared between being issued and
-							 * being answered. queueGeneration below still produces
-							 * the voxels, so this is not an orphan yet; it only
-							 * becomes one if that generation task is also lost,
-							 * which the worker-failure path registers separately.
-							 * Registering it here as well would be harmless but
-							 * would grow the candidate set on every far-LOD chunk,
-							 * which is the common case, not an anomaly.
+							 * `hydrateChunks` holds Chunk OBJECT references captured
+							 * before the storage read, and the read is awaited. Chunk
+							 * objects are pooled: one disposed during that await is
+							 * unlinked from the registry and may be re-registered at
+							 * entirely different coordinates. Everything below keys off
+							 * `chunk`, so without this fence a recycled object could be
+							 * handed another chunk's saved data — installing coordinate
+							 * K's voxels into coordinate J's buffers — or queued for
+							 * generation as if it were still the chunk that was asked
+							 * for.
+							 *
+							 * The registry lookup answers both halves at once: disposed
+							 * objects are unlinked, and a recycled object registers under
+							 * its new id, so neither still maps to itself.
 							 */
-							this.queueGeneration(state, chunk);
-							continue;
-						}
+							if (Chunk.chunkInstances.get(chunk.id) !== chunk) {
+								state.hydrationRecycledDrops++;
+								this._totalHydrationRecycledDrops++;
+								continue;
+							}
 
-						this.adapter.applyHydratedChunkFromSavedData(chunk, savedData);
-						state.hydratedCount++;
-					}
+							if (!chunk.isTerrainScheduled) {
+								if (!chunk.isLoaded) {
+									this.queueGeneration(state, chunk);
+								}
+								continue;
+							}
+
+							const savedData = state.hydrateMap.get(chunk.id);
+							if (!savedData) {
+								/*
+								 * The hydration read came back without this chunk's data
+								 * — the request disappeared between being issued and
+								 * being answered. queueGeneration below still produces
+								 * the voxels, so this is not an orphan yet; it only
+								 * becomes one if that generation task is also lost,
+								 * which the worker-failure path registers separately.
+								 * Registering it here as well would be harmless but
+								 * would grow the candidate set on every far-LOD chunk,
+								 * which is the common case, not an anomaly.
+								 */
+								this.queueGeneration(state, chunk);
+								continue;
+							}
+
+							this.adapter.applyHydratedChunkFromSavedData(chunk, savedData);
+							state.hydratedCount++;
+						}
 
 						if (state.hydrateIndex >= state.hydrateChunks.length) {
 							state.stage = ProcessStage.ScheduleGeneration;
@@ -1056,8 +1053,7 @@ export class ChunkProcessScheduler {
 		// the loaded-refresh drain, orphan sweep and mesh ingest are all competing
 		// for it — capping only locally is what let their sum overrun the frame.
 		state.sliceDeadlineMs =
-			now +
-			Math.min(budget, FRAME_WORK_BUDGET.remainingMs() || budget);
+			now + Math.min(budget, FRAME_WORK_BUDGET.remainingMs() || budget);
 	}
 
 	public hasBudget(state: InFlightProcessState): boolean {

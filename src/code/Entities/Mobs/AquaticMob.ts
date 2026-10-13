@@ -523,26 +523,13 @@ export abstract class AquaticMob extends BaseMob {
 				continue;
 			}
 
-			resolveBlockAtWorldCoordsInto(
-				targetX,
-				targetY,
-				targetZ,
-				_waterTarget,
-			);
+			resolveBlockAtWorldCoordsInto(targetX, targetY, targetZ, _waterTarget);
 
-			if (
-				_waterTarget.unloaded ||
-				_waterTarget.blockId !== BlockType.Water
-			) {
+			if (_waterTarget.unloaded || _waterTarget.blockId !== BlockType.Water) {
 				continue;
 			}
 
-			resolveBlockAtWorldCoordsInto(
-				targetX,
-				targetY + 1,
-				targetZ,
-				_waterHead,
-			);
+			resolveBlockAtWorldCoordsInto(targetX, targetY + 1, targetZ, _waterHead);
 
 			if (
 				!_waterHead.unloaded &&

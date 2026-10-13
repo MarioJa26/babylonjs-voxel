@@ -1,7 +1,4 @@
-import {
-	FRAME_WORK_BUDGET,
-	FrameWorkKind,
-} from "@/code/Lib/FrameWorkBudget";
+import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { estimatePhysicalCores } from "@/code/Lib/estimatePhysicalCores";
 import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
@@ -2032,7 +2029,7 @@ export class ChunkWorkerPool {
 			 * against a 5.5ms target. That single overrun is what Chrome's
 			 * Frames track records as a dropped frame.
 			 *
-		 * `processed !== 0` keeps a minimum of one result per drain so the
+			 * `processed !== 0` keeps a minimum of one result per drain so the
 			 * pipeline can never stall on an empty-but-nonempty queue.
 			 *
 			 * The shared frame pool is consulted alongside the local ceiling.
@@ -2047,8 +2044,7 @@ export class ChunkWorkerPool {
 						FrameWorkKind.Meshing,
 						ChunkWorkerPool.MESH_INGEST_BUDGET_MS,
 					) ||
-						performance.now() - start >=
-							ChunkWorkerPool.MESH_INGEST_BUDGET_MS)
+						performance.now() - start >= ChunkWorkerPool.MESH_INGEST_BUDGET_MS)
 				) {
 					break;
 				}

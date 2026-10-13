@@ -251,7 +251,8 @@ const processScheduler = new ChunkProcessScheduler({
 		streamingController.onLoadRequestsAbandoned(requests),
 	recycleQueuedRequests: (requests) =>
 		streamingController.recycleQueuedRequests(requests),
-	markPotentialOrphan: (chunk) => streamingController.markPotentialOrphan(chunk),
+	markPotentialOrphan: (chunk) =>
+		streamingController.markPotentialOrphan(chunk),
 });
 
 // After each processQueues continuation slice, pump remote generation.
@@ -1022,12 +1023,7 @@ export function resolveBlockAtWorldCoordsInto(
 		out.unloaded = false;
 		return out;
 	}
-	worldMutations.getBlockAndStateAtWorldCoordsInto(
-		worldX,
-		worldY,
-		worldZ,
-		out,
-	);
+	worldMutations.getBlockAndStateAtWorldCoordsInto(worldX, worldY, worldZ, out);
 	out.unloaded = !out.loaded;
 	return out;
 }

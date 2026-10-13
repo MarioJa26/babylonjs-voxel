@@ -10,10 +10,7 @@ import {
 	isOceanFloorBandChunk,
 } from "@/code/Generation/TerrainHeightMap";
 import { isInCave } from "@/code/Lib/GameRuntimeState";
-import {
-	FRAME_WORK_BUDGET,
-	FrameWorkKind,
-} from "@/code/Lib/FrameWorkBudget";
+import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
 import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
 import { FarTileManager } from "../../FarTiles/FarTileManager";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
@@ -1236,10 +1233,7 @@ export class ChunkStreamingController {
 			while (processed < maxChunks) {
 				if (
 					processed !== 0 &&
-					(!FRAME_WORK_BUDGET.canContinue(
-						FrameWorkKind.Streaming,
-						budgetMs,
-					) ||
+					(!FRAME_WORK_BUDGET.canContinue(FrameWorkKind.Streaming, budgetMs) ||
 						performance.now() - startMs >= budgetMs)
 				) {
 					break;
@@ -1364,10 +1358,7 @@ export class ChunkStreamingController {
 			// budget alone lets those three stack.
 			if (
 				rescued !== 0 &&
-				(!FRAME_WORK_BUDGET.canContinue(
-					FrameWorkKind.Streaming,
-					budgetMs,
-				) ||
+				(!FRAME_WORK_BUDGET.canContinue(FrameWorkKind.Streaming, budgetMs) ||
 					performance.now() - startedMs >= budgetMs)
 			) {
 				break;

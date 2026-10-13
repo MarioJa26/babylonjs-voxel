@@ -34,10 +34,7 @@ import {
 	getChunkLatencyPercentiles,
 	getChunkPipelineStats,
 } from "../World/Chunk/Loading/ChunkPipeline";
-import {
-	FRAME_WORK_BUDGET,
-	FrameWorkKind,
-} from "../Lib/FrameWorkBudget";
+import { FRAME_WORK_BUDGET, FrameWorkKind } from "../Lib/FrameWorkBudget";
 import { getPipelineStats } from "../Lib/PipelineStats";
 import {
 	getMergedLayerMemoryStats,

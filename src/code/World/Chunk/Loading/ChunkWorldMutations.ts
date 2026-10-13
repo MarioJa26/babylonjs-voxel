@@ -118,11 +118,7 @@ function resolveCoords(
 				// can therefore hold a chunk that has since moved, in which case
 				// the key still looks correct while the value is wrong. Verify
 				// the chunk still lives at the coordinates it is filed under.
-				if (
-					c.chunkX === chunkX &&
-					c.chunkY === chunkY &&
-					c.chunkZ === chunkZ
-				) {
+				if (c.chunkX === chunkX && c.chunkY === chunkY && c.chunkZ === chunkZ) {
 					scratch.chunk = c;
 					return scratch;
 				}

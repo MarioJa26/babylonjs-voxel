@@ -997,9 +997,7 @@ export class PlayerHud {
 	/**
 	 * Captures the current crate grid without creating intermediate arrays.
 	 */
-	private static snapshotCrateSlots(
-		grid: ItemSlot[][],
-	): CrateCellSnapshot[][] {
+	private static snapshotCrateSlots(grid: ItemSlot[][]): CrateCellSnapshot[][] {
 		const snapshot = new Array<CrateCellSnapshot[]>(grid.length);
 
 		for (let row = 0; row < grid.length; row++) {
@@ -1088,10 +1086,7 @@ export class PlayerHud {
 				const stackSize = item?.stackSize ?? 0;
 				const previous = lastRow[col];
 
-				if (
-					previous.itemId === itemId &&
-					previous.stackSize === stackSize
-				) {
+				if (previous.itemId === itemId && previous.stackSize === stackSize) {
 					continue;
 				}
 
@@ -1102,15 +1097,7 @@ export class PlayerHud {
 				previous.itemId = itemId;
 				previous.stackSize = stackSize;
 
-				network.containers.sendSetSlot(
-					x,
-					y,
-					z,
-					row,
-					col,
-					itemId,
-					stackSize,
-				);
+				network.containers.sendSetSlot(x, y, z, row, col, itemId, stackSize);
 			}
 		}
 	}
@@ -1150,13 +1137,13 @@ export class PlayerHud {
 			return;
 		}
 
-		const savedSlots =
-			new Array<SavedBlockInventory["slots"][number]>(height);
+		const savedSlots = new Array<SavedBlockInventory["slots"][number]>(height);
 		const lastSent = PlayerHud.createCrateSnapshot(width, height);
 
 		for (let row = 0; row < height; row++) {
-			const savedRow =
-				new Array<SavedBlockInventory["slots"][number][number]>(width);
+			const savedRow = new Array<SavedBlockInventory["slots"][number][number]>(
+				width,
+			);
 			const snapshotRow = lastSent[row];
 			const rowOffset = row * width;
 
@@ -1167,10 +1154,7 @@ export class PlayerHud {
 				snapshotRow[col].itemId = itemId;
 				snapshotRow[col].stackSize = stackSize;
 
-				savedRow[col] =
-					itemId === 0
-						? null
-						: { itemId, stackSize };
+				savedRow[col] = itemId === 0 ? null : { itemId, stackSize };
 			}
 
 			savedSlots[row] = savedRow;
@@ -1226,11 +1210,7 @@ export class PlayerHud {
 			}
 
 			try {
-				const item = Item.createById(
-					update.itemId,
-					update.row,
-					update.col,
-				);
+				const item = Item.createById(update.itemId, update.row, update.col);
 
 				item.stackSize = update.stackSize;
 				slot.item = item;
@@ -2213,10 +2193,7 @@ export class PlayerHud {
 		const mana = stats.mana;
 		const maxMana = stats.maxMana;
 
-		if (
-			mana !== this.#prevManaValue ||
-			maxMana !== this.#prevMaxManaValue
-		) {
+		if (mana !== this.#prevManaValue || maxMana !== this.#prevMaxManaValue) {
 			this.#prevManaValue = mana;
 			this.#prevMaxManaValue = maxMana;
 			this.#prevManaPct = setBar(
