@@ -73,11 +73,11 @@ const counts = new Int32Array(STAGE_COUNT);
 const latencyRing = new Float64Array(LATENCY_CAPACITY);
 
 /*
- * Reused percentile scratch storage.
+ * Reused percentile storage.
  *
- * JavaScript execution is synchronous within this function, so reusing this
- * module-private buffer is safe. It avoids allocating a Float64Array on every
- * percentile query.
+ * Percentile queries use the engine's native TypedArray sort implementation,
+ * which is substantially faster than a JavaScript insertion sort when the
+ * ring approaches capacity.
  */
 const percentileScratch = new Float64Array(LATENCY_CAPACITY);
 
@@ -90,6 +90,10 @@ let inFlight = 0;
 /**
  * Chunks awaiting their first mesh, keyed by packed coordinates and holding
  * the wall-clock time at which the current request was sent.
+ *
+ * Entries are maintained in request-time order. Restarting an existing
+ * request deletes and reinserts its key so stale reaping can stop at the first
+ * live request.
  */
 const requestedAt = new Map<bigint, number>();
 
@@ -100,46 +104,72 @@ const requestedAt = new Map<bigint, number>();
  * may pass its member count to keep counters comparable with per-chunk stages.
  */
 export function noteChunkStage(stage: ChunkPipelineStage, count = 1): void {
-	if (count <= 0) return;
-
-	counts[stage] += count;
-
-	if (stage === ChunkPipelineStage.Validated) {
-		inFlight += count;
+	if (
+		count <= 0 ||
+		!Number.isFinite(count) ||
+		stage < 0 ||
+		stage >= STAGE_COUNT
+	) {
 		return;
 	}
 
-	if (
-		stage === ChunkPipelineStage.Renderable ||
-		stage === ChunkPipelineStage.Abandoned
-	) {
-		inFlight -= count;
+	/*
+	 * Stage counts represent whole chunks. Normal callers already pass
+	 * integers, but truncating protects the counters from accidental fractions.
+	 */
+	count = Math.trunc(count);
+
+	if (count <= 0) {
+		return;
+	}
+
+	counts[stage] += count;
+
+	switch (stage) {
+		case ChunkPipelineStage.Validated:
+			inFlight += count;
+			break;
+
+		case ChunkPipelineStage.Renderable:
+		case ChunkPipelineStage.Abandoned:
+			/*
+			 * Avoid exposing a negative in-flight count if duplicate terminal
+			 * notifications arrive. Correct callers are unaffected.
+			 */
+			inFlight = Math.max(0, inFlight - count);
+			break;
 	}
 }
 
 /**
  * Begin or restart latency tracking for one chunk.
  *
- * Deleting an existing entry before setting it is important: Map iteration is
- * insertion ordered, and stale-request reaping stops at the first live entry.
- * A plain set on an existing key would update its timestamp without moving it
- * to the end, invalidating that ordering assumption.
+ * Map iteration follows insertion order. Deleting before setting moves a
+ * restarted request to the end, preserving the ordering used by stale reaping.
  */
 export function noteChunkRequested(key: bigint, nowMs: number): void {
-	if (requestedAt.has(key)) {
-		requestedAt.delete(key);
+	if (!Number.isFinite(nowMs)) {
+		return;
 	}
 
+	/*
+	 * Map.delete() is safe when the key is absent, so a separate has() lookup
+	 * would only duplicate hash-table work.
+	 */
+	requestedAt.delete(key);
 	requestedAt.set(key, nowMs);
 }
 
 /** Record one completed request-to-mesh latency sample, in milliseconds. */
 export function noteChunkRendered(ms: number): void {
-	if (!Number.isFinite(ms) || ms < 0) return;
+	if (!Number.isFinite(ms) || ms < 0) {
+		return;
+	}
 
 	latencyRing[latencyHead] = ms;
 
 	latencyHead++;
+
 	if (latencyHead === LATENCY_CAPACITY) {
 		latencyHead = 0;
 	}
@@ -156,6 +186,11 @@ export function noteChunkRendered(ms: number): void {
  * exists.
  */
 export function completeChunkLatency(key: bigint, nowMs: number): number {
+	if (!Number.isFinite(nowMs)) {
+		requestedAt.delete(key);
+		return -1;
+	}
+
 	const startedAt = requestedAt.get(key);
 
 	if (startedAt === undefined) {
@@ -167,9 +202,9 @@ export function completeChunkLatency(key: bigint, nowMs: number): number {
 	const elapsedMs = nowMs - startedAt;
 
 	if (
-		!Number.isFinite(elapsedMs) ||
 		elapsedMs < 0 ||
-		elapsedMs > MAX_TRACKED_AGE_MS
+		elapsedMs > MAX_TRACKED_AGE_MS ||
+		!Number.isFinite(elapsedMs)
 	) {
 		return -1;
 	}
@@ -189,10 +224,19 @@ export function forgetChunkRequest(key: bigint): void {
  * this loop to stop at the first live request rather than scan the entire map.
  */
 export function reapStaleLatencyTracks(nowMs: number): number {
+	if (!Number.isFinite(nowMs) || requestedAt.size === 0) {
+		return 0;
+	}
+
+	const staleBefore = nowMs - MAX_TRACKED_AGE_MS;
 	let reaped = 0;
 
+	/*
+	 * Deleting the current Map entry during iteration is defined and advances
+	 * iteration to the following entry.
+	 */
 	for (const [key, startedAt] of requestedAt) {
-		if (nowMs - startedAt <= MAX_TRACKED_AGE_MS) {
+		if (startedAt >= staleBefore) {
 			break;
 		}
 
@@ -204,17 +248,18 @@ export function reapStaleLatencyTracks(nowMs: number): number {
 }
 
 /**
- * Copy the ring into a normal array in oldest-to-newest order.
+ * Copy the active latency ring into `destination`.
  *
- * The copy is split at the physical end of the ring to avoid a modulo operation
- * for every sample.
+ * Values are written in oldest-to-newest order. Sorting callers may ignore
+ * this order, but sharing one copy implementation avoids duplicate ring logic.
+ *
+ * @returns Number of copied samples.
  */
-function copyLatencySamples(): number[] {
+function copyLatencyRingTo(destination: Float64Array | number[]): number {
 	const count = latencyCount;
-	const samples = new Array<number>(count);
 
 	if (count === 0) {
-		return samples;
+		return 0;
 	}
 
 	let sourceIndex = latencyHead - count;
@@ -229,72 +274,31 @@ function copyLatencySamples(): number[] {
 	const firstEnd = sourceIndex + firstLength;
 
 	while (sourceIndex < firstEnd) {
-		samples[destinationIndex++] = latencyRing[sourceIndex++];
+		destination[destinationIndex++] = latencyRing[sourceIndex++];
 	}
 
 	sourceIndex = 0;
 
 	while (destinationIndex < count) {
-		samples[destinationIndex++] = latencyRing[sourceIndex++];
+		destination[destinationIndex++] = latencyRing[sourceIndex++];
 	}
 
+	return count;
+}
+
+/**
+ * Copy the latency ring into a normal array in oldest-to-newest order.
+ */
+function copyLatencySamples(): number[] {
+	const samples = new Array<number>(latencyCount);
+	copyLatencyRingTo(samples);
 	return samples;
-}
-
-/**
- * Copy the ring into the reusable percentile scratch buffer.
- *
- * Ordering does not matter because the populated range is sorted afterward.
- */
-function copyLatencyToPercentileScratch(): void {
-	const count = latencyCount;
-	let sourceIndex = latencyHead - count;
-
-	if (sourceIndex < 0) {
-		sourceIndex += LATENCY_CAPACITY;
-	}
-
-	const firstLength = Math.min(count, LATENCY_CAPACITY - sourceIndex);
-
-	let destinationIndex = 0;
-	const firstEnd = sourceIndex + firstLength;
-
-	while (sourceIndex < firstEnd) {
-		percentileScratch[destinationIndex++] = latencyRing[sourceIndex++];
-	}
-
-	sourceIndex = 0;
-
-	while (destinationIndex < count) {
-		percentileScratch[destinationIndex++] = latencyRing[sourceIndex++];
-	}
-}
-
-/**
- * Sort the active prefix of percentileScratch in place.
- *
- * The ring holds at most 256 entries, so insertion sort is competitive here
- * and avoids allocating the temporary TypedArray view required by
- * `percentileScratch.subarray(0, count).sort()`.
- */
-function sortPercentileScratch(count: number): void {
-	for (let i = 1; i < count; i++) {
-		const value = percentileScratch[i];
-		let j = i - 1;
-
-		while (j >= 0 && percentileScratch[j] > value) {
-			percentileScratch[j + 1] = percentileScratch[j];
-			j--;
-		}
-
-		percentileScratch[j + 1] = value;
-	}
 }
 
 export function getChunkPipelineStats(): ChunkPipelineStats {
 	/*
-	 * A public snapshot must own its arrays so callers cannot mutate internal
-	 * counters or observe future updates through a shared typed-array view.
+	 * Public snapshots own their arrays so callers cannot mutate internal
+	 * counters or observe future updates through shared views.
 	 */
 	const countSnapshot = new Array<number>(STAGE_COUNT);
 
@@ -313,8 +317,8 @@ export function resetChunkPipelineStats(): void {
 	counts.fill(0);
 
 	/*
-	 * latencyRing does not need clearing. latencyCount defines the active
-	 * entries, and subsequent writes overwrite old values before exposure.
+	 * The ring itself does not need clearing. latencyCount defines its active
+	 * range, and future writes overwrite old samples before exposure.
 	 */
 	latencyCount = 0;
 	latencyHead = 0;
@@ -323,7 +327,15 @@ export function resetChunkPipelineStats(): void {
 	requestedAt.clear();
 }
 
-/** Percentiles over the current latency ring. */
+/**
+ * Percentiles over the current latency ring.
+ *
+ * This preserves the original percentile index convention:
+ *
+ *     floor(percentile * sampleCount)
+ *
+ * clamped to the final sample.
+ */
 export function getChunkLatencyPercentiles(): ChunkLatencyPercentiles {
 	const count = latencyCount;
 
@@ -336,14 +348,22 @@ export function getChunkLatencyPercentiles(): ChunkLatencyPercentiles {
 		};
 	}
 
-	copyLatencyToPercentileScratch();
-	sortPercentileScratch(count);
+	copyLatencyRingTo(percentileScratch);
+
+	/*
+	 * subarray() creates only a lightweight view, not a data copy. Native
+	 * TypedArray sorting is normally much faster than a JavaScript O(n²)
+	 * insertion sort at the 256-sample capacity.
+	 */
+	percentileScratch.subarray(0, count).sort();
 
 	const lastIndex = count - 1;
 
-	const p50Index = Math.min(lastIndex, Math.floor(0.5 * count));
-	const p90Index = Math.min(lastIndex, Math.floor(0.9 * count));
-	const p99Index = Math.min(lastIndex, Math.floor(0.99 * count));
+	const p50Index = Math.min(lastIndex, Math.floor(count * 0.5));
+
+	const p90Index = Math.min(lastIndex, Math.floor(count * 0.9));
+
+	const p99Index = Math.min(lastIndex, Math.floor(count * 0.99));
 
 	return {
 		p50: percentileScratch[p50Index],
