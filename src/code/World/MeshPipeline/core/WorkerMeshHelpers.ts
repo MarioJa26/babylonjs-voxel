@@ -562,6 +562,66 @@ export class MeshBuildSession implements MeshContext {
 		this.ownedNeedsCustom = new Uint8Array(psVol);
 	}
 
+	// One classification byte per possible Uint16 packed block ID:
+	//
+	// bit 0: opaque full cube
+	// bit 1: requires custom geometry
+	private readonly blockClassification = new Uint8Array(0x1_0000);
+
+	/*
+	 * Generation stamps avoid clearing blockClassification every build.
+	 * A packed block ID is recomputed only when its stamp differs from the
+	 * current classification generation.
+	 */
+	private readonly blockClassificationStamp = new Uint32Array(0x1_0000);
+
+	private blockClassificationGeneration = 0;
+	private beginBlockClassificationGeneration(): number {
+		let generation = (this.blockClassificationGeneration + 1) >>> 0;
+
+		if (generation === 0) {
+			this.blockClassificationStamp.fill(0);
+			generation = 1;
+		}
+
+		this.blockClassificationGeneration = generation;
+		return generation;
+	}
+	private classifyPackedBlock(packed: number, generation: number): number {
+		/*
+		 * The padded block grid is Uint16, but masking documents the indexing
+		 * contract and protects this helper if called independently later.
+		 */
+		const blockId = packed & 0xffff;
+		const stamps = this.blockClassificationStamp;
+
+		if (stamps[blockId] === generation) {
+			return this.blockClassification[blockId];
+		}
+
+		const flags = getCachedFlagsAndId(blockId) & 0xffff;
+
+		let classification = 0;
+
+		if ((flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED) {
+			classification |= 1;
+		}
+
+		if ((flags & CUSTOM_TEST_MASK) === FLAG_SOLID) {
+			classification |= 2;
+		}
+
+		this.blockClassification[blockId] = classification;
+
+		/*
+		 * Publish the classification before its matching stamp. JavaScript workers
+		 * are single-threaded and these arrays are not shared, but this order also
+		 * makes the cache invariant explicit.
+		 */
+		stamps[blockId] = generation;
+
+		return classification;
+	}
 	/**
 	 * Precompute the per-cell opaque + needs-custom classification over the
 	 * whole padded volume, so the hot mask/cell loops do a single byte load
@@ -582,35 +642,56 @@ export class MeshBuildSession implements MeshContext {
 		psVol: number,
 		computeCustom: boolean,
 	): void {
+		const padded = this.block;
 		const opaqueBits = this.opaque;
 		const customBits = this.needsCustom;
-		const padded = this.block;
+		const classifications = this.blockClassification;
+		const stamps = this.blockClassificationStamp;
+		const generation = this.beginBlockClassificationGeneration();
 
 		let customCount = 0;
 
 		if (computeCustom) {
 			for (let i = 0; i < psVol; i++) {
-				// getCachedFlagsAndId's low 16 bits ARE the flags, so masking the
-				// combined value directly is equivalent to getFlagsFromCombined()
-				// but skips a function call per cell over the whole padded volume.
-				const flags = getCachedFlagsAndId(padded[i]) & 0xffff;
+				const blockId = padded[i];
+				let classification: number;
 
-				opaqueBits[i] = (flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED ? 1 : 0;
-				const custom = (flags & CUSTOM_TEST_MASK) === FLAG_SOLID ? 1 : 0;
+				if (stamps[blockId] === generation) {
+					classification = classifications[blockId];
+				} else {
+					classification = this.classifyPackedBlock(blockId, generation);
+				}
+
+				/*
+				 * Classification bits are already 0 or 1 after shifting, so they
+				 * can be written directly without ternaries.
+				 */
+				opaqueBits[i] = classification & 1;
+
+				const custom = classification >>> 1;
 				customBits[i] = custom;
 				customCount += custom;
 			}
 		} else {
 			for (let i = 0; i < psVol; i++) {
-				const flags = getCachedFlagsAndId(padded[i]) & 0xffff;
+				const blockId = padded[i];
+				let classification: number;
 
-				opaqueBits[i] = (flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED ? 1 : 0;
+				if (stamps[blockId] === generation) {
+					classification = classifications[blockId];
+				} else {
+					/*
+					 * Custom classification is calculated too. This keeps one
+					 * cache representation and usually costs nothing meaningful,
+					 * since each distinct block ID is classified only once.
+					 */
+					classification = this.classifyPackedBlock(blockId, generation);
+				}
+
+				opaqueBits[i] = classification & 1;
 			}
 		}
 
-		// Lets emitCustomShapes bail out without scanning the volume for
-		// plain terrain chunks (the overwhelming majority). Zero when custom
-		// shapes aren't computed, so that bail-out still holds.
 		this.needsCustomCount = customCount;
 	}
 }

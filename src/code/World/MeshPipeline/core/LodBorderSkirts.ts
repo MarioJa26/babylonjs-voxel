@@ -163,7 +163,8 @@ function isWaterPacked(packed: number): boolean {
 function emitSkirt(
 	out: QuadBuffer,
 	yTop: number,
-	packed: number,
+	packedBlockId: number,
+	blockId: number,
 	light: number,
 	axis: number,
 	back: number,
@@ -173,18 +174,31 @@ function emitSkirt(
 	span: number,
 	face: FaceName,
 ): void {
-	const blockId = unpackBlockId(packed & 0xffff);
-	// Water sides are culled on downsampled builds; glass/water here would
-	// land an opaque wall in the wrong bucket.
-	if (blockId <= 0 || isWaterPacked(packed)) return;
+	/*
+	 * Callers only pass decoded, non-water solid blocks. Retaining the packed
+	 * ID parameter makes the relationship explicit for future tint or material
+	 * metadata use without decoding it again here.
+	 */
+	void packedBlockId;
 
-	// Positions are unsigned bytes; clamp so deep skirts never wrap.
-	const yBottom = Math.max(0, yBottomRaw);
-	if (yBottom >= yTop + 1) return;
+	if (blockId <= 0) {
+		return;
+	}
 
+	// Positions are unsigned bytes, so deep skirts must not wrap below zero.
+	const yBottom = yBottomRaw > 0 ? yBottomRaw : 0;
 	const vertical = yTop + 1 - yBottom;
-	// Downsampled builds imply lod>=4 (disableAO always true): raw units,
-	// zero meta, LUT lighting. Axis 0 (±X): w=Y, h=Z; axis 2: w=X, h=Y.
+
+	if (vertical <= 0) {
+		return;
+	}
+
+	const quantizedLight = quantizeByteForLOD(light) & 0xff;
+
+	/*
+	 * Axis 0, ±X: width=Y, height=Z.
+	 * Axis 2, ±Z: width=X, height=Y.
+	 */
 	out.emitQuadRawUnits(
 		x,
 		yBottom,
@@ -194,7 +208,7 @@ function emitSkirt(
 		axis === 0 ? span : vertical,
 		blockId,
 		back,
-		quantizeByteForLOD(light) & 0xff,
+		quantizedLight,
 		0,
 		face,
 	);
@@ -231,17 +245,31 @@ function emitBorderColumn(
 	const ps = session.ps;
 	const ps2 = session.ps2;
 
-	// Cache hot array references locally. Typed-array property access through
-	// session is otherwise repeated for every voxel in the column.
 	const blocks = session.block;
 	const opaque = session.opaque;
 	const lights = session.light;
 	const grids = session.activeGrids;
 
-	// Offset from a border voxel to the neighboring air voxel outside the
-	// chunk: slot 0=-X, 1=+X, 2=-Z, 3=+Z.
-	const outwardOffset =
-		slot === 0 ? -1 : slot === 1 ? 1 : slot === 2 ? -ps2 : ps2;
+	/*
+	 * Offset from a border voxel to the adjacent voxel outside the chunk:
+	 * slot 0=-X, 1=+X, 2=-Z, 3=+Z.
+	 */
+	let outwardOffset: number;
+
+	switch (slot) {
+		case 0:
+			outwardOffset = -1;
+			break;
+		case 1:
+			outwardOffset = 1;
+			break;
+		case 2:
+			outwardOffset = -ps2;
+			break;
+		default:
+			outwardOffset = ps2;
+			break;
+	}
 
 	const cacheIndex = slot * size + col;
 
@@ -268,26 +296,29 @@ function emitBorderColumn(
 		}
 	}
 
-	let firstY = -1;
+	let firstY = TOP_NONE;
 	let firstPacked = 0;
 	let stopY = 0;
 
-	let runTop = -1;
+	let runTop = TOP_NONE;
 	let runPacked = 0;
 	let runBlockId = 0;
 	let runLight = 0;
 
-	let idx = cx + 1 + (startY + 1) * ps + (cz + 1) * ps2;
+	let index = cx + 1 + (startY + 1) * ps + (cz + 1) * ps2;
 
-	for (let y = startY; y >= 0; y--, idx -= ps) {
-		// Once below the requested skirt depth, close the active run directly
-		// at stopY and stop scanning.
-		if (firstY >= 0 && y + 1 <= stopY) {
+	for (let y = startY; y >= 0; y--, index -= ps) {
+		/*
+		 * Once the scan reaches the skirt depth, close the current run at the
+		 * exact depth boundary. No cells below that boundary affect output.
+		 */
+		if (firstY >= 0 && y < stopY) {
 			if (runTop >= 0) {
 				emitSkirt(
 					out,
 					runTop,
 					runPacked,
+					runBlockId,
 					runLight,
 					axis,
 					back,
@@ -297,28 +328,33 @@ function emitBorderColumn(
 					span,
 					face,
 				);
+
+				runTop = TOP_NONE;
 			}
 
-			runTop = -1;
 			break;
 		}
 
-		// Read the packed block once. Opaque blocks are inherently solid;
-		// non-opaque blocks require the cached solid flag.
-		const packed = blocks[idx];
+		const packed = blocks[index];
 
-		let isSolid = opaque[idx] === 1;
+		let solid = opaque[index] !== 0;
 
-		if (!isSolid && packed !== 0) {
-			isSolid = (getCachedFlagsAndId(packed) & 0xffff & FLAG_SOLID) !== 0;
+		/*
+		 * Opaque cells are necessarily solid. Only non-opaque, non-air cells
+		 * need the more expensive cached flag lookup.
+		 */
+		if (!solid && packed !== 0) {
+			const flags = getCachedFlagsAndId(packed) & 0xffff;
+			solid = (flags & FLAG_SOLID) !== 0;
 		}
 
-		if (!isSolid || packed === 0) {
+		if (!solid || packed === 0) {
 			if (runTop >= 0) {
 				emitSkirt(
 					out,
 					runTop,
 					runPacked,
+					runBlockId,
 					runLight,
 					axis,
 					back,
@@ -328,19 +364,25 @@ function emitBorderColumn(
 					span,
 					face,
 				);
-				runTop = -1;
+
+				runTop = TOP_NONE;
 			}
 
 			continue;
 		}
 
-		// Decode once and reuse for both water classification and run identity.
-		const blockId = unpackBlockId(packed & 0xffff);
-		const isWater = getSourceBlockId(blockId) === WATER_BLOCK_ID;
+		/*
+		 * Decode once per solid voxel. The decoded ID is reused for water
+		 * classification, run comparison, and final emission.
+		 */
+		const blockId = unpackBlockId(packed);
+		const sourceBlockId = getSourceBlockId(blockId);
 
-		if (isWater) {
-			// A water surface at the top means this column emits no opaque
-			// skirt. Water encountered deeper down breaks the current run.
+		if (sourceBlockId === WATER_BLOCK_ID) {
+			/*
+			 * A water surface at the top suppresses the complete opaque skirt
+			 * for this column. Water below an opaque top only splits the run.
+			 */
 			if (firstY < 0) {
 				break;
 			}
@@ -350,6 +392,7 @@ function emitBorderColumn(
 					out,
 					runTop,
 					runPacked,
+					runBlockId,
 					runLight,
 					axis,
 					back,
@@ -359,7 +402,8 @@ function emitBorderColumn(
 					span,
 					face,
 				);
-				runTop = -1;
+
+				runTop = TOP_NONE;
 			}
 
 			continue;
@@ -376,8 +420,8 @@ function emitBorderColumn(
 			runPacked = packed;
 			runBlockId = blockId;
 
-			const aboveLight = lights[idx + ps];
-			const outwardLight = lights[idx + outwardOffset];
+			const aboveLight = lights[index + ps];
+			const outwardLight = lights[index + outwardOffset];
 
 			runLight = aboveLight > outwardLight ? aboveLight : outwardLight;
 
@@ -385,12 +429,11 @@ function emitBorderColumn(
 		}
 
 		if (blockId !== runBlockId) {
-			// Different source material or block variant requires a separate
-			// segment so its texture and tint remain correct.
 			emitSkirt(
 				out,
 				runTop,
 				runPacked,
+				runBlockId,
 				runLight,
 				axis,
 				back,
@@ -405,17 +448,19 @@ function emitBorderColumn(
 			runPacked = packed;
 			runBlockId = blockId;
 
-			const aboveLight = lights[idx + ps];
-			const outwardLight = lights[idx + outwardOffset];
+			const aboveLight = lights[index + ps];
+			const outwardLight = lights[index + outwardOffset];
 
 			runLight = aboveLight > outwardLight ? aboveLight : outwardLight;
 
 			continue;
 		}
 
-		// Same block run. Only outward light needs to be considered below the
-		// run top, preserving the original lighting behavior.
-		const outwardLight = lights[idx + outwardOffset];
+		/*
+		 * Above-light is sampled only at the top of a run. Deeper cells need
+		 * only outward-facing light, preserving the original lighting model.
+		 */
+		const outwardLight = lights[index + outwardOffset];
 
 		if (outwardLight > runLight) {
 			runLight = outwardLight;
@@ -427,6 +472,7 @@ function emitBorderColumn(
 			out,
 			runTop,
 			runPacked,
+			runBlockId,
 			runLight,
 			axis,
 			back,
@@ -438,18 +484,25 @@ function emitBorderColumn(
 		);
 	}
 
-	if (grids !== undefined && !cacheHit) {
-		ensureBorderCache(grids, size, step);
-
-		const topYCache = grids.borderTopY!;
-		const packedCache = grids.borderTopPacked!;
-
-		if (firstY < 0) {
-			topYCache[cacheIndex] = TOP_NONE;
-			packedCache[cacheIndex] = 0;
-		} else {
-			topYCache[cacheIndex] = firstY;
-			packedCache[cacheIndex] = firstPacked;
-		}
+	if (grids === undefined || cacheHit) {
+		return;
 	}
+
+	ensureBorderCache(grids, size, step);
+
+	const topYCache = grids.borderTopY;
+	const packedCache = grids.borderTopPacked;
+
+	if (topYCache === undefined || packedCache === undefined) {
+		return;
+	}
+
+	if (firstY < 0) {
+		topYCache[cacheIndex] = TOP_NONE;
+		packedCache[cacheIndex] = 0;
+		return;
+	}
+
+	topYCache[cacheIndex] = firstY;
+	packedCache[cacheIndex] = firstPacked;
 }
