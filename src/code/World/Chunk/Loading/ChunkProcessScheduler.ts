@@ -1,7 +1,8 @@
-import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
+import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
 import { Chunk } from "../Chunk";
+import { ChunkLifecycle } from "./ChunkLifecycle";
 import type { QueuedChunkRequest } from "./ChunkStreamingController";
 import { type InFlightProcessState, ProcessStage } from "./ChunkTypes";
 
@@ -97,8 +98,11 @@ export class ChunkProcessScheduler {
 	private readonly _ioTimedOut = { count: 0 };
 
 	/**
-	 * Reject if `promise` has not settled within IO_TIMEOUT_MS. Never rejects
-	 * before the underlying promise settles on its own.
+	 * Execute one storage operation with a hard timeout.
+	 *
+	 * The timeout is cleared as soon as either branch settles. The underlying
+	 * operation is not cancelled because the storage API does not expose
+	 * cancellation.
 	 */
 	private async withIoTimeout<T>(
 		label: string,
@@ -106,23 +110,27 @@ export class ChunkProcessScheduler {
 	): Promise<T> {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 
-		const timeout = new Promise<never>((_resolve, reject) => {
+		const timeoutPromise = new Promise<never>((_resolve, reject) => {
 			timer = setTimeout(() => {
 				this._ioTimedOut.count++;
+
 				console.error(
 					`[ChunkProcessScheduler] ${label} did not settle within ` +
-						`${ChunkProcessScheduler.IO_TIMEOUT_MS}ms — abandoning it ` +
-						`and continuing (occurrence ${this._ioTimedOut.count}). ` +
-						`The streaming pipeline would otherwise stay parked forever.`,
+						`${ChunkProcessScheduler.IO_TIMEOUT_MS}ms. The operation ` +
+						`was abandoned so chunk streaming can continue ` +
+						`(occurrence ${this._ioTimedOut.count}).`,
 				);
+
 				reject(new Error(`${label} timed out`));
 			}, ChunkProcessScheduler.IO_TIMEOUT_MS);
 		});
 
 		try {
-			return await Promise.race([promise, timeout]);
+			return await Promise.race([promise, timeoutPromise]);
 		} finally {
-			if (timer !== undefined) clearTimeout(timer);
+			if (timer !== undefined) {
+				clearTimeout(timer);
+			}
 		}
 	}
 
@@ -152,6 +160,14 @@ export class ChunkProcessScheduler {
 	private readonly _farIdScratch: bigint[] = [];
 	private readonly _recoveredRequests: QueuedChunkRequest[] = [];
 
+	/*
+	 * Reusable callback batches.
+	 *
+	 * These arrays are passed only to synchronous adapter notifications and are
+	 * cleared immediately afterward, avoiding loadBatch.slice() allocations.
+	 */
+	private readonly _notificationRequests: QueuedChunkRequest[] = [];
+
 	private preferLoadNext = false;
 	private unloadRetryAfterMs = 0;
 
@@ -161,6 +177,23 @@ export class ChunkProcessScheduler {
 
 	public get processing(): boolean {
 		return this.isProcessing;
+	}
+
+	/**
+	 * Whether the chunk sits in the unprocessed tail of the current unload
+	 * batch. The scheduler dequeues unload entries into its batch (removing
+	 * them from the set) while they are still Unloading; the ChunkLifecycle
+	 * host queries this so the owner keeps deriving Unloading through dispose.
+	 * Processed entries (index < unloadBatchIndex, including disposed chunks)
+	 * intentionally answer false — they are Absent, not Unloading.
+	 */
+	public isChunkInUnloadBatch(chunk: Chunk): boolean {
+		const s = this.inFlightProcessState;
+		if (s === null) return false;
+		for (let i = s.unloadBatchIndex; i < s.unloadBatch.length; i++) {
+			if (s.unloadBatch[i] === chunk) return true;
+		}
+		return false;
 	}
 
 	/** Human-readable name of the stage the in-flight batch is parked on. */
@@ -224,6 +257,58 @@ export class ChunkProcessScheduler {
 		};
 	}
 
+	/**
+	 * Notify an adapter with a stable temporary snapshot.
+	 *
+	 * This keeps adapter callbacks isolated from subsequent state-array mutation
+	 * without allocating through Array.prototype.slice().
+	 */
+	private notifyRequests(
+		callback:
+			| ((requests: ReadonlyArray<QueuedChunkRequest>) => void)
+			| undefined,
+		requests: ReadonlyArray<QueuedChunkRequest>,
+	): void {
+		if (callback === undefined || requests.length === 0) {
+			return;
+		}
+
+		const snapshot = this._notificationRequests;
+		snapshot.length = requests.length;
+
+		for (let i = 0; i < requests.length; i++) {
+			snapshot[i] = requests[i];
+		}
+
+		try {
+			callback(snapshot);
+		} finally {
+			snapshot.length = 0;
+		}
+	}
+
+	/**
+	 * Recycle the active load batch without creating a temporary slice.
+	 *
+	 * Adapter recycling is required to be synchronous. The state array is cleared
+	 * immediately after notification so it cannot retain recycled requests.
+	 */
+	private recycleLoadBatch(state: InFlightProcessState): void {
+		const length = state.loadBatch.length;
+
+		if (length === 0) {
+			return;
+		}
+
+		const recycle = this.adapter.recycleQueuedRequests;
+
+		if (recycle !== undefined) {
+			recycle(state.loadBatch);
+		}
+
+		state.loadBatch.length = 0;
+	}
+
 	private resetState(state: InFlightProcessState): void {
 		state.stage = ProcessStage.Start;
 
@@ -244,13 +329,8 @@ export class ChunkProcessScheduler {
 	}
 
 	private clearLoadState(state: InFlightProcessState): void {
-		// P1-6: recycle QueuedChunkRequest objects to pool to avoid per-batch GC.
-		if (state.loadBatch.length > 0) {
-			const toRecycle = state.loadBatch.slice();
-			// Clear references before offloading to pool; state arrays will be cleared below.
-			this.adapter.recycleQueuedRequests?.(toRecycle);
-		}
-		state.loadBatch.length = 0;
+		this.recycleLoadBatch(state);
+
 		state.validLoadBatch.length = 0;
 		state.nearRequests.length = 0;
 		state.farRequests.length = 0;
@@ -259,6 +339,7 @@ export class ChunkProcessScheduler {
 		state.farLoadedDataMap.clear();
 
 		state.applyLoadedIndex = 0;
+
 		state.chunksToGenerate.length = 0;
 		state.chunksToGenerateIds.clear();
 		state.chunksNeedingFullHydration.clear();
@@ -403,13 +484,13 @@ export class ChunkProcessScheduler {
 						}
 
 						if (this._saveScratch.length > 0) {
+							markSuspend();
+
 							try {
 								await this.withIoTimeout(
 									"WorldStorage.saveChunks (unload batch)",
 									WorldStorage.saveChunks(this._saveScratch),
 								);
-
-								this.beginSlice(state);
 
 								for (const id of state.savedChunkRevisions.keys()) {
 									state.savedChunkIds.add(id);
@@ -421,6 +502,9 @@ export class ChunkProcessScheduler {
 								state.savedChunkIds.clear();
 								state.savedChunkRevisions.clear();
 								this.unloadRetryAfterMs = performance.now() + 250;
+							} finally {
+								markResume();
+								this.beginSlice(state);
 							}
 						}
 
@@ -453,6 +537,8 @@ export class ChunkProcessScheduler {
 								continue;
 							}
 
+							markSuspend();
+
 							try {
 								await this.withIoTimeout(
 									"unloadChunkBoundEntitiesForChunk",
@@ -463,9 +549,10 @@ export class ChunkProcessScheduler {
 								unloadQueueSet.add(chunk);
 								state.unloadBatchIndex++;
 								continue;
+							} finally {
+								markResume();
+								this.beginSlice(state);
 							}
-
-							this.beginSlice(state);
 
 							if (!chunk.isLoaded || chunk.isBoatChunk) {
 								state.unloadBatchIndex++;
@@ -486,6 +573,14 @@ export class ChunkProcessScheduler {
 								continue;
 							}
 
+							// Route through the owner: Unloading → Absent (dequeues
+							// the unload, clears the residency + mesh flags).
+							// chunk.dispose() below performs the data teardown
+							// (voxel/light reset, registry unregister, pool
+							// recycle); its flag writes repeat the owner's
+							// idempotently. isChunkInUnloadBatch keeps the owner
+							// deriving Unloading while the batch owns this chunk.
+							ChunkLifecycle.completeUnload(chunk);
 							chunk.dispose();
 
 							state.unloadBatchIndex++;
@@ -514,9 +609,10 @@ export class ChunkProcessScheduler {
 								state.loadBatch.push(loadQueue[i]);
 							}
 
-							if (this.adapter.onLoadRequestsDequeued) {
-								this.adapter.onLoadRequestsDequeued(state.loadBatch.slice());
-							}
+							this.notifyRequests(
+								this.adapter.onLoadRequestsDequeued,
+								state.loadBatch,
+							);
 
 							if (takeCount < loadQueue.length) {
 								loadQueue.copyWithin(0, takeCount);
@@ -686,7 +782,7 @@ export class ChunkProcessScheduler {
 						) {
 							const request = state.validLoadBatch[state.applyLoadedIndex++];
 
-							if (!this.isStillDesired(request)) {
+							if (!this.isStillDesired(state, request)) {
 								/*
 								 * The chunk stopped being desired while its storage read
 								 * was in flight, so isStillDesired sent the request back
@@ -903,10 +999,12 @@ export class ChunkProcessScheduler {
 			// Book the slice's own synchronous cost against the shared frame pool.
 			// `offFrameMs` above covers the awaited storage reads, which happen
 			// outside any frame and so must NOT be charged here.
-			FRAME_WORK_BUDGET.record(
-				FrameWorkKind.Streaming,
+			const synchronousSliceMs = Math.max(
+				0,
 				performance.now() - state.sliceStartMs - offFrameMs,
 			);
+
+			FRAME_WORK_BUDGET.record(FrameWorkKind.Streaming, synchronousSliceMs);
 
 			this.isProcessing = false;
 
@@ -916,14 +1014,103 @@ export class ChunkProcessScheduler {
 		}
 	}
 
+	/**
+	 * Move one request back to the load queue if it is still valid.
+	 *
+	 * This is used when the desired near/far routing changes while an asynchronous
+	 * storage read is in flight. Returning false from isStillDesired without
+	 * re-queuing would otherwise strand the chunk.
+	 *
+	 * Routed through the owner (Loading → Scheduled): the host restores the
+	 * retained request — the same object, with the adopted LOD already applied
+	 * in place — instead of pushing here. The owner no-ops when the chunk is
+	 * no longer Loading (culled mid-flight, unload won the race); the request
+	 * is then dropped and the sweep/cull owns the outcome.
+	 */
+	private requeueLoadRequest(
+		state: InFlightProcessState,
+		request: QueuedChunkRequest,
+	): boolean {
+		const chunk = request.chunk;
+
+		if (!chunk || !chunk.isTerrainScheduled || chunk.isLoaded) {
+			return false;
+		}
+
+		const loadQueue = this.adapter.getLoadQueue();
+		const queuedIds = state.queuedLoadIdsScratch;
+
+		queuedIds.clear();
+
+		for (let i = 0; i < loadQueue.length; i++) {
+			const queuedChunk = loadQueue[i].chunk;
+
+			if (queuedChunk) {
+				queuedIds.add(queuedChunk.id);
+			}
+		}
+
+		if (queuedIds.has(chunk.id)) {
+			queuedIds.clear();
+			return false;
+		}
+
+		ChunkLifecycle.abandonLoad(chunk, "requeue");
+		queuedIds.clear();
+
+		this.notifyRequests(this.adapter.onLoadRequestsRecovered, [request]);
+
+		this.adapter.onQueueSnapshotChanged?.();
+		return true;
+	}
+
+	/**
+	 * Whether an in-flight request still matches the current desired state.
+	 *
+	 * Revision-only changes are adopted in place. A near/far boundary change must
+	 * go through storage again because the original read used the wrong voxel-data
+	 * mode.
+	 */
+	private isStillDesired(
+		state: InFlightProcessState,
+		request: QueuedChunkRequest,
+	): boolean {
+		const chunk = request.chunk;
+
+		if (!chunk || !chunk.isTerrainScheduled) {
+			return false;
+		}
+
+		const desired = this.adapter.getDesiredState(chunk.numericId);
+
+		if (desired === undefined) {
+			this.adapter.markPotentialOrphan(chunk);
+			return false;
+		}
+
+		const desiredLod = desired & 0b111;
+		const desiredRevision = desired >>> 3;
+		const wantVoxelData = desiredLod <= 1;
+
+		request.revision = desiredRevision;
+
+		if (wantVoxelData !== request.includeVoxelData) {
+			request.desiredLod = desiredLod;
+			request.includeVoxelData = wantVoxelData;
+			request.priority = Number.POSITIVE_INFINITY;
+
+			this.requeueLoadRequest(state, request);
+			return false;
+		}
+
+		request.desiredLod = desiredLod;
+		return true;
+	}
+
 	private recoverProcessState(state: InFlightProcessState): void {
 		const unloadQueue = this.adapter.getUnloadQueueSet();
 
-		for (
-			let i = state.unloadBatchIndex, length = state.unloadBatch.length;
-			i < length;
-			i++
-		) {
+		for (let i = state.unloadBatchIndex; i < state.unloadBatch.length; i++) {
 			const chunk = state.unloadBatch[i];
 
 			if (chunk.isLoaded && !chunk.isBoatChunk) {
@@ -936,130 +1123,89 @@ export class ChunkProcessScheduler {
 
 		queuedIds.clear();
 
-		for (let i = 0, length = loadQueue.length; i < length; i++) {
-			const request = loadQueue[i];
-			if (request.chunk) queuedIds.add(request.chunk.id);
+		for (let i = 0; i < loadQueue.length; i++) {
+			const chunk = loadQueue[i].chunk;
+
+			if (chunk) {
+				queuedIds.add(chunk.id);
+			}
 		}
 
 		const recovered = this._recoveredRequests;
 		recovered.length = 0;
 
-		for (let i = 0, length = state.loadBatch.length; i < length; i++) {
+		for (let i = 0; i < state.loadBatch.length; i++) {
 			const request = state.loadBatch[i];
 			const chunk = request.chunk;
 
 			if (
-				chunk &&
-				chunk.isTerrainScheduled &&
-				!chunk.isLoaded &&
-				!queuedIds.has(chunk.id)
+				!chunk ||
+				!chunk.isTerrainScheduled ||
+				chunk.isLoaded ||
+				queuedIds.has(chunk.id)
 			) {
-				queuedIds.add(chunk.id);
-				loadQueue.push(request);
-				recovered.push(request);
+				continue;
 			}
+
+			queuedIds.add(chunk.id);
+			// Route through the owner (Loading → Scheduled): the host
+			// restores the retained request — the same object — onto the
+			// load queue instead of pushing here.
+			ChunkLifecycle.abandonLoad(chunk, "requeue");
+			recovered.push(request);
 		}
 
 		/*
-		 * STALLFIX: drop the batch references now that they are live in
-		 * `loadQueue` again. Leaving them in place meant the next
-		 * resetState -> clearLoadState recycled them into the free pool while
-		 * they were still queued, so ensureChunkQueuedForLoad could hand the
-		 * very same object out a second time and push a duplicate entry.
+		 * Requests now owned by loadQueue must not be recycled when this state is
+		 * reset.
 		 */
 		state.loadBatch.length = 0;
-
-		/*
-		 * The scratch set is no longer needed after the synchronous loops above.
-		 * Clearing it avoids retaining IDs until the next process operation.
-		 */
 		queuedIds.clear();
 
-		/*
-		 * These requests went back into `loadQueue` but were removed from the
-		 * controller's request map when they were originally dequeued. Without
-		 * re-registering them, a later ensureChunkQueuedForLoad for the same
-		 * chunk would allocate a SECOND request object for it and the chunk
-		 * would be loaded twice per pass.
-		 */
 		if (recovered.length > 0) {
 			this.adapter.onLoadRequestsRecovered?.(recovered);
 		}
-		recovered.length = 0;
 
+		recovered.length = 0;
 		this.adapter.onQueueSnapshotChanged?.();
 	}
 
-	/**
-	 * Whether an in-flight request is still wanted, re-syncing it against the
-	 * newest desired state first.
-	 *
-	 * STALLFIX: this used to be a pure "revision must match exactly" predicate,
-	 * so a request whose desired state advanced while `LoadFromStorage` was
-	 * awaiting was silently skipped — leaving its chunk loaded-but-unhydrated (or
-	 * absent) with no request anywhere. Re-syncing means a revision bump is
-	 * absorbed instead of discarded, and matches what PrepareLoadBatch now does.
-	 */
-	private isStillDesired(request: QueuedChunkRequest): boolean {
-		const chunk = request.chunk;
-
-		if (!chunk) return false;
-		if (!chunk.isTerrainScheduled) return false;
-
-		const desired = this.adapter.getDesiredState(chunk.numericId);
-
-		if (desired === undefined) {
-			// Nothing records this chunk as wanted. Leave the request dropped;
-			// sweepOrphanedChunks will re-queue it with a fresh desired state if
-			// it is still wanted.
-			return false;
-		}
-
-		const desiredLod = desired & 0b111;
-		const desiredRevision = desired >>> 3;
-
-		if (desiredRevision !== request.revision) {
-			request.revision = desiredRevision;
-		}
-
-		if (desiredLod !== request.desiredLod) {
-			// Near/far routing was decided in PrepareLoadBatch from the old LOD;
-			// a chunk that crossed the LOD1 boundary mid-flight must go back
-			// through the queue rather than being hydrated from the wrong read.
-			const wantVoxels = desiredLod <= 1;
-			if (wantVoxels !== request.includeVoxelData) {
-				return false;
-			}
-			request.desiredLod = desiredLod;
-		}
-
-		return true;
-	}
-
 	private queueGeneration(state: InFlightProcessState, chunk: Chunk): void {
-		if (chunk.isLoaded || state.chunksToGenerateIds.has(chunk.id)) return;
+		if (
+			chunk.isLoaded ||
+			!chunk.isTerrainScheduled ||
+			state.chunksToGenerateIds.has(chunk.id)
+		) {
+			return;
+		}
 
 		state.chunksToGenerateIds.add(chunk.id);
 		state.chunksToGenerate.push(chunk);
 	}
 
 	public beginSlice(state: InFlightProcessState): void {
-		const budget = Math.max(0.5, this.adapter.getProcessFrameBudgetMs());
+		const configuredBudget = Math.max(
+			0.5,
+			this.adapter.getProcessFrameBudgetMs(),
+		);
+
+		const sharedRemaining = FRAME_WORK_BUDGET.remainingMs();
+
+		/*
+		 * A reported zero means the shared frame budget is exhausted, not that the
+		 * local budget should be restored. Keep a very small allowance so the
+		 * state machine can record its continuation without doing a full batch.
+		 */
+		const availableBudget =
+			sharedRemaining > 0 ? Math.min(configuredBudget, sharedRemaining) : 0.05;
+
 		const now = performance.now();
 
 		state.sliceStartMs = now;
-		// The slice deadline is the MINIMUM of this subsystem's own ceiling and
-		// what the frame-wide pool still has. Both draw on the same frame, and
-		// the loaded-refresh drain, orphan sweep and mesh ingest are all competing
-		// for it — capping only locally is what let their sum overrun the frame.
-		state.sliceDeadlineMs =
-			now + Math.min(budget, FRAME_WORK_BUDGET.remainingMs() || budget);
+		state.sliceDeadlineMs = now + availableBudget;
 	}
 
 	public hasBudget(state: InFlightProcessState): boolean {
-		// Both conditions: the slice's own deadline, and the aggregate frame
-		// pool. A slice that started while the pool had room can still be cut
-		// short by work another subsystem did after it began.
 		return (
 			performance.now() < state.sliceDeadlineMs &&
 			FRAME_WORK_BUDGET.canContinue(FrameWorkKind.Streaming)
@@ -1067,7 +1213,9 @@ export class ChunkProcessScheduler {
 	}
 
 	public scheduleProcessContinuation(): void {
-		if (this.processContinuationScheduled) return;
+		if (this.processContinuationScheduled) {
+			return;
+		}
 
 		this.processContinuationScheduled = true;
 

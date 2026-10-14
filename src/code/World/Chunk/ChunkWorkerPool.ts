@@ -1,6 +1,6 @@
-import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
-import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { estimatePhysicalCores } from "@/code/Lib/estimatePhysicalCores";
+import { frameProfiler } from "@/code/Lib/FrameProfiler";
+import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
 import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
 import type {
 	RemoteChunkProvider,
@@ -39,6 +39,7 @@ import {
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
+import { ChunkLifecycle } from "./Loading/ChunkLifecycle";
 import { precomputeClosedFaceMasks } from "./Meshing/ChunkFaceMasks";
 import { createMeshFromData } from "./Meshing/ChunkMesher";
 import {
@@ -2069,8 +2070,12 @@ export class ChunkWorkerPool {
 					this.debugStats.meshStaleDroppedTotal++;
 					this._summaryDropped++;
 					this.recycleMeshBuffers(workerIdx, data);
-					chunk.isDirty = true;
-					chunk.remeshQueued = false;
+					// Route through the owner: a superseded in-flight result still
+					// applies via completeRemesh-then-rerun, so the stale drop is
+					// markDirty (latches Superseded when Building) + a fresh queue.
+					// completeRemesh is deliberately NOT called here: the stale
+					// result was never applied, so there is nothing to mark clean.
+					ChunkLifecycle.markDirty(chunk);
 					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0, false);
 					processed++;
 					continue;
@@ -2092,14 +2097,20 @@ export class ChunkWorkerPool {
 
 				if (isCurrentLod) {
 					createMeshFromData(chunk, opaqueData, waterData, cutoutData);
-					chunk.isDirty = false;
-					chunk.remeshQueued = false;
+					// Route through the owner: clears dirty + queued, preserves the
+					// rerun latch so a superseded chunk still re-runs after this
+					// (previously two manual flag writes with the same outcome).
+					ChunkLifecycle.completeRemesh(chunk);
 					this.queuePostRemeshSave(chunk);
 					this.debugStats.meshAppliedTotal++;
 					this._summaryApplied++;
 				} else {
-					chunk.isDirty = true;
+					// The current LOD changed while this build was in flight: the
+					// re-queue must supersede it with a fresh revision. Clear the
+					// queued flag first so the owner's bump guard below advances
+					// meshRevision exactly as the legacy manual writes did.
 					chunk.remeshQueued = false;
+					ChunkLifecycle.markDirty(chunk);
 					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
 					this.debugStats.meshCachedForOtherLodTotal++;
 				}
@@ -2201,8 +2212,10 @@ export class ChunkWorkerPool {
 				droppedChunk?.isLoaded &&
 				dropped.meshRevision === droppedChunk.meshRevision
 			) {
-				droppedChunk.isDirty = true;
-				droppedChunk.remeshQueued = false;
+				// Route through the owner (markDirty owns the isDirty write;
+				// scheduleRemesh below owns the re-queue). bumpRevision=false is
+				// preserved: the victim's revision is current, so no supersede.
+				ChunkLifecycle.markDirty(droppedChunk);
 				this.scheduleRemesh(
 					droppedChunk,
 					(droppedChunk.lodLevel ?? 0) === 0,
@@ -2385,7 +2398,11 @@ export class ChunkWorkerPool {
 		}
 
 		if (inflight) {
-			chunk.rerunRemeshAfterInflight = true;
+			// Route through the owner: markDirty owns the isDirty write and
+			// latches the rerun exactly when a build is in flight
+			// (Building → Superseded). The queued/in-flight build still
+			// applies when it lands; the latch re-runs it after.
+			ChunkLifecycle.markDirty(chunk);
 			return;
 		}
 
@@ -2395,6 +2412,12 @@ export class ChunkWorkerPool {
 			chunk,
 			existingPriority || priority || lodPriority,
 		);
+		// Route through the owner: queueRemesh owns the isDirty + remeshQueued
+		// writes (idempotent when already Queued, illegal-state-guarded
+		// otherwise), so the flags always describe the queued entry above.
+		// The revision bump above stays gated on !remeshQueued exactly as
+		// before: a repeat request must not advance meshRevision.
+		ChunkLifecycle.queueRemesh(chunk);
 		this.scheduleRemeshFlush();
 	}
 
@@ -2609,7 +2632,11 @@ export class ChunkWorkerPool {
 		this.enqueueMeshResult(meshData, workerIndex);
 
 		if (resolvedChunk?.rerunRemeshAfterInflight) {
-			resolvedChunk.rerunRemeshAfterInflight = false;
+			// Route through the owner: rerunAfterInflight clears the latch and
+			// re-queues (Superseded → Queued); the pool call below refreshes
+			// the pending entry without advancing the revision (same as the
+			// legacy manual clear + scheduleRemesh(false)).
+			ChunkLifecycle.rerunAfterInflight(resolvedChunk);
 			this.scheduleRemesh(
 				resolvedChunk,
 				(resolvedChunk.lodLevel ?? 0) === 0,
@@ -2891,6 +2918,59 @@ export class ChunkWorkerPool {
 	 */
 	public isTerrainTaskQueued(chunk: Chunk): boolean {
 		return this.terrainTaskQueue.has(chunk);
+	}
+
+	/**
+	 * Whether the chunk's load is accounted for anywhere in the generation
+	 * pipeline: the local terrain queue, an actively-executing terrain worker
+	 * task, or any leg of the multiplayer remote pipeline (queued, deferred,
+	 * parked for retry, or awaiting a server response).
+	 *
+	 * This is the `isGenerating` leg of the ChunkLifecycle host. It must cover
+	 * the whole worker-execution window — not just queue membership — because
+	 * the scheduler recycles the controller's in-flight marks while generation
+	 * is still running, and the owner derives `Loading` from this query when a
+	 * generation result completes. A chunk that answers true here is NOT an
+	 * orphan even though it sits in no load queue.
+	 */
+	public isChunkGenerating(chunk: Chunk): boolean {
+		if (this.terrainTaskQueue.has(chunk)) return true;
+		for (let i = 0; i < this.workerTaskContext.length; i++) {
+			const ctx = this.workerTaskContext[i];
+			if (ctx?.taskType === TaskType.Terrain && ctx.chunk === chunk) {
+				return true;
+			}
+		}
+		return this.isChunkInRemotePipeline(chunk);
+	}
+
+	/**
+	 * Whether the chunk has any outstanding multiplayer remote-generation
+	 * state. Split out so the ChunkLifecycle host and diagnostics can share
+	 * one definition of "accounted for by the remote pipeline".
+	 */
+	public isChunkInRemotePipeline(chunk: Chunk): boolean {
+		return (
+			this.remoteTaskQueueSet.has(chunk) ||
+			this.remoteDeferredChunks.has(chunk) ||
+			this.remoteRetryParked.has(chunk) ||
+			this.remotePendingChunks.has(chunk.id)
+		);
+	}
+
+	/**
+	 * Whether any remesh for this chunk (any LOD) is currently dispatched to a
+	 * worker. This is the `isRemeshInFlight` leg of the ChunkLifecycle host:
+	 * it lets the owner distinguish `Queued` (waiting) from `Building`
+	 * (dispatched) without trusting the `remeshQueued` flag alone.
+	 */
+	public isRemeshInFlightFor(chunk: Chunk): boolean {
+		for (let lod = 0; lod < 16; lod++) {
+			if (this.inFlightRemeshKeys.has(packInflightKey(chunk.numericId, lod))) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -4373,6 +4453,12 @@ export class ChunkWorkerPool {
 		const worker = this.workers[workerIndex];
 		this.setWorkerTaskContext(workerIndex, taskType, taskChunk, lod);
 		if (kind === 0) {
+			// Route through the owner: Queued → Building. No flag writes (the
+			// worker now owns the build); the host's isRemeshInFlight query
+			// distinguishes the states from here on. Must run BEFORE the
+			// in-flight key is added so the transition reads Queued, not
+			// Building (idempotent either way).
+			ChunkLifecycle.beginRemesh(taskChunk);
 			this.pendingRemeshMap.delete(taskChunk);
 			this.taskQueuePriority.delete(taskChunk);
 		}

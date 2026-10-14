@@ -1,5 +1,9 @@
 import { Chunk } from "../Chunk";
 import { ChunkWorkerPool } from "../ChunkWorkerPool";
+import {
+	findResidencyInvariantViolation,
+	getChunkLifecycleQueries,
+} from "./ChunkLifecycle";
 
 /**
  * Snapshot of everything needed to tell "chunk streaming is idle" apart from
@@ -256,9 +260,9 @@ export class StreamingWatchdog {
 				? `  ${s.loadedWithoutVoxels} loaded chunks have NO voxel data -> hydration stalled.`
 				: `  no chunk is stuck un-hydrated.`,
 			s.unloadedScheduled > 0
-				? `  ${s.unloadedScheduled} chunks are isTerrainScheduled but NOT loaded and NOT queued ->` +
-						` orphans; nothing will ever revisit them.`
-				: `  no orphaned chunks.`,
+				? `  ${s.unloadedScheduled} chunks are isTerrainScheduled, NOT loaded, and accounted for by` +
+						` NO queue -> true orphans (precise via ChunkLifecycle; nothing will revisit them).`
+				: `  no orphaned chunks (every scheduled-unloaded chunk is queued, in-flight, or generating).`,
 		);
 
 		console.warn(lines.join("\n"));
@@ -279,6 +283,9 @@ export function surveyChunkStates(): {
 	let loadedWithoutVoxels = 0;
 	let unloadedScheduled = 0;
 
+	const pool = ChunkWorkerPool.getInstance();
+	const queries = getChunkLifecycleQueries();
+
 	for (const chunk of Chunk.chunkInstances.values()) {
 		chunkInstances++;
 
@@ -287,7 +294,20 @@ export function surveyChunkStates(): {
 			if (chunk.hasVoxelData) loadedWithVoxels++;
 			else loadedWithoutVoxels++;
 		} else if (chunk.isTerrainScheduled) {
-			unloadedScheduled++;
+			/*
+			 * Precise when the ChunkLifecycle queries are wired: the owner's
+			 * invariant checker flags only chunks that are scheduled, unloaded,
+			 * AND accounted for by no queue — the true orphan shape. Falls back
+			 * to a coarse upper bound (scheduled + not generation-queued) before
+			 * the host is wired.
+			 */
+			if (queries) {
+				if (findResidencyInvariantViolation(chunk, queries) !== null) {
+					unloadedScheduled++;
+				}
+			} else if (!pool?.isTerrainTaskQueued(chunk)) {
+				unloadedScheduled++;
+			}
 		}
 	}
 

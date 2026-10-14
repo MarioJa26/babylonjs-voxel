@@ -28,6 +28,13 @@ import {
 	UNDERGROUND_SKIP_LOD,
 } from "../LOD/LODUtilities";
 import { createMeshFromData } from "../Meshing/ChunkMesher";
+import {
+	ChunkLifecycle,
+	type ChunkLifecycleHost,
+	deriveResidencyState,
+	ResidencyState,
+	setChunkLifecycleHost,
+} from "./ChunkLifecycle";
 import { chunkForwardScore } from "./ChunkPriority";
 import {
 	ChunkResidency,
@@ -227,6 +234,13 @@ function unpackRevision(packed: number): number {
 export interface ChunkStreamingControllerAdapter {
 	getLoadQueue(): QueuedChunkRequest[];
 	getUnloadQueueSet(): Set<Chunk>;
+	/**
+	 * Whether the chunk sits in the scheduler's unprocessed unload batch.
+	 * The scheduler dequeues unload entries into its batch (removing them
+	 * from the set), but they are still Unloading — without this the owner
+	 * would derive Loaded at dispose time and reject completeUnload.
+	 */
+	isInUnloadBatch?(chunk: Chunk): boolean;
 	onQueueSnapshotChanged?(): void;
 }
 
@@ -461,6 +475,168 @@ export class ChunkStreamingController {
 	 */
 	private readonly _loadRequestsInFlight = new Set<number>();
 
+	/**
+	 * Request objects the scheduler has dequeued and is currently processing,
+	 * keyed by chunk numericId. Populated by the host's `moveLoadToInFlight`
+	 * (which runs while the map entry still exists), consumed by
+	 * `moveInFlightToLoad` (abandon + requeue restores the same object),
+	 * `clearInFlight`, and `dropFromLoadPath`.
+	 *
+	 * Lifecycle mirror rule: an entry lives here exactly while its numericId
+	 * lives in `_loadRequestsInFlight`. Every path that deletes from one must
+	 * delete from the other (`onLoadRequestsRecovered`,
+	 * `onLoadRequestsAbandoned`, `recycleQueuedRequests`, `onChunkDisposed`
+	 * all maintain both), or a recycled request object could be resurrected
+	 * onto the queue while also sitting in the free pool.
+	 */
+	private readonly _inFlightRequests = new Map<number, QueuedChunkRequest>();
+
+	/**
+	 * ChunkLifecycle host over this controller's load-path state. The read-only
+	 * queries back the residency-invariant checker; the side effects are what
+	 * the owner performs when a transition is routed through it. Published via
+	 * setChunkLifecycleHost in the constructor.
+	 *
+	 * In-flight requests are retained in `_inFlightRequests` (populated by
+	 * `moveLoadToInFlight`, consumed by `moveInFlightToLoad`/`clearInFlight`/
+	 * `dropFromLoadPath`) so `abandonLoad(requeue)` restores the SAME request
+	 * object — preserving its revision/desiredLod/priority — instead of
+	 * allocating a fresh one the scheduler would treat as a duplicate.
+	 */
+	private readonly _lifecycleHost: ChunkLifecycleHost = {
+		isQueuedForLoad: (view) =>
+			this.loadQueueRequestMap.has((view as Chunk).numericId),
+		isLoadInFlight: (view) =>
+			this._loadRequestsInFlight.has((view as Chunk).numericId),
+		isGenerating: (view) =>
+			ChunkWorkerPool.getInstance().isChunkGenerating(view as Chunk),
+		isUnloading: (view) =>
+			this.adapter.getUnloadQueueSet().has(view as Chunk) ||
+			this.adapter.isInUnloadBatch?.(view as Chunk) === true,
+		isRemeshInFlight: (view) =>
+			ChunkWorkerPool.getInstance().isRemeshInFlightFor(view as Chunk),
+
+		moveLoadToInFlight: (view) => {
+			const chunk = view as Chunk;
+			const retained = this.loadQueueRequestMap.get(chunk.numericId);
+			if (retained !== undefined) {
+				this._inFlightRequests.set(chunk.numericId, retained);
+			}
+			this.loadQueueRequestMap.delete(chunk.numericId);
+			this._loadRequestsInFlight.add(chunk.numericId);
+			this._orphanCandidates.delete(chunk);
+		},
+		clearInFlight: (view) => {
+			const numericId = (view as Chunk).numericId;
+			this._loadRequestsInFlight.delete(numericId);
+			// Drop the retention WITHOUT pooling: the request object is still
+			// owned by the scheduler's batch, which recycles it exactly once.
+			// Pooling here would hand the same object out twice.
+			this._inFlightRequests.delete(numericId);
+		},
+		enqueueUnload: (view) => {
+			this.adapter.getUnloadQueueSet().add(view as Chunk);
+		},
+		dequeueUnload: (view) => {
+			this.adapter.getUnloadQueueSet().delete(view as Chunk);
+		},
+		dropFromLoadPath: (view) => {
+			const chunk = view as Chunk;
+			const request = this.loadQueueRequestMap.get(chunk.numericId);
+			this.loadQueueRequestMap.delete(chunk.numericId);
+			this._loadRequestsInFlight.delete(chunk.numericId);
+			// Same no-pool rule as clearInFlight: the scheduler's batch still
+			// references this object and recycles it on its own path.
+			this._inFlightRequests.delete(chunk.numericId);
+			if (request) {
+				const loadQueue = this.adapter.getLoadQueue();
+				const idx = loadQueue.indexOf(request);
+				if (idx !== -1) loadQueue.splice(idx, 1);
+			}
+		},
+		enqueueLoad: (view, request) => {
+			if (!request) return; // no payload → nothing to enqueue (defensive)
+			const chunk = view as Chunk;
+			const desiredLod = clampLodForY(chunk.chunkY, request.desiredLod);
+			const revision = request.revision;
+			const includeVoxelData =
+				request.includeVoxelData ?? request.desiredLod <= 1;
+
+			// STALLFIX: this is the single choke point through which every load
+			// request enters `loadQueue`, so it is also where the matching desired
+			// state must be published. ChunkProcessScheduler.PrepareLoadBatch drops
+			// any request whose `revision` disagrees with the recorded desired state.
+			this.trackDesiredState(
+				chunk.numericId,
+				packLodRevision(desiredLod, revision),
+				revision,
+			);
+
+			const loadQueue = this.adapter.getLoadQueue();
+			const numericId = chunk.numericId;
+			let req = this.loadQueueRequestMap.get(numericId);
+			if (req) {
+				req.desiredLod = desiredLod;
+				req.revision = revision;
+				req.includeVoxelData = includeVoxelData;
+				req.priority = Number.POSITIVE_INFINITY;
+			} else {
+				const pooled = this._freeRequests.pop();
+				if (pooled !== undefined) {
+					pooled.chunk = chunk;
+					pooled.desiredLod = desiredLod;
+					pooled.revision = revision;
+					pooled.includeVoxelData = includeVoxelData;
+					pooled.priority = chunk.lodLevel << 4;
+					req = pooled;
+				} else {
+					req = {
+						chunk,
+						desiredLod,
+						revision,
+						includeVoxelData,
+						priority: chunk.lodLevel << 4,
+					};
+				}
+				loadQueue.push(req);
+				this.loadQueueRequestMap.set(numericId, req);
+			}
+
+			const unloadSet = this.adapter.getUnloadQueueSet();
+			if (unloadSet.has(chunk)) {
+				unloadSet.delete(chunk);
+			}
+
+			// The chunk has a request again, so it is no longer an orphan.
+			this._orphanCandidates.delete(chunk);
+
+			chunk.isTerrainScheduled = true;
+		},
+		moveInFlightToLoad: (view) => {
+			const chunk = view as Chunk;
+			const numericId = chunk.numericId;
+			const retained = this._inFlightRequests.get(numericId);
+			this._inFlightRequests.delete(numericId);
+			this._loadRequestsInFlight.delete(numericId);
+			if (retained?.chunk) {
+				// Restore the SAME request (revision/desiredLod/priority
+				// intact) so the next scheduler pass adopts it instead of
+				// treating it as a duplicate. Guarded against double-queue:
+				// a newer request may already exist for this chunk.
+				if (!this.loadQueueRequestMap.has(numericId)) {
+					this.loadQueueRequestMap.set(numericId, retained);
+					this.adapter.getLoadQueue().push(retained);
+				}
+				// Back on loadQueue with a live request — not an orphan.
+				this._orphanCandidates.delete(chunk);
+			} else {
+				// No retained request (recycled/stale): stay visible to the
+				// sweep, which rescues with a freshly tracked desired state.
+				this.markPotentialOrphan(chunk);
+			}
+		},
+	};
+
 	private loadedRefreshQueue: Chunk[] = [];
 	private loadedRefreshQueueSet = new Set<number>();
 	private loadedRefreshQueueHead = 0;
@@ -563,7 +739,13 @@ export class ChunkStreamingController {
 
 	public constructor(
 		private readonly adapter: ChunkStreamingControllerAdapter,
-	) {}
+	) {
+		// Publish the ChunkLifecycle host so the residency-invariant checker runs
+		// against this controller's live load-path state, and so the owner can
+		// drive the transitions routed through it (requestLoad / dispatchLoad /
+		// abandonLoad / requestUnload / completeUnload).
+		setChunkLifecycleHost(this._lifecycleHost);
+	}
 
 	public getDesiredState(numericId: number): number | undefined {
 		return this.desiredStates.get(numericId);
@@ -1934,7 +2116,11 @@ export class ChunkStreamingController {
 					fullyBuriedAndCullable
 				) {
 					noteChunkEvicted(chunk, fullyBuriedAndCullable);
-					unloadQueueSet.add(chunk);
+					// Route through the owner: requestUnload drops any pending
+					// load request (map + queue + in-flight) and enqueues the
+					// unload. Never-loaded (Absent) chunks no-op here — there is
+					// nothing to unload, matching the legacy add-then-skip.
+					ChunkLifecycle.requestUnload(chunk);
 				}
 
 				continue;
@@ -1954,7 +2140,8 @@ export class ChunkStreamingController {
 				fullyBuriedAndCullable
 			) {
 				noteChunkEvicted(chunk, fullyBuriedAndCullable);
-				unloadQueueSet.add(chunk);
+				// Same owner routing as the underground branch above.
+				ChunkLifecycle.requestUnload(chunk);
 			}
 		}
 	}
@@ -1985,82 +2172,49 @@ export class ChunkStreamingController {
 		revision: number,
 		includeVoxelData = desiredLod <= 1,
 	): void {
-		desiredLod = clampLodForY(chunk.chunkY, desiredLod);
-
-		if (chunk.isLoaded && (!includeVoxelData || chunk.hasVoxelData)) {
-			return;
-		}
-
-		// STALLFIX: this is the single choke point through which every load
-		// request enters `loadQueue`, so it is also where the matching desired
-		// state must be published. ChunkProcessScheduler.PrepareLoadBatch drops
-		// any request whose `revision` disagrees with the recorded desired state
-		// (revision + lod packed together). Callers that queued without
-		// tracking produced requests that were silently discarded on every
-		// attempt, leaving their chunk stuck at isTerrainScheduled=true with no
-		// request and no way back — see applyTargetChunkDecision's early-return
-		// branch, which skipped tracking entirely.
-		this.trackDesiredState(
-			chunk.numericId,
-			packLodRevision(desiredLod, revision),
+		// Route through the ChunkLifecycle owner: it owns the "already holds the
+		// requested data" guard and delegates the enqueue to the host (this
+		// controller's `enqueueLoad`). The enqueue logic — desired-state
+		// tracking, request create/update, loadQueue push, unload de-queue,
+		// orphan clear, and `isTerrainScheduled = true` — lives in `enqueueLoad`
+		// so the invariant "isTerrainScheduled ⟺ queued" is established in one
+		// place.
+		ChunkLifecycle.requestLoad(chunk, {
+			desiredLod,
 			revision,
-		);
-
-		const loadQueue = this.adapter.getLoadQueue();
-		const numericId = chunk.numericId;
-		let request = this.loadQueueRequestMap.get(numericId);
-
-		if (request) {
-			request.desiredLod = desiredLod;
-			request.revision = revision;
-			request.includeVoxelData = includeVoxelData;
-			request.priority = Number.POSITIVE_INFINITY;
-		} else {
-			const pooled = this._freeRequests.pop();
-			if (pooled !== undefined) {
-				pooled.chunk = chunk;
-				pooled.desiredLod = desiredLod;
-				pooled.revision = revision;
-				pooled.includeVoxelData = includeVoxelData;
-				pooled.priority = chunk.lodLevel << 4;
-				request = pooled;
-			} else {
-				request = {
-					chunk,
-					desiredLod,
-					revision,
-					includeVoxelData,
-					priority: chunk.lodLevel << 4,
-				};
-			}
-
-			loadQueue.push(request);
-			this.loadQueueRequestMap.set(numericId, request);
-		}
-
-		const unloadSet = this.adapter.getUnloadQueueSet();
-		if (unloadSet.has(chunk)) {
-			unloadSet.delete(chunk);
-		}
-
-		// The chunk has a request again, so it is no longer an orphan. This is
-		// the single place every load request passes through, so clearing here
-		// covers the rescue path, the recovery path and every normal caller.
-		this._orphanCandidates.delete(chunk);
-
-		chunk.isTerrainScheduled = true;
+			includeVoxelData,
+		});
 	}
 
 	public onLoadRequestsDequeued(
 		requests: ReadonlyArray<QueuedChunkRequest>,
 	): void {
 		for (let i = 0; i < requests.length; i++) {
-			const request = requests[i];
-			if (request.chunk) {
-				this.loadQueueRequestMap.delete(request.chunk.numericId);
-				this._loadRequestsInFlight.add(request.chunk.numericId);
+			const chunk = requests[i].chunk;
+			if (!chunk) continue;
+
+			/*
+			 * Route the Scheduled → Loading transition through the owner when the
+			 * chunk is in the expected state: the owner validates the transition
+			 * and performs the identical bookkeeping via the host (including
+			 * retaining the request for a later abandon + requeue). For a stale or
+			 * recycled request whose chunk is no longer Scheduled (the owner would
+			 * no-op), fall back to the direct bookkeeping so the request tracking
+			 * is still cleaned up. Both branches retain the request and do the
+			 * same in-flight registration, so behavior is unchanged — this only
+			 * moves the healthy path behind the owner's transition guard.
+			 */
+			if (
+				deriveResidencyState(chunk, this._lifecycleHost) ===
+				ResidencyState.Scheduled
+			) {
+				ChunkLifecycle.dispatchLoad(chunk);
+			} else {
+				this._inFlightRequests.set(chunk.numericId, requests[i]);
+				this.loadQueueRequestMap.delete(chunk.numericId);
+				this._loadRequestsInFlight.add(chunk.numericId);
 				// The request is being serviced, so it is not an orphan.
-				this._orphanCandidates.delete(request.chunk);
+				this._orphanCandidates.delete(chunk);
 			}
 		}
 	}
@@ -2079,6 +2233,8 @@ export class ChunkStreamingController {
 			if (request.chunk) {
 				this.loadQueueRequestMap.set(request.chunk.numericId, request);
 				this._loadRequestsInFlight.delete(request.chunk.numericId);
+				// Mirror rule: back on loadQueue means no longer in flight.
+				this._inFlightRequests.delete(request.chunk.numericId);
 				// Back on loadQueue with a live request — not an orphan.
 				this._orphanCandidates.delete(request.chunk);
 			}
@@ -2087,10 +2243,12 @@ export class ChunkStreamingController {
 
 	/**
 	 * Terminal cleanup for a batch that is being dropped without being recycled
-	 * (scheduler recovery failed). Clears the in-flight marks so the orphan sweep
-	 * can rescue those chunks, and evicts any stale request-map entry so a later
-	 * ensureChunkQueuedForLoad allocates a fresh request instead of mutating one
-	 * that is not on `loadQueue`.
+	 * (scheduler recovery failed). A still-Loading chunk with a retained
+	 * request is requeued through the owner (Loading → Scheduled, same object
+	 * restored); anything else falls back to clearing the in-flight marks so
+	 * the orphan sweep can rescue those chunks, and evicts any stale
+	 * request-map entry so a later ensureChunkQueuedForLoad allocates a fresh
+	 * request instead of mutating one that is not on `loadQueue`.
 	 */
 	public onLoadRequestsAbandoned(
 		requests: ReadonlyArray<QueuedChunkRequest>,
@@ -2100,7 +2258,17 @@ export class ChunkStreamingController {
 			if (!request.chunk) continue;
 
 			const numericId = request.chunk.numericId;
+			if (
+				this._inFlightRequests.has(numericId) &&
+				deriveResidencyState(request.chunk, this._lifecycleHost) ===
+					ResidencyState.Loading
+			) {
+				ChunkLifecycle.abandonLoad(request.chunk, "requeue");
+				continue;
+			}
+
 			this._loadRequestsInFlight.delete(numericId);
+			this._inFlightRequests.delete(numericId);
 
 			if (this.loadQueueRequestMap.get(numericId) === request) {
 				this.loadQueueRequestMap.delete(numericId);
@@ -2132,7 +2300,9 @@ export class ChunkStreamingController {
 
 			// The scheduler has finished with this in-flight reference, regardless
 			// of whether the request completed or was recovered into loadQueue.
+			// Mirror rule: retention lives exactly while the in-flight mark does.
 			inFlight.delete(numericId);
+			this._inFlightRequests.delete(numericId);
 
 			/*
 			 * A recovered request may already be back in loadQueue and registered
@@ -2163,6 +2333,7 @@ export class ChunkStreamingController {
 	public onChunkDisposed(chunk: Chunk): void {
 		this.loadedRefreshQueueSet.delete(chunk.numericId);
 		this._loadRequestsInFlight.delete(chunk.numericId);
+		this._inFlightRequests.delete(chunk.numericId);
 		this._orphanCandidates.delete(chunk);
 	}
 	/**

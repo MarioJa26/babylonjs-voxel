@@ -9,6 +9,10 @@ import {
 } from "./DataStructures/BlockEncoding";
 import { packCoords } from "./DataStructures/ChunkCoords";
 import type { MeshData } from "./DataStructures/MeshData";
+import {
+	ChunkLifecycle,
+	notifyResidencyLoadComplete,
+} from "./Loading/ChunkLifecycle";
 import { LoadedChunkIndex } from "./Loading/LoadedChunkIndex";
 import { connectFacesMask } from "./Meshing/ChunkFaceMasks";
 import { removeChunkFromGroup } from "./Meshing/MergedMeshManager";
@@ -622,10 +626,17 @@ export class Chunk {
 		this.blockRevision++;
 		this.generation = ++Chunk._generationCounter;
 
-		this.isLoaded = true;
 		Chunk.loadedChunks.add(this);
 		Chunk.loadedChunkIndex.register(this);
-		this.isTerrainScheduled = false;
+		// Route the Loading → Loaded transition through the owner when the
+		// chunk is completable (storage path: in-flight; generation path: the
+		// worker context keeps it Loading). The fallback repeats the legacy
+		// direct writes verbatim — no host in unit tests, or a stale result
+		// for a culled/recycled chunk whose data install must not be dropped.
+		if (!notifyResidencyLoadComplete(this)) {
+			this.isLoaded = true;
+			this.isTerrainScheduled = false;
+		}
 
 		// Storage hydration (VoxelSerializer.deserialize) hands us
 		// _block_array / _palette / light_array as views into a regular
@@ -716,10 +727,14 @@ export class Chunk {
 		this.updateLightView();
 		this.blockRevision++;
 		this.generation = ++Chunk._generationCounter;
-		this.isLoaded = true;
 		Chunk.loadedChunks.add(this);
 		Chunk.loadedChunkIndex.register(this);
-		this.isTerrainScheduled = false;
+		// Same owner routing as loadFromStorage: Loading → LodOnly (the hook
+		// reads hasVoxelData, already false here) or the legacy writes.
+		if (!notifyResidencyLoadComplete(this)) {
+			this.isLoaded = true;
+			this.isTerrainScheduled = false;
+		}
 
 		/*
 		 * A chunk re-loaded at far LOD goes (isLoaded && hasVoxelData) ->
@@ -1326,7 +1341,12 @@ export class Chunk {
 			return;
 		}
 
-		this.isDirty = true;
+		// Route through the owner: markDirty owns the isDirty write and
+		// latches the rerun synchronously when a build is in flight
+		// (Building → Superseded). Previously the latch was only set later via
+		// the pool callback, so a Building chunk edited here — where the
+		// remeshQueued early-return below skips the callback — lost its rerun.
+		ChunkLifecycle.markDirty(this);
 
 		if (includeNeighbors) {
 			const refs = this.neighborRefs;
@@ -1344,7 +1364,11 @@ export class Chunk {
 		}
 
 		this.meshRevision++;
-		this.remeshQueued = true;
+		// queueRemesh owns the isDirty + remeshQueued writes. The pool
+		// callback below (bound with bumpRevision=false) only refreshes its
+		// own pending entry — it cannot double-bump because remeshQueued is
+		// already set, same coalescing contract as before.
+		ChunkLifecycle.queueRemesh(this);
 		Chunk.onRequestRemesh?.(this, priority);
 	}
 

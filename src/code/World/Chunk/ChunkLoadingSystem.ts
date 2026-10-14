@@ -141,11 +141,17 @@ const chunkHydration = new ChunkHydration({
 	}),
 });
 
-const streamingController = new ChunkStreamingController({
-	getLoadQueue: () => loadQueue,
-	getUnloadQueueSet: () => unloadQueueSet,
-	onQueueSnapshotChanged: refreshQueueDebugSnapshot,
-});
+const streamingController: ChunkStreamingController =
+	new ChunkStreamingController({
+		getLoadQueue: (): QueuedChunkRequest[] => loadQueue,
+		getUnloadQueueSet: (): Set<Chunk> => unloadQueueSet,
+
+		// Deferred closure: invoked only after processScheduler is constructed.
+		isInUnloadBatch: (chunk: Chunk): boolean =>
+			processScheduler.isChunkInUnloadBatch(chunk),
+
+		onQueueSnapshotChanged: refreshQueueDebugSnapshot,
+	});
 
 addChunkDisposeHook((chunk) => {
 	streamingController.onChunkDisposed(chunk);
@@ -219,40 +225,49 @@ Chunk.onBlockModified = (chunk) => {
 	queueBlockEditSave(chunk);
 };
 
-const processScheduler = new ChunkProcessScheduler({
-	getLoadQueue: () => loadQueue,
-	getUnloadQueueSet: () => unloadQueueSet,
+const processScheduler: ChunkProcessScheduler = new ChunkProcessScheduler({
+	getLoadQueue: (): QueuedChunkRequest[] => loadQueue,
+	getUnloadQueueSet: (): Set<Chunk> => unloadQueueSet,
 
-	getLoadBatchSize: () => getLoadBatchSize(),
-	getUnloadBatchSize: () => getUnloadBatchSize(),
-	getProcessFrameBudgetMs: () => getProcessFrameBudgetMs(),
+	getLoadBatchSize: (): number => getLoadBatchSize(),
+	getUnloadBatchSize: (): number => getUnloadBatchSize(),
+	getProcessFrameBudgetMs: (): number => getProcessFrameBudgetMs(),
 
-	getDesiredState: (chunkId) => streamingController.getDesiredState(chunkId),
+	getDesiredState: (
+		chunkId,
+	): ReturnType<ChunkStreamingController["getDesiredState"]> =>
+		streamingController.getDesiredState(chunkId),
 
-	unloadChunkBoundEntitiesForChunk: (chunk) =>
+	unloadChunkBoundEntitiesForChunk: (chunk): Promise<void> =>
 		chunkEntityRegistry.unloadEntitiesForChunk(chunk),
 
 	applyLoadedChunkFromSavedData,
 	applyHydratedChunkFromSavedData,
 
-	scheduleTerrainGenerationBatch: (chunks) =>
-		ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(chunks),
+	scheduleTerrainGenerationBatch: (chunks): void => {
+		ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(chunks);
+	},
 
 	updateSliceDebugStats,
 	finalizeProcessState,
 
 	onQueueSnapshotChanged: refreshQueueDebugSnapshot,
 
-	onLoadRequestsDequeued: (requests) =>
-		streamingController.onLoadRequestsDequeued(requests),
-	onLoadRequestsRecovered: (requests) =>
-		streamingController.onLoadRequestsRecovered(requests),
-	onLoadRequestsAbandoned: (requests) =>
-		streamingController.onLoadRequestsAbandoned(requests),
-	recycleQueuedRequests: (requests) =>
-		streamingController.recycleQueuedRequests(requests),
-	markPotentialOrphan: (chunk) =>
-		streamingController.markPotentialOrphan(chunk),
+	onLoadRequestsDequeued: (requests): void => {
+		streamingController.onLoadRequestsDequeued(requests);
+	},
+	onLoadRequestsRecovered: (requests): void => {
+		streamingController.onLoadRequestsRecovered(requests);
+	},
+	onLoadRequestsAbandoned: (requests): void => {
+		streamingController.onLoadRequestsAbandoned(requests);
+	},
+	recycleQueuedRequests: (requests): void => {
+		streamingController.recycleQueuedRequests(requests);
+	},
+	markPotentialOrphan: (chunk): void => {
+		streamingController.markPotentialOrphan(chunk);
+	},
 });
 
 // After each processQueues continuation slice, pump remote generation.
@@ -415,47 +430,64 @@ export function validateChunksAround(
 	horizontalRadius = SETTING_PARAMS.RENDER_DISTANCE,
 	verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 ): void {
-	const queuedIds = buildQueuedIdSet();
-
-	const missing: Array<{
+	type MissingChunkDiagnostic = {
 		chunkX: number;
 		chunkY: number;
 		chunkZ: number;
 		chunkId: bigint;
-		isLoaded: boolean;
-		isQueued: boolean;
-		isUnloading: boolean;
-		hasDesiredState: boolean;
-		/** False means the orphan registry would never have examined this chunk. */
+		isLoaded: false;
+		isQueued: false;
+		isUnloading: false;
+		hasDesiredState: true;
 		inOrphanRegistry: boolean;
-	}> = [];
+	};
 
-	/*
-	 * STALLFIX: chunks stuck in the loaded-but-never-hydrated shape (near LOD,
-	 * isLoaded, but no voxel data) were invisible to this validator because the
-	 * `chunk.isLoaded` check below skipped them — which is exactly the shape
-	 * produced by a lost hydration request, i.e. the "chunks stop appearing
-	 * after a while" symptom. Report them separately.
-	 */
-	const unHydrated: Array<{
+	type UnhydratedChunkDiagnostic = {
 		chunkX: number;
 		chunkY: number;
 		chunkZ: number;
 		chunkId: bigint;
 		lodLevel: number;
-		isQueued: boolean;
+		isQueued: false;
 		inOrphanRegistry: boolean;
-	}> = [];
+	};
 
-	/*
-	 * The production orphan sweep only walks `_orphanCandidates`, so this
-	 * validator is what proves that set is complete. Any genuinely orphaned
-	 * chunk with `inOrphanRegistry === false` is a code path that abandons a
-	 * request without calling markPotentialOrphan — a bug the sweep can no
-	 * longer see on its own.
-	 */
-	const untracked: Array<{ chunkX: number; chunkY: number; chunkZ: number }> =
-		[];
+	type UntrackedChunkDiagnostic = {
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+	};
+
+	const queuedIds = buildQueuedIdSet();
+
+	// Lazily allocated because a healthy streaming state produces no entries.
+	let missing: MissingChunkDiagnostic[] | undefined;
+	let unhydrated: UnhydratedChunkDiagnostic[] | undefined;
+	let untracked: UntrackedChunkDiagnostic[] | undefined;
+
+	const addMissing = (entry: MissingChunkDiagnostic): void => {
+		if (missing) {
+			missing.push(entry);
+		} else {
+			missing = [entry];
+		}
+	};
+
+	const addUnhydrated = (entry: UnhydratedChunkDiagnostic): void => {
+		if (unhydrated) {
+			unhydrated.push(entry);
+		} else {
+			unhydrated = [entry];
+		}
+	};
+
+	const addUntracked = (entry: UntrackedChunkDiagnostic): void => {
+		if (untracked) {
+			untracked.push(entry);
+		} else {
+			untracked = [entry];
+		}
+	};
 
 	const minChunkY = SETTING_PARAMS.MIN_CHUNK_Y;
 	const maxChunkY = minChunkY + SETTING_PARAMS.MAX_CHUNK_HEIGHT - 1;
@@ -472,38 +504,41 @@ export function validateChunksAround(
 			for (let z = startZ; z <= endZ; z++) {
 				const chunk = getChunk(x, y, z);
 
-				// A non-existent chunk cannot have desired state because
-				// desired state is keyed by chunk.numericId from existing chunks.
-				if (!chunk) {
+				if (
+					!chunk ||
+					unloadQueueSet.has(chunk) ||
+					streamingController.getDesiredState(chunk.numericId) === undefined
+				) {
 					continue;
 				}
 
-				const hasDesiredState =
-					streamingController.getDesiredState(chunk.numericId) !== undefined;
-
-				if (!hasDesiredState || unloadQueueSet.has(chunk)) {
-					continue;
-				}
-
-				const chunkId = chunk.id;
-				const isQueued = queuedIds.has(chunkId);
+				const isQueued = queuedIds.has(chunk.id);
 
 				if (chunk.isLoaded) {
-					if (chunk.lodLevel <= 1 && !chunk.hasVoxelData && !isQueued) {
-						const tracked = streamingController.isOrphanCandidate(chunk);
-						if (!tracked) {
-							untracked.push({ chunkX: x, chunkY: y, chunkZ: z });
-						}
-						unHydrated.push({
+					if (chunk.lodLevel > 1 || chunk.hasVoxelData || isQueued) {
+						continue;
+					}
+
+					const isTracked = streamingController.isOrphanCandidate(chunk);
+
+					addUnhydrated({
+						chunkX: x,
+						chunkY: y,
+						chunkZ: z,
+						chunkId: chunk.id,
+						lodLevel: chunk.lodLevel,
+						isQueued: false,
+						inOrphanRegistry: isTracked,
+					});
+
+					if (!isTracked) {
+						addUntracked({
 							chunkX: x,
 							chunkY: y,
 							chunkZ: z,
-							chunkId,
-							lodLevel: chunk.lodLevel,
-							isQueued,
-							inOrphanRegistry: tracked,
 						});
 					}
+
 					continue;
 				}
 
@@ -511,44 +546,50 @@ export function validateChunksAround(
 					continue;
 				}
 
-				const trackedMissing = streamingController.isOrphanCandidate(chunk);
-				if (!trackedMissing) {
-					untracked.push({ chunkX: x, chunkY: y, chunkZ: z });
-				}
+				const isTracked = streamingController.isOrphanCandidate(chunk);
 
-				missing.push({
+				addMissing({
 					chunkX: x,
 					chunkY: y,
 					chunkZ: z,
-					chunkId,
+					chunkId: chunk.id,
 					isLoaded: false,
 					isQueued: false,
 					isUnloading: false,
 					hasDesiredState: true,
-					inOrphanRegistry: trackedMissing,
+					inOrphanRegistry: isTracked,
 				});
+
+				if (!isTracked) {
+					addUntracked({
+						chunkX: x,
+						chunkY: y,
+						chunkZ: z,
+					});
+				}
 			}
 		}
 	}
 
-	if (missing.length > 0) {
+	if (missing) {
 		console.warn("[ChunkLoadingSystem] Missing desired chunks:", missing);
 	}
 
-	if (unHydrated.length > 0) {
+	if (unhydrated) {
 		console.warn(
-			"[ChunkLoadingSystem] Stuck un-hydrated chunks (loaded at near LOD with no voxel data and no pending load request):",
-			unHydrated,
+			"[ChunkLoadingSystem] Stuck un-hydrated chunks " +
+				"(loaded at near LOD with no voxel data and no pending load request):",
+			unhydrated,
 		);
 	}
 
-	if (untracked.length > 0) {
-		// Loud on purpose. The production sweep cannot see these chunks, so this
-		// is the only report that a request-abandonment path forgot to register.
+	if (untracked) {
 		console.error(
-			`[ChunkLoadingSystem] ${untracked.length} orphaned chunk(s) MISSING from the orphan candidate registry. ` +
-				"The sweep only inspects registered candidates, so these will never be rescued. " +
-				"Find the code path that drops the request without calling markPotentialOrphan():",
+			`[ChunkLoadingSystem] ${untracked.length} orphaned chunk(s) ` +
+				"MISSING from the orphan candidate registry. " +
+				"The sweep only inspects registered candidates, so these will " +
+				"never be rescued. Find the code path that drops the request " +
+				"without calling markPotentialOrphan():",
 			untracked,
 		);
 	}
@@ -726,35 +767,18 @@ function scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
 
 	pool.scheduleRemesh(chunk, true);
 
-	let neighbor = chunk.getNeighbor(-1, 0, 0);
-	if (neighbor !== undefined) {
-		pool.scheduleRemesh(neighbor, true);
-	}
+	const scheduleNeighbor = (neighbor: Chunk | undefined): void => {
+		if (neighbor) {
+			pool.scheduleRemesh(neighbor, true);
+		}
+	};
 
-	neighbor = chunk.getNeighbor(1, 0, 0);
-	if (neighbor !== undefined) {
-		pool.scheduleRemesh(neighbor, true);
-	}
-
-	neighbor = chunk.getNeighbor(0, -1, 0);
-	if (neighbor !== undefined) {
-		pool.scheduleRemesh(neighbor, true);
-	}
-
-	neighbor = chunk.getNeighbor(0, 1, 0);
-	if (neighbor !== undefined) {
-		pool.scheduleRemesh(neighbor, true);
-	}
-
-	neighbor = chunk.getNeighbor(0, 0, -1);
-	if (neighbor !== undefined) {
-		pool.scheduleRemesh(neighbor, true);
-	}
-
-	neighbor = chunk.getNeighbor(0, 0, 1);
-	if (neighbor !== undefined) {
-		pool.scheduleRemesh(neighbor, true);
-	}
+	scheduleNeighbor(chunk.getNeighbor(-1, 0, 0));
+	scheduleNeighbor(chunk.getNeighbor(1, 0, 0));
+	scheduleNeighbor(chunk.getNeighbor(0, -1, 0));
+	scheduleNeighbor(chunk.getNeighbor(0, 1, 0));
+	scheduleNeighbor(chunk.getNeighbor(0, 0, -1));
+	scheduleNeighbor(chunk.getNeighbor(0, 0, 1));
 }
 
 export async function updateChunksAround(
