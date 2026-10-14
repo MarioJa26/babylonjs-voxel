@@ -314,9 +314,13 @@ export function deserializeVoxelDataShared(data: Uint8Array): SavedChunkData {
 	const flags = data[0];
 	const isUniform = (flags & FLAG_IS_UNIFORM) !== 0;
 	const compressed = (flags & FLAG_COMPRESSED) !== 0;
+	const sourceBuffer = data.buffer;
+	const sourceBaseOffset = data.byteOffset;
+	const sourceIsShared =
+		typeof SharedArrayBuffer !== "undefined" &&
+		sourceBuffer instanceof SharedArrayBuffer;
 
 	const version = readU32LE(data, 2);
-
 	let offset = HEADER_SIZE;
 
 	let uniformBlockId: number | undefined;
@@ -332,32 +336,23 @@ export function deserializeVoxelDataShared(data: Uint8Array): SavedChunkData {
 		const byteLength = readU32LE(data, offset);
 		offset += 4;
 
-		// Zero-copy fast path when blob is already SAB-backed (e.g. pooled cache)
-		if (
-			data.buffer instanceof SharedArrayBuffer &&
-			(data.byteOffset + offset) % 2 === 0
-		) {
-			if (!compressed && byteLength === UINT16_BLOCK_BYTE_LENGTH) {
-				blocks = new Uint16Array(
-					data.buffer,
-					data.byteOffset + offset,
-					byteLength >>> 1,
-				);
-			} else {
-				blocks = new Uint8Array(
-					data.buffer,
-					data.byteOffset + offset,
-					byteLength,
-				);
-			}
+		const absoluteOffset = sourceBaseOffset + offset;
+		const usesUint16Blocks =
+			!compressed && byteLength === UINT16_BLOCK_BYTE_LENGTH;
+
+		if (sourceIsShared && (!usesUint16Blocks || (absoluteOffset & 1) === 0)) {
+			// Uint8Array has no alignment requirement. Uint16Array requires
+			// a two-byte-aligned absolute offset.
+			blocks = usesUint16Blocks
+				? new Uint16Array(sourceBuffer, absoluteOffset, byteLength >>> 1)
+				: new Uint8Array(sourceBuffer, absoluteOffset, byteLength);
 		} else {
 			const sharedBuffer = new SharedArrayBuffer(byteLength);
 			const sharedBytes = new Uint8Array(sharedBuffer);
+
 			copyBytes(data, offset, sharedBytes);
-			blocks =
-				!compressed && byteLength === UINT16_BLOCK_BYTE_LENGTH
-					? new Uint16Array(sharedBuffer)
-					: sharedBytes;
+
+			blocks = usesUint16Blocks ? new Uint16Array(sharedBuffer) : sharedBytes;
 		}
 
 		offset += byteLength;
@@ -370,16 +365,17 @@ export function deserializeVoxelDataShared(data: Uint8Array): SavedChunkData {
 		offset += 4;
 
 		const byteLength = count * Uint16Array.BYTES_PER_ELEMENT;
-		if (
-			data.buffer instanceof SharedArrayBuffer &&
-			(data.byteOffset + offset) % 2 === 0
-		) {
-			palette = new Uint16Array(data.buffer, data.byteOffset + offset, count);
+		const absoluteOffset = sourceBaseOffset + offset;
+
+		if (sourceIsShared && (absoluteOffset & 1) === 0) {
+			palette = new Uint16Array(sourceBuffer, absoluteOffset, count);
 		} else {
 			const sharedBuffer = new SharedArrayBuffer(byteLength);
+
 			copyBytes(data, offset, new Uint8Array(sharedBuffer));
-			palette = new Uint16Array(sharedBuffer, 0, count);
+			palette = new Uint16Array(sharedBuffer);
 		}
+
 		offset += byteLength;
 	}
 
@@ -389,14 +385,15 @@ export function deserializeVoxelDataShared(data: Uint8Array): SavedChunkData {
 		const byteLength = readU32LE(data, offset);
 		offset += 4;
 
-		if (data.buffer instanceof SharedArrayBuffer) {
+		if (sourceIsShared) {
 			lightArray = new Uint8Array(
-				data.buffer,
-				data.byteOffset + offset,
+				sourceBuffer,
+				sourceBaseOffset + offset,
 				byteLength,
 			);
 		} else {
 			const sharedBuffer = new SharedArrayBuffer(byteLength);
+
 			lightArray = new Uint8Array(sharedBuffer);
 			copyBytes(data, offset, lightArray);
 		}

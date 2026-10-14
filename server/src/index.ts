@@ -2,10 +2,10 @@
  * b102 Multiplayer Server
  *
  * Colyseus + ws-transport for shared voxel worlds, plus a small HTTP API
- * (express) used by the client's multiplayer server list to show a live
- * MOTD, player count, and client-measured ping without joining a room.
+ * used by the client's multiplayer server list to retrieve the live MOTD,
+ * player count, version, and client-measured ping without joining a room.
  *
- * Run with: npm run dev (tsx watch)
+ * Run with: npm run dev
  */
 
 import { WebSocketTransport } from "@colyseus/ws-transport";
@@ -15,11 +15,20 @@ import { getServerConfig, loadServerConfig } from "./config/ServerConfig.ts";
 import { getOnlinePlayers, VoxelRoom } from "./rooms/VoxelRoom.ts";
 
 const STATUS_ROUTE = "/api/status";
-const SHUTDOWN_SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
+const SHUTDOWN_SIGNALS: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
 
-// Load server.properties once at startup.
+const WS_MAX_PAYLOAD = 64 * 1024;
+
+// Load server.properties once during startup.
 const config = loadServerConfig();
-const PORT = Number(process.env.PORT) || config.serverPort;
+
+const environmentPort = Number(process.env.PORT);
+const PORT =
+	Number.isInteger(environmentPort) &&
+	environmentPort > 0 &&
+	environmentPort <= 65_535
+		? environmentPort
+		: config.serverPort;
 
 function setCors(res: express.Response): void {
 	res.setHeader("Access-Control-Allow-Origin", "*");
@@ -39,26 +48,29 @@ function handleStatus(_req: express.Request, res: express.Response): void {
 	setCors(res);
 	res.setHeader("Cache-Control", "no-store");
 
-	const cfg = getServerConfig();
+	const currentConfig = getServerConfig();
 
 	res.json({
-		name: cfg.serverName,
-		motd: cfg.motd,
-		version: cfg.version,
-		maxPlayers: cfg.maxPlayers,
+		name: currentConfig.serverName,
+		motd: currentConfig.motd,
+		version: currentConfig.version,
+		maxPlayers: currentConfig.maxPlayers,
 		players: getOnlinePlayers(),
 	});
 }
 
-// Incoming-frame cap. ws-transport's default is only 4 KB, which any avatar
-// skin upload (MAX_SKIN_BYTES = 16 KB) exceeds and gets the socket killed
-// with "Max payload size exceeded". 64 KB covers skins with headroom while
-// still bounding per-frame abuse; outgoing chunk batches are unaffected
-// (maxPayload only limits what the server RECEIVES).
-const WS_MAX_PAYLOAD = 64 * 1024;
-
 const gameServer = new Server({
-	transport: new WebSocketTransport({ maxPayload: WS_MAX_PAYLOAD }),
+	/*
+	 * ws-transport defaults to a 4 KB incoming-frame limit. Avatar skin
+	 * uploads can reach 16 KB, so use a bounded 64 KB limit.
+	 *
+	 * maxPayload applies only to frames received by the server. It does not
+	 * constrain outgoing chunk batches.
+	 */
+	transport: new WebSocketTransport({
+		maxPayload: WS_MAX_PAYLOAD,
+	}),
+
 	express: (app) => {
 		app.options(STATUS_ROUTE, handleStatusOptions);
 		app.get(STATUS_ROUTE, handleStatus);
@@ -71,17 +83,17 @@ let isShuttingDown = false;
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
 	if (isShuttingDown) return;
-	isShuttingDown = true;
 
+	isShuttingDown = true;
 	console.log(`\n[b102-server] Received ${signal}. Shutting down...`);
 
 	try {
 		await gameServer.gracefullyShutdown();
 		console.log("[b102-server] Shutdown complete");
-		process.exit(0);
-	} catch (err) {
-		console.error("[b102-server] Shutdown failed:", err);
-		process.exit(1);
+		process.exitCode = 0;
+	} catch (error) {
+		console.error("[b102-server] Shutdown failed:", error);
+		process.exitCode = 1;
 	}
 }
 
@@ -91,15 +103,19 @@ for (const signal of SHUTDOWN_SIGNALS) {
 	});
 }
 
-gameServer
-	.listen(PORT)
-	.then(() => {
-		const statusUrl = `http://localhost:${PORT}${STATUS_ROUTE}`;
+async function startServer(): Promise<void> {
+	try {
+		await gameServer.listen(PORT);
 
-		console.log(`[b102-server] Listening on ws://localhost:${PORT}`);
+		const host = "localhost";
+		const statusUrl = `http://${host}:${PORT}${STATUS_ROUTE}`;
+
+		console.log(`[b102-server] Listening on ws://${host}:${PORT}`);
 		console.log(`[b102-server] Status API: ${statusUrl}`);
-	})
-	.catch((err) => {
-		console.error("[b102-server] Failed to start:", err);
-		process.exit(1);
-	});
+	} catch (error) {
+		console.error("[b102-server] Failed to start:", error);
+		process.exitCode = 1;
+	}
+}
+
+void startServer();

@@ -123,7 +123,6 @@ const MIN_INSTANCE_DATA_ELEMENTS = INSTANCE_FLOATS;
 const MAX_INSTANCE_DATA_ELEMENTS = 1 << 23;
 
 const MAX_FREE_INTERVAL_POOL_SIZE = 4096;
-const INSTANCE_SHRINK_RATIO = 4;
 
 interface FreeInterval {
 	base: number;

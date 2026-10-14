@@ -252,6 +252,11 @@ type BlockShapeMapResult = {
 	ids: Set<number>;
 };
 
+type VirtualShapeIndex = {
+	offset: number;
+	shapeIndex: number;
+};
+
 const loadBlockShapeMap = (
 	shapes: readonly ShapeDefinition[],
 ): BlockShapeMapResult => {
@@ -263,7 +268,6 @@ const loadBlockShapeMap = (
 
 	for (let i = 0; i < shapes.length; i++) {
 		const name = shapes[i].name;
-
 		shapeIndexByName.set(name, i);
 
 		if (name === "cube") {
@@ -272,6 +276,20 @@ const loadBlockShapeMap = (
 	}
 
 	map.fill(cubeIndex);
+
+	/*
+	 * Resolve these once rather than performing Map.get for every cube block
+	 * and every virtual shape.
+	 */
+	const virtualShapeIndices: VirtualShapeIndex[] = [];
+
+	for (let offset = 0; offset < VIRTUAL_SHAPES.length; offset++) {
+		const shapeIndex = shapeIndexByName.get(VIRTUAL_SHAPES[offset]);
+
+		if (shapeIndex !== undefined) {
+			virtualShapeIndices.push({ offset, shapeIndex });
+		}
+	}
 
 	try {
 		const data: unknown = blocksRaw;
@@ -306,43 +324,41 @@ const loadBlockShapeMap = (
 				continue;
 			}
 
-			// Preserve registration behavior for every finite resolved ID.
+			// Preserve registration behavior for all finite resolved IDs.
 			ids.add(id);
 
-			// Typed-array indices must be non-negative integers in range.
-			if (Number.isInteger(id) && id >= 0 && id < BLOCK_ID_CAPACITY) {
+			const isMappableId =
+				Number.isInteger(id) && id >= 0 && id < BLOCK_ID_CAPACITY;
+
+			if (isMappableId) {
 				map[id] = shapeIndex;
 			}
 
-			if (shapeName !== "cube") {
-				continue;
-			}
-
-			// Blocks above the cap stay cubes: their virtual ids would land in the
-			// tool item range. See MAX_SHAPE_SOURCE_ID.
-			if (id > MAX_SHAPE_SOURCE_ID) {
+			/*
+			 * Virtual variants are generated only from valid positive integer
+			 * source IDs. This also prevents fractional or negative virtual IDs
+			 * from being added to the registration set.
+			 */
+			if (
+				shapeIndex !== cubeIndex ||
+				!Number.isInteger(id) ||
+				id < 1 ||
+				id > MAX_SHAPE_SOURCE_ID
+			) {
 				continue;
 			}
 
 			const virtualBase =
 				VIRTUAL_BLOCK_ID_START + (id - 1) * VIRTUAL_SHAPES.length;
 
-			for (
-				let shapeOffset = 0;
-				shapeOffset < VIRTUAL_SHAPES.length;
-				shapeOffset++
-			) {
-				const targetIndex = shapeIndexByName.get(VIRTUAL_SHAPES[shapeOffset]);
+			for (let j = 0; j < virtualShapeIndices.length; j++) {
+				const virtualShape = virtualShapeIndices[j];
+				const virtualId = virtualBase + virtualShape.offset;
 
-				if (targetIndex === undefined) {
-					continue;
-				}
-
-				const virtualId = virtualBase + shapeOffset;
 				ids.add(virtualId);
 
 				if (virtualId >= 0 && virtualId < BLOCK_ID_CAPACITY) {
-					map[virtualId] = targetIndex;
+					map[virtualId] = virtualShape.shapeIndex;
 				}
 			}
 		}
@@ -434,9 +450,10 @@ export const getShapeForBlockId = (id: number): ShapeDefinition => {
 		return FALLBACK_CUBE;
 	}
 
-	const isValidIndex = id >= 0 && id < shapeByBlockId.length;
-
-	const shapeIndex = isValidIndex ? shapeByBlockId[id] : _cubeShapeIndex;
+	const shapeIndex =
+		Number.isInteger(id) && id >= 0 && id < shapeByBlockId.length
+			? shapeByBlockId[id]
+			: _cubeShapeIndex;
 
 	return (
 		definitions[shapeIndex] ?? definitions[_cubeShapeIndex] ?? FALLBACK_CUBE
@@ -449,6 +466,8 @@ export function isCrossBlockId(blockId: number): boolean {
 	return (
 		_crossShapeIndex >= 0 &&
 		shapeByBlockId !== null &&
+		blockId >= 0 &&
+		blockId < shapeByBlockId.length &&
 		shapeByBlockId[blockId] === _crossShapeIndex
 	);
 }
@@ -459,6 +478,8 @@ export function isCrossDiagonalBlockId(blockId: number): boolean {
 	return (
 		_crossDiagonalShapeIndex >= 0 &&
 		shapeByBlockId !== null &&
+		blockId >= 0 &&
+		blockId < shapeByBlockId.length &&
 		shapeByBlockId[blockId] === _crossDiagonalShapeIndex
 	);
 }
