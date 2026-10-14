@@ -1,14 +1,11 @@
 // ---------------------------------------------------------------------------
-// ChunkEmptiness: mesh-skippability predicates (extracted from
-// ChunkWorkerPool).
+// ChunkEmptiness: mesh-skippability predicates.
 //
-// A uniform-air chunk has no mesh. A chunk of one opaque cube only emits
-// faces at its -X/-Y/-Z boundaries (the +neighbors emit their own slice -1,
-// interior pairs are opaque-opaque) — when those three negative neighbors
-// are also uniformly opaque cubes, the mesh is provably empty and the worker
-// dispatch can be skipped.
+// Uniform air produces no mesh. A uniformly opaque full-cube chunk can also
+// skip meshing when its three negative-axis neighbors are uniformly opaque,
+// because those neighbors close every boundary face owned by this chunk.
 // ---------------------------------------------------------------------------
-import { getChunk, type Chunk } from "../Chunk";
+
 import {
 	FLAG_GREEDY,
 	FLAG_PARTIAL,
@@ -17,45 +14,71 @@ import {
 	getCachedFlagsAndId,
 	getFlagsFromCombined,
 } from "../../MeshPipeline/core/BlockInfoCache";
+import { type Chunk, getChunk } from "../Chunk";
+
+const REQUIRED_OPAQUE_CUBE_FLAGS = FLAG_SOLID | FLAG_GREEDY;
+const DISALLOWED_OPAQUE_CUBE_FLAGS = FLAG_TRANSPARENT | FLAG_PARTIAL;
 
 export function isCompletelyEmptyChunk(chunk: Chunk): boolean {
 	return chunk.isUniform && chunk.uniformBlockId === 0;
 }
 
 /**
- * The engine's "opaque" classification, identical to the mesher's:
- * solid + greedy-participating, neither transparent nor partial-shape.
- * These are full cubes that close every face, so a chunk made entirely
- * of one such block emits no custom geometry either.
+ * Returns whether the packed block is classified by the mesher as an opaque,
+ * greedy full cube with no transparent or partial-shape geometry.
  */
 export function isOpaqueCubePacked(packed: number): boolean {
 	const flags = getFlagsFromCombined(getCachedFlagsAndId(packed));
+
 	return (
-		(flags & (FLAG_SOLID | FLAG_GREEDY)) === (FLAG_SOLID | FLAG_GREEDY) &&
-		(flags & (FLAG_TRANSPARENT | FLAG_PARTIAL)) === 0
+		(flags & REQUIRED_OPAQUE_CUBE_FLAGS) === REQUIRED_OPAQUE_CUBE_FLAGS &&
+		(flags & DISALLOWED_OPAQUE_CUBE_FLAGS) === 0
 	);
 }
 
+/**
+ * Returns whether the specified chunk exists, has usable voxel data, and is
+ * uniformly filled with an opaque full-cube block.
+ */
 export function isUniformOpaqueCubeNeighbor(
 	cx: number,
 	cy: number,
 	cz: number,
 ): boolean {
 	const neighbor = getChunk(cx, cy, cz);
-	if (!neighbor?.isLoaded || !neighbor.hasVoxelData) return false;
-	return (
-		neighbor.isUniform &&
-		neighbor.uniformBlockId !== 0 &&
-		isOpaqueCubePacked(neighbor.uniformBlockId)
-	);
+
+	if (
+		neighbor === undefined ||
+		!neighbor.isLoaded ||
+		!neighbor.hasVoxelData ||
+		!neighbor.isUniform
+	) {
+		return false;
+	}
+
+	return isOpaqueCubePacked(neighbor.uniformBlockId);
 }
 
+/**
+ * Returns whether meshing a uniformly solid chunk can be skipped because all
+ * faces owned by the chunk are fully occluded.
+ */
 export function isUniformSolidMeshSkippable(chunk: Chunk): boolean {
-	if (!chunk.isUniform || chunk.uniformBlockId === 0) return false;
-	if (!isOpaqueCubePacked(chunk.uniformBlockId)) return false;
+	if (!chunk.isUniform) {
+		return false;
+	}
+
+	const blockId = chunk.uniformBlockId;
+
+	if (!isOpaqueCubePacked(blockId)) {
+		return false;
+	}
+
+	const { chunkX, chunkY, chunkZ } = chunk;
+
 	return (
-		isUniformOpaqueCubeNeighbor(chunk.chunkX - 1, chunk.chunkY, chunk.chunkZ) &&
-		isUniformOpaqueCubeNeighbor(chunk.chunkX, chunk.chunkY - 1, chunk.chunkZ) &&
-		isUniformOpaqueCubeNeighbor(chunk.chunkX, chunk.chunkY, chunk.chunkZ - 1)
+		isUniformOpaqueCubeNeighbor(chunkX - 1, chunkY, chunkZ) &&
+		isUniformOpaqueCubeNeighbor(chunkX, chunkY - 1, chunkZ) &&
+		isUniformOpaqueCubeNeighbor(chunkX, chunkY, chunkZ - 1)
 	);
 }
