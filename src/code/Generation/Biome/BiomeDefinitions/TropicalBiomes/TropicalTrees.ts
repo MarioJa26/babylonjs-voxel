@@ -3,36 +3,60 @@ import type { PlaceBlockFn } from "@/code/Generation/SurfaceGenerator";
 import type { TreeDefinition } from "../../BiomeTypes";
 import { DIAG_X, DIAG_Z, generateSlinkyTree } from "../../TreeDefinition";
 
+const POSITION_HASH_X = 374761393;
+const POSITION_HASH_Z = 678446653;
+
+// ---------------------------------------------------------------------------
+// JUNGLE_TREE
+// ---------------------------------------------------------------------------
+
 export const JUNGLE_TREE: TreeDefinition = {
 	woodId: 33,
 	leavesId: 93,
 	baseHeight: 20,
 	heightVariance: 20,
+
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
 		const heightHash = getPRNGBySeed(
-			worldX * 374761393 + worldZ * 678446653,
+			worldX * POSITION_HASH_X + worldZ * POSITION_HASH_Z,
 			seedAsInt,
 		);
+
 		const height =
 			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
+
 		const woodId = this.woodId;
 		const leavesId = this.leavesId;
+		const trunkTopY = worldY + height;
 
-		for (let i = 0; i < height; i++) {
-			placeBlock(worldX, worldY + i, worldZ, woodId, true);
+		for (let y = worldY; y < trunkTopY; y++) {
+			placeBlock(worldX, y, worldZ, woodId, true);
 		}
 
 		const canopyRadius = 4;
-		for (let conopie = 1; conopie <= 2; conopie++) {
-			const leafYStart = worldY + height - 5 * conopie - (conopie - 1) * 3;
-			for (let y = leafYStart; y < leafYStart + 8; y++) {
-				const currentRadius = canopyRadius - Math.floor((y - leafYStart) / 2);
-				const radiusSqP1 = currentRadius * currentRadius + 1;
-				for (let x = -currentRadius; x <= currentRadius; x++) {
-					const x2 = x * x;
-					for (let z = -currentRadius; z <= currentRadius; z++) {
-						if (x2 + z * z <= radiusSqP1) {
-							placeBlock(worldX + x, y, worldZ + z, leavesId, false);
+
+		for (let canopy = 1; canopy <= 2; canopy++) {
+			const leafYStart = trunkTopY - canopy * 5 - (canopy - 1) * 3;
+			const leafYEnd = leafYStart + 8;
+
+			for (let y = leafYStart; y < leafYEnd; y++) {
+				const layer = y - leafYStart;
+				const radius = canopyRadius - (layer >> 1);
+				const radiusLimit = radius * radius + 1;
+
+				for (let xOffset = -radius; xOffset <= radius; xOffset++) {
+					const xSquared = xOffset * xOffset;
+					const remaining = radiusLimit - xSquared;
+
+					for (let zOffset = -radius; zOffset <= radius; zOffset++) {
+						if (zOffset * zOffset <= remaining) {
+							placeBlock(
+								worldX + xOffset,
+								y,
+								worldZ + zOffset,
+								leavesId,
+								false,
+							);
 						}
 					}
 				}
@@ -42,14 +66,16 @@ export const JUNGLE_TREE: TreeDefinition = {
 };
 
 // ---------------------------------------------------------------------------
-// MANGROVE_TREE — Mangrove biome
-// Uses generateSlinkyTree with prop roots that spread wide into the water
+// MANGROVE_TREE
+// Uses generateSlinkyTree with prop roots that spread wide into the water.
 // ---------------------------------------------------------------------------
+
 export const MANGROVE_TREE: TreeDefinition = {
-	woodId: 95, // mangrove wood block
-	leavesId: 34, // jungle leaves — replace with mangrove leaves
+	woodId: 95,
+	leavesId: 34,
 	baseHeight: 7,
 	heightVariance: 3,
+
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
 		generateSlinkyTree(
 			worldX,
@@ -66,100 +92,97 @@ export const MANGROVE_TREE: TreeDefinition = {
 };
 
 // ---------------------------------------------------------------------------
-// PALM_TREE — Tropical Island, Oasis
-// Tall curved trunk with no branches and a single top frond burst
+// PALM_TREE
+// Tall curved trunk with no branches and a single top frond burst.
 // ---------------------------------------------------------------------------
 
 export const PALM_TREE: TreeDefinition = {
-	woodId: 85, // palm wood
-	leavesId: 86, // palm leaves
+	woodId: 85,
+	leavesId: 86,
 	baseHeight: 9,
 	heightVariance: 4,
 
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
 		const hash =
-			getPRNGBySeed(worldX * 374761393 + worldZ * 678446653, seedAsInt) >>> 0;
+			getPRNGBySeed(
+				worldX * POSITION_HASH_X + worldZ * POSITION_HASH_Z,
+				seedAsInt,
+			) >>> 0;
 
 		const height = this.baseHeight + (hash % (this.heightVariance + 1));
 
 		const woodId = this.woodId;
 		const leavesId = this.leavesId;
 
-		const leanDir = (hash >>> 3) & 7;
+		const leanDirection = (hash >>> 3) & 7;
 		const maxLean = 2 + ((hash >>> 6) & 1);
+		const directionX = DIAG_X[leanDirection];
+		const directionZ = DIAG_Z[leanDirection];
+		const heightMinusOne = height - 1;
 
-		const dirX = DIAG_X[leanDir];
-		const dirZ = DIAG_Z[leanDir];
+		let trunkX = worldX;
+		let trunkZ = worldZ;
 
-		let tx = worldX;
-		let tz = worldZ;
+		let previousX = worldX;
+		let previousY = worldY;
+		let previousZ = worldZ;
 
-		let prevX = worldX;
-		let prevY = worldY;
-		let prevZ = worldZ;
-
-		placeBlock(prevX, prevY, prevZ, woodId, true);
+		placeBlock(previousX, previousY, previousZ, woodId, true);
 
 		for (let i = 1; i < height; i++) {
-			const t = i / (height - 1);
-			const leanAmount = Math.round(t * t * maxLean);
+			const progress = i / heightMinusOne;
+			const leanAmount = Math.round(progress * progress * maxLean);
 
-			const targetX = worldX + dirX * leanAmount;
-			const targetZ = worldZ + dirZ * leanAmount;
+			const targetX = worldX + directionX * leanAmount;
 			const targetY = worldY + i;
+			const targetZ = worldZ + directionZ * leanAmount;
 
-			if (tx < targetX) tx++;
-			else if (tx > targetX) tx--;
-
-			if (tz < targetZ) tz++;
-			else if (tz > targetZ) tz--;
+			trunkX += Math.sign(targetX - trunkX);
+			trunkZ += Math.sign(targetZ - trunkZ);
 
 			placeFaceConnected(
-				prevX,
-				prevY,
-				prevZ,
-				tx,
+				previousX,
+				previousY,
+				previousZ,
+				trunkX,
 				targetY,
-				tz,
+				trunkZ,
 				woodId,
 				true,
 				placeBlock,
 			);
 
-			prevX = tx;
-			prevY = targetY;
-			prevZ = tz;
+			previousX = trunkX;
+			previousY = targetY;
+			previousZ = trunkZ;
 		}
 
-		const crownX = prevX;
-		const crownY = prevY;
-		const crownZ = prevZ;
-
-		// Frond burst at the crown — 6–8 fronds radiating outward
+		const crownX = previousX;
+		const crownY = previousY;
+		const crownZ = previousZ;
 		const frondCount = 6 + ((hash >>> 9) % 3);
 
-		for (let f = 0; f < frondCount; f++) {
+		for (let frond = 0; frond < frondCount; frond++) {
 			const frondHash =
 				getPRNGBySeed(
-					worldX * 15731 + worldZ * 789221 + f * 1013,
+					worldX * 15731 + worldZ * 789221 + frond * 1013,
 					seedAsInt,
 				) >>> 0;
 
-			const frondDir = f & 7;
-			const frondLen = 3 + (frondHash & 1);
+			const frondDirection = frond & 7;
+			const frondLength = 3 + (frondHash & 1);
+			const frondDirectionX = DIAG_X[frondDirection];
+			const frondDirectionZ = DIAG_Z[frondDirection];
 
-			const frondDirX = DIAG_X[frondDir];
-			const frondDirZ = DIAG_Z[frondDir];
+			let frondX = crownX;
+			let frondY = crownY;
+			let frondZ = crownZ;
 
-			let prevFx = crownX;
-			let prevFy = crownY;
-			let prevFz = crownZ;
+			for (let step = 0; step < frondLength; step++) {
+				const nextX = frondX + frondDirectionX;
+				const nextZ = frondZ + frondDirectionZ;
 
-			for (let step = 0; step < frondLen; step++) {
-				const nextX = prevFx + frondDirX;
-				const nextZ = prevFz + frondDirZ;
-
-				let nextY = prevFy;
+				let nextY = frondY;
 
 				if (step === 0) {
 					nextY++;
@@ -168,9 +191,9 @@ export const PALM_TREE: TreeDefinition = {
 				}
 
 				placeFaceConnected(
-					prevFx,
-					prevFy,
-					prevFz,
+					frondX,
+					frondY,
+					frondZ,
 					nextX,
 					nextY,
 					nextZ,
@@ -179,9 +202,9 @@ export const PALM_TREE: TreeDefinition = {
 					placeBlock,
 				);
 
-				prevFx = nextX;
-				prevFy = nextY;
-				prevFz = nextZ;
+				frondX = nextX;
+				frondY = nextY;
+				frondZ = nextZ;
 			}
 		}
 
@@ -205,18 +228,22 @@ function placeFaceConnected(
 	let y = fromY;
 	let z = fromZ;
 
+	const yStep = Math.sign(toY - fromY);
+	const xStep = Math.sign(toX - fromX);
+	const zStep = Math.sign(toZ - fromZ);
+
 	while (y !== toY) {
-		y += y < toY ? 1 : -1;
+		y += yStep;
 		placeBlock(x, y, z, blockId, replace);
 	}
 
 	while (x !== toX) {
-		x += x < toX ? 1 : -1;
+		x += xStep;
 		placeBlock(x, y, z, blockId, replace);
 	}
 
 	while (z !== toZ) {
-		z += z < toZ ? 1 : -1;
+		z += zStep;
 		placeBlock(x, y, z, blockId, replace);
 	}
 }

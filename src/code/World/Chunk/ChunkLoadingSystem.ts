@@ -460,40 +460,18 @@ export function validateChunksAround(
 
 	const queuedIds = buildQueuedIdSet();
 
-	// Lazily allocated because a healthy streaming state produces no entries.
+	// Lazily allocate diagnostics because a healthy streaming state produces
+	// no entries.
 	let missing: MissingChunkDiagnostic[] | undefined;
 	let unhydrated: UnhydratedChunkDiagnostic[] | undefined;
 	let untracked: UntrackedChunkDiagnostic[] | undefined;
-
-	const addMissing = (entry: MissingChunkDiagnostic): void => {
-		if (missing) {
-			missing.push(entry);
-		} else {
-			missing = [entry];
-		}
-	};
-
-	const addUnhydrated = (entry: UnhydratedChunkDiagnostic): void => {
-		if (unhydrated) {
-			unhydrated.push(entry);
-		} else {
-			unhydrated = [entry];
-		}
-	};
-
-	const addUntracked = (entry: UntrackedChunkDiagnostic): void => {
-		if (untracked) {
-			untracked.push(entry);
-		} else {
-			untracked = [entry];
-		}
-	};
 
 	const minChunkY = SETTING_PARAMS.MIN_CHUNK_Y;
 	const maxChunkY = minChunkY + SETTING_PARAMS.MAX_CHUNK_HEIGHT - 1;
 
 	const startY = Math.max(minChunkY, centerChunkY - verticalRadius);
 	const endY = Math.min(maxChunkY, centerChunkY + verticalRadius);
+
 	const startX = centerChunkX - horizontalRadius;
 	const endX = centerChunkX + horizontalRadius;
 	const startZ = centerChunkZ - horizontalRadius;
@@ -502,11 +480,15 @@ export function validateChunksAround(
 	for (let y = startY; y <= endY; y++) {
 		for (let x = startX; x <= endX; x++) {
 			for (let z = startZ; z <= endZ; z++) {
-				const chunk = getChunk(x, y, z);
+				// This scan can inspect thousands of coordinates. Prefer the
+				// numeric-key path and avoid creating a BigInt key per cell.
+				const chunk = getChunkFast(x, y, z);
+
+				if (!chunk || unloadQueueSet.has(chunk)) {
+					continue;
+				}
 
 				if (
-					!chunk ||
-					unloadQueueSet.has(chunk) ||
 					streamingController.getDesiredState(chunk.numericId) === undefined
 				) {
 					continue;
@@ -521,7 +503,7 @@ export function validateChunksAround(
 
 					const isTracked = streamingController.isOrphanCandidate(chunk);
 
-					addUnhydrated({
+					(unhydrated ??= []).push({
 						chunkX: x,
 						chunkY: y,
 						chunkZ: z,
@@ -532,7 +514,7 @@ export function validateChunksAround(
 					});
 
 					if (!isTracked) {
-						addUntracked({
+						(untracked ??= []).push({
 							chunkX: x,
 							chunkY: y,
 							chunkZ: z,
@@ -548,7 +530,7 @@ export function validateChunksAround(
 
 				const isTracked = streamingController.isOrphanCandidate(chunk);
 
-				addMissing({
+				(missing ??= []).push({
 					chunkX: x,
 					chunkY: y,
 					chunkZ: z,
@@ -561,7 +543,7 @@ export function validateChunksAround(
 				});
 
 				if (!isTracked) {
-					addUntracked({
+					(untracked ??= []).push({
 						chunkX: x,
 						chunkY: y,
 						chunkZ: z,
@@ -571,11 +553,11 @@ export function validateChunksAround(
 		}
 	}
 
-	if (missing) {
+	if (missing !== undefined) {
 		console.warn("[ChunkLoadingSystem] Missing desired chunks:", missing);
 	}
 
-	if (unhydrated) {
+	if (unhydrated !== undefined) {
 		console.warn(
 			"[ChunkLoadingSystem] Stuck un-hydrated chunks " +
 				"(loaded at near LOD with no voxel data and no pending load request):",
@@ -583,7 +565,7 @@ export function validateChunksAround(
 		);
 	}
 
-	if (untracked) {
+	if (untracked !== undefined) {
 		console.error(
 			`[ChunkLoadingSystem] ${untracked.length} orphaned chunk(s) ` +
 				"MISSING from the orphan candidate registry. " +

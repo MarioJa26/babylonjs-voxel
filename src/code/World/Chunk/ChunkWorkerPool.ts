@@ -3635,59 +3635,27 @@ export class ChunkWorkerPool {
 
 	private dispatchRemoteRequests(toRequest: Chunk[]): void {
 		const provider = this.remoteChunkProvider;
-		const len = toRequest.length;
-
-		if (len === 0 || !provider) return;
+		if (!provider || toRequest.length === 0) return;
 
 		const pending = this.remotePendingChunks;
-		const nowMs = performance.now();
+		const dispatchedAtMs = performance.now();
 
-		// Arm the staleness reaper before dispatching: from this point on every
-		// entry in `pending` MUST be guaranteed a settlement path, and the reaper
-		// is what makes that true even if one is lost.
+		// Every pending request must either receive a promise handler below or be
+		// released synchronously through handleRemoteGenError.
 		this.scheduleRemotePendingReap();
 
-		/**
-		 * STALLFIX: every path that adds to `remotePendingChunks` MUST have a
-		 * settlement path, including the synchronous failure modes.
-		 *
-		 * `provider.requestChunk` / `provider.requestChunkBatch` sit behind a
-		 * network transport and can throw before returning a promise (closed
-		 * socket, room already consumed, serialization failure). In that case
-		 * the `.then/.catch` chain is never even constructed, so nothing ever
-		 * removes the entries added here: `remotePendingChunks` grows without
-		 * bound, `MAX_OUTSTANDING_REMOTE` is reached, the backpressure branch
-		 * bails on every subsequent pump, and no chunk is ever requested again.
-		 * The client stays connected and silent while the world stops filling
-		 * in — the exact reported multiplayer failure.
-		 *
-		 * Wrapping both calls turns that into an ordinary per-chunk error, which
-		 * handleRemoteGenError retries (and, past MAX_REMOTE_RETRY, parks with a
-		 * backoff instead of abandoning).
-		 */
-		const releaseAll = (err: unknown): void => {
-			for (let i = 0; i < toRequest.length; i++) {
-				const chunk = toRequest[i];
-				if (chunk) {
-					this.handleRemoteGenError(
-						err instanceof Error ? err : new Error(String(err)),
-						chunk,
-						this.remoteKeyFor(chunk),
-					);
-				}
-			}
-			this.pumpRemoteGeneration();
-		};
-
-		if (len === 1) {
+		if (toRequest.length === 1) {
 			const chunk = toRequest[0];
 
+			// The chunk is stale, disposed, replaced, or otherwise no longer valid.
+			// Do not access chunk in this branch because isLiveRemoteRequestChunk
+			// is currently declared as a type predicate and narrows it to never.
 			if (!this.isLiveRemoteRequestChunk(chunk)) {
 				return;
 			}
 
 			const key = this.remoteKeyFor(chunk);
-			pending.set(key, { chunk, dispatchedAtMs: nowMs });
+			pending.set(key, { chunk, dispatchedAtMs });
 
 			let request: Promise<RemoteChunkResult>;
 
@@ -3698,13 +3666,36 @@ export class ChunkWorkerPool {
 					chunk.chunkZ,
 				);
 			} catch (error) {
-				releaseAll(error);
+				this.handleRemoteGenError(
+					error instanceof Error ? error : new Error(String(error)),
+					chunk,
+					key,
+				);
+				this.pumpRemoteGeneration();
 				return;
 			}
 
-			void request
-				.then((data) => this.handleRemoteChunkData(data))
-				.catch((err) => this.handleRemoteGenError(err, chunk, key));
+			if (!request || typeof request.then !== "function") {
+				this.handleRemoteGenError(
+					new Error("Remote provider returned an invalid chunk promise"),
+					chunk,
+					key,
+				);
+				this.pumpRemoteGeneration();
+				return;
+			}
+
+			void Promise.resolve(request)
+				.then((result) => {
+					this.handleRemoteChunkData(result);
+				})
+				.catch((error: unknown) => {
+					this.handleRemoteGenError(
+						error instanceof Error ? error : new Error(String(error)),
+						chunk,
+						key,
+					);
+				});
 
 			return;
 		}
@@ -3713,22 +3704,29 @@ export class ChunkWorkerPool {
 		const chunks: Chunk[] = [];
 		const keys: bigint[] = [];
 
-		for (let i = 0; i < len; i++) {
+		for (let i = 0; i < toRequest.length; i++) {
 			const chunk = toRequest[i];
 
+			// See the single-request branch above. Do not access chunk after this
+			// predicate returns false because TypeScript narrows it to never.
 			if (!this.isLiveRemoteRequestChunk(chunk)) {
 				continue;
 			}
 
-			const cx = chunk.chunkX;
-			const cy = chunk.chunkY;
-			const cz = chunk.chunkZ;
 			const key = this.remoteKeyFor(chunk);
 
-			pending.set(key, { chunk, dispatchedAtMs: nowMs });
+			pending.set(key, {
+				chunk,
+				dispatchedAtMs,
+			});
+
 			chunks.push(chunk);
 			keys.push(key);
-			coords.push({ cx, cy, cz });
+			coords.push({
+				cx: chunk.chunkX,
+				cy: chunk.chunkY,
+				cz: chunk.chunkZ,
+			});
 		}
 
 		if (coords.length === 0) return;
@@ -3738,40 +3736,100 @@ export class ChunkWorkerPool {
 		try {
 			promises = provider.requestChunkBatch(coords);
 		} catch (error) {
-			// Synchronous transport failure — release exactly the entries this
-			// batch added, not the whole toRequest list (the non-live chunks in
-			// it were never registered).
+			const normalizedError =
+				error instanceof Error ? error : new Error(String(error));
+
 			for (let i = 0; i < chunks.length; i++) {
-				this.handleRemoteGenError(
-					error instanceof Error ? error : new Error(String(error)),
-					chunks[i],
-					keys[i],
-				);
+				this.handleRemoteGenError(normalizedError, chunks[i], keys[i]);
 			}
+
 			this.pumpRemoteGeneration();
 			return;
 		}
 
-		for (let i = 0, count = promises.length; i < count; i++) {
+		if (!Array.isArray(promises)) {
+			const error = new Error(
+				"Remote provider returned an invalid batch response",
+			);
+
+			for (let i = 0; i < chunks.length; i++) {
+				this.handleRemoteGenError(error, chunks[i], keys[i]);
+			}
+
+			this.pumpRemoteGeneration();
+			return;
+		}
+
+		const requestCount = chunks.length;
+		const promiseCount = promises.length;
+		const matchedCount = Math.min(requestCount, promiseCount);
+
+		// Attach exactly one settlement path to every matched request.
+		for (let i = 0; i < matchedCount; i++) {
 			const chunk = chunks[i];
 			const key = keys[i];
+			const request = promises[i];
 
-			if (i >= count || !chunk || !key) {
-				// Provider returned a shorter array than it was given. Release the
-				// entries that will never get a settlement callback attached.
-				if (chunk && key && i >= promises.length) {
-					this.handleRemoteGenError(
-						new Error("Remote provider returned a short batch"),
-						chunk,
-						key,
-					);
-				}
+			if (!request || typeof request.then !== "function") {
+				this.handleRemoteGenError(
+					new Error(
+						`Remote provider returned an invalid promise at batch index ${i}`,
+					),
+					chunk,
+					key,
+				);
 				continue;
 			}
 
-			void promises[i]
-				.then((data) => this.handleRemoteChunkData(data))
-				.catch((err) => this.handleRemoteGenError(err, chunk, key));
+			void Promise.resolve(request)
+				.then((result) => {
+					this.handleRemoteChunkData(result);
+				})
+				.catch((error: unknown) => {
+					this.handleRemoteGenError(
+						error instanceof Error ? error : new Error(String(error)),
+						chunk,
+						key,
+					);
+				});
+		}
+
+		// Critical fix: release requests for which the provider returned no promise.
+		// Otherwise their pending entries remain until the stale-request reaper runs.
+		if (promiseCount < requestCount) {
+			const error = new Error(
+				`Remote provider returned ${promiseCount} promises ` +
+					`for ${requestCount} chunk requests`,
+			);
+
+			for (let i = promiseCount; i < requestCount; i++) {
+				this.handleRemoteGenError(error, chunks[i], keys[i]);
+			}
+		}
+
+		// Consume unexpected extra promises so rejected promises do not become
+		// unhandled rejections.
+		for (let i = requestCount; i < promiseCount; i++) {
+			const extraRequest = promises[i];
+
+			if (!extraRequest || typeof extraRequest.then !== "function") {
+				console.warn(
+					`[RemoteGen] Ignoring invalid extra batch promise at index ${i}`,
+				);
+				continue;
+			}
+
+			void Promise.resolve(extraRequest).catch((error: unknown) => {
+				console.warn(
+					`[RemoteGen] Unmatched extra batch request ${i} failed:`,
+					error,
+				);
+			});
+		}
+
+		// Missing or invalid promises may have synchronously released pending slots.
+		if (promiseCount < requestCount) {
+			this.pumpRemoteGeneration();
 		}
 	}
 

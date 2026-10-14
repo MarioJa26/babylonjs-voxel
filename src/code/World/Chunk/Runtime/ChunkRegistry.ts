@@ -5,12 +5,13 @@ import { packCoords } from "../DataStructures/ChunkCoords";
 export const chunkInstances = new Map<bigint, Chunk>();
 export const chunkByNumericKey = new Map<number, Chunk>();
 
-// 8 sets × 4 ways = 32 cache entries.
+// 8 sets x 4 ways = 32 cache entries.
 // A lookup examines only the four entries belonging to its coordinate hash.
 const FAST_SET_COUNT = 8;
 const FAST_WAYS = 4;
 const FAST_SLOTS = FAST_SET_COUNT * FAST_WAYS;
 const FAST_SET_MASK = FAST_SET_COUNT - 1;
+const FAST_WAY_MASK = FAST_WAYS - 1;
 
 const EMPTY_COORDINATE = 0x7fffffff;
 
@@ -25,6 +26,9 @@ const fastOccupied = new Uint8Array(FAST_SLOTS);
 // Round-robin replacement cursor for each set.
 const fastCursors = new Uint8Array(FAST_SET_COUNT);
 
+// Positive cache entries can be invalidated directly without scanning all slots.
+const fastSlotByChunk = new WeakMap<Chunk, number>();
+
 function inNumericRange(x: number, y: number, z: number): boolean {
 	return (
 		x >= -1048576 &&
@@ -37,13 +41,23 @@ function inNumericRange(x: number, y: number, z: number): boolean {
 }
 
 function getFastSet(x: number, y: number, z: number): number {
-	const hash =
-		Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791);
-
-	return hash & FAST_SET_MASK;
+	return (
+		(Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) &
+		FAST_SET_MASK
+	);
 }
 
 function clearFastSlot(index: number): void {
+	if (fastOccupied[index] === 0) {
+		return;
+	}
+
+	const cached = fastChunks[index];
+
+	if (cached !== undefined && fastSlotByChunk.get(cached) === index) {
+		fastSlotByChunk.delete(cached);
+	}
+
 	fastOccupied[index] = 0;
 	fastX[index] = EMPTY_COORDINATE;
 	fastY[index] = EMPTY_COORDINATE;
@@ -51,16 +65,57 @@ function clearFastSlot(index: number): void {
 	fastChunks[index] = undefined;
 }
 
+function writeFastSlot(
+	index: number,
+	x: number,
+	y: number,
+	z: number,
+	chunk: Chunk | undefined,
+): void {
+	clearFastSlot(index);
+
+	if (chunk !== undefined) {
+		// Preserve the invariant that a Chunk has at most one positive
+		// entry in the fast cache.
+		const previousIndex = fastSlotByChunk.get(chunk);
+
+		if (previousIndex !== undefined && previousIndex !== index) {
+			clearFastSlot(previousIndex);
+		}
+
+		fastSlotByChunk.set(chunk, index);
+	}
+
+	fastX[index] = x;
+	fastY[index] = y;
+	fastZ[index] = z;
+	fastChunks[index] = chunk;
+	fastOccupied[index] = 1;
+}
+
 export function invalidateFastChunkCache(chunk: Chunk): void {
-	for (let i = 0; i < FAST_SLOTS; i++) {
+	// Clear the positive entry by object identity in O(1).
+	const chunkSlot = fastSlotByChunk.get(chunk);
+
+	if (chunkSlot !== undefined) {
+		clearFastSlot(chunkSlot);
+	}
+
+	// Cached misses have no Chunk reference, so inspect only the four slots
+	// that could contain this coordinate.
+	const setStart =
+		getFastSet(chunk.chunkX, chunk.chunkY, chunk.chunkZ) * FAST_WAYS;
+
+	for (let way = 0; way < FAST_WAYS; way++) {
+		const index = setStart + way;
+
 		if (
-			fastOccupied[i] !== 0 &&
-			(fastChunks[i] === chunk ||
-				(fastX[i] === chunk.chunkX &&
-					fastY[i] === chunk.chunkY &&
-					fastZ[i] === chunk.chunkZ))
+			fastOccupied[index] !== 0 &&
+			fastX[index] === chunk.chunkX &&
+			fastY[index] === chunk.chunkY &&
+			fastZ[index] === chunk.chunkZ
 		) {
-			clearFastSlot(i);
+			clearFastSlot(index);
 		}
 	}
 }
@@ -114,7 +169,7 @@ export function getChunkFast(
 
 		const cached = fastChunks[index];
 
-		// undefined is a valid cached miss.
+		// undefined represents a valid cached miss.
 		if (cached === undefined) {
 			return undefined;
 		}
@@ -123,7 +178,7 @@ export function getChunkFast(
 			return cached;
 		}
 
-		// The Chunk object moved or changed coordinates.
+		// The Chunk object changed coordinates without prior invalidation.
 		clearFastSlot(index);
 		break;
 	}
@@ -135,13 +190,9 @@ export function getChunkFast(
 	const replacementWay = fastCursors[set];
 	const replacementIndex = setStart + replacementWay;
 
-	fastCursors[set] = (replacementWay + 1) & (FAST_WAYS - 1);
+	fastCursors[set] = (replacementWay + 1) & FAST_WAY_MASK;
 
-	fastX[replacementIndex] = x;
-	fastY[replacementIndex] = y;
-	fastZ[replacementIndex] = z;
-	fastChunks[replacementIndex] = chunk;
-	fastOccupied[replacementIndex] = 1;
+	writeFastSlot(replacementIndex, x, y, z, chunk);
 
 	return chunk;
 }
