@@ -671,20 +671,21 @@ export class Arrow {
 		ey: number,
 		ez: number,
 	): boolean {
-		/*
-		 * Reset target references before every query. This prevents a failed
-		 * or changed query from leaving an old Mob strongly referenced.
-		 */
+		// Clear references before every query so stale targets cannot be retained.
 		this.#tmpIsRemote = false;
 		this.#tmpRemoteId = -1;
 		this.#tmpLocalMob = null;
 
 		const remote = Arrow.#frameRemote;
 
+		/*
+		 * Preserve the existing authority model: when a remote manager is active,
+		 * it owns collision selection and the local registry is not queried.
+		 */
 		if (remote !== null) {
 			const hit = remote.findSegmentHit(sx, sy, sz, ex, ey, ez);
 
-			if (hit === null || hit === undefined) {
+			if (hit == null) {
 				return false;
 			}
 
@@ -703,12 +704,17 @@ export class Arrow {
 			return false;
 		}
 
-		const minX = Math.min(sx, ex);
-		const minY = Math.min(sy, ey);
-		const minZ = Math.min(sz, ez);
-		const maxX = Math.max(sx, ex);
-		const maxY = Math.max(sy, ey);
-		const maxZ = Math.max(sz, ez);
+		const segmentX = ex - sx;
+		const segmentY = ey - sy;
+		const segmentZ = ez - sz;
+
+		const minX = segmentX >= 0 ? sx : ex;
+		const minY = segmentY >= 0 ? sy : ey;
+		const minZ = segmentZ >= 0 ? sz : ez;
+
+		const maxX = segmentX >= 0 ? ex : sx;
+		const maxY = segmentY >= 0 ? ey : sy;
+		const maxZ = segmentZ >= 0 ? ez : sz;
 
 		let bestT = Number.POSITIVE_INFINITY;
 		let bestMob: Mob | null = null;
@@ -738,6 +744,7 @@ export class Arrow {
 			const hy = halfExtents.y;
 			const hz = halfExtents.z;
 
+			// Cheap broad-phase rejection before the oriented hit test.
 			if (
 				mx + hx < minX ||
 				mx - hx > maxX ||
@@ -776,9 +783,9 @@ export class Arrow {
 		}
 
 		this.#tmpLocalMob = bestMob;
-		this.#tmpHX = sx + (ex - sx) * bestT;
-		this.#tmpHY = sy + (ey - sy) * bestT;
-		this.#tmpHZ = sz + (ez - sz) * bestT;
+		this.#tmpHX = sx + segmentX * bestT;
+		this.#tmpHY = sy + segmentY * bestT;
+		this.#tmpHZ = sz + segmentZ * bestT;
 
 		return true;
 	}

@@ -19,12 +19,12 @@ import {
 	FACE_PY,
 	shapeInitPromise,
 } from "@/code/World/Shape/BlockShapes";
+import { compressBlob } from "@/code/World/Storage/BlobCompression";
 import {
 	packChunkKeyFast,
 	unpackChunkKeyFast,
 } from "@/code/World/Storage/ChunkKey.ts";
 import { LevelDbChunkStore } from "@/code/World/Storage/LevelDbChunkStore";
-import { compressBlob } from "@/code/World/Storage/BlobCompression";
 import {
 	deserializeVoxelData,
 	serializeVoxelData,
@@ -1293,9 +1293,7 @@ export class ServerWorldStorage {
 				// Index of the top voxel in this column; each descent is one
 				// layer lower (x + y * 32 + z * 1024).
 				let voxelIndex =
-					lx +
-					((CS - 1) << CHUNK_SHIFT) +
-					(lz << (CHUNK_SHIFT * 2));
+					lx + ((CS - 1) << CHUNK_SHIFT) + (lz << (CHUNK_SHIFT * 2));
 
 				let isBlocked = false;
 				for (let y = CS - 1; y >= 0; y--, voxelIndex -= CS) {

@@ -219,7 +219,11 @@ export class ArrowInstancePool {
 		const slot = holder.index;
 		const count = this.#count;
 
-		if (slot < 0 || slot >= count) {
+		/*
+		 * Checking lane ownership makes release idempotent and protects against
+		 * stale or forged handles releasing another instance's lane.
+		 */
+		if (slot < 0 || slot >= count || this.#laneHolders[slot] !== holder) {
 			return;
 		}
 
@@ -230,6 +234,10 @@ export class ArrowInstancePool {
 
 			const movedHolder = this.#laneHolders[last];
 
+			/*
+			 * An active lane should always have a holder. Keeping the null guard
+			 * avoids corrupting state if that invariant is broken elsewhere.
+			 */
 			if (movedHolder !== null) {
 				movedHolder.index = slot;
 				this.#laneHolders[slot] = movedHolder;
@@ -241,9 +249,8 @@ export class ArrowInstancePool {
 		this.#count = last;
 
 		/*
-		 * A release must schedule a sync even when the removed instance was
-		 * already the final lane. In that case no matrix or color data needs
-		 * uploading, but the GPU-visible instance count must still change.
+		 * A count-only change still requires synchronization, even when no lane
+		 * was copied.
 		 */
 		this.#needsSync = true;
 	}
@@ -264,7 +271,15 @@ export class ArrowInstancePool {
 
 		const index = holder.index;
 
-		if (index < 0 || index >= this.#count) {
+		/*
+		 * The identity check prevents a stale or externally constructed handle
+		 * from writing into a lane now owned by another instance.
+		 */
+		if (
+			index < 0 ||
+			index >= this.#count ||
+			this.#laneHolders[index] !== holder
+		) {
 			return;
 		}
 
@@ -282,32 +297,62 @@ export class ArrowInstancePool {
 		const wy = qw * y2;
 		const wz = qw * z2;
 
+		const m00 = 1 - (yy + zz);
+		const m01 = xy + wz;
+		const m02 = xz - wy;
+
+		const m10 = xy - wz;
+		const m11 = 1 - (xx + zz);
+		const m12 = yz + wx;
+
+		const m20 = xz + wy;
+		const m21 = yz - wx;
+		const m22 = 1 - (xx + yy);
+
 		const offset = index * MAT4_FLOATS;
 		const matrices = this.#matrices;
 
 		/*
-		 * Column-major affine rotation and translation matrix.
-		 *
-		 * col0
+		 * Affine matrices always contain the same values in indices
+		 * 3, 7, 11, and 15. Testing only the twelve variable elements keeps
+		 * unchanged transforms out of the dirty range.
 		 */
-		matrices[offset] = 1 - (yy + zz);
-		matrices[offset + 1] = xy + wz;
-		matrices[offset + 2] = xz - wy;
+		if (
+			matrices[offset] === m00 &&
+			matrices[offset + 1] === m01 &&
+			matrices[offset + 2] === m02 &&
+			matrices[offset + 4] === m10 &&
+			matrices[offset + 5] === m11 &&
+			matrices[offset + 6] === m12 &&
+			matrices[offset + 8] === m20 &&
+			matrices[offset + 9] === m21 &&
+			matrices[offset + 10] === m22 &&
+			matrices[offset + 12] === px &&
+			matrices[offset + 13] === py &&
+			matrices[offset + 14] === pz
+		) {
+			return;
+		}
+
+		// Column 0
+		matrices[offset] = m00;
+		matrices[offset + 1] = m01;
+		matrices[offset + 2] = m02;
 		matrices[offset + 3] = 0;
 
-		// col1
-		matrices[offset + 4] = xy - wz;
-		matrices[offset + 5] = 1 - (xx + zz);
-		matrices[offset + 6] = yz + wx;
+		// Column 1
+		matrices[offset + 4] = m10;
+		matrices[offset + 5] = m11;
+		matrices[offset + 6] = m12;
 		matrices[offset + 7] = 0;
 
-		// col2
-		matrices[offset + 8] = xz + wy;
-		matrices[offset + 9] = yz - wx;
-		matrices[offset + 10] = 1 - (xx + yy);
+		// Column 2
+		matrices[offset + 8] = m20;
+		matrices[offset + 9] = m21;
+		matrices[offset + 10] = m22;
 		matrices[offset + 11] = 0;
 
-		// col3
+		// Column 3
 		matrices[offset + 12] = px;
 		matrices[offset + 13] = py;
 		matrices[offset + 14] = pz;
@@ -329,12 +374,25 @@ export class ArrowInstancePool {
 
 		const index = holder.index;
 
-		if (index < 0 || index >= this.#count) {
+		if (
+			index < 0 ||
+			index >= this.#count ||
+			this.#laneHolders[index] !== holder
+		) {
 			return;
 		}
 
 		const offset = index * COLOR_FLOATS;
 		const colors = this.#colors;
+
+		if (
+			colors[offset] === r &&
+			colors[offset + 1] === g &&
+			colors[offset + 2] === b &&
+			colors[offset + 3] === a
+		) {
+			return;
+		}
 
 		colors[offset] = r;
 		colors[offset + 1] = g;
