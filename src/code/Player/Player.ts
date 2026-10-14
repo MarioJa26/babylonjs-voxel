@@ -227,21 +227,24 @@ export class Player {
 
 	#updatePlayerBody(deltaMs: number): void {
 		const body = this.#playerBodyMesh;
-		if (!body) return;
+		if (body === null) return;
 
-		// Advance the punch clock in every view (the rig below only renders
-		// it in third person; first person runs its own viewmodel swing).
-		if (this.#punchT < 1) {
-			this.#punchT += deltaMs / 1000 / PUNCH_DURATION_S;
-			if (this.#punchT >= 1) this.#punchT = Number.POSITIVE_INFINITY;
+		const deltaSeconds = deltaMs * 0.001;
+
+		// Advance punch animation regardless of camera mode.
+		let punchT = this.#punchT;
+		if (punchT < 1) {
+			punchT += deltaSeconds / PUNCH_DURATION_S;
+
+			if (punchT >= 1) {
+				punchT = Number.POSITIVE_INFINITY;
+			}
+
+			this.#punchT = punchT;
 		}
 
-		// Don't render until the skin texture is bound (unbound sampler would
-		// produce an invalid pass), and only in third person.
-		// PERF: checked first — in first person (the common case) this skips
-		// the walk-phase math and rig uniform writes below entirely. Phase
-		// simply freezes while invisible and eases back on return.
 		const visible = this.#playerCamera.isThirdPerson && this.#bodySkinBound;
+
 		body.visible = visible;
 
 		if (!visible) {
@@ -250,85 +253,106 @@ export class Player {
 			return;
 		}
 
-		// Walk swing: phase advances with ground speed; amplitude eases toward
-		// full stride at WALK_REF_SPEED and decays back to the rest pose.
-		{
-			const v = this.velocity;
-			const hSpeed = Math.hypot(v.x, v.z);
-			const dt = deltaMs / 1000;
-			this.#bodyWalkPhase += hSpeed * dt * WALK_STRIDE_FACTOR;
-			const targetAmp = Math.min(1, hSpeed / WALK_REF_SPEED);
-			this.#bodyWalkAmp +=
-				(targetAmp - this.#bodyWalkAmp) * Math.min(1, dt * 10);
-			const mat = this.#playerBodyMat;
-			if (mat) {
-				setRigWalk(mat, this.#bodyWalkPhase, this.#bodyWalkAmp);
-				setRigHeadPitch(mat, this.#playerCamera.cameraPitch);
-				setRigPunch(mat, this.#punchT);
-			}
+		const vehicle = this.#playerVehicle;
+		const position = vehicle.position;
+		const velocity = vehicle.velocity;
+		const material = this.#playerBodyMat;
+
+		const x = position.x;
+		const y = position.y;
+		const z = position.z;
+
+		// Avoid Math.hypot() overhead in this per-frame path.
+		const horizontalSpeed = Math.sqrt(
+			velocity.x * velocity.x + velocity.z * velocity.z,
+		);
+
+		const walkPhase =
+			this.#bodyWalkPhase + horizontalSpeed * deltaSeconds * WALK_STRIDE_FACTOR;
+
+		let walkAmplitude = this.#bodyWalkAmp;
+		const targetAmplitude = Math.min(1, horizontalSpeed / WALK_REF_SPEED);
+
+		walkAmplitude +=
+			(targetAmplitude - walkAmplitude) * Math.min(1, deltaSeconds * 10);
+
+		this.#bodyWalkPhase = walkPhase;
+		this.#bodyWalkAmp = walkAmplitude;
+
+		if (material !== null) {
+			setRigWalk(material, walkPhase, walkAmplitude);
+			setRigHeadPitch(material, this.#playerCamera.cameraPitch);
+			setRigPunch(material, punchT);
 		}
 
-		const { x, y, z } = this.position;
 		body.position.set(x, y, z);
 
-		// Re-tint the model when it crosses into a different voxel so its
-		// brightness follows the light the player actually stands in — and
-		// re-sample on a short interval so the day/night sun factor keeps
-		// updating even while standing still.
-		{
-			const lx = Math.floor(x);
-			const ly = Math.floor(y + PLAYER_LIGHT_SAMPLE_Y_OFFSET);
-			const lz = Math.floor(z);
-			const nowMs = performance.now();
-			if (
-				lx !== this.#bodyLightX ||
-				ly !== this.#bodyLightY ||
-				lz !== this.#bodyLightZ ||
-				nowMs - this.#bodyLightSampleMs > 250
-			) {
-				this.#bodyLightX = lx;
-				this.#bodyLightY = ly;
-				this.#bodyLightZ = lz;
-				this.#bodyLightSampleMs = nowMs;
-				const mat = this.#playerBodyMat;
-				if (mat) {
-					setRigLightColor(
-						mat,
-						packedLightToLightColor(
-							getLightByWorldCoords(x, y + PLAYER_LIGHT_SAMPLE_Y_OFFSET, z),
-						),
-					);
-				}
+		// Update voxel lighting only when entering another voxel or when the
+		// standing-still day/night refresh interval expires.
+		const lightX = Math.floor(x);
+		const lightY = Math.floor(y + PLAYER_LIGHT_SAMPLE_Y_OFFSET);
+		const lightZ = Math.floor(z);
+		const nowMs = performance.now();
+
+		if (
+			lightX !== this.#bodyLightX ||
+			lightY !== this.#bodyLightY ||
+			lightZ !== this.#bodyLightZ ||
+			nowMs - this.#bodyLightSampleMs > 250
+		) {
+			this.#bodyLightX = lightX;
+			this.#bodyLightY = lightY;
+			this.#bodyLightZ = lightZ;
+			this.#bodyLightSampleMs = nowMs;
+
+			if (material !== null) {
+				const packedLight = getLightByWorldCoords(
+					x,
+					y + PLAYER_LIGHT_SAMPLE_Y_OFFSET,
+					z,
+				);
+
+				setRigLightColor(material, packedLightToLightColor(packedLight));
 			}
 		}
 
-		// Face the movement direction (Minecraft-style), smoothing through the
-		// shortest arc so the model never spins the long way around.
-		if (!Number.isNaN(this.#lastBodyX)) {
-			const dx = x - this.#lastBodyX;
-			const dz = z - this.#lastBodyZ;
-			if (dx * dx + dz * dz > 1e-6) {
+		// Rotate toward movement direction through the shortest angular arc.
+		const lastX = this.#lastBodyX;
+		const lastZ = this.#lastBodyZ;
+
+		if (!Number.isNaN(lastX)) {
+			const dx = x - lastX;
+			const dz = z - lastZ;
+			const movementSquared = dx * dx + dz * dz;
+
+			if (movementSquared > 1e-6) {
 				const targetYaw = Math.atan2(dx, dz);
-				const diff = Math.atan2(
-					targetYaw - this.#bodyYaw,
-					Math.cos(targetYaw - this.#bodyYaw),
+				const yawDelta = targetYaw - this.#bodyYaw;
+
+				// atan2(sin, cos) normalizes the difference to [-PI, PI].
+				const shortestDelta = Math.atan2(
+					Math.sin(yawDelta),
+					Math.cos(yawDelta),
 				);
-				this.#bodyYaw += diff * 0.25;
+
+				this.#bodyYaw += shortestDelta * 0.25;
 				body.rotation.y = this.#bodyYaw;
 			}
 		}
+
 		this.#lastBodyX = x;
 		this.#lastBodyZ = z;
-		const item =
-			this.#playerInventory.inventory[0]?.[this.#playerHud.selectedHotbarSlot]
-				?.item;
+
+		const hotbarSlot = this.#playerHud.selectedHotbarSlot;
+		const item = this.#playerInventory.inventory[0]?.[hotbarSlot]?.item;
+
 		this.#bodyHeldItem?.updateAvatar(
 			item && item.stackSize > 0 ? item.itemId : 0,
 			item?.blockState ?? 0,
 			body,
-			this.#bodyWalkPhase,
-			this.#bodyWalkAmp,
-			this.#punchT,
+			walkPhase,
+			walkAmplitude,
+			punchT,
 		);
 	}
 

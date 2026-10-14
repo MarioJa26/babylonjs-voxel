@@ -861,7 +861,11 @@ export class MainMenu {
 		window.location.href = serverPath(name);
 	}
 
+	private serverRefreshVersion = 0;
+
 	private async refreshServerList(): Promise<void> {
+		const refreshVersion = ++this.serverRefreshVersion;
+
 		setStatus(this.mpStatusEl, "");
 
 		const servers = getSavedServers();
@@ -873,31 +877,53 @@ export class MainMenu {
 			return;
 		}
 
+		const rows: HTMLElement[] = [];
 		const fragment = document.createDocumentFragment();
-		const rows: HTMLElement[] = new Array(servers.length);
 
-		for (let i = 0; i < servers.length; i++) {
-			const row = this.serverRow(servers[i]);
-			rows[i] = row;
+		for (const server of servers) {
+			const row = this.serverRow(server);
+			rows.push(row);
 			fragment.appendChild(row);
 		}
 
 		this.mpServerListEl.replaceChildren(fragment);
 
-		let statuses: ServerStatus[];
 		try {
-			statuses = await fetchAllStatuses(servers);
-		} catch (err) {
+			const statuses = await fetchAllStatuses(servers);
+
+			// Ignore an older request if the list was refreshed again while
+			// server statuses were being fetched.
+			if (refreshVersion !== this.serverRefreshVersion) {
+				return;
+			}
+
+			const count = Math.min(servers.length, rows.length, statuses.length);
+
+			for (let i = 0; i < count; i++) {
+				this.updateServerRow(rows[i], servers[i], statuses[i]);
+			}
+
+			// Leave unmatched rows in their existing "Pinging…" state, but make
+			// the incomplete response visible instead of throwing at runtime.
+			if (statuses.length < servers.length) {
+				setStatus(
+					this.mpStatusEl,
+					`Received status for ${statuses.length} of ${servers.length} servers.`,
+					true,
+				);
+			}
+		} catch (err: unknown) {
+			if (refreshVersion !== this.serverRefreshVersion) {
+				return;
+			}
+
+			const message = err instanceof Error ? err.message : String(err);
+
 			setStatus(
 				this.mpStatusEl,
-				`Could not refresh server status: ${String(err)}`,
+				`Could not refresh server status: ${message}`,
 				true,
 			);
-			return;
-		}
-
-		for (let i = 0; i < servers.length; i++) {
-			this.updateServerRow(rows[i], servers[i], statuses[i]);
 		}
 	}
 
