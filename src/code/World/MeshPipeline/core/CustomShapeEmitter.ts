@@ -14,8 +14,8 @@ import {
 	computeFenceNeighborMask,
 	getFenceDynamicShape,
 } from "../../Shape/FenceConnect";
-import { FaceName, getFaceName } from "../../Texture/FaceName";
 import { getSourceBlockId } from "../../Texture/BlockMaterial";
+import { FaceName, getFaceName } from "../../Texture/FaceName";
 import { MaterialType } from "../types/MeshTypes";
 
 import { computeAO } from "./AOPipeline";

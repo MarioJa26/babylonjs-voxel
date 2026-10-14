@@ -221,83 +221,148 @@ const terrainVertexWGSL = /* wgsl */ `
 ${FACE_EXPAND_WGSL}
 ${FOG_HELPER_WGSL}
 ${FRUSTUM_CULL_WGSL}
+
 struct VSOut {
-  @builtin(position) pos : vec4<f32>,
-  // Axis-selected planar UV (world-position XY/XZ/ZY divided by
-  // textureScale here in the vertex stage). The fragment only fract()s it,
-  // which saves passing the 3-float world position plus the axis mode.
-  @location(0) vUV : vec2<f32>,
-  // Per-face payload: xy = atlas tile, z = flat shade. Every far-tile
-  // face is FLAT (axis-aligned constant normal), so N·L and the sky term
-  // are identical across each quad's pixels and fold into one scalar.
-  @location(1) vTileShade : vec3<f32>,
-  @location(2) vFogColor : vec3<f32>,
-  @location(3) vFogFactor : f32,
+@builtin(position) pos : vec4<f32>,
+@location(0) vUV : vec2<f32>,
+@location(1) vTileShade : vec3<f32>,
+@location(2) vFogColor : vec3<f32>,
+@location(3) vFogFactor : f32,
 };
 
 @vertex
-fn mainVertex(input : VertexInput, @builtin(vertex_index) vertexIndex : u32) -> VSOut {
-  var out : VSOut;
-  let f = expandFace(u32(input.instData.x), vertexIndex);
+fn mainVertex(
+input : VertexInput,
+@builtin(vertex_index) vertexIndex : u32
+) -> VSOut {
+var out : VSOut;
 
-  let bases = axisBases(f.axis);
-  let worldPos = vec3<f32>(f.x, f.y, f.z) + bases.u * (f.au * f.w) + bases.v * (f.av * f.h);
+let face = expandFace(u32(input.instData.x), vertexIndex);
+let bases = axisBases(face.axis);
 
-  // Behind-camera / off-screen faces: degenerate before raster (see above).
-  // halfSize avoids a second * 0.5 for the cull-sphere radius.
-  let halfSize = vec2<f32>(f.w, f.h) * 0.5;
-  let ftCenter = vec3<f32>(f.x, f.y, f.z) + bases.u * halfSize.x + bases.v * halfSize.y;
-  let ftRadius = length(halfSize) + 2.0;
-  if (ftFrustumCulled(ftCenter, ftRadius)) {
-    out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
-    out.vUV = vec2<f32>(0.0);
-    out.vTileShade = vec3<f32>(0.0);
-    out.vFogColor = vec3<f32>(0.0);
-    out.vFogFactor = 0.0;
-    return out;
-  }
+/*
+* The face center does not depend on the current corner. Compute and test
+* it before expanding the current vertex, avoiding the corner-position
+* multiply/add work for faces rejected by the frustum.
+*/
+let halfWidth = face.w * 0.5;
+let halfHeight = face.h * 0.5;
 
-  out.pos = shaderSystem.worldViewProjection * vec4<f32>(worldPos, 1.0);
+let faceCenter =
+vec3<f32>(face.x, face.y, face.z) +
+bases.u * halfWidth +
+bases.v * halfHeight;
 
-  // Triplanar-ish planar projection, branchless: X-faces sample ZY,
-  // Y-faces sample XZ, Z-faces sample XY — same mapping as before.
-  let isXFace = f.axis == 0u;
-  let isYFace = f.axis == 1u;
-  out.vUV = vec2<f32>(
-    select(worldPos.x, worldPos.z, isXFace),
-    select(worldPos.y, worldPos.z, isYFace),
-  ) / shaderUniforms.textureScale;
+let faceRadius =
+sqrt(halfWidth * halfWidth + halfHeight * halfHeight) + 2.0;
 
-  // Chunk-matching sun convention: dot(N, +lightDirection). The old CPU
-  // path always emitted +axis normals (backFace flipped WINDING, not the
-  // normal), so N·L here uses the unsigned axis vector exactly like before.
-  let ndotl = max(0.0, dot(bases.n, shaderUniforms.lightDirection));
-  let sun = shaderUniforms.sunLightIntensity;
-  let shade =
-    (ndotl * sun * 0.6 + 0.48 * (sun + 0.2)) * mix(0.55, 1.0, f.lightFactor);
-  out.vTileShade = vec3<f32>(f.tileX, f.tileY, shade);
+if (ftFrustumCulled(faceCenter, faceRadius)) {
+out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+out.vUV = vec2<f32>(0.0);
+out.vTileShade = vec3<f32>(0.0);
+out.vFogColor = vec3<f32>(0.0);
+out.vFogFactor = 0.0;
+return out;
+}
 
-  let toCamera = shaderSystem.cameraPosition - worldPos;
-  let distanceSquared = dot(toCamera, toCamera);
-  let distance = sqrt(distanceSquared);
+let worldPos =
+vec3<f32>(face.x, face.y, face.z) +
+bases.u * (face.au * face.w) +
+bases.v * (face.av * face.h);
 
-  let infos = shaderUniforms.fogInfos;
-  let fogFactor = clamp((infos.z - distance) * shaderUniforms.fogInvRange, 0.0, 1.0);
+out.pos =
+shaderSystem.worldViewProjection *
+vec4<f32>(worldPos, 1.0);
 
-  let heightFactor = clamp(worldPos.y * 0.003, 0.0, 1.0);
-  let atmosphereColor = ftAtmosphereColor(heightFactor);
-  var baseFogColor = mix(shaderUniforms.fogColor, atmosphereColor, 0.8);
-  let nightAmount = clamp(1.0 - sun, 0.0, 1.0);
-  baseFogColor = mix(baseFogColor, vec3<f32>(0.0, 0.0, 0.0), nightAmount);
+/*
+* Axis-selected planar projection:
+*
+* X faces: ZY
+* Y faces: XZ
+* Z faces: XY
+*/
+let isXFace = face.axis == 0u;
+let isYFace = face.axis == 1u;
 
-  let inverseDistance = inverseSqrt(max(distanceSquared, 1e-8));
-  let viewDirY = toCamera.y * inverseDistance;
-  let skyboxColor = ftSkyboxColor(viewDirY, nightAmount);
-  let skyBlend = clamp((distance - 1400.0) * 0.0003333, 0.0, 1.0);
+out.vUV =
+vec2<f32>(
+select(worldPos.x, worldPos.z, isXFace),
+select(worldPos.y, worldPos.z, isYFace)
+) / shaderUniforms.textureScale;
 
-  out.vFogColor = mix(baseFogColor, skyboxColor, skyBlend);
-  out.vFogFactor = fogFactor;
-  return out;
+let sun = shaderUniforms.sunLightIntensity;
+let ndotl =
+max(0.0, dot(bases.n, shaderUniforms.lightDirection));
+
+let shade =
+(ndotl * sun * 0.6 + 0.48 * (sun + 0.2)) *
+mix(0.55, 1.0, face.lightFactor);
+
+out.vTileShade =
+vec3<f32>(face.tileX, face.tileY, shade);
+
+let toCamera =
+shaderSystem.cameraPosition - worldPos;
+
+let distanceSquared =
+dot(toCamera, toCamera);
+
+let distance =
+sqrt(distanceSquared);
+
+let fogEnd =
+shaderUniforms.fogInfos.z;
+
+out.vFogFactor =
+clamp(
+(fogEnd - distance) * shaderUniforms.fogInvRange,
+0.0,
+1.0
+);
+
+let heightFactor =
+clamp(worldPos.y * 0.003, 0.0, 1.0);
+
+let atmosphereColor =
+ftAtmosphereColor(heightFactor);
+
+let nightAmount =
+clamp(1.0 - sun, 0.0, 1.0);
+
+var baseFogColor =
+mix(
+shaderUniforms.fogColor,
+atmosphereColor,
+0.8
+);
+
+baseFogColor =
+mix(
+baseFogColor,
+vec3<f32>(0.0),
+nightAmount
+);
+
+let inverseDistance =
+inverseSqrt(max(distanceSquared, 1e-8));
+
+let viewDirY =
+toCamera.y * inverseDistance;
+
+let skyboxColor =
+ftSkyboxColor(viewDirY, nightAmount);
+
+let skyBlend =
+clamp(
+(distance - 1400.0) * 0.0003333,
+0.0,
+1.0
+);
+
+out.vFogColor =
+mix(baseFogColor, skyboxColor, skyBlend);
+
+return out;
 }
 `;
 
@@ -345,107 +410,125 @@ ${FOG_HELPER_WGSL}
 ${FRUSTUM_CULL_WGSL}
 
 struct VSOut {
-  @builtin(position) pos : vec4<f32>,
-  @location(0) vPositionW : vec3<f32>,
-  @location(1) vFogColor : vec3<f32>,
-  @location(2) vFogFactor : f32,
+@builtin(position) pos : vec4<f32>,
+@location(0) vPositionW : vec3<f32>,
+@location(1) vFogColor : vec3<f32>,
+@location(2) vFogFactor : f32,
 };
 
 @vertex
 fn mainVertex(
-  input : VertexInput,
-  @builtin(vertex_index) vertexIndex : u32
+input : VertexInput,
+@builtin(vertex_index) vertexIndex : u32
 ) -> VSOut {
-  var out : VSOut;
+var out : VSOut;
 
-  // Axis 1 uses U = +Z with width and V = +X with height, matching
-  // axisBases(1u) in the terrain path.
-  let f = expandWaterFace(u32(input.instData.x), vertexIndex);
+let face =
+expandWaterFace(
+u32(input.instData.x),
+vertexIndex
+);
 
-  let worldPos = vec3<f32>(
-    f.x + f.av * f.h,
-    f.y,
-    f.z + f.au * f.w,
-  );
+/*
+* Axis 1 dimensions:
+*
+* X extent = height
+* Z extent = width
+*
+* Cull before calculating the current corner's world position.
+*/
+let halfX = face.h * 0.5;
+let halfZ = face.w * 0.5;
 
-  // Axis-1 dimensions:
-  // X extent = h
-  // Z extent = w
-  // halfSize avoids a second * 0.5 for the cull-sphere radius.
-  let halfSizeW = vec2<f32>(f.h, f.w) * 0.5;
-  let ftCenterW = vec3<f32>(
-    f.x + halfSizeW.x,
-    f.y,
-    f.z + halfSizeW.y,
-  );
-  let ftRadiusW = length(halfSizeW) + 2.0;
-  if (ftFrustumCulled(ftCenterW, ftRadiusW)) {
-    out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
-    out.vPositionW = ftCenterW;
-    out.vFogColor = vec3<f32>(0.0);
-    out.vFogFactor = 0.0;
-    return out;
-  }
+let faceCenter =
+vec3<f32>(
+face.x + halfX,
+face.y,
+face.z + halfZ
+);
 
-  out.pos =
-    shaderSystem.worldViewProjection *
-    vec4<f32>(worldPos, 1.0);
+let faceRadius =
+sqrt(halfX * halfX + halfZ * halfZ) + 2.0;
 
-  out.vPositionW = worldPos;
+if (ftFrustumCulled(faceCenter, faceRadius)) {
+out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+out.vPositionW = faceCenter;
+out.vFogColor = vec3<f32>(0.0);
+out.vFogFactor = 0.0;
+return out;
+}
 
-  let toCamera = shaderSystem.cameraPosition - worldPos;
-  let distanceSquared = dot(toCamera, toCamera);
-  let distance = sqrt(distanceSquared);
+let worldPos =
+vec3<f32>(
+face.x + face.av * face.h,
+face.y,
+face.z + face.au * face.w
+);
 
-  let infos = shaderUniforms.fogInfos;
+out.pos =
+shaderSystem.worldViewProjection *
+vec4<f32>(worldPos, 1.0);
 
-  out.vFogFactor =
-    clamp(
-      (infos.z - distance) * shaderUniforms.fogInvRange,
-      0.0,
-      1.0
-    );
+out.vPositionW = worldPos;
 
-  let heightFactor =
-    clamp(worldPos.y * 0.003, 0.0, 1.0);
+let toCamera =
+shaderSystem.cameraPosition - worldPos;
 
-  let atmosphereColor =
-    ftAtmosphereColor(heightFactor);
+let distanceSquared =
+dot(toCamera, toCamera);
 
-  let sun = shaderUniforms.sunLightIntensity;
+let distance =
+sqrt(distanceSquared);
 
-  var baseFogColor =
-    mix(
-      shaderUniforms.fogColor,
-      atmosphereColor,
-      0.8
-    );
+out.vFogFactor =
+clamp(
+(shaderUniforms.fogInfos.z - distance) *
+shaderUniforms.fogInvRange,
+0.0,
+1.0
+);
 
-  let nightAmount =
-    clamp(1.0 - sun, 0.0, 1.0);
+let heightFactor =
+clamp(worldPos.y * 0.003, 0.0, 1.0);
 
-  baseFogColor =
-    mix(
-      baseFogColor,
-      vec3<f32>(0.0),
-      nightAmount
-    );
+let atmosphereColor =
+ftAtmosphereColor(heightFactor);
 
-  let inverseDistance =
-    inverseSqrt(max(distanceSquared, 1e-8));
+let sun =
+shaderUniforms.sunLightIntensity;
 
-  let viewDirY =
-    toCamera.y * inverseDistance;
+let nightAmount =
+clamp(1.0 - sun, 0.0, 1.0);
 
-  let skyboxColor =
-    ftSkyboxColor(viewDirY, nightAmount);
+var baseFogColor =
+mix(
+shaderUniforms.fogColor,
+atmosphereColor,
+0.8
+);
 
-  let skyBlend =
-    clamp(
-      (distance - 7000.0) * 0.0003333,
-      0.0,
-      1.0
-    );
+baseFogColor =
+mix(
+baseFogColor,
+vec3<f32>(0.0),
+nightAmount
+);
+
+let inverseDistance =
+inverseSqrt(max(distanceSquared, 1e-8));
+
+let viewDirY =
+toCamera.y * inverseDistance;
+
+let skyboxColor =
+ftSkyboxColor(viewDirY, nightAmount);
+
+let skyBlend =
+clamp(
+(distance - 7000.0) * 0.0003333,
+0.0,
+1.0
+);
 
   out.vFogColor =
     mix(

@@ -7,8 +7,8 @@ import type { MeshBuildSession } from "./WorkerMeshHelpers";
  * Writable numeric arrays accepted by the greedy pipeline.
  *
  * - mask uses Int32 because idState may carry high-bit markers
- *   like BACK_FACE_MASK / NON_CUBE_MASK.
- * - light uses Uint16 because your packed lightMask stores:
+ *   such as BACK_FACE_MASK / NON_CUBE_MASK.
+ * - light uses Uint16 because packed light stores:
  *     low 8 bits  = AO
  *     high 8 bits = packed light
  */
@@ -18,39 +18,21 @@ export type WritableNumberArray =
 	| Uint16Array
 	| Uint32Array;
 
-/**
- * Interface required from the caller to extract mask data.
- */
 export type MaskExtractor = (
 	slice: number,
 	mask: WritableNumberArray,
 	light: WritableNumberArray,
 ) => void;
 
-/**
- * Interface required from the caller to handle a greedy face descriptor.
- */
 export type FaceEmitterCallback = (desc: GreedyFaceDescriptor) => void;
 
 /**
- * The main greedy-meshing engine.
+ * Runs greedy meshing over each slice of the current mesh grid.
  *
- * It accepts:
- *   - session for dimensions + reusable scratch buffers
- *   - extractMask(...) to fill mask & light arrays for a slice, OR
- *   - maskBank/lightBank holding pre-extracted masks for ALL slices
- *     (banked mode — slice s lives at (s+1) * area; filled by the
- *     extractAllSliceMasks* sweeps in VoxelMaskExtractor)
- *   - emitFace(...) callback that builds quads using the merged results
+ * In scratch mode, extractMask overwrites an area-sized mask for every slice.
+ * In banked mode, each slice occupies one contiguous area-sized bank region:
  *
- * Optimized version:
- * - reuses the session's typed-array scratch buffers (or caller-provided banks)
- * - avoids per-call array allocation
- * - avoids per-slice .fill(0) because extraction overwrites every entry
- * - clears only mask after merging because mask is the processed/empty marker
- *
- * The shared face descriptor lives on the session, so greedyMesh is
- * re-entrant as long as the callback doesn't stash the descriptor.
+ *     offset = (slice + 1) * area
  */
 export function greedyMesh(
 	session: MeshBuildSession,
@@ -59,15 +41,12 @@ export function greedyMesh(
 	maskBank?: Int32Array,
 	lightBank?: Uint16Array,
 ): void {
-	// Greedy merging runs on the (possibly downsampled) mask grid. For
-	// lodStep > 1 the extractor writes one cell per lodStep^3 voxel region,
-	// so descriptors come back in grid cells and the face emitter scales
-	// them back to block units.
 	const size = session.meshGridSize > 0 ? session.meshGridSize : session.size;
-	const area = size * size;
 
+	const area = size * size;
 	const banked = maskBank !== undefined && lightBank !== undefined;
-	if (!banked && !extractMask) {
+
+	if (!banked && extractMask === null) {
 		throw new Error("greedyMesh requires extractMask or mask banks");
 	}
 
@@ -90,68 +69,82 @@ export function greedyMesh(
 		lights = session.scratchLights;
 	}
 
+	// This is guaranteed to exist in scratch mode by the validation above.
 	const extractor = extractMask as MaskExtractor;
 	const faceScratch = session.faceScratch;
-	// Banked sweeps mark per-slice occupancy; skipping all-empty slices
-	// avoids scanning (up to) gridSize² mask cells per dead slice — most
-	// far chunks are majority air above the terrain line.
-	const occ = session.sliceOccupancy;
+	const occupancy = session.sliceOccupancy;
+	const occupancyLength = occupancy.length;
 
 	for (let slice = -1; slice < size; slice++) {
-		// Banked mode reads straight from the pre-extracted bank region;
-		// scratch mode extracts into the area-sized buffers at offset 0.
-		const base = banked ? (slice + 1) * area : 0;
-		if (!banked) extractor(slice, mask, lights);
+		const sliceIndex = slice + 1;
+		const base = banked ? sliceIndex * area : 0;
 
-		if (
-			banked &&
-			slice >= 0 &&
-			base + area <= occ.length &&
-			occ[slice + 1] === 0
-		) {
-			continue;
+		if (banked) {
+			// Skip slices that the bank-building sweep marked as empty.
+			//
+			// Check the occupancy index itself. Comparing base + area against
+			// occupancy.length is incorrect because base is a mask-bank offset,
+			// while occupancy.length is measured in slices.
+			if (
+				slice >= 0 &&
+				sliceIndex < occupancyLength &&
+				occupancy[sliceIndex] === 0
+			) {
+				continue;
+			}
+		} else {
+			extractor(slice, mask, lights);
 		}
 
-		for (let v = 0; v < size; v++) {
-			const rowBase = base + v * size;
+		const sliceEnd = base + area;
 
-			for (let u = 0; u < size; ) {
-				const index = rowBase + u;
+		for (let rowBase = base, v = 0; rowBase < sliceEnd; rowBase += size, v++) {
+			const rowEnd = rowBase + size;
+
+			for (let index = rowBase, u = 0; index < rowEnd; ) {
 				const idState = mask[index];
 
 				if (idState === 0) {
+					index++;
 					u++;
 					continue;
 				}
 
 				const light = lights[index];
 
-				let width = 1;
+				// Find the maximum matching width in the current row.
 				let scan = index + 1;
-				const rowEnd = rowBase + size;
 
 				while (
 					scan < rowEnd &&
 					mask[scan] === idState &&
 					lights[scan] === light
 				) {
-					width++;
 					scan++;
 				}
 
-				let height = 1;
+				const width = scan - index;
 
-				outer: while (v + height < size) {
-					const testRowBase = index + height * size;
+				// Extend the rectangle downward while every cell in the next
+				// row has the same mask and lighting value.
+				let height = 1;
+				let testRowBase = index + size;
+
+				heightScan: while (v + height < size) {
 					const testRowEnd = testRowBase + width;
 
-					for (let idx = testRowBase; idx < testRowEnd; idx++) {
-						if (mask[idx] !== idState || lights[idx] !== light) {
-							break outer;
+					for (
+						let testIndex = testRowBase;
+						testIndex < testRowEnd;
+						testIndex++
+					) {
+						if (mask[testIndex] !== idState || lights[testIndex] !== light) {
+							break heightScan;
 						}
 					}
 
 					height++;
+					testRowBase += size;
 				}
 
 				faceScratch.slice = slice;
@@ -164,27 +157,39 @@ export function greedyMesh(
 
 				emitFace(faceScratch);
 
-				// Only mask needs clearing. It is the sole processed-cell marker.
-				// lights is ignored whenever mask is 0 and extraction overwrites
-				// (or pre-fills) it before the next slice is processed.
+				// Mask is the processed-cell marker. Lighting does not need to
+				// be cleared because cells with mask === 0 are ignored.
 				if (width === size) {
+					// A full-width rectangle is contiguous in memory.
 					mask.fill(0, index, index + height * size);
 				} else if (width < 8) {
-					for (let dv = 0; dv < height; dv++) {
-						const clearStart = index + dv * size;
+					// Direct writes are generally cheaper for narrow spans.
+					let clearStart = index;
+
+					for (let row = 0; row < height; row++) {
 						const clearEnd = clearStart + width;
 
-						for (let ci = clearStart; ci < clearEnd; ci++) {
-							mask[ci] = 0;
+						for (
+							let clearIndex = clearStart;
+							clearIndex < clearEnd;
+							clearIndex++
+						) {
+							mask[clearIndex] = 0;
 						}
+
+						clearStart += size;
 					}
 				} else {
-					for (let dv = 0; dv < height; dv++) {
-						const clearStart = index + dv * size;
+					// Native fill is preferable for wider spans.
+					let clearStart = index;
+
+					for (let row = 0; row < height; row++) {
 						mask.fill(0, clearStart, clearStart + width);
+						clearStart += size;
 					}
 				}
 
+				index += width;
 				u += width;
 			}
 		}

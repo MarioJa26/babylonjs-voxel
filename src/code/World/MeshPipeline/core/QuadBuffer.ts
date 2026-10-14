@@ -7,8 +7,6 @@ import { BlockFaceTileX, BlockFaceTileY } from "../../Texture/BlockTextures";
 import { FaceName } from "../../Texture/FaceName";
 import { BlockTint } from "./BlockInfoCache";
 
-const WATER_FRAC_SCALE = [8, 7, 6, 5, 4, 3, 2, 1];
-const WATER_TOP_OFFSET_SCALE = [0, -1, -2, -3, -4, -5, -6, -7];
 const WATER_ABOVE_MASK = 0x10000;
 const WATER_LEVEL_PAIR_MASK = 0x20000;
 
@@ -20,47 +18,75 @@ const META_DIAG_VARIANT = 1 << 5;
 const META_RAW_DIM = 1 << 6;
 const META_POS_OFF_Z = 1 << 7;
 
+const BYTES_PER_FACE = 12;
+const WORDS_PER_FACE = 3;
+const BYTE_COORD_LIMIT = 256;
+
 export class QuadBuffer {
 	private data!: WorkerInternalMeshData;
 	private rta!: ResizableTypedArray<Uint8Array>;
-	// Interleaved face records: 12 bytes (3 u32 words) per face, one
-	// contiguous stream. emitRaw writes one record per quad instead of
-	// touching three separate SoA streams.
 	private buf!: Uint8Array;
+	private words!: Uint32Array;
 	private count = 0;
+
+	/**
+	 * Updates cached array views only when the backing storage changed.
+	 *
+	 * In the normal reuse path, bind() performs no allocation.
+	 */
+	private updateBackingViews(buf: Uint8Array): void {
+		const words = this.words;
+
+		if (
+			words !== undefined &&
+			words.buffer === buf.buffer &&
+			words.byteOffset === buf.byteOffset &&
+			words.byteLength === (buf.byteLength & ~3)
+		) {
+			this.buf = buf;
+			return;
+		}
+
+		this.buf = buf;
+		this.words = new Uint32Array(
+			buf.buffer,
+			buf.byteOffset,
+			buf.byteLength >>> 2,
+		);
+	}
 
 	/** Point this buffer at a reused output mesh and zero its face count. */
 	public bind(out: WorkerInternalMeshData): void {
-		this.data = out;
-
 		const rta = out.faceData;
 
+		this.data = out;
 		this.rta = rta;
-		this.buf = rta.backingArray;
-
+		this.updateBackingViews(rta.backingArray);
 		this.count = 0;
 
-		// Keep the externally visible mesh empty immediately after bind.
 		rta.length = 0;
 		out.faceCount = 0;
 	}
 
-	/**
-	 * Publish final byte lengths and face count after all quads have been emitted.
-	 *
-	 * Call this once at the end of the mesh build, before the output mesh is read,
-	 * uploaded, merged, or transferred.
-	 */
+	/** Publish the final byte length and face count. */
 	public finish(): void {
-		this.rta.length = this.count * 12;
-		this.data.faceCount = this.count;
+		const count = this.count;
+
+		this.rta.length = count * BYTES_PER_FACE;
+		this.data.faceCount = count;
 	}
 
 	/**
-	 * Raw face write. Fast path is branch-predicted (single length compare);
-	 * reserveMeshCapacity sizes the buffer for the common case and this
-	 * grows via ensureCapacity on overflow so the reserve is a hint, not
-	 * a correctness requirement.
+	 * Returns the block tint without allocating or creating temporary objects.
+	 */
+	private getTint(blockId: number): number {
+		return blockId >= 0 && blockId < BlockTint.length ? BlockTint[blockId] : 1;
+	}
+
+	/**
+	 * Raw face write.
+	 *
+	 * No allocations occur unless the resizable backing array must grow.
 	 */
 	private emitRaw(
 		sx: number,
@@ -76,28 +102,33 @@ export class QuadBuffer {
 		tint: number,
 		meta: number,
 	): void {
-		const i = this.count * 12;
-		let buf = this.buf;
+		const count = this.count;
+		const byteIndex = count * BYTES_PER_FACE;
+		const requiredLength = byteIndex + BYTES_PER_FACE;
 
-		if (i + 12 > buf.length) {
-			this.rta.length = i;
-			this.rta.ensureCapacity(i + 12);
-			buf = this.rta.backingArray;
-			this.buf = buf;
+		if (requiredLength > this.buf.length) {
+			const rta = this.rta;
+
+			rta.length = byteIndex;
+			rta.ensureCapacity(requiredLength);
+			this.updateBackingViews(rta.backingArray);
 		}
 
-		const view = new Uint32Array(buf.buffer, buf.byteOffset, buf.length >>> 2);
-		const i4 = i >>> 2;
-		view[i4] = sx | (sy << 8) | (sz << 16) | ((axisFace | (tint << 3)) << 24);
-		view[i4 + 1] = sw | (sh << 8) | (tx << 16) | (ty << 24);
-		view[i4 + 2] = ao | (light << 8) | (meta << 16);
+		const wordIndex = count * WORDS_PER_FACE;
+		const words = this.words;
 
-		this.count++;
+		words[wordIndex] =
+			sx | (sy << 8) | (sz << 16) | ((axisFace | (tint << 3)) << 24);
+
+		words[wordIndex + 1] = sw | (sh << 8) | (tx << 16) | (ty << 24);
+
+		words[wordIndex + 2] = ao | (light << 8) | (meta << 16);
+
+		this.count = count + 1;
 	}
 
 	/**
-	 * General-purpose quad with bounds check.
-	 * Used for non-water faces that can touch the chunk border.
+	 * General-purpose quad with bounds checking.
 	 */
 	public emitQuad(
 		x: number,
@@ -124,11 +155,18 @@ export class QuadBuffer {
 		const sy = (ys + 0.5) | 0;
 		const sz = (zs + 0.5) | 0;
 
-		if (sx < 0 || sy < 0 || sz < 0 || sx >= 256 || sy >= 256 || sz >= 256) {
+		if (
+			sx < 0 ||
+			sy < 0 ||
+			sz < 0 ||
+			sx >= BYTE_COORD_LIMIT ||
+			sy >= BYTE_COORD_LIMIT ||
+			sz >= BYTE_COORD_LIMIT
+		) {
 			return;
 		}
 
-		const tileIdx = blockId * FaceName.Count + faceName;
+		const tileIndex = blockId * FaceName.Count + faceName;
 
 		let meta =
 			((materialType & 0x3) << 1) |
@@ -137,8 +175,6 @@ export class QuadBuffer {
 			(diagonal === 2 ? META_DIAG_VARIANT : 0) |
 			(rawDim ? META_RAW_DIM : 0);
 
-		// Usually cheaper than xs % 1 !== 0 in tight loops.
-		// This preserves the intent here because positions are already bounded through sx/sy/sz.
 		if (xs !== (xs | 0)) {
 			meta |= META_POS_OFF_X;
 		}
@@ -147,8 +183,13 @@ export class QuadBuffer {
 			meta |= META_POS_OFF_Z;
 		}
 
-		const sw = rawDim ? width : width * POS_SCALE;
-		const sh = rawDim ? height : height * POS_SCALE;
+		let sw = width;
+		let sh = height;
+
+		if (!rawDim) {
+			sw *= POS_SCALE;
+			sh *= POS_SCALE;
+		}
 
 		this.emitRaw(
 			sx,
@@ -157,24 +198,17 @@ export class QuadBuffer {
 			axis * 2 + backFace,
 			sw,
 			sh,
-			BlockFaceTileX[tileIdx],
-			BlockFaceTileY[tileIdx],
+			BlockFaceTileX[tileIndex],
+			BlockFaceTileY[tileIndex],
 			ao,
 			light,
-			blockId >= 0 && blockId < BlockTint.length ? BlockTint[blockId] : 1,
+			this.getTint(blockId),
 			meta,
 		);
 	}
 
 	/**
-	 * Specialized unchecked cube face emitter.
-	 *
-	 * This is faster than the generic emitQuadUnchecked path because cube faces
-	 * emitted from VoxelFaceEmitterAdapter always use:
-	 * - MaterialType.Default
-	 * - flip = 0
-	 * - diagonal = 0
-	 * - integer block-space positions
+	 * Specialized unchecked cube-face emitter.
 	 */
 	public emitCubeQuadUnchecked(
 		x: number,
@@ -190,43 +224,34 @@ export class QuadBuffer {
 		faceName: FaceName,
 		rawDim: number,
 	): void {
-		const xs = x * POS_SCALE + 0.5;
-		const ys = y * POS_SCALE + 0.5;
-		const zs = z * POS_SCALE + 0.5;
+		const tileIndex = blockId * FaceName.Count + faceName;
 
-		const tileIdx = blockId * FaceName.Count + faceName;
+		let sw = width;
+		let sh = height;
 
-		const sw = rawDim ? width : width * POS_SCALE;
-		const sh = rawDim ? height : height * POS_SCALE;
-
-		// Cube greedy faces have no flip, no diagonal, default material.
-		// Positions are integer block coords, so no META_POS_OFF_X/Z needed.
-		const meta = rawDim ? META_RAW_DIM : 0;
+		if (!rawDim) {
+			sw *= POS_SCALE;
+			sh *= POS_SCALE;
+		}
 
 		this.emitRaw(
-			xs,
-			ys,
-			zs,
+			x * POS_SCALE + 0.5,
+			y * POS_SCALE + 0.5,
+			z * POS_SCALE + 0.5,
 			axis * 2 + backFace,
 			sw,
 			sh,
-			BlockFaceTileX[tileIdx],
-			BlockFaceTileY[tileIdx],
+			BlockFaceTileX[tileIndex],
+			BlockFaceTileY[tileIndex],
 			ao,
 			light,
-			blockId >= 0 && blockId < BlockTint.length ? BlockTint[blockId] : 1,
-			meta,
+			this.getTint(blockId),
+			rawDim ? META_RAW_DIM : 0,
 		);
 	}
 
 	/**
-	 * Raw-units quad emitter for downsampled builds (lodStep > 1).
-	 *
-	 * Positions and dimensions are whole blocks (all ≤ CHUNK_SIZE = 32), so
-	 * they are written verbatim with NO POS_SCALE multiply and a fully zero
-	 * meta byte — no flip, no diagonal, no posOff, no materialType sentinel,
-	 * no rawDim flag. Only the dedicated LOD4+ "raw units" shader variant may
-	 * consume faces written through this path.
+	 * Raw-units emitter for downsampled builds.
 	 */
 	public emitQuadRawUnits(
 		x: number,
@@ -241,7 +266,7 @@ export class QuadBuffer {
 		ao: number,
 		faceName: FaceName,
 	): void {
-		const tileIdx = blockId * FaceName.Count + faceName;
+		const tileIndex = blockId * FaceName.Count + faceName;
 
 		this.emitRaw(
 			x,
@@ -250,19 +275,17 @@ export class QuadBuffer {
 			axis * 2 + backFace,
 			width,
 			height,
-			BlockFaceTileX[tileIdx],
-			BlockFaceTileY[tileIdx],
+			BlockFaceTileX[tileIndex],
+			BlockFaceTileY[tileIndex],
 			ao,
 			light,
-			blockId >= 0 && blockId < BlockTint.length ? BlockTint[blockId] : 1,
+			this.getTint(blockId),
 			0,
 		);
 	}
 
 	/**
-	 * General-purpose quad without bounds check.
-	 * Keep this for non-cube or future callers that may use flip, diagonal,
-	 * fractional positions, or non-default material types.
+	 * General-purpose quad without bounds checking.
 	 */
 	public emitQuadUnchecked(
 		x: number,
@@ -285,8 +308,6 @@ export class QuadBuffer {
 		const ys = y * POS_SCALE;
 		const zs = z * POS_SCALE;
 
-		const tileIdx = blockId * FaceName.Count + faceName;
-
 		let meta =
 			((materialType & 0x3) << 1) |
 			(flip ? META_FLIP : 0) |
@@ -302,8 +323,15 @@ export class QuadBuffer {
 			meta |= META_POS_OFF_Z;
 		}
 
-		const sw = rawDim ? width : width * POS_SCALE;
-		const sh = rawDim ? height : height * POS_SCALE;
+		let sw = width;
+		let sh = height;
+
+		if (!rawDim) {
+			sw *= POS_SCALE;
+			sh *= POS_SCALE;
+		}
+
+		const tileIndex = blockId * FaceName.Count + faceName;
 
 		this.emitRaw(
 			(xs + 0.5) | 0,
@@ -312,18 +340,17 @@ export class QuadBuffer {
 			axis * 2 + backFace,
 			sw,
 			sh,
-			BlockFaceTileX[tileIdx],
-			BlockFaceTileY[tileIdx],
+			BlockFaceTileX[tileIndex],
+			BlockFaceTileY[tileIndex],
 			ao,
 			light,
-			blockId >= 0 && blockId < BlockTint.length ? BlockTint[blockId] : 1,
+			this.getTint(blockId),
 			meta,
 		);
 	}
 
 	/**
 	 * Water-only quad emitter.
-	 * Handles water-level scaling, rawDim override, and water-level Y offsets.
 	 */
 	public emitWaterQuad(
 		x: number,
@@ -344,15 +371,23 @@ export class QuadBuffer {
 		let sy = (y * POS_SCALE + 0.5) | 0;
 		const sz = (z * POS_SCALE + 0.5) | 0;
 
-		if (sx < 0 || sy < 0 || sz < 0 || sx >= 256 || sy >= 256 || sz >= 256) {
+		if (
+			sx < 0 ||
+			sy < 0 ||
+			sz < 0 ||
+			sx >= BYTE_COORD_LIMIT ||
+			sy >= BYTE_COORD_LIMIT ||
+			sz >= BYTE_COORD_LIMIT
+		) {
 			return;
 		}
 
 		const hasLevelPair = (packedBlock & WATER_LEVEL_PAIR_MASK) !== 0;
-		const neighborLevel = (packedBlock >> 10) & 0x7;
+
+		const neighborLevel = (packedBlock >>> 10) & 0x7;
 		const ownLevel = hasLevelPair
-			? (packedBlock >> 13) & 0x7
-			: (packedBlock >> 10) & 0xf;
+			? (packedBlock >>> 13) & 0x7
+			: (packedBlock >>> 10) & 0xf;
 
 		const rawDim = width > 31 || height > 31 ? 1 : 0;
 
@@ -360,34 +395,48 @@ export class QuadBuffer {
 		let sh: number;
 
 		if (axis === 1) {
+			// Equivalent to WATER_TOP_OFFSET_SCALE[ownLevel].
 			if (ownLevel > 0) {
-				sy += WATER_TOP_OFFSET_SCALE[ownLevel];
+				sy -= ownLevel;
 			}
 
-			sw = rawDim ? width : width * POS_SCALE;
-			sh = rawDim ? height : height * POS_SCALE;
-		} else {
-			const topScale = hasLevelPair
-				? WATER_FRAC_SCALE[ownLevel]
-				: (packedBlock & WATER_ABOVE_MASK) !== 0
-					? POS_SCALE
-					: WATER_FRAC_SCALE[ownLevel];
+			sw = width;
+			sh = height;
 
-			const baseScale = hasLevelPair ? WATER_FRAC_SCALE[neighborLevel] : 0;
+			if (!rawDim) {
+				sw *= POS_SCALE;
+				sh *= POS_SCALE;
+			}
+		} else {
+			let topScale: number;
+
+			if (!hasLevelPair && (packedBlock & WATER_ABOVE_MASK) !== 0) {
+				topScale = POS_SCALE;
+			} else {
+				// Equivalent to WATER_FRAC_SCALE[ownLevel].
+				topScale = POS_SCALE - ownLevel;
+			}
+
+			// Equivalent to WATER_FRAC_SCALE[neighborLevel].
+			const baseScale = hasLevelPair ? POS_SCALE - neighborLevel : 0;
+
 			const spanScale = topScale - baseScale;
 
 			sy += baseScale;
 
-			if (axis === 0) {
-				sw = rawDim ? width : width * spanScale;
-				sh = rawDim ? height : height * POS_SCALE;
+			if (rawDim) {
+				sw = width;
+				sh = height;
+			} else if (axis === 0) {
+				sw = width * spanScale;
+				sh = height * POS_SCALE;
 			} else {
-				sw = rawDim ? width : width * POS_SCALE;
-				sh = rawDim ? height : height * spanScale;
+				sw = width * POS_SCALE;
+				sh = height * spanScale;
 			}
 		}
 
-		const tileIdx = blockId * FaceName.Count + faceName;
+		const tileIndex = blockId * FaceName.Count + faceName;
 		const meta =
 			((materialType & 0x3) << 1) | META_WATER | (rawDim ? META_RAW_DIM : 0);
 
@@ -398,11 +447,11 @@ export class QuadBuffer {
 			axis * 2 + backFace,
 			sw,
 			sh,
-			BlockFaceTileX[tileIdx],
-			BlockFaceTileY[tileIdx],
+			BlockFaceTileX[tileIndex],
+			BlockFaceTileY[tileIndex],
 			ao,
 			light,
-			blockId >= 0 && blockId < BlockTint.length ? BlockTint[blockId] : 1,
+			this.getTint(blockId),
 			meta,
 		);
 	}
