@@ -11,79 +11,77 @@ import {
 } from "./VoxelMaskExtractor";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
-type EmitFaceCallback = (desc: GreedyFaceDescriptor) => void;
-
 /**
- * Drives the greedy mesher across all 3 axes (X, Y, Z).
+ * Drives greedy meshing across all three axes.
  *
- * Masks are pre-extracted per axis in ONE contiguous sweep
- * (extractAllSliceMasks*) into the session's reusable mask/light banks, then
- * greedyMesh runs in banked mode over the precomputed slices. This replaces
- * the old per-slice extraction callbacks whose strided grid walks dominated
- * worker profiles.
- *
- * The adapter instance is cached per session, so the face-emitter closures
- * are allocated once per worker pipeline, not once per chunk build.
+ * Slice masks are extracted into reusable session-owned banks before each
+ * greedy pass. A single callback is reused for every axis to avoid allocating
+ * three axis-capturing closures per adapter.
  */
 export class VoxelGreedyAdapter {
 	private readonly _session: MeshBuildSession;
+	private readonly _faceEmitter: VoxelFaceEmitterAdapter;
 
-	private readonly _emitFaceX: EmitFaceCallback;
-	private readonly _emitFaceY: EmitFaceCallback;
-	private readonly _emitFaceZ: EmitFaceCallback;
+	/**
+	 * Axis consumed by the shared greedy callback.
+	 *
+	 * build() is synchronous, so the axis remains stable for the duration of
+	 * each greedyMesh() call.
+	 */
+	private _currentAxis = 0;
+
+	/**
+	 * One callback allocation per adapter instead of one closure per axis.
+	 */
+	private readonly _emitFace: (desc: GreedyFaceDescriptor) => void;
 
 	constructor(session: MeshBuildSession) {
 		this._session = session;
-		const faceEmitter = new VoxelFaceEmitterAdapter(session);
-
-		// Axis-specialized emitter callbacks.
-		// These are still closures, but they are created once and avoid a
-		// mutable current-axis field in the hot greedy path.
-		this._emitFaceX = (desc: GreedyFaceDescriptor): void => {
-			faceEmitter.emitVoxelFace(0, desc);
-		};
-
-		this._emitFaceY = (desc: GreedyFaceDescriptor): void => {
-			faceEmitter.emitVoxelFace(1, desc);
-		};
-
-		this._emitFaceZ = (desc: GreedyFaceDescriptor): void => {
-			faceEmitter.emitVoxelFace(2, desc);
-		};
+		this._faceEmitter = new VoxelFaceEmitterAdapter(session);
+		this._emitFace = this.emitFace.bind(this);
 	}
 
 	/**
-	 * Runs greedy meshing on all 3 axes.
-	 * Emits quads for all voxel faces into the session's quad buffers.
+	 * Shared greedy-mesher callback.
+	 */
+	private emitFace(desc: GreedyFaceDescriptor): void {
+		this._faceEmitter.emitVoxelFace(this._currentAxis, desc);
+	}
+
+	/**
+	 * Runs greedy meshing on all three axes.
 	 *
-	 * Axis order is X, Z, Y (sides first, horizontal tops/bottoms last).
-	 * The water bucket is alpha-blended with depthWrite enabled but no
-	 * per-face sorting, so buffer order IS draw order. Z side faces emitted
-	 * after Y tops used to composite over the ocean surface when viewed
-	 * from above — deep water walls at cave openings appeared on top of
-	 * the surface. Emitting Y last keeps the surface (near from above,
-	 * far slices first → near slices last within Y) on top for the
-	 * dominant top-down view. Opaque/cutout are depth-resolved so order
-	 * is irrelevant for them.
+	 * Axis order remains X, Z, Y. Water is alpha-blended without per-face
+	 * sorting, so Y faces are emitted last to keep nearby water surfaces above
+	 * distant side walls for the dominant top-down view.
 	 */
 	public build(): void {
 		const session = this._session;
-		// Bank layout follows the greedy grid (compacted when lodStep > 1),
-		// matching what the stride-aware extractors write.
+
+		// Bank layout follows the potentially downsampled greedy grid.
 		const gridSize =
 			session.meshGridSize > 0 ? session.meshGridSize : session.size;
-		const bankLength = (gridSize + 1) * gridSize * gridSize;
+
+		const area = gridSize * gridSize;
+		const bankLength = area * (gridSize + 1);
 
 		const maskBank = session.ensureMaskBank(bankLength);
 		const lightBank = session.ensureLightBank(bankLength);
+		const emitFace = this._emitFace;
 
+		// X axis
 		extractAllSliceMasksX(session, maskBank, lightBank);
-		greedyMesh(session, null, this._emitFaceX, maskBank, lightBank);
+		this._currentAxis = 0;
+		greedyMesh(session, null, emitFace, maskBank, lightBank);
 
+		// Z axis
 		extractAllSliceMasksZ(session, maskBank, lightBank);
-		greedyMesh(session, null, this._emitFaceZ, maskBank, lightBank);
+		this._currentAxis = 2;
+		greedyMesh(session, null, emitFace, maskBank, lightBank);
 
+		// Y axis, intentionally emitted last for transparent water ordering.
 		extractAllSliceMasksY(session, maskBank, lightBank);
-		greedyMesh(session, null, this._emitFaceY, maskBank, lightBank);
+		this._currentAxis = 1;
+		greedyMesh(session, null, emitFace, maskBank, lightBank);
 	}
 }

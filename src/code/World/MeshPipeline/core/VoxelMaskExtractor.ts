@@ -24,7 +24,7 @@ import {
 	getShapeInfo,
 	isGlassBlock,
 } from "./BlockInfoCache";
-import { quantizeLightForLOD } from "./LightPipeline";
+import { quantizeByteForLOD } from "./LightPipeline";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 /**
@@ -84,7 +84,6 @@ export function extractAllSliceMasksX(
 	const area = gridSize * gridSize;
 
 	maskBank.fill(0, 0, (gridSize + 1) * area);
-	lightBank.fill(0, 0, (gridSize + 1) * area);
 
 	// Per-slice occupancy: lets greedyMesh skip all-empty slices.
 	const occ = session.ensureSliceOccupancy(gridSize + 1);
@@ -204,45 +203,51 @@ export function extractAllSliceMasksY(
 	const gridSize =
 		session.meshGridSize > 0 ? session.meshGridSize : size / step;
 	const area = gridSize * gridSize;
+	const bankLength = (gridSize + 1) * area;
 
-	maskBank.fill(0, 0, (gridSize + 1) * area);
-	lightBank.fill(0, 0, (gridSize + 1) * area);
+	maskBank.fill(0, 0, bankLength);
 
-	const occ = session.ensureSliceOccupancy(gridSize + 1);
-	occ.fill(0, 0, gridSize + 1);
-
-	const hasPosNeighbor = session.hasNeighborChunk(0, 1, 0);
+	const occupancy = session.ensureSliceOccupancy(gridSize + 1);
+	occupancy.fill(0, 0, gridSize + 1);
 
 	const blockArr = session.block;
 	const lightArr = session.light;
 	const opaqueArr = session.opaque;
 	const disableAO = session.disableAO;
+
 	const ps = session.ps;
 	const ps2 = session.ps2;
-
-	// Axis Y uses u = Z and v = X (mask index = x * gridSize + z). Border
-	// ownership mirrors the X sweep: one +Y boundary slice pairs this
-	// chunk's top region representative with the neighbor's bottom one.
 	const yStep = ps * step;
 
-	for (let cvx = 0; cvx < gridSize; cvx++) {
-		const vx = cvx * step;
-		const xOffset = vx + 1;
+	/*
+	 * Axis Y:
+	 *   u = Z
+	 *   v = X
+	 *   mask cell = z + x * gridSize
+	 *
+	 * Keep X as the innermost loop so block, light, and opaque accesses are
+	 * contiguous. The output is strided by gridSize, but the considerably
+	 * larger input stencil used by processCell benefits from sequential reads.
+	 */
 
-		for (let cs = 0; cs < gridSize - 1; cs++) {
-			const nyVox = (cs + 1) * step;
-			const by = nyVox - step;
-			const curRowBase = (by + 1) * ps;
-			const outSliceBase = (cs + 1) * area;
+	for (let cs = 0; cs < gridSize - 1; cs++) {
+		const by = cs * step;
+		const ny = by + step;
+		const currentRowBase = (by + 1) * ps;
+		const outputSliceBase = (cs + 1) * area;
 
-			for (let cvz = 0; cvz < gridSize; cvz++) {
-				const vz = cvz * step;
-				const zBase = (vz + 1) * ps2;
-				const outIndex = outSliceBase + cvz + cvx * gridSize;
-				const curIdx = xOffset + curRowBase + zBase;
-				const nbrIdx = curIdx + yStep;
+		let sliceOccupied = 0;
 
-				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
+		for (let cvz = 0; cvz < gridSize; cvz++) {
+			const vz = cvz * step;
+			const inputBase = currentRowBase + (vz + 1) * ps2 + 1;
+			let outputIndex = outputSliceBase + cvz;
+
+			for (let cvx = 0, vx = 0; cvx < gridSize; cvx++, vx += step) {
+				const currentIndex = inputBase + vx;
+				const neighborIndex = currentIndex + yStep;
+
+				if ((opaqueArr[currentIndex] & opaqueArr[neighborIndex]) === 0) {
 					processCell(
 						session,
 						blockArr,
@@ -252,64 +257,79 @@ export function extractAllSliceMasksY(
 						by,
 						vz,
 						vx,
-						nyVox,
+						ny,
 						vz,
-						curIdx,
-						nbrIdx,
+						currentIndex,
+						neighborIndex,
 						2,
 						0,
 						FACE_PY,
 						FACE_NY,
-						outIndex,
+						outputIndex,
 						maskBank,
 						lightBank,
 					);
 
-					if (maskBank[outIndex] !== 0) occ[cs + 1] = 1;
+					sliceOccupied |= maskBank[outputIndex];
 				}
+
+				outputIndex += gridSize;
 			}
 		}
 
-		if (hasPosNeighbor) {
-			const by = (gridSize - 1) * step;
-			const curRowBase = (by + 1) * ps;
-			const outSliceBase = gridSize * area;
+		occupancy[cs + 1] = sliceOccupied !== 0 ? 1 : 0;
+	}
 
-			for (let cvz = 0; cvz < gridSize; cvz++) {
-				const vz = cvz * step;
-				const zBase = (vz + 1) * ps2;
-				const outIndex = outSliceBase + cvz + cvx * gridSize;
-				const curIdx = xOffset + curRowBase + zBase;
-				const nbrIdx = curIdx + yStep; // padding layer at voxel size
+	if (!session.hasNeighborChunk(0, 1, 0)) {
+		return;
+	}
 
-				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
-					processCell(
-						session,
-						blockArr,
-						lightArr,
-						disableAO,
-						vx,
-						by,
-						vz,
-						vx,
-						size,
-						vz,
-						curIdx,
-						nbrIdx,
-						2,
-						0,
-						FACE_PY,
-						FACE_NY,
-						outIndex,
-						maskBank,
-						lightBank,
-					);
+	const by = (gridSize - 1) * step;
+	const currentRowBase = (by + 1) * ps;
+	const outputSliceBase = gridSize * area;
 
-					if (maskBank[outIndex] !== 0) occ[gridSize] = 1;
-				}
+	let sliceOccupied = 0;
+
+	for (let cvz = 0; cvz < gridSize; cvz++) {
+		const vz = cvz * step;
+		const inputBase = currentRowBase + (vz + 1) * ps2 + 1;
+		let outputIndex = outputSliceBase + cvz;
+
+		for (let cvx = 0, vx = 0; cvx < gridSize; cvx++, vx += step) {
+			const currentIndex = inputBase + vx;
+			const neighborIndex = currentIndex + yStep;
+
+			if ((opaqueArr[currentIndex] & opaqueArr[neighborIndex]) === 0) {
+				processCell(
+					session,
+					blockArr,
+					lightArr,
+					disableAO,
+					vx,
+					by,
+					vz,
+					vx,
+					size,
+					vz,
+					currentIndex,
+					neighborIndex,
+					2,
+					0,
+					FACE_PY,
+					FACE_NY,
+					outputIndex,
+					maskBank,
+					lightBank,
+				);
+
+				sliceOccupied |= maskBank[outputIndex];
 			}
+
+			outputIndex += gridSize;
 		}
 	}
+
+	occupancy[gridSize] = sliceOccupied !== 0 ? 1 : 0;
 }
 
 export function extractAllSliceMasksZ(
@@ -324,7 +344,6 @@ export function extractAllSliceMasksZ(
 	const area = gridSize * gridSize;
 
 	maskBank.fill(0, 0, (gridSize + 1) * area);
-	lightBank.fill(0, 0, (gridSize + 1) * area);
 
 	const occ = session.ensureSliceOccupancy(gridSize + 1);
 	occ.fill(0, 0, gridSize + 1);
@@ -458,14 +477,16 @@ function processCell(
 	const currentPacked = blockArr[curIdx];
 	const neighborPacked = blockArr[nbrIdx];
 
-	// Air-air.
+	// maskBank was cleared before the sweep, so early exits do not need to
+	// write mask[outIndex] = 0.
 	if ((currentPacked | neighborPacked) === 0) {
-		mask[outIndex] = 0;
 		return;
 	}
 
-	const currCombined = currentPacked ? getCachedFlagsAndId(currentPacked) : 0;
-	const nbrCombined = neighborPacked ? getCachedFlagsAndId(neighborPacked) : 0;
+	const currCombined =
+		currentPacked !== 0 ? getCachedFlagsAndId(currentPacked) : 0;
+	const nbrCombined =
+		neighborPacked !== 0 ? getCachedFlagsAndId(neighborPacked) : 0;
 
 	const currFlags = getFlagsFromCombined(currCombined);
 	const nbrFlags = getFlagsFromCombined(nbrCombined);
@@ -475,21 +496,16 @@ function processCell(
 
 	// No solid blocks means no face.
 	if ((currSolid | nbrSolid) === 0) {
-		mask[outIndex] = 0;
 		return;
 	}
 
-	const currGreedy = currFlags & FLAG_GREEDY;
-	const nbrGreedy = nbrFlags & FLAG_GREEDY;
-
-	const currParticipates = currSolid !== 0 && currGreedy !== 0;
-	const nbrParticipates = nbrSolid !== 0 && nbrGreedy !== 0;
+	const currParticipates = currSolid !== 0 && (currFlags & FLAG_GREEDY) !== 0;
+	const nbrParticipates = nbrSolid !== 0 && (nbrFlags & FLAG_GREEDY) !== 0;
 
 	// If neither solid side can be emitted through greedy meshing, only a
 	// closed-face occlusion test could have mattered. Since no side emits,
 	// this cell contributes nothing.
 	if (!currParticipates && !nbrParticipates) {
-		mask[outIndex] = 0;
 		return;
 	}
 
@@ -508,58 +524,53 @@ function processCell(
 
 	// Two opaque participating full cubes never produce a visible face.
 	if (bothCube && currTransparent === 0 && nbrTransparent === 0) {
-		mask[outIndex] = 0;
 		return;
 	}
 
 	let currId = -1;
 	let nbrId = -1;
+	let currSourceId = -1;
+	let nbrSourceId = -1;
+
+	let waterCurrLevel = -1;
+	let waterNbrLevel = -1;
 
 	// IDs are only needed for water/glass interface and water-level behavior.
 	// Virtual variants resolve to their source for comparison so glass_01
 	// cube vs glass_01 stairs (same source) cull like the same block.
-	if (
+	const bothWaterGlass =
 		currSolid !== 0 &&
 		nbrSolid !== 0 &&
 		currWaterGlass !== 0 &&
-		nbrWaterGlass !== 0
-	) {
+		nbrWaterGlass !== 0;
+
+	if (bothWaterGlass) {
 		currId = getIdFromCombined(currCombined);
 		nbrId = getIdFromCombined(nbrCombined);
 
-		// Same water/glass cube state with same level is hidden.
-		// Compare source IDs so virtual variants cull against their base.
-		if (bothCube && getSourceBlockId(currId) === getSourceBlockId(nbrId)) {
-			const currLevel =
-				(currentPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
-			const nbrLevel =
-				(neighborPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
+		currSourceId = getSourceBlockId(currId);
+		nbrSourceId = getSourceBlockId(nbrId);
 
-			if (currLevel === nbrLevel) {
-				mask[outIndex] = 0;
-				return;
-			}
+		const bothWater =
+			currSourceId === WATER_BLOCK_ID && nbrSourceId === WATER_BLOCK_ID;
+
+		if (bothWater) {
+			waterCurrLevel =
+				(currentPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
+			waterNbrLevel =
+				(neighborPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
 		}
 
-		// Same-source glass (e.g. glass cube vs glass stairs) never shows
-		// an internal face. Water with differing levels falls through to
-		// the sliver logic below.
-		if (getSourceBlockId(currId) === getSourceBlockId(nbrId)) {
-			const currIsWater =
-				currId === WATER_BLOCK_ID ||
-				getSourceBlockId(currId) === WATER_BLOCK_ID;
-			const nbrIsWater =
-				nbrId === WATER_BLOCK_ID || getSourceBlockId(nbrId) === WATER_BLOCK_ID;
-			if (!(currIsWater && nbrIsWater)) {
-				mask[outIndex] = 0;
+		if (currSourceId === nbrSourceId) {
+			// Same-source glass (e.g. glass cube vs glass stairs) never shows
+			// an internal face, at any level.
+			if (!bothWater) {
 				return;
 			}
-			const currLevel =
-				(currentPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
-			const nbrLevel =
-				(neighborPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
-			if (currLevel === nbrLevel) {
-				mask[outIndex] = 0;
+
+			// Equal-level water columns are hidden. Differing-level columns
+			// fall through to the sliver path below.
+			if (waterCurrLevel === waterNbrLevel) {
 				return;
 			}
 		}
@@ -568,19 +579,12 @@ function processCell(
 	let preserveInterface = 0;
 
 	if (
-		currSolid !== 0 &&
-		nbrSolid !== 0 &&
+		bothWaterGlass &&
 		currTransparent !== 0 &&
 		nbrTransparent !== 0 &&
-		currWaterGlass !== 0 &&
-		nbrWaterGlass !== 0
+		currSourceId !== nbrSourceId
 	) {
-		if (currId < 0) currId = getIdFromCombined(currCombined);
-		if (nbrId < 0) nbrId = getIdFromCombined(nbrCombined);
-
-		if (getSourceBlockId(currId) !== getSourceBlockId(nbrId)) {
-			preserveInterface = 1;
-		}
+		preserveInterface = 1;
 	}
 
 	let currShapeInfo: BlockShapeInfo | null = null;
@@ -600,7 +604,6 @@ function processCell(
 			(currShapeInfo.closedFaceMask & currentFaceBit) !== 0 &&
 			(nbrShapeInfo.closedFaceMask & neighborFaceBit) !== 0
 		) {
-			mask[outIndex] = 0;
 			return;
 		}
 	}
@@ -610,9 +613,6 @@ function processCell(
 	// ============================================================
 
 	if (preserveInterface) {
-		if (currId < 0) currId = getIdFromCombined(currCombined);
-		if (nbrId < 0) nbrId = getIdFromCombined(nbrCombined);
-
 		const preferCurrent = isGlassBlock(currId)
 			? 1
 			: isGlassBlock(nbrId)
@@ -644,11 +644,14 @@ function processCell(
 
 			packedAO = disableAO ? 0 : computeAO(session, bx, by, bz, uAxis, vAxis);
 		} else {
-			mask[outIndex] = 0;
 			return;
 		}
 
-		if (getSourceBlockId(packedMask & BLOCK_ID_MASK) === WATER_BLOCK_ID) {
+		if (
+			preferCurrent
+				? currSourceId === WATER_BLOCK_ID
+				: nbrSourceId === WATER_BLOCK_ID
+		) {
 			packedMask &= ~(WATER_LEVEL_MASK_3 << WATER_SHALLOWER_SHIFT);
 
 			if (isWaterAt(blockArr, session.ps, session.ps2, bx, by + 1, bz)) {
@@ -659,9 +662,7 @@ function processCell(
 		const currLight = lightArr[curIdx];
 		const nbrLight = lightArr[nbrIdx];
 		const maxLight = currLight > nbrLight ? currLight : nbrLight;
-		const packedLightOnly = disableAO
-			? quantizeLightForLOD(maxLight, true)
-			: maxLight & 0xff;
+		const packedLightOnly = disableAO ? quantizeByteForLOD(maxLight) : maxLight;
 
 		mask[outIndex] = packedMask;
 		lightMask[outIndex] = (packedAO & 0xff) | ((packedLightOnly & 0xff) << 8);
@@ -701,29 +702,6 @@ function processCell(
 			(currTransparent !== 0 && nbrTransparent === 0) ||
 			currClosesFace === 0);
 
-	let waterCurrLevel = -1;
-	let waterNbrLevel = -1;
-
-	if (
-		currWaterGlass !== 0 &&
-		nbrWaterGlass !== 0 &&
-		currSolid !== 0 &&
-		nbrSolid !== 0
-	) {
-		if (currId < 0) currId = getIdFromCombined(currCombined);
-		if (nbrId < 0) nbrId = getIdFromCombined(nbrCombined);
-
-		if (
-			getSourceBlockId(currId) === WATER_BLOCK_ID &&
-			getSourceBlockId(nbrId) === WATER_BLOCK_ID
-		) {
-			waterCurrLevel =
-				(currentPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
-			waterNbrLevel =
-				(neighborPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
-		}
-	}
-
 	// Special case: adjacent water columns of different levels need a sliver.
 	if (!emitCurrent && !emitNeighbor) {
 		if (waterCurrLevel >= 0 && waterCurrLevel !== waterNbrLevel) {
@@ -736,7 +714,6 @@ function processCell(
 	}
 
 	if (!emitCurrent && !emitNeighbor) {
-		mask[outIndex] = 0;
 		return;
 	}
 
@@ -757,11 +734,23 @@ function processCell(
 
 		packedAO = disableAO ? 0 : computeAO(session, bx, by, bz, uAxis, vAxis);
 	} else {
-		mask[outIndex] = 0;
 		return;
 	}
 
-	if (getSourceBlockId(packedMask & BLOCK_ID_MASK) === WATER_BLOCK_ID) {
+	// Water state bits are only ever packed when the emitting block's source
+	// is water. When the opposite side is not water/glass its source ID was
+	// never resolved, so fall back to a packed-value resolve for the emitter.
+	const emittingIsWater = emitCurrent
+		? currWaterGlass !== 0 &&
+			(currSourceId !== -1
+				? currSourceId === WATER_BLOCK_ID
+				: getSourceBlockId(getIdFromCombined(currCombined)) === WATER_BLOCK_ID)
+		: nbrWaterGlass !== 0 &&
+			(nbrSourceId !== -1
+				? nbrSourceId === WATER_BLOCK_ID
+				: getSourceBlockId(getIdFromCombined(nbrCombined)) === WATER_BLOCK_ID);
+
+	if (emittingIsWater) {
 		packedMask &= ~(WATER_LEVEL_MASK_3 << WATER_SHALLOWER_SHIFT);
 
 		// waterAbove must reflect the block whose top defines the face.
@@ -771,12 +760,10 @@ function processCell(
 		let aboveY = by;
 		let aboveZ = bz;
 
-		if (waterCurrLevel >= 0 && waterCurrLevel !== waterNbrLevel) {
-			if (waterCurrLevel > waterNbrLevel) {
-				aboveX = nx;
-				aboveY = ny;
-				aboveZ = nz;
-			}
+		if (waterCurrLevel >= 0 && waterCurrLevel > waterNbrLevel) {
+			aboveX = nx;
+			aboveY = ny;
+			aboveZ = nz;
 		} else if (emitNeighbor) {
 			aboveX = nx;
 			aboveY = ny;
@@ -815,9 +802,7 @@ function processCell(
 	const currLight = lightArr[curIdx];
 	const nbrLight = lightArr[nbrIdx];
 	const maxLight = currLight > nbrLight ? currLight : nbrLight;
-	const packedLightOnly = disableAO
-		? quantizeLightForLOD(maxLight, true)
-		: maxLight & 0xff;
+	const packedLightOnly = disableAO ? quantizeByteForLOD(maxLight) : maxLight;
 
 	mask[outIndex] = packedMask;
 	lightMask[outIndex] = (packedAO & 0xff) | ((packedLightOnly & 0xff) << 8);

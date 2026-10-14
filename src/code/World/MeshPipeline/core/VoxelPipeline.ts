@@ -1,33 +1,29 @@
 // MeshPipeline/core/VoxelPipeline.ts
 
 import { emitCustomShapes } from "./CustomShapeEmitter";
-
 import { VoxelGreedyAdapter } from "./VoxelGreedyAdapter";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 /**
- * The main voxel pipeline:
+ * Main voxel mesh pipeline:
  *
- * 1. Run greedy meshing for all 3 axes (via VoxelGreedyAdapter)
- * 2. Emit non-greedy custom shapes (crosses, fences, multi-box blocks)
+ * 1. Emit greedy voxel faces across all three axes.
+ * 2. Emit non-greedy custom shapes.
  *
- * All per-build state lives on the MeshBuildSession passed in; the pipeline
- * instance is cached on the session (`session.pipeline`) so its adapter and
- * per-axis closures are created once per worker. Quads are emitted into
- * session.quadOpaque / session.quadWater / session.quadCutout, which
- * buildVoxelMesh binds to the worker's reused output buffers before calling
- * build().
+ * The pipeline and its greedy adapter are created once per session and reused
+ * across chunk builds. build() itself performs no allocations.
  */
 export class VoxelPipeline {
-	// PERF: Cache VoxelGreedyAdapter to avoid per-build allocations of adapter + sub-objects.
-	private greedy: VoxelGreedyAdapter;
+	private readonly session: MeshBuildSession;
+	private readonly greedy: VoxelGreedyAdapter;
 
-	constructor(private readonly session: MeshBuildSession) {
+	constructor(session: MeshBuildSession) {
+		this.session = session;
 		this.greedy = new VoxelGreedyAdapter(session);
 	}
 
 	/**
-	 * Build the voxel mesh for a full chunk.
+	 * Build the voxel mesh for the session's current chunk.
 	 */
 	public build(): void {
 		this.greedy.build();

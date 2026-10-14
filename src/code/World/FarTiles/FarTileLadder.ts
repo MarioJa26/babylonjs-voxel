@@ -3,135 +3,171 @@ import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 /**
  * Far-tile LOD ladder (LOD6+).
  *
- * Beyond the per-chunk LOD bands, the world is covered by square TILES that
+ * Beyond the per-chunk LOD bands, the world is covered by square tiles that
  * grow geometrically with distance while their voxel sampling step grows
- * proportionally. Tile count per ring stays bounded, so real decimated
- * geometry can extend to FAR_TILE_DISTANCE chunks without an explosion of
- * objects or draw work — the same trick Voxy / Distant Horizons use.
+ * proportionally.
  */
-
 export interface FarTileLevelDef {
-	/** lodLevel carried by tiles of this ring (matches chunk LOD numbering). */
+	/** lodLevel carried by tiles of this ring. */
 	lod: number;
+
 	/** Tile edge length in base chunks (32 blocks each). */
 	tileSizeChunks: number;
-	/** Voxel sample step in blocks (1 sample per step^2 column cell). */
+
+	/** Voxel sample step in blocks. */
 	voxelStep: number;
-	/** Inner radius (chunks) of this ring; tiles spawn at >= this distance. */
+
+	/** Inclusive inner radius of this ring, in chunks. */
 	ringInnerChunks: number;
-	/** Outer radius (chunks) of this ring. */
+
+	/** Exclusive outer radius of this ring, in chunks. */
 	ringOuterChunks: number;
 }
 
 const BASE_CHUNK_SIZE = 32;
 
-/**
- * Static ladder definition. Ring widths double per level so every ring
- * contains a similar number of tiles.
- *
- *   LOD6:  2x2-chunk tiles,  step 8,  ring +34  -> reach  55 chunks
- *   LOD7:  4x4-chunk tiles,  step 16, ring +66  -> reach 121 chunks
- *   LOD8:  8x8-chunk tiles,  step 32, ring +130 -> reach 251 chunks
- *   LOD9: 16x16-chunk tiles, step 64, ring +261 -> reach 512 chunks
- *
- * PERF: the outermost ring's voxel step must keep doubling with the ring
- * width, otherwise cells-per-tile grows with tile size and the horizon
- * dominates the frame. A 16-chunk tile at step 64 is still an 8x8 lattice,
- * so LOD9 stays the same 64 cells as every other ring — it covers 4x the
- * arc with the same per-tile work. At step 32 it was 16x16 = 256 cells and
- * accounted for ~72% of all resident far-tile faces.
- */
-function buildLadder(farDistance: number): FarTileLevelDef[] {
-	if (farDistance <= 0) return [];
+interface LadderDefinition {
+	readonly size: number;
+	readonly step: number;
+}
 
-	// Inner edge of the far system: just past the outermost per-chunk band.
-	let inner =
-		SETTING_PARAMS.RENDER_DISTANCE +
-		Math.max(
-			SETTING_PARAMS.LOD_1_OFFSET,
-			SETTING_PARAMS.LOD_2_OFFSET,
-			SETTING_PARAMS.LOD_3_OFFSET,
-			SETTING_PARAMS.LOD_4_OFFSET,
-			SETTING_PARAMS.LOD_5_OFFSET,
-		);
+const LADDER_DEFINITIONS: readonly LadderDefinition[] = [
+	{ size: 2, step: 8 },
+	{ size: 4, step: 16 },
+	{ size: 8, step: 32 },
+	{ size: 16, step: 64 },
+];
+
+const LOD_OFFSETS = (): readonly number[] => [
+	SETTING_PARAMS.LOD_1_OFFSET,
+	SETTING_PARAMS.LOD_2_OFFSET,
+	SETTING_PARAMS.LOD_3_OFFSET,
+	SETTING_PARAMS.LOD_4_OFFSET,
+	SETTING_PARAMS.LOD_5_OFFSET,
+];
+
+function getFarTileInnerRadius(): number {
+	const offsets = LOD_OFFSETS();
+
+	let maximumOffset = offsets[0];
+	for (let i = 1; i < offsets.length; i++) {
+		if (offsets[i] > maximumOffset) {
+			maximumOffset = offsets[i];
+		}
+	}
+
+	return SETTING_PARAMS.RENDER_DISTANCE + maximumOffset;
+}
+
+/**
+ * Builds the static far-tile ladder up to the configured horizon.
+ *
+ * Ring widths grow approximately geometrically, keeping the number of tiles
+ * per ring bounded while voxel resolution decreases with distance.
+ */
+function buildLadder(
+	farDistance: number,
+	initialInnerRadius: number,
+): FarTileLevelDef[] {
+	if (farDistance <= initialInnerRadius) {
+		return [];
+	}
 
 	const levels: FarTileLevelDef[] = [];
-	const ladders = [
-		{ size: 2, step: 8 },
-		{ size: 4, step: 16 },
-		{ size: 8, step: 32 },
-		{ size: 16, step: 64 },
-	];
+	let inner = initialInnerRadius;
 
-	for (let i = 0; i < ladders.length; i++) {
-		const { size, step } = ladders[i];
-		const remaining = ladders.length - i;
-		// The last level always extends to the configured horizon.
-		const outer =
-			remaining === 1
-				? farDistance
-				: Math.min(farDistance, inner * 2 + 1 + size);
+	for (let i = 0; i < LADDER_DEFINITIONS.length; i++) {
+		const definition = LADDER_DEFINITIONS[i];
+		const isLastLevel = i === LADDER_DEFINITIONS.length - 1;
 
-		if (outer <= inner) break;
+		const outer = isLastLevel
+			? farDistance
+			: Math.min(farDistance, inner * 2 + 1 + definition.size);
+
+		if (outer <= inner) {
+			break;
+		}
 
 		levels.push({
 			lod: 6 + i,
-			tileSizeChunks: size,
-			voxelStep: step,
+			tileSizeChunks: definition.size,
+			voxelStep: definition.step,
 			ringInnerChunks: inner,
 			ringOuterChunks: outer,
 		});
 
 		inner = outer;
+
+		if (inner >= farDistance) {
+			break;
+		}
 	}
 
 	return levels;
 }
 
 // ---------------------------------------------------------------------------
-// Module state (rebuilt when the settings value changes)
+// Module state
 // ---------------------------------------------------------------------------
 
-let _cachedFarDistance = -1;
-let _cachedLevels: FarTileLevelDef[] = [];
+let cachedFarDistance = Number.NaN;
+let cachedInnerRadius = Number.NaN;
+let cachedLevels: FarTileLevelDef[] = [];
 
 export function getFarTileLevels(): FarTileLevelDef[] {
-	const far = SETTING_PARAMS.FAR_TILE_DISTANCE;
-	if (_cachedFarDistance !== far) {
-		_cachedFarDistance = far;
-		_cachedLevels = buildLadder(far);
+	const farDistance = SETTING_PARAMS.FAR_TILE_DISTANCE;
+	const innerRadius = getFarTileInnerRadius();
+
+	if (cachedFarDistance !== farDistance || cachedInnerRadius !== innerRadius) {
+		cachedFarDistance = farDistance;
+		cachedInnerRadius = innerRadius;
+		cachedLevels = buildLadder(farDistance, innerRadius);
 	}
-	return _cachedLevels;
+
+	return cachedLevels;
 }
 
 export function isFarTilesEnabled(): boolean {
-	return SETTING_PARAMS.FAR_TILE_DISTANCE > 0 && getFarTileLevels().length > 0;
+	if (SETTING_PARAMS.FAR_TILE_DISTANCE <= 0) {
+		return false;
+	}
+
+	return getFarTileLevels().length !== 0;
 }
 
-/** Horizon of the far-tile system in blocks (0 when disabled). */
+/** Horizon of the far-tile system in blocks, or zero when disabled. */
 export function farTileReachBlocks(): number {
-	const levels = getFarTileLevels();
-	if (levels.length === 0) return 0;
-	return levels[levels.length - 1].ringOuterChunks * BASE_CHUNK_SIZE;
+	return farTileOutermostRingChunks() * BASE_CHUNK_SIZE;
 }
 
 export function farTileOutermostRingChunks(): number {
 	const levels = getFarTileLevels();
-	return levels.length > 0 ? levels[levels.length - 1].ringOuterChunks : 0;
+	const levelCount = levels.length;
+
+	return levelCount === 0 ? 0 : levels[levelCount - 1].ringOuterChunks;
 }
 
 /**
- * Which ladder level covers a chunk-distance (Chebyshev), or -1 when the
- * distance belongs to the per-chunk bands / is beyond the horizon.
+ * Returns the ladder-array index covering a Chebyshev chunk distance.
+ *
+ * Returns -1 when the distance belongs to the per-chunk bands or lies beyond
+ * the far-tile horizon.
  */
 export function levelForChunkDistance(chunkDist: number): number {
 	const levels = getFarTileLevels();
+
 	for (let i = 0; i < levels.length; i++) {
-		const lv = levels[i];
-		if (chunkDist >= lv.ringInnerChunks && chunkDist < lv.ringOuterChunks) {
+		const level = levels[i];
+
+		if (chunkDist < level.ringInnerChunks) {
+			return -1;
+		}
+
+		if (chunkDist < level.ringOuterChunks) {
 			return i;
 		}
 	}
+
 	return -1;
 }
 

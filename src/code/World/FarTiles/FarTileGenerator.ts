@@ -20,17 +20,16 @@ import { getFarTileLevels } from "./FarTileLadder";
 /**
  * Worker-side far-tile mesh generator.
  *
- * Produces decimated voxel-style geometry for one far LOD tile directly from
- * the terrain height/biome functions — full-resolution voxel arrays are never
- * materialized. Output is the compact face format defined in
- * FarTileFaceFormat.ts (encoding + decode + CPU expansion all live there so
- * the pipeline stays verifiable end-to-end).
+ * Produces decimated voxel-style geometry directly from terrain height and
+ * biome functions, without materializing full-resolution voxel arrays.
  */
 
-// Tree candidate scan stride in blocks. Real trees are stamped per block
-// column; at far distance every 4th column still catches every canopy while
-// keeping per-tile cost bounded.
+const BASE_CHUNK_SIZE = 32;
 const TREE_SCAN_STRIDE = 4;
+const WORDS_PER_FACE = 4;
+
+const DEFAULT_TOP_TILE_X = 14;
+const DEFAULT_TOP_TILE_Y = 0;
 
 export interface FarTileGenerateRequest {
 	requestId: number;
@@ -49,11 +48,13 @@ export interface FarTileResult {
 }
 
 class FaceWriter {
-	public faces: Uint32Array;
-	public count: number = 0;
+	private faces: Uint32Array;
+	private wordCount = 0;
 
-	constructor(initialCapacity: number = 4096) {
-		this.faces = new Uint32Array(initialCapacity * 4); // 4 words per face
+	constructor(initialFaceCapacity = 4096) {
+		const faceCapacity = initialFaceCapacity > 0 ? initialFaceCapacity : 1;
+
+		this.faces = new Uint32Array(faceCapacity * WORDS_PER_FACE);
 	}
 
 	public emit(
@@ -70,6 +71,7 @@ class FaceWriter {
 		kind: number,
 	): void {
 		const yBiased = y + FAR_TILE_Y_OFFSET;
+
 		if (
 			x < 0 ||
 			z < 0 ||
@@ -77,62 +79,103 @@ class FaceWriter {
 			x > 1023 ||
 			z > 1023 ||
 			yBiased > 4095 ||
+			w < 0 ||
+			h < 0 ||
 			w > 1023 ||
 			h > 1023
-		)
+		) {
 			return;
-
-		if (this.count + 4 > this.faces.length) {
-			const newFaces = new Uint32Array(this.faces.length * 2);
-			newFaces.set(this.faces);
-			this.faces = newFaces;
 		}
 
-		const i = this.count;
-		this.faces[i] = x | (yBiased << 10) | (z << 22);
-		this.faces[i + 1] = packWord1(w, h, axis, backFace);
-		this.faces[i + 2] =
-			(tileX & 0xff) | ((tileY & 0xff) << 8) | ((light & 0xff) << 16);
-		this.faces[i + 3] = kind & 0xff;
+		const requiredWordCount = this.wordCount + WORDS_PER_FACE;
 
-		this.count += 4;
+		if (requiredWordCount > this.faces.length) {
+			let newLength = this.faces.length * 2;
+
+			if (newLength < requiredWordCount) {
+				newLength = requiredWordCount;
+			}
+
+			const expanded = new Uint32Array(newLength);
+			expanded.set(this.faces);
+			this.faces = expanded;
+		}
+
+		const index = this.wordCount;
+
+		this.faces[index] = x | (yBiased << 10) | (z << 22);
+
+		this.faces[index + 1] = packWord1(w, h, axis, backFace);
+
+		this.faces[index + 2] =
+			(tileX & 0xff) | ((tileY & 0xff) << 8) | ((light & 0xff) << 16);
+
+		this.faces[index + 3] = kind & 0xff;
+
+		this.wordCount = requiredWordCount;
 	}
 
 	public toUint32Array(): Uint32Array {
-		// Slice creates a new ArrayBuffer, safe to transfer to main thread
-		// without detaching the worker's reusable buffer.
-		return this.faces.slice(0, this.count);
+		// Creates an independently transferable buffer.
+		return this.faces.slice(0, this.wordCount);
 	}
-}
-
-function tilesForBlock(blockId: number): [number, number] | null {
-	if (blockId < 0 || blockId * FaceName.Count >= BlockFaceTileX.length)
-		return null;
-	const base = blockId * FaceName.Count + FaceName.All;
-	return [BlockFaceTileX[base], BlockFaceTileY[base]];
 }
 
 interface HeightLattice {
 	/** Number of unpadded height samples per axis. */
 	n: number;
+
+	/** Distance between samples in blocks. */
 	step: number;
+
+	/** Number of samples per padded row. */
 	padded: number;
+
+	/** Reused height buffer. Only the current lattice range is valid. */
 	heights: Float64Array;
-	/** Maximum corner height for every terrain cell. */
+
+	/** Maximum corner height for each terrain cell. */
 	cellMax: Float64Array;
 }
 
-let _latticeHeightBuffer = new Float64Array(1024);
-let _latticeCellMaxBuffer = new Float64Array(1024);
+let latticeHeightBuffer: Float64Array = new Float64Array(1024);
+let latticeCellMaxBuffer: Float64Array = new Float64Array(1024);
+
+function ensureFloat64Capacity(
+	buffer: Float64Array,
+	requiredLength: number,
+): Float64Array {
+	if (requiredLength <= buffer.length) {
+		return buffer;
+	}
+
+	return new Float64Array(Math.max(requiredLength, buffer.length * 2));
+}
 
 /**
- * Samples heights on a lattice padded by ONE ring (-1..n inclusive) so that
- * neighbor lookups across tile borders resolve to REAL terrain values.
- * Same-level neighbors then produce flush edges (no skirt -> no seam fins),
- * while genuine cliffs and level-ring boundaries still get exact skirts.
+ * Returns the maximum of the four height samples forming the cell whose
+ * upper-left corner is at `topLeftIndex`.
  */
-const _latticeBuffer = new Float64Array(1024);
+function getCellMaximum(
+	heights: Float64Array,
+	topLeftIndex: number,
+	rowStride: number,
+): number {
+	const h00 = heights[topLeftIndex];
+	const h10 = heights[topLeftIndex + 1];
+	const h01 = heights[topLeftIndex + rowStride];
+	const h11 = heights[topLeftIndex + rowStride + 1];
 
+	const upperMaximum = h00 > h10 ? h00 : h10;
+	const lowerMaximum = h01 > h11 ? h01 : h11;
+
+	return upperMaximum > lowerMaximum ? upperMaximum : lowerMaximum;
+}
+
+/**
+ * Samples heights on a lattice padded by one ring so tile-boundary neighbor
+ * heights come from real terrain instead of duplicated edge values.
+ */
 function buildHeightLattice(
 	originX: number,
 	originZ: number,
@@ -141,55 +184,44 @@ function buildHeightLattice(
 ): HeightLattice {
 	const n = sizeBlocks / step + 1;
 	const padded = n + 2;
+
 	const heightCount = padded * padded;
 	const cellsPerAxis = n - 1;
 	const cellCount = cellsPerAxis * cellsPerAxis;
 
-	if (heightCount > _latticeHeightBuffer.length) {
-		_latticeHeightBuffer = new Float64Array(
-			Math.max(heightCount, _latticeHeightBuffer.length * 2),
-		);
-	}
+	latticeHeightBuffer = ensureFloat64Capacity(latticeHeightBuffer, heightCount);
 
-	if (cellCount > _latticeCellMaxBuffer.length) {
-		_latticeCellMaxBuffer = new Float64Array(
-			Math.max(cellCount, _latticeCellMaxBuffer.length * 2),
-		);
-	}
+	latticeCellMaxBuffer = ensureFloat64Capacity(latticeCellMaxBuffer, cellCount);
 
-	const heights = _latticeHeightBuffer;
-	const cellMax = _latticeCellMaxBuffer;
+	const heights = latticeHeightBuffer;
+	const cellMax = latticeCellMaxBuffer;
 
-	let writeIndex = 0;
+	let heightIndex = 0;
+	let worldZ = originZ - step;
 
-	for (let cz = -1; cz <= n; cz++) {
-		const worldZ = originZ + cz * step;
+	for (let latticeZ = -1; latticeZ <= n; latticeZ++) {
 		let worldX = originX - step;
 
-		for (let cx = -1; cx <= n; cx++) {
-			heights[writeIndex++] = getFinalTerrainHeight(worldX, worldZ);
+		for (let latticeX = -1; latticeX <= n; latticeX++) {
+			heights[heightIndex++] = getFinalTerrainHeight(worldX, worldZ);
+
 			worldX += step;
 		}
+
+		worldZ += step;
 	}
 
-	// Precompute the maximum of each cell's four corners once. The terrain
-	// loop, neighbor skirts, and tree sampling can then use direct reads.
 	let cellIndex = 0;
+	let rowStart = padded + 1;
 
-	for (let cz = 0; cz < cellsPerAxis; cz++) {
-		let topLeftIndex = (cz + 1) * padded + 1;
+	for (let cellZ = 0; cellZ < cellsPerAxis; cellZ++) {
+		let sampleIndex = rowStart;
 
-		for (let cx = 0; cx < cellsPerAxis; cx++, topLeftIndex++) {
-			const h00 = heights[topLeftIndex];
-			const h10 = heights[topLeftIndex + 1];
-			const h01 = heights[topLeftIndex + padded];
-			const h11 = heights[topLeftIndex + padded + 1];
-
-			const topMax = h00 > h10 ? h00 : h10;
-			const bottomMax = h01 > h11 ? h01 : h11;
-
-			cellMax[cellIndex++] = topMax > bottomMax ? topMax : bottomMax;
+		for (let cellX = 0; cellX < cellsPerAxis; cellX++, sampleIndex++) {
+			cellMax[cellIndex++] = getCellMaximum(heights, sampleIndex, padded);
 		}
+
+		rowStart += padded;
 	}
 
 	return {
@@ -203,57 +235,129 @@ function buildHeightLattice(
 
 /**
  * Returns the nearest interior lattice sample for a local block coordinate.
- * This preserves the original round-and-clamp behavior used by tree stamping.
+ * This preserves the existing rounded-and-clamped tree placement behavior.
  */
 function sampleLatticeHeight(
 	lattice: HeightLattice,
 	localX: number,
 	localZ: number,
 ): number {
-	const maxSample = lattice.n - 1;
+	const maximumSample = lattice.n - 1;
+	const inverseStep = 1 / lattice.step;
 
-	let gx = Math.round(localX / lattice.step);
-	let gz = Math.round(localZ / lattice.step);
+	let gridX = Math.round(localX * inverseStep);
+	let gridZ = Math.round(localZ * inverseStep);
 
-	if (gx < 0) gx = 0;
-	else if (gx > maxSample) gx = maxSample;
+	if (gridX < 0) {
+		gridX = 0;
+	} else if (gridX > maximumSample) {
+		gridX = maximumSample;
+	}
 
-	if (gz < 0) gz = 0;
-	else if (gz > maxSample) gz = maxSample;
+	if (gridZ < 0) {
+		gridZ = 0;
+	} else if (gridZ > maximumSample) {
+		gridZ = maximumSample;
+	}
 
-	return lattice.heights[(gz + 1) * lattice.padded + gx + 1];
+	return lattice.heights[(gridZ + 1) * lattice.padded + gridX + 1];
+}
+
+/**
+ * Packs a block's "all faces" texture coordinates into one integer.
+ *
+ * The low byte contains tile X and the next byte contains tile Y. A negative
+ * result means that the block does not have a valid texture entry.
+ */
+function getPackedBlockTile(blockId: number): number {
+	if (blockId < 0) {
+		return -1;
+	}
+
+	const textureIndex = blockId * FaceName.Count + FaceName.All;
+
+	if (
+		textureIndex < 0 ||
+		textureIndex >= BlockFaceTileX.length ||
+		textureIndex >= BlockFaceTileY.length
+	) {
+		return -1;
+	}
+
+	return (
+		(BlockFaceTileX[textureIndex] & 0xff) |
+		((BlockFaceTileY[textureIndex] & 0xff) << 8)
+	);
+}
+
+function getTopTextureIndex(blockId: number): number {
+	if (blockId < 0) {
+		return -1;
+	}
+
+	const textureIndex = blockId * FaceName.Count + FaceName.Top;
+
+	if (
+		textureIndex < 0 ||
+		textureIndex >= BlockFaceTileX.length ||
+		textureIndex >= BlockFaceTileY.length
+	) {
+		return -1;
+	}
+
+	return textureIndex;
+}
+
+function createEmptyResult(
+	request: FarTileGenerateRequest,
+	opaque: FaceWriter,
+	water: FaceWriter,
+): FarTileResult {
+	return {
+		requestId: request.requestId,
+		levelIndex: request.levelIndex,
+		tileX: request.tileX,
+		tileZ: request.tileZ,
+		opaqueFaces: opaque.toUint32Array(),
+		waterFaces: water.toUint32Array(),
+	};
 }
 
 export function generateFarTile(
 	request: FarTileGenerateRequest,
 ): FarTileResult {
-	const levels = getFarTileLevels();
-	const level: FarTileLevelDef | undefined = levels[request.levelIndex];
-
-	const opaque = new FaceWriter();
-	const water = new FaceWriter();
+	const level: FarTileLevelDef | undefined =
+		getFarTileLevels()[request.levelIndex];
 
 	if (level === undefined) {
-		return {
-			requestId: request.requestId,
-			levelIndex: request.levelIndex,
-			tileX: request.tileX,
-			tileZ: request.tileZ,
-			opaqueFaces: opaque.toUint32Array(),
-			waterFaces: water.toUint32Array(),
-		};
+		const opaque = new FaceWriter(1);
+		const water = new FaceWriter(1);
+
+		return createEmptyResult(request, opaque, water);
 	}
 
-	const sizeBlocks = level.tileSizeChunks * 32;
+	const sizeBlocks = level.tileSizeChunks * BASE_CHUNK_SIZE;
+
+	const step = level.voxelStep;
+	const cellsPerAxis = sizeBlocks / step;
+	const cellCount = cellsPerAxis * cellsPerAxis;
+
+	/*
+	 * Every land cell can emit one top and up to four sides. Pre-sizing for
+	 * two faces per cell handles typical terrain without allocating for the
+	 * pathological five-face maximum.
+	 */
+	const opaque = new FaceWriter(cellCount * 2);
+	const water = new FaceWriter(cellCount);
+
 	const originX = request.tileX * sizeBlocks;
 	const originZ = request.tileZ * sizeBlocks;
-	const step = level.voxelStep;
+
 	const halfStep = step * 0.5;
 	const seaLevel = GenerationParams.SEA_LEVEL;
 
 	const lattice = buildHeightLattice(originX, originZ, sizeBlocks, step);
 
-	const cellsPerAxis = lattice.n - 1;
 	const padded = lattice.padded;
 	const heights = lattice.heights;
 	const cellMaxima = lattice.cellMax;
@@ -261,22 +365,21 @@ export function generateFarTile(
 	const lastCell = cellsPerAxis - 1;
 
 	let cellIndex = 0;
+	let sampleRowStart = padded + 1;
+	let z0 = 0;
 
-	for (let cz = 0, z0 = 0; cz < cellsPerAxis; cz++, z0 += step) {
-		/*
-		 * Sample (0, cz) in the padded height lattice. The interior lattice
-		 * begins at padded coordinate (1, 1).
-		 */
-		let sampleIndex = (cz + 1) * padded + 1;
+	for (let cellZ = 0; cellZ < cellsPerAxis; cellZ++) {
+		let sampleIndex = sampleRowStart;
+		let x0 = 0;
 
 		for (
-			let cx = 0, x0 = 0;
-			cx < cellsPerAxis;
-			cx++, x0 += step, sampleIndex++, cellIndex++
+			let cellX = 0;
+			cellX < cellsPerAxis;
+			cellX++, x0 += step, sampleIndex++, cellIndex++
 		) {
-			const cellMax = cellMaxima[cellIndex];
+			const cellMaximum = cellMaxima[cellIndex];
 
-			if (cellMax < seaLevel) {
+			if (cellMaximum < seaLevel) {
 				water.emit(
 					x0,
 					seaLevel,
@@ -296,23 +399,19 @@ export function generateFarTile(
 
 			const biome = getBiome(originX + x0 + halfStep, originZ + z0 + halfStep);
 
-			const topBlockId = biome.topBlock;
+			const textureIndex = getTopTextureIndex(biome.topBlock);
 
-			let tileX = 14;
-			let tileY = 0;
+			let tileX = DEFAULT_TOP_TILE_X;
+			let tileY = DEFAULT_TOP_TILE_Y;
 
-			if (topBlockId >= 0) {
-				const textureIndex = topBlockId * FaceName.Count + FaceName.Top;
-
-				if (textureIndex < BlockFaceTileX.length) {
-					tileX = BlockFaceTileX[textureIndex];
-					tileY = BlockFaceTileY[textureIndex];
-				}
+			if (textureIndex >= 0) {
+				tileX = BlockFaceTileX[textureIndex];
+				tileY = BlockFaceTileY[textureIndex];
 			}
 
 			opaque.emit(
 				x0,
-				cellMax,
+				cellMaximum,
 				z0,
 				step,
 				step,
@@ -324,37 +423,18 @@ export function generateFarTile(
 				KIND_OPAQUE,
 			);
 
-			/*
-			 * Interior neighbor maxima have already been calculated by
-			 * buildHeightLattice(). Only tile-boundary neighbors require
-			 * reading four corners from the padded height lattice.
-			 */
+			const negativeZMaximum =
+				cellZ > 0
+					? cellMaxima[cellIndex - cellsPerAxis]
+					: getCellMaximum(heights, sampleIndex - padded, padded);
 
-			let negativeZMax: number;
-
-			if (cz > 0) {
-				negativeZMax = cellMaxima[cellIndex - cellsPerAxis];
-			} else {
-				const rowAbove = sampleIndex - padded;
-
-				const h00 = heights[rowAbove];
-				const h10 = heights[rowAbove + 1];
-				const h01 = heights[sampleIndex];
-				const h11 = heights[sampleIndex + 1];
-
-				const upperMax = h00 > h10 ? h00 : h10;
-				const lowerMax = h01 > h11 ? h01 : h11;
-
-				negativeZMax = upperMax > lowerMax ? upperMax : lowerMax;
-			}
-
-			if (negativeZMax < cellMax) {
+			if (negativeZMaximum < cellMaximum) {
 				opaque.emit(
 					x0,
-					negativeZMax,
+					negativeZMaximum,
 					z0,
 					step,
-					cellMax - negativeZMax,
+					cellMaximum - negativeZMaximum,
 					2,
 					1,
 					tileX,
@@ -364,31 +444,18 @@ export function generateFarTile(
 				);
 			}
 
-			let positiveZMax: number;
+			const positiveZMaximum =
+				cellZ < lastCell
+					? cellMaxima[cellIndex + cellsPerAxis]
+					: getCellMaximum(heights, sampleIndex + padded, padded);
 
-			if (cz < lastCell) {
-				positiveZMax = cellMaxima[cellIndex + cellsPerAxis];
-			} else {
-				const neighborTopLeft = sampleIndex + padded;
-
-				const h00 = heights[neighborTopLeft];
-				const h10 = heights[neighborTopLeft + 1];
-				const h01 = heights[neighborTopLeft + padded];
-				const h11 = heights[neighborTopLeft + padded + 1];
-
-				const upperMax = h00 > h10 ? h00 : h10;
-				const lowerMax = h01 > h11 ? h01 : h11;
-
-				positiveZMax = upperMax > lowerMax ? upperMax : lowerMax;
-			}
-
-			if (positiveZMax < cellMax) {
+			if (positiveZMaximum < cellMaximum) {
 				opaque.emit(
 					x0,
-					positiveZMax,
+					positiveZMaximum,
 					z0 + step,
 					step,
-					cellMax - positiveZMax,
+					cellMaximum - positiveZMaximum,
 					2,
 					0,
 					tileX,
@@ -398,30 +465,17 @@ export function generateFarTile(
 				);
 			}
 
-			let negativeXMax: number;
+			const negativeXMaximum =
+				cellX > 0
+					? cellMaxima[cellIndex - 1]
+					: getCellMaximum(heights, sampleIndex - 1, padded);
 
-			if (cx > 0) {
-				negativeXMax = cellMaxima[cellIndex - 1];
-			} else {
-				const neighborTopLeft = sampleIndex - 1;
-
-				const h00 = heights[neighborTopLeft];
-				const h10 = heights[neighborTopLeft + 1];
-				const h01 = heights[neighborTopLeft + padded];
-				const h11 = heights[neighborTopLeft + padded + 1];
-
-				const upperMax = h00 > h10 ? h00 : h10;
-				const lowerMax = h01 > h11 ? h01 : h11;
-
-				negativeXMax = upperMax > lowerMax ? upperMax : lowerMax;
-			}
-
-			if (negativeXMax < cellMax) {
+			if (negativeXMaximum < cellMaximum) {
 				opaque.emit(
 					x0,
-					negativeXMax,
+					negativeXMaximum,
 					z0,
-					cellMax - negativeXMax,
+					cellMaximum - negativeXMaximum,
 					step,
 					0,
 					1,
@@ -432,30 +486,17 @@ export function generateFarTile(
 				);
 			}
 
-			let positiveXMax: number;
+			const positiveXMaximum =
+				cellX < lastCell
+					? cellMaxima[cellIndex + 1]
+					: getCellMaximum(heights, sampleIndex + 1, padded);
 
-			if (cx < lastCell) {
-				positiveXMax = cellMaxima[cellIndex + 1];
-			} else {
-				const neighborTopLeft = sampleIndex + 1;
-
-				const h00 = heights[neighborTopLeft];
-				const h10 = heights[neighborTopLeft + 1];
-				const h01 = heights[neighborTopLeft + padded];
-				const h11 = heights[neighborTopLeft + padded + 1];
-
-				const upperMax = h00 > h10 ? h00 : h10;
-				const lowerMax = h01 > h11 ? h01 : h11;
-
-				positiveXMax = upperMax > lowerMax ? upperMax : lowerMax;
-			}
-
-			if (positiveXMax < cellMax) {
+			if (positiveXMaximum < cellMaximum) {
 				opaque.emit(
 					x0 + step,
-					positiveXMax,
+					positiveXMaximum,
 					z0,
-					cellMax - positiveXMax,
+					cellMaximum - positiveXMaximum,
 					step,
 					0,
 					0,
@@ -466,6 +507,9 @@ export function generateFarTile(
 				);
 			}
 		}
+
+		sampleRowStart += padded;
+		z0 += step;
 	}
 
 	stampTrees(opaque, lattice, originX, originZ, sizeBlocks, step, seaLevel);
@@ -481,7 +525,7 @@ export function generateFarTile(
 }
 
 /**
- * Stamp simplified trees at the same world positions used by normal terrain
+ * Stamps simplified trees at the same world positions used by normal terrain
  * generation.
  */
 function stampTrees(
@@ -495,21 +539,29 @@ function stampTrees(
 ): void {
 	const stride = step > TREE_SCAN_STRIDE ? step : TREE_SCAN_STRIDE;
 
-	for (let lz = 0, wz = originZ; lz < sizeBlocks; lz += stride, wz += stride) {
-		for (
-			let lx = 0, wx = originX;
-			lx < sizeBlocks;
-			lx += stride, wx += stride
-		) {
-			const noiseValue = SurfaceGenerator.getTreeNoiseValue(wx, wz);
+	let worldZ = originZ;
 
-			const biome = getBiome(wx, wz);
+	for (
+		let localZ = 0;
+		localZ < sizeBlocks;
+		localZ += stride, worldZ += stride
+	) {
+		let worldX = originX;
+
+		for (
+			let localX = 0;
+			localX < sizeBlocks;
+			localX += stride, worldX += stride
+		) {
+			const noiseValue = SurfaceGenerator.getTreeNoiseValue(worldX, worldZ);
+
+			const biome = getBiome(worldX, worldZ);
 
 			if (!biome.canSpawnTrees || noiseValue >= biome.treeDensity) {
 				continue;
 			}
 
-			const surfaceY = Math.floor(sampleLatticeHeight(lattice, lx, lz));
+			const surfaceY = Math.floor(sampleLatticeHeight(lattice, localX, localZ));
 
 			if (surfaceY < seaLevel) {
 				continue;
@@ -517,11 +569,20 @@ function stampTrees(
 
 			const tree = biome.getTreeForBlock(biome.topBlock, noiseValue);
 
-			if (tree === null || tree === undefined) {
+			if (tree == null) {
 				continue;
 			}
 
-			const hash = (Math.imul(wx, 374761393) ^ Math.imul(wz, 678446653)) >>> 0;
+			const packedWoodTile = getPackedBlockTile(tree.woodId);
+
+			const packedLeafTile = getPackedBlockTile(tree.leavesId);
+
+			if (packedWoodTile < 0 && packedLeafTile < 0) {
+				continue;
+			}
+
+			const hash =
+				(Math.imul(worldX, 374761393) ^ Math.imul(worldZ, 678446653)) >>> 0;
 
 			const rawVariance = tree.heightVariance ?? 0;
 			const variance = rawVariance > 0 ? rawVariance : 0;
@@ -529,23 +590,17 @@ function stampTrees(
 			const trunkHeight =
 				(tree.baseHeight ?? 5) + (variance > 0 ? hash % (variance + 1) : 0);
 
-			const woodTile = tilesForBlock(tree.woodId);
-			const leafTile = tilesForBlock(tree.leavesId);
-
-			if (woodTile === null && leafTile === null) {
-				continue;
-			}
-
 			const baseY = surfaceY + 1;
 
-			if (woodTile !== null) {
-				const woodTileX = woodTile[0];
-				const woodTileY = woodTile[1];
+			if (packedWoodTile >= 0) {
+				const woodTileX = packedWoodTile & 0xff;
+
+				const woodTileY = (packedWoodTile >>> 8) & 0xff;
 
 				out.emit(
-					lx,
+					localX,
 					baseY,
-					lz + 1,
+					localZ + 1,
 					1,
 					trunkHeight,
 					2,
@@ -557,9 +612,9 @@ function stampTrees(
 				);
 
 				out.emit(
-					lx,
+					localX,
 					baseY,
-					lz,
+					localZ,
 					1,
 					trunkHeight,
 					2,
@@ -571,9 +626,9 @@ function stampTrees(
 				);
 
 				out.emit(
-					lx + 1,
+					localX + 1,
 					baseY,
-					lz,
+					localZ,
 					trunkHeight,
 					1,
 					0,
@@ -585,9 +640,9 @@ function stampTrees(
 				);
 
 				out.emit(
-					lx,
+					localX,
 					baseY,
-					lz,
+					localZ,
 					trunkHeight,
 					1,
 					0,
@@ -599,35 +654,41 @@ function stampTrees(
 				);
 			}
 
-			if (leafTile === null) {
+			if (packedLeafTile < 0) {
 				continue;
 			}
 
 			let radius = stride >> 2;
 
-			if (radius < 2) radius = 2;
-			else if (radius > 8) radius = 8;
+			if (radius < 2) {
+				radius = 2;
+			} else if (radius > 8) {
+				radius = 8;
+			}
 
 			const canopyBase = baseY + (trunkHeight > 3 ? trunkHeight - 3 : 1);
 
 			const canopySize = radius * 2 + 1;
 			const maximumAnchor = sizeBlocks - canopySize;
 
-			let canopyX = lx - radius;
-			let canopyZ = lz - radius;
+			let canopyX = localX - radius;
+			let canopyZ = localZ - radius;
 
-			if (canopyX < 0) canopyX = 0;
-			else if (canopyX > maximumAnchor) {
+			if (canopyX < 0) {
+				canopyX = 0;
+			} else if (canopyX > maximumAnchor) {
 				canopyX = maximumAnchor;
 			}
 
-			if (canopyZ < 0) canopyZ = 0;
-			else if (canopyZ > maximumAnchor) {
+			if (canopyZ < 0) {
+				canopyZ = 0;
+			} else if (canopyZ > maximumAnchor) {
 				canopyZ = maximumAnchor;
 			}
 
-			const leafTileX = leafTile[0];
-			const leafTileY = leafTile[1];
+			const leafTileX = packedLeafTile & 0xff;
+
+			const leafTileY = (packedLeafTile >>> 8) & 0xff;
 
 			out.emit(
 				canopyX,

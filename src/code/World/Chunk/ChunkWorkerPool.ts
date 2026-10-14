@@ -2371,9 +2371,21 @@ export class ChunkWorkerPool {
 		// the drain discards the in-flight result and pays a duplicate rebuild.
 		if (bumpRevision && !chunk.remeshQueued) chunk.meshRevision++;
 		if (!chunk.hasVoxelData) {
-			if (!this.tryApplyCachedLODMesh(chunk, true)) {
+			if (this.tryApplyCachedLODMesh(chunk, true)) {
+				// Cached mesh stands in: the chunk is clean. Drop any queued
+				// state — a heap entry pushed before the voxel data was
+				// released would otherwise dispatch later as an illegal
+				// beginRemesh from Clean.
+				this.pendingRemeshMap.delete(chunk);
+				this.taskQueuePriority.delete(chunk);
+				this.heapRemove(chunk);
+				ChunkLifecycle.completeRemesh(chunk);
+			} else {
 				chunk.isDirty = true;
 				chunk.remeshQueued = false;
+				this.pendingRemeshMap.delete(chunk);
+				this.taskQueuePriority.delete(chunk);
+				this.heapRemove(chunk);
 			}
 			return;
 		}
@@ -2389,6 +2401,7 @@ export class ChunkWorkerPool {
 			}
 			this.pendingRemeshMap.delete(chunk);
 			this.taskQueuePriority.delete(chunk);
+			this.heapRemove(chunk);
 			this.clearChunkMeshIfPresent(chunk);
 			// Nothing is queued anymore — release the flag so a later content
 			// change can enqueue a fresh build instead of hitting the
@@ -2480,7 +2493,17 @@ export class ChunkWorkerPool {
 				this.isCompletelyEmptyChunk(chunk) ||
 				this.isUniformSolidMeshSkippable(chunk)
 			) {
+				// Mirror scheduleRemesh's empty path: nothing is queued
+				// anymore, so release the flag (and drop any stale heap entry
+				// pushed before the chunk became empty) instead of leaving a
+				// Queued flag with no heap entry behind.
+				if (this.isSameLodRemeshInflight(chunk)) {
+					chunk.rerunRemeshAfterInflight = true;
+				}
+				this.taskQueuePriority.delete(chunk);
+				this.heapRemove(chunk);
 				this.clearChunkMeshIfPresent(chunk);
+				chunk.remeshQueued = false;
 				continue;
 			}
 			this.insertChunkIntoRemeshQueue(chunk, priority);
@@ -4367,11 +4390,14 @@ export class ChunkWorkerPool {
 			// predicate is true for a released chunk (isUniform &&
 			// uniformBlockId === 0) and would route it into
 			// clearChunkMeshIfPresent — replacing a valid mesh with a hole.
-			// Skip the task and let scheduleRemesh's hasVoxelData branch decide
-			// whether a cached mesh can stand in.
+			// Delegate to scheduleRemesh's hasVoxelData branch so the flags
+			// heal through the single owner (cached mesh standing in, or
+			// Dirty + queues dropped) instead of leaving a Queued flag with
+			// no queue behind.
 			if (!chunk.hasVoxelData) {
 				this.pendingRemeshMap.delete(chunk);
 				this.taskQueuePriority.delete(chunk);
+				this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0, false);
 				return false;
 			}
 
@@ -4379,7 +4405,41 @@ export class ChunkWorkerPool {
 				this.isCompletelyEmptyChunk(chunk) ||
 				this.isUniformSolidMeshSkippable(chunk)
 			) {
-				this.clearChunkMeshIfPresent(chunk);
+				// Delegate to scheduleRemesh's empty path: it owns the rerun
+				// latch, the heap removal, and the flag release.
+				this.pendingRemeshMap.delete(chunk);
+				this.taskQueuePriority.delete(chunk);
+				this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0, false);
+				return false;
+			}
+
+			// Stale heap entry: the mesh flags were cleared after this entry
+			// was pushed (completed, cached, emptied, or pooled). Dispatching
+			// would log an illegal beginRemesh from Clean/Superseded and waste
+			// a worker build on a chunk whose mesh is already current.
+			if (chunk.rerunRemeshAfterInflight) {
+				// The in-flight result's ingest re-queues via
+				// rerunAfterInflight; the heap entry itself is stale.
+				this.pendingRemeshMap.delete(chunk);
+				this.taskQueuePriority.delete(chunk);
+				return false;
+			}
+			if (!chunk.remeshQueued) {
+				this.pendingRemeshMap.delete(chunk);
+				this.taskQueuePriority.delete(chunk);
+				if (chunk.isDirty) {
+					// Dirty still needs a mesh — heal back through the owner
+					// instead of dispatching directly, so the flags and the
+					// pending entry stay consistent (bumpRevision=false: no
+					// new content change, just a flag/heap desync).
+					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0, false);
+				}
+				return false;
+			}
+			// Same-LOD build already in flight: duplicate dispatch while
+			// Building. The in-flight result (or its stale-drop re-queue)
+			// heals; a second concurrent build for the same LOD is pure waste.
+			if (this.isSameLodRemeshInflight(chunk)) {
 				this.pendingRemeshMap.delete(chunk);
 				this.taskQueuePriority.delete(chunk);
 				return false;

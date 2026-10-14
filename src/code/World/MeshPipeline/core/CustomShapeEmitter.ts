@@ -16,7 +16,7 @@ import {
 } from "../../Shape/FenceConnect";
 import { getSourceBlockId } from "../../Texture/BlockMaterial";
 import { FaceName, getFaceName } from "../../Texture/FaceName";
-import { MaterialType } from "../types/MeshTypes";
+import { type BlockShapeInfo, MaterialType } from "../types/MeshTypes";
 
 import { computeAO } from "./AOPipeline";
 import {
@@ -29,181 +29,109 @@ import {
 	getMaterialType,
 	getRuntimeShapeBoxes,
 	getShapeInfo,
-	isGreedyCompatiblePackedBlock,
 } from "./BlockInfoCache";
 import type { QuadBuffer } from "./QuadBuffer";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 const EPS = 1e-6;
+const DIAGONAL_WIDTH = Math.SQRT2;
+const LOD2_BILLBOARD_WIDTH = 1.2;
 
-type ParsedBlock = {
-	packed: number;
-	blockId: number;
-	shape: ReturnType<typeof getShapeInfo>;
-	materialType: MaterialType;
-	isSolid: boolean;
-	isTransparent: boolean;
-	greedyCompatible: boolean;
+type ShapeBox = {
+	min: [number, number, number];
+	max: [number, number, number];
+	faceMask: number;
 };
 
-type FaceDescriptor = {
-	bit: number;
-	axis: 0 | 1 | 2;
-	isBackFace: boolean;
-};
-
-const FACE_DESCRIPTORS: readonly FaceDescriptor[] = [
-	{ bit: FACE_PX, axis: 0, isBackFace: false },
-	{ bit: FACE_NX, axis: 0, isBackFace: true },
-	{ bit: FACE_PY, axis: 1, isBackFace: false },
-	{ bit: FACE_NY, axis: 1, isBackFace: true },
-	{ bit: FACE_PZ, axis: 2, isBackFace: false },
-	{ bit: FACE_NZ, axis: 2, isBackFace: true },
-] as const;
-
-const _parsedBlockScratch1: ParsedBlock = {
-	packed: 0,
-	blockId: 0,
-	shape: getShapeInfo(0),
-	materialType: MaterialType.Default,
-	isSolid: false,
-	isTransparent: true,
-	greedyCompatible: false,
-};
-const _parsedBlockScratch2: ParsedBlock = {
-	packed: 0,
-	blockId: 0,
-	shape: getShapeInfo(0),
-	materialType: MaterialType.Default,
-	isSolid: false,
-	isTransparent: true,
-	greedyCompatible: false,
-};
-
-function parseBlockInto(packed: number, out: ParsedBlock): void {
-	if (!packed) {
-		out.packed = 0;
-		out.blockId = 0;
-		out.shape = getShapeInfo(0);
-		out.materialType = MaterialType.Default;
-		out.isSolid = false;
-		out.isTransparent = true;
-		out.greedyCompatible = false;
-		return;
+/**
+ * Returns the face bit for an axis and direction without table lookups.
+ */
+function getFaceBit(axis: number, back: number): number {
+	if (axis === 0) {
+		return back !== 0 ? FACE_NX : FACE_PX;
 	}
 
-	out.packed = packed;
-	out.blockId = unpackBlockId(packed);
-	out.shape = getShapeInfo(packed);
-	out.materialType = getMaterialType(out.blockId);
-	out.isSolid = out.blockId !== 0;
-	out.isTransparent = out.materialType === MaterialType.WaterOrGlass;
-	out.greedyCompatible = isGreedyCompatiblePackedBlock(packed);
-}
-
-const FACE_BIT_FRONT = [FACE_PX, FACE_PY, FACE_PZ];
-const FACE_BIT_BACK = [FACE_NX, FACE_NY, FACE_NZ];
-const FACE_BIT_LUT = [FACE_BIT_FRONT, FACE_BIT_BACK];
-
-function getFaceBit(axis: number, isBackFace: boolean): number {
-	return FACE_BIT_LUT[+isBackFace][axis];
-}
-
-function isWaterGlassInterface(curr: ParsedBlock, nbr: ParsedBlock): boolean {
-	if (!curr.isSolid || !nbr.isSolid) return false;
-	if (!curr.isTransparent || !nbr.isTransparent) return false;
-
-	if (
-		curr.materialType !== MaterialType.WaterOrGlass ||
-		nbr.materialType !== MaterialType.WaterOrGlass
-	) {
-		return false;
+	if (axis === 1) {
+		return back !== 0 ? FACE_NY : FACE_PY;
 	}
-	// Compare material sources so glass_01 cube vs glass_01 stairs
-	// (same source, different virtual IDs) cull instead of preserving.
-	return getSourceBlockId(curr.blockId) !== getSourceBlockId(nbr.blockId);
+
+	return back !== 0 ? FACE_NZ : FACE_PZ;
 }
 
 /**
- * Emit all non-greedy custom shapes directly.
+ * Emits all non-greedy custom shapes.
  *
- * Greedy-compatible blocks are skipped here because they are already handled
- * by the fast greedy path.
- *
- * Border blocks (from adjacent chunks, at positions -1 and size) are also
- * processed. For these, only faces that point INTO the current chunk are emitted
- * so the adjacent chunk's own mesher handles the outward-facing side.
+ * Greedy-compatible blocks are skipped because they are handled by the greedy
+ * pipeline. Border blocks are processed only for faces pointing into the
+ * current chunk.
  */
 export function emitCustomShapes(session: MeshBuildSession): void {
-	// Downsampled builds (LOD4+) skip custom geometry entirely: fences,
-	// crosses and multi-box shapes are invisible at those distances and the
-	// forced-cube greedy path already covers their cells.
-	if (session.lodStep > 1) return;
-
-	// Plain terrain (no crosses/fences/multi-box anywhere in the chunk)
-	// skips the whole 34^3 volume walk.
-	if (session.needsCustomCount === 0) return;
+	// Reduced-LOD builds represent custom shapes as full greedy cubes.
+	if (session.lodStep > 1 || session.needsCustomCount === 0) {
+		return;
+	}
 
 	const size = session.size;
-	const getBlock = session.getBlock;
-	const getLight = session.getLight;
-	const isLOD2 = session.lod >= 2;
-	const needsCustom = session.needsCustom;
 	const ps = session.ps;
 	const ps2 = session.ps2;
+
+	const blocks = session.block;
+	const lights = session.light;
+	const needsCustom = session.needsCustom;
+
+	const isLOD2 = session.lod >= 2;
+
 	const opaqueOut = session.quadOpaque;
 	const transparentOut = session.quadTransparent;
 	const waterOut = session.quadWater ?? transparentOut;
 	const cutoutOut = session.quadCutout ?? transparentOut;
 
-	// Hoisted out of the per-cell loop: this only closes over the
-	// loop-invariant getBlock (computeFenceNeighborMask supplies its own
-	// nx/ny/nz), so allocating it per fence block was pure GC churn in any
-	// fence-heavy region.
-	const fenceGetBlock = (nx: number, ny: number, nz: number): number =>
-		getBlock(nx, ny, nz, 0);
+	// getBlock is already an instance-bound arrow function, so it can be
+	// forwarded directly without allocating a wrapper closure per build.
+	const fenceGetBlock = session.getBlock;
 
 	for (let y = -1; y <= size; y++) {
-		const rowBaseY = (y + 1) * ps;
+		const paddedY = (y + 1) * ps;
+
 		for (let z = -1; z <= size; z++) {
-			// PERF: hoisted padded-grid base for the x-row — the per-cell
-			// padIndex closure call (2 multiplies + 3 adds) is replaced by a
-			// single add per cell.
-			const base = rowBaseY + (z + 1) * ps2;
-			for (let x = -1; x <= size; x++) {
-				// P3.7: precomputed per-cell classification — skip every cell
-				// that cannot contribute custom geometry (air + greedy blocks)
-				// with a single byte load, instead of a cache lookup + flag
-				// checks per cell.
-				if (!needsCustom[base + x + 1]) continue;
+			const rowBase = paddedY + (z + 1) * ps2;
+			let paddedIndex = rowBase;
 
-				const packed = getBlock(x, y, z, 0);
-				const flags = getCachedFlags(packed);
-
-				const blockId = getCachedBlockId(packed);
-				const out =
-					flags & FLAG_WATER_GLASS
-						? getSourceBlockId(blockId) === WATER_BLOCK_ID
-							? waterOut
-							: cutoutOut
-						: opaqueOut;
-
-				const baseLight = getLight(x, y, z, 0);
-
-				if (flags & FLAG_CUSTOM_CROSS) {
-					emitCrossShapeAtBlock(
-						x,
-						y,
-						z,
-						blockId,
-						baseLight,
-						getMaterialType(blockId),
-						out,
-					);
+			for (let x = -1; x <= size; x++, paddedIndex++) {
+				if (needsCustom[paddedIndex] === 0) {
 					continue;
 				}
 
-				if (flags & FLAG_CUSTOM_CROSS_DIAGONAL) {
+				const packed = blocks[paddedIndex];
+
+				// needsCustom should guarantee a nonzero custom block, but
+				// retain this guard for stale or externally supplied grids.
+				if (packed === 0) {
+					continue;
+				}
+
+				const flags = getCachedFlags(packed);
+				const blockId = getCachedBlockId(packed);
+				const sourceBlockId = getSourceBlockId(blockId);
+				const materialType = getMaterialType(blockId);
+				const baseLight = lights[paddedIndex];
+
+				let out: QuadBuffer;
+
+				if ((flags & FLAG_WATER_GLASS) === 0) {
+					out = opaqueOut;
+				} else if (sourceBlockId === WATER_BLOCK_ID) {
+					out = waterOut;
+				} else {
+					out = cutoutOut;
+				}
+
+				if ((flags & FLAG_CUSTOM_CROSS) !== 0) {
+					emitCrossShapeAtBlock(x, y, z, blockId, baseLight, materialType, out);
+					continue;
+				}
+
+				if ((flags & FLAG_CUSTOM_CROSS_DIAGONAL) !== 0) {
 					if (isLOD2) {
 						emitLOD2CrossBillboard(
 							x,
@@ -211,7 +139,7 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 							z,
 							blockId,
 							baseLight,
-							getMaterialType(blockId),
+							materialType,
 							out,
 						);
 					} else {
@@ -221,99 +149,211 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 							z,
 							blockId,
 							baseLight,
-							getMaterialType(blockId),
+							materialType,
 							out,
 						);
 					}
+
 					continue;
 				}
 
-				if (flags & FLAG_CUSTOM_FENCE) {
-					const neighborMask = computeFenceNeighborMask(x, y, z, fenceGetBlock);
-					const fenceShape = getFenceDynamicShape(neighborMask);
+				const currentShape = getShapeInfo(packed);
 
-					for (let i = 0; i < fenceShape.boxes.length; i++) {
-						const box = fenceShape.boxes[i];
-						for (let fi = 0; fi < 6; fi++) {
-							const face = FACE_DESCRIPTORS[fi];
-							if ((box.faceMask & face.bit) === 0) continue;
-							if (
-								isBorderOutwardFace(x, y, z, size, face.axis, face.isBackFace)
-							)
-								continue;
-							emitBoxFace(
-								session,
-								x,
-								y,
-								z,
-								blockId,
-								packed,
-								box,
-								face.axis,
-								face.isBackFace,
-								baseLight,
-								out,
-							);
-						}
-					}
+				if ((flags & FLAG_CUSTOM_FENCE) !== 0) {
+					const neighborMask = computeFenceNeighborMask(x, y, z, fenceGetBlock);
+
+					const boxes = getFenceDynamicShape(neighborMask).boxes;
+
+					emitShapeBoxes(
+						session,
+						x,
+						y,
+						z,
+						blockId,
+						sourceBlockId,
+						packed,
+						currentShape,
+						materialType,
+						baseLight,
+						boxes,
+						size,
+						out,
+					);
+
 					continue;
 				}
 
 				const boxes = getRuntimeShapeBoxes(packed);
-				if (boxes.length === 0) continue;
 
-				for (let i = 0; i < boxes.length; i++) {
-					const box = boxes[i];
-
-					for (let fi = 0; fi < 6; fi++) {
-						const face = FACE_DESCRIPTORS[fi];
-						if ((box.faceMask & face.bit) === 0) continue;
-						if (isBorderOutwardFace(x, y, z, size, face.axis, face.isBackFace))
-							continue;
-
-						emitBoxFace(
-							session,
-							x,
-							y,
-							z,
-							blockId,
-							packed,
-							box,
-							face.axis,
-							face.isBackFace,
-							baseLight,
-							out,
-						);
-					}
+				if (boxes.length === 0) {
+					continue;
 				}
+
+				emitShapeBoxes(
+					session,
+					x,
+					y,
+					z,
+					blockId,
+					sourceBlockId,
+					packed,
+					currentShape,
+					materialType,
+					baseLight,
+					boxes,
+					size,
+					out,
+				);
 			}
 		}
 	}
 }
 
 /**
- * Returns true when a face on a border block points away from the chunk
- * (i.e. into the adjacent chunk that owns the block). Those faces are
- * rendered by the adjacent chunk's own mesher.
+ * Emits all enabled faces for a cached collection of shape boxes.
  *
- * Border positions: x/y/z === -1 or x/y/z === size.
+ * Current-block classification is passed in so it is computed once per voxel,
+ * rather than once for every box face.
  */
-function isBorderOutwardFace(
-	x: number,
-	y: number,
-	z: number,
+function emitShapeBoxes(
+	session: MeshBuildSession,
+	voxelX: number,
+	voxelY: number,
+	voxelZ: number,
+	blockId: number,
+	sourceBlockId: number,
+	packedBlock: number,
+	currentShape: BlockShapeInfo,
+	materialType: MaterialType,
+	baseLight: number,
+	boxes: readonly ShapeBox[],
 	size: number,
-	axis: number,
-	isBackFace: boolean,
-): boolean {
-	// A back face (dir = -1) points outward at the p < 0 border; a front
-	// face (dir = +1) points outward at the p >= size border.
-	const p = axis === 0 ? x : axis === 1 ? y : z;
-	return isBackFace ? p < 0 : p >= size;
+	out: QuadBuffer,
+): void {
+	const boxCount = boxes.length;
+
+	for (let i = 0; i < boxCount; i++) {
+		const box = boxes[i];
+		const faceMask = box.faceMask;
+
+		if ((faceMask & FACE_PX) !== 0 && voxelX < size) {
+			emitBoxFace(
+				session,
+				voxelX,
+				voxelY,
+				voxelZ,
+				blockId,
+				sourceBlockId,
+				packedBlock,
+				currentShape,
+				materialType,
+				box,
+				0,
+				0,
+				baseLight,
+				out,
+			);
+		}
+
+		if ((faceMask & FACE_NX) !== 0 && voxelX >= 0) {
+			emitBoxFace(
+				session,
+				voxelX,
+				voxelY,
+				voxelZ,
+				blockId,
+				sourceBlockId,
+				packedBlock,
+				currentShape,
+				materialType,
+				box,
+				0,
+				1,
+				baseLight,
+				out,
+			);
+		}
+
+		if ((faceMask & FACE_PY) !== 0 && voxelY < size) {
+			emitBoxFace(
+				session,
+				voxelX,
+				voxelY,
+				voxelZ,
+				blockId,
+				sourceBlockId,
+				packedBlock,
+				currentShape,
+				materialType,
+				box,
+				1,
+				0,
+				baseLight,
+				out,
+			);
+		}
+
+		if ((faceMask & FACE_NY) !== 0 && voxelY >= 0) {
+			emitBoxFace(
+				session,
+				voxelX,
+				voxelY,
+				voxelZ,
+				blockId,
+				sourceBlockId,
+				packedBlock,
+				currentShape,
+				materialType,
+				box,
+				1,
+				1,
+				baseLight,
+				out,
+			);
+		}
+
+		if ((faceMask & FACE_PZ) !== 0 && voxelZ < size) {
+			emitBoxFace(
+				session,
+				voxelX,
+				voxelY,
+				voxelZ,
+				blockId,
+				sourceBlockId,
+				packedBlock,
+				currentShape,
+				materialType,
+				box,
+				2,
+				0,
+				baseLight,
+				out,
+			);
+		}
+
+		if ((faceMask & FACE_NZ) !== 0 && voxelZ >= 0) {
+			emitBoxFace(
+				session,
+				voxelX,
+				voxelY,
+				voxelZ,
+				blockId,
+				sourceBlockId,
+				packedBlock,
+				currentShape,
+				materialType,
+				box,
+				2,
+				1,
+				baseLight,
+				out,
+			);
+		}
+	}
 }
 
 /**
- * Emit a "cross" shape as two intersecting transparent planes centered in the block.
+ * Emits a cross shape as two intersecting axis-aligned planes.
  */
 function emitCrossShapeAtBlock(
 	x: number,
@@ -321,12 +361,14 @@ function emitCrossShapeAtBlock(
 	z: number,
 	blockId: number,
 	baseLight: number,
-	materialType: MaterialType = MaterialType.Cutout,
+	materialType: MaterialType,
 	out: QuadBuffer,
 ): void {
-	// X-aligned plane (perpendicular to X axis)
+	const centerX = x + 0.5;
+	const centerZ = z + 0.5;
+
 	out.emitQuad(
-		x + 0.5,
+		centerX,
 		y,
 		z,
 		0,
@@ -344,7 +386,7 @@ function emitCrossShapeAtBlock(
 	);
 
 	out.emitQuad(
-		x + 0.5,
+		centerX,
 		y,
 		z,
 		0,
@@ -361,11 +403,10 @@ function emitCrossShapeAtBlock(
 		0,
 	);
 
-	// Z-aligned plane (perpendicular to Z axis)
 	out.emitQuad(
 		x,
 		y,
-		z + 0.5,
+		centerZ,
 		2,
 		1,
 		1,
@@ -383,7 +424,7 @@ function emitCrossShapeAtBlock(
 	out.emitQuad(
 		x,
 		y,
-		z + 0.5,
+		centerZ,
 		2,
 		1,
 		1,
@@ -397,11 +438,10 @@ function emitCrossShapeAtBlock(
 		0,
 		0,
 	);
-} /**
- * Emit a true diagonal "X" cross centered in the block.
- *
- * This uses diagonal metadata so the runtime reconstruction can rotate
- * the planes corner-to-corner across the voxel.
+}
+
+/**
+ * Emits a true diagonal X-shaped cross.
  */
 function emitCrossDiagonalAtBlock(
 	x: number,
@@ -409,22 +449,18 @@ function emitCrossDiagonalAtBlock(
 	z: number,
 	blockId: number,
 	baseLight: number,
-	materialType: MaterialType = MaterialType.Cutout,
+	materialType: MaterialType,
 	out: QuadBuffer,
 ): void {
-	const cx = x + 0.5;
-	const cz = z + 0.5;
+	const centerX = x + 0.5;
+	const centerZ = z + 0.5;
 
-	// diagonal across a unit square corner-to-corner
-	const diagWidth = Math.SQRT2;
-
-	// Diagonal A: SW -> NE (variant 1 → NE normal catches SE light)
 	out.emitQuad(
-		cx,
+		centerX,
 		y,
-		cz,
+		centerZ,
 		0,
-		diagWidth,
+		DIAGONAL_WIDTH,
 		1,
 		blockId,
 		0,
@@ -438,11 +474,11 @@ function emitCrossDiagonalAtBlock(
 	);
 
 	out.emitQuad(
-		cx,
+		centerX,
 		y,
-		cz,
+		centerZ,
 		0,
-		diagWidth,
+		DIAGONAL_WIDTH,
 		1,
 		blockId,
 		1,
@@ -455,13 +491,12 @@ function emitCrossDiagonalAtBlock(
 		0,
 	);
 
-	// Diagonal B: NW -> SE (variant 0 → NW normal, tangent NE)
 	out.emitQuad(
-		cx,
+		centerX,
 		y,
-		cz,
+		centerZ,
 		0,
-		diagWidth,
+		DIAGONAL_WIDTH,
 		1,
 		blockId,
 		0,
@@ -475,11 +510,11 @@ function emitCrossDiagonalAtBlock(
 	);
 
 	out.emitQuad(
-		cx,
+		centerX,
 		y,
-		cz,
+		centerZ,
 		0,
-		diagWidth,
+		DIAGONAL_WIDTH,
 		1,
 		blockId,
 		1,
@@ -494,9 +529,7 @@ function emitCrossDiagonalAtBlock(
 }
 
 /**
- * Emit a wider crossed-billboard for LOD2+ vegetation.
- * Two axis-aligned planes (X-facing, Z-facing) slightly wider than 1.0
- * so the plant doesn't look too thin compared to the sqrt(2) diagonal cross.
+ * Emits a wider crossed billboard for LOD2+ vegetation.
  */
 function emitLOD2CrossBillboard(
 	x: number,
@@ -507,15 +540,15 @@ function emitLOD2CrossBillboard(
 	materialType: MaterialType,
 	out: QuadBuffer,
 ): void {
-	const W = 1.2;
+	const centerX = x + 0.5;
+	const centerZ = z + 0.5;
 
-	// X-aligned plane
 	out.emitQuad(
-		x + 0.5,
+		centerX,
 		y,
 		z,
 		0,
-		W,
+		LOD2_BILLBOARD_WIDTH,
 		1,
 		blockId,
 		0,
@@ -529,11 +562,11 @@ function emitLOD2CrossBillboard(
 	);
 
 	out.emitQuad(
-		x + 0.5,
+		centerX,
 		y,
 		z,
 		0,
-		W,
+		LOD2_BILLBOARD_WIDTH,
 		1,
 		blockId,
 		1,
@@ -546,13 +579,12 @@ function emitLOD2CrossBillboard(
 		0,
 	);
 
-	// Z-aligned plane
 	out.emitQuad(
 		x,
 		y,
-		z + 0.5,
+		centerZ,
 		2,
-		W,
+		LOD2_BILLBOARD_WIDTH,
 		1,
 		blockId,
 		0,
@@ -568,9 +600,9 @@ function emitLOD2CrossBillboard(
 	out.emitQuad(
 		x,
 		y,
-		z + 0.5,
+		centerZ,
 		2,
-		W,
+		LOD2_BILLBOARD_WIDTH,
 		1,
 		blockId,
 		1,
@@ -590,105 +622,128 @@ function emitBoxFace(
 	voxelY: number,
 	voxelZ: number,
 	blockId: number,
+	sourceBlockId: number,
 	packedBlock: number,
-	box: {
-		min: [number, number, number];
-		max: [number, number, number];
-		faceMask: number;
-	},
+	currentShape: BlockShapeInfo,
+	materialType: MaterialType,
+	box: ShapeBox,
 	axis: number,
-	isBackFace: boolean,
+	back: number,
 	baseLight: number,
 	out: QuadBuffer,
 ): void {
-	const faceBit = getFaceBit(axis, isBackFace);
-	if ((box.faceMask & faceBit) === 0) {
-		return;
-	}
-
 	const min = box.min;
 	const max = box.max;
-	parseBlockInto(packedBlock, _parsedBlockScratch1);
-	const currentBlock = _parsedBlockScratch1;
 
-	const back = isBackFace ? 1 : 0;
-	const d = 1 - 2 * back;
-	const dirX = axis === 0 ? d : 0;
-	const dirY = axis === 1 ? d : 0;
-	const dirZ = axis === 2 ? d : 0;
+	const faceBoundary = back !== 0 ? min[axis] : max[axis];
 
-	const nx = voxelX + dirX;
-	const ny = voxelY + dirY;
-	const nz = voxelZ + dirZ;
-
-	const onBoundary = back ? min[axis] <= EPS : max[axis] >= 1 - EPS;
+	const onVoxelBoundary =
+		back !== 0 ? faceBoundary <= EPS : faceBoundary >= 1 - EPS;
 
 	let light = baseLight;
 	let ao = 0;
 
-	if (onBoundary) {
-		const neighborPacked = session.getBlock(nx, ny, nz, 0);
-		parseBlockInto(neighborPacked, _parsedBlockScratch2);
-		const neighbor = _parsedBlockScratch2;
+	if (onVoxelBoundary) {
+		const direction = back !== 0 ? -1 : 1;
 
-		const oppositeFaceBit = getFaceBit(axis, !isBackFace);
-		const neighborCloses =
-			neighbor.isSolid &&
-			(neighbor.shape.closedFaceMask & oppositeFaceBit) !== 0;
+		const neighborX = axis === 0 ? voxelX + direction : voxelX;
 
-		const preserveTransparentInterface = isWaterGlassInterface(
-			currentBlock,
-			neighbor,
-		);
+		const neighborY = axis === 1 ? voxelY + direction : voxelY;
 
-		// Same-source glass (cube vs stairs of the same glass) shares no
-		// visible interface even though both masks are 0 (fully
-		// transparent). Cull it here; different glass types preserve.
-		if (
-			currentBlock.isSolid &&
-			neighbor.isSolid &&
-			currentBlock.isTransparent &&
-			neighbor.isTransparent &&
-			currentBlock.materialType === MaterialType.WaterOrGlass &&
-			neighbor.materialType === MaterialType.WaterOrGlass &&
-			getSourceBlockId(currentBlock.blockId) ===
-				getSourceBlockId(neighbor.blockId)
-		) {
-			const currIsWater =
-				getSourceBlockId(currentBlock.blockId) === WATER_BLOCK_ID;
-			const nbrIsWater = getSourceBlockId(neighbor.blockId) === WATER_BLOCK_ID;
-			if (!(currIsWater && nbrIsWater)) return;
-			const currLevel = (packedBlock >>> 10) & 0xf;
-			const nbrLevel = (neighborPacked >>> 10) & 0xf;
-			if (currLevel === nbrLevel) return;
+		const neighborZ = axis === 2 ? voxelZ + direction : voxelZ;
+
+		const neighborIndex =
+			neighborX +
+			1 +
+			(neighborY + 1) * session.ps +
+			(neighborZ + 1) * session.ps2;
+
+		const neighborPacked = session.block[neighborIndex];
+
+		if (neighborPacked !== 0) {
+			const neighborBlockId = unpackBlockId(neighborPacked);
+			const neighborShape = getShapeInfo(neighborPacked);
+			const neighborMaterialType = getMaterialType(neighborBlockId);
+
+			const oppositeFaceBit = getFaceBit(axis, back ^ 1);
+
+			const neighborCloses =
+				(neighborShape.closedFaceMask & oppositeFaceBit) !== 0;
+
+			const currentTransparent = materialType === MaterialType.WaterOrGlass;
+
+			const neighborTransparent =
+				neighborMaterialType === MaterialType.WaterOrGlass;
+
+			let preserveTransparentInterface = false;
+
+			if (currentTransparent && neighborTransparent) {
+				const neighborSourceBlockId = getSourceBlockId(neighborBlockId);
+
+				if (sourceBlockId !== neighborSourceBlockId) {
+					preserveTransparentInterface = true;
+				} else {
+					// Same-source glass has no visible internal face.
+					// Different-height water columns still need the interface.
+					if (sourceBlockId !== WATER_BLOCK_ID) {
+						return;
+					}
+
+					const currentLevel = (packedBlock >>> 10) & 0xf;
+
+					const neighborLevel = (neighborPacked >>> 10) & 0xf;
+
+					if (currentLevel === neighborLevel) {
+						return;
+					}
+				}
+			}
+
+			if (neighborCloses && !preserveTransparentInterface) {
+				return;
+			}
 		}
 
-		// If the neighbor closes this boundary, cull the face,
-		// except for water/glass interfaces which should remain visible.
-		if (neighborCloses && !preserveTransparentInterface) {
-			return;
-		}
-
-		light = session.getLight(nx, ny, nz, baseLight);
+		light = session.light[neighborIndex];
 
 		if (!session.disableAO) {
-			// AO anchor must be on the outside side of the emitted face.
-			const uAxis = (axis + 1) % 3;
-			const vAxis = (axis + 2) % 3;
+			let uAxis: number;
+			let vAxis: number;
 
-			ao = computeAO(session, nx, ny, nz, uAxis, vAxis);
+			if (axis === 0) {
+				uAxis = 1;
+				vAxis = 2;
+			} else if (axis === 1) {
+				uAxis = 2;
+				vAxis = 0;
+			} else {
+				uAxis = 0;
+				vAxis = 1;
+			}
+
+			ao = computeAO(session, neighborX, neighborY, neighborZ, uAxis, vAxis);
 		}
 	}
 
-	const faceName = getFaceName(axis, isBackFace);
+	let u: number;
+	let v: number;
 
-	const faceIdx = back;
-	const bc = back ? min[axis] : max[axis];
-	const x = voxelX + (axis === 0 ? bc : min[0]);
-	const y = voxelY + (axis === 1 ? bc : min[1]);
-	const z = voxelZ + (axis === 2 ? bc : min[2]);
-	const u = (axis + 1) % 3;
-	const v = (axis + 2) % 3;
+	if (axis === 0) {
+		u = 1;
+		v = 2;
+	} else if (axis === 1) {
+		u = 2;
+		v = 0;
+	} else {
+		u = 0;
+		v = 1;
+	}
+
+	const x = voxelX + (axis === 0 ? faceBoundary : min[0]);
+
+	const y = voxelY + (axis === 1 ? faceBoundary : min[1]);
+
+	const z = voxelZ + (axis === 2 ? faceBoundary : min[2]);
 
 	out.emitQuad(
 		x,
@@ -698,11 +753,11 @@ function emitBoxFace(
 		max[u] - min[u],
 		max[v] - min[v],
 		blockId,
-		faceIdx,
+		back,
 		light,
 		ao,
-		faceName,
-		currentBlock.materialType,
+		getFaceName(axis, back !== 0),
+		materialType,
 		0,
 		0,
 		0,

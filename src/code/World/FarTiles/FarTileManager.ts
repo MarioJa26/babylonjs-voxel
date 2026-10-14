@@ -75,14 +75,18 @@ const UNLOAD_MARGIN_CHUNKS = 16;
 /**
  * Collision-free key within JavaScript's safe-integer range:
  *
- * level: 1 bit at position 52
- * tx: 26 bits at positions 26-51
- * tz: 26 bits at positions 0-25
+ * level: 4 bits at positions 48-51 (up to 16 LOD levels)
+ * tx: 24 bits at positions 24-47
+ * tz: 24 bits at positions 0-23
  *
- * This supports two levels safely. If more than two far-tile levels are used,
- * use bigint or string keys instead.
+ * Maximum key is 2**52 - 1, safely below MAX_SAFE_INTEGER (2**53 - 1).
+ * The previous 26-bit-per-axis layout exceeded the safe-integer range for
+ * level indices >= 2 (level * 2**52 with 52 coordinate bits), causing
+ * precision loss and key collisions across the 4-level ladder. Coordinates
+ * remain safe within ±8,388,607 tile units — vastly beyond the configured
+ * horizon (FAR_TILE_DISTANCE 256 chunks => at most ~128 tiles per axis).
  */
-const TILE_KEY_AXIS_BITS = 26;
+const TILE_KEY_AXIS_BITS = 24;
 const TILE_KEY_AXIS_SIZE = 2 ** TILE_KEY_AXIS_BITS;
 const TILE_KEY_AXIS_MASK = TILE_KEY_AXIS_SIZE - 1;
 const TILE_KEY_LEVEL_MULTIPLIER = 2 ** (TILE_KEY_AXIS_BITS * 2);
@@ -263,8 +267,10 @@ class FaceWordArena {
 		if (faceCount <= this.capacityFaces) return;
 
 		const maxFaces = maxFarFacesPerArena();
+		// 2× growth (was 4×): halves unused CPU memory and avoids oversized
+		// storage-buffer recreations during streaming bursts.
 		const grownCapacity =
-			this.capacityFaces > 0 ? this.capacityFaces * 4 : this.initialCapacity;
+			this.capacityFaces > 0 ? this.capacityFaces * 2 : this.initialCapacity;
 		const capacity = Math.min(
 			Math.max(faceCount, grownCapacity, 256),
 			maxFaces,
@@ -300,18 +306,35 @@ class FaceWordArena {
 
 		const holes = this.holes;
 
+		// Best-fit hole reuse: pick the smallest hole that fits, reducing
+		// long-term fragmentation vs first-fit (which strands large holes
+		// behind small allocations).
+		let bestIndex = -1;
+		let bestCount = Number.POSITIVE_INFINITY;
+
 		for (let i = 0; i < holes.length; i++) {
 			const hole = holes[i];
+			const holeCount = hole.count;
 
-			if (hole.count < count) {
+			if (holeCount < count || holeCount >= bestCount) {
 				continue;
 			}
 
+			bestIndex = i;
+			bestCount = holeCount;
+
+			if (holeCount === count) {
+				break;
+			}
+		}
+
+		if (bestIndex >= 0) {
+			const hole = holes[bestIndex];
 			const base = hole.base;
 			const remaining = hole.count - count;
 
 			if (remaining === 0) {
-				holes.splice(i, 1);
+				holes.splice(bestIndex, 1);
 			} else {
 				// Reuse the existing hole object rather than removing it and
 				// allocating a replacement remainder object.
@@ -390,6 +413,23 @@ class FaceWordArena {
 
 		this.cpu.fill(0, wordStart, wordEnd);
 		this.insertHole(slot.base, slot.count);
+
+		// Trailing-hole reclamation: when the arena tail is freed, shrink
+		// appendedFaces so future appends reuse the tail without growing, and
+		// so appendedFaces (reported as live faces) can decrease on eviction.
+		// Holes stay sorted by base, so only the suffix can touch the tail.
+		const holes = this.holes;
+
+		while (holes.length > 0) {
+			const last = holes[holes.length - 1];
+
+			if (last.base + last.count !== this.appendedFaces) {
+				break;
+			}
+
+			this.appendedFaces = last.base;
+			holes.pop();
+		}
 	}
 
 	pushDirty(start: number, count: number): void {
@@ -397,26 +437,39 @@ class FaceWordArena {
 
 		const starts = this.dirtyStarts;
 		const counts = this.dirtyCounts;
-		const length = starts.length;
 
-		if (length > 0) {
-			const lastIndex = length - 1;
-			const lastStart = starts[lastIndex];
-			const lastEnd = lastStart + counts[lastIndex];
-			const newEnd = start + count;
+		// Merge with ANY overlapping/adjacent range, not just the most recent.
+		// Worker completions arrive out of order and arena hole reuse makes
+		// slots non-monotonic, so last-only merging left the list fragmented
+		// into many small writeBuffer calls. Restart the scan after each merge
+		// since merging can expand the range onto previously skipped entries.
+		let newStart = start;
+		let newEnd = start + count;
+		let index = 0;
 
-			// Merge adjacent or overlapping ranges.
-			if (start <= lastEnd && newEnd >= lastStart) {
-				const mergedStart = Math.min(lastStart, start);
-				const mergedEnd = Math.max(lastEnd, newEnd);
-				starts[lastIndex] = mergedStart;
-				counts[lastIndex] = mergedEnd - mergedStart;
-				return;
+		while (index < starts.length) {
+			const existingStart = starts[index];
+			const existingEnd = existingStart + counts[index];
+
+			if (newStart <= existingEnd && newEnd >= existingStart) {
+				if (existingStart < newStart) {
+					newStart = existingStart;
+				}
+
+				if (existingEnd > newEnd) {
+					newEnd = existingEnd;
+				}
+
+				starts.splice(index, 1);
+				counts.splice(index, 1);
+				index = 0;
+			} else {
+				index++;
 			}
 		}
 
-		starts.push(start);
-		counts.push(count);
+		starts.push(newStart);
+		counts.push(newEnd - newStart);
 	}
 
 	flushDirty(): void {
@@ -513,6 +566,111 @@ class WindingMesh {
 		return this.countDirty || this.dirtyMax > this.dirtyMin;
 	}
 
+	appendContiguousFaces(faceBase: number, faceCount: number): void {
+		if (faceCount <= 0) {
+			return;
+		}
+
+		const oldCount = this.count;
+		const newCount = oldCount + faceCount;
+
+		this.ensureRecordCapacity(newCount);
+
+		const records = this.records;
+		let outputOffset = oldCount * FT_FACE_WORDS;
+
+		if (
+			this.recordsSortedByFaceIndex &&
+			oldCount > 0 &&
+			faceBase < records[(oldCount - 1) * FT_FACE_WORDS]
+		) {
+			this.recordsSortedByFaceIndex = false;
+		}
+
+		for (let face = 0; face < faceCount; face++) {
+			records[outputOffset] = faceBase + face;
+			records[outputOffset + 1] = 0;
+			records[outputOffset + 2] = 0;
+			records[outputOffset + 3] = 0;
+			outputOffset += FT_FACE_WORDS;
+		}
+
+		this.count = newCount;
+		this.countDirty = true;
+		this.markDirty(oldCount, newCount);
+	}
+
+	appendFacesByWinding(
+		faceBase: number,
+		faces: Uint32Array,
+		requiredBackFace: 0 | 1,
+	): void {
+		const faceCount = faces.length >>> 2;
+
+		if (faceCount === 0) {
+			return;
+		}
+
+		// Count matching faces first so capacity grows at most once.
+		let addedCount = 0;
+
+		for (
+			let face = 0, word = 1;
+			face < faceCount;
+			face++, word += FT_FACE_WORDS
+		) {
+			if (((faces[word] >>> 20) & 1) === requiredBackFace) {
+				addedCount++;
+			}
+		}
+
+		if (addedCount === 0) {
+			return;
+		}
+
+		const oldCount = this.count;
+		const newCount = oldCount + addedCount;
+
+		this.ensureRecordCapacity(newCount);
+
+		const records = this.records;
+		let write = oldCount;
+		let lastFaceIndex =
+			oldCount > 0
+				? records[(oldCount - 1) * FT_FACE_WORDS]
+				: Number.NEGATIVE_INFINITY;
+		let remainsSorted = this.recordsSortedByFaceIndex;
+
+		for (
+			let localFaceIndex = 0, word = 1;
+			localFaceIndex < faceCount;
+			localFaceIndex++, word += FT_FACE_WORDS
+		) {
+			if (((faces[word] >>> 20) & 1) !== requiredBackFace) {
+				continue;
+			}
+
+			const absoluteFaceIndex = faceBase + localFaceIndex;
+
+			if (remainsSorted && absoluteFaceIndex < lastFaceIndex) {
+				remainsSorted = false;
+			}
+
+			lastFaceIndex = absoluteFaceIndex;
+
+			const offset = write * FT_FACE_WORDS;
+			records[offset] = absoluteFaceIndex;
+			records[offset + 1] = 0;
+			records[offset + 2] = 0;
+			records[offset + 3] = 0;
+			write++;
+		}
+
+		this.count = newCount;
+		this.countDirty = true;
+		this.recordsSortedByFaceIndex = remainsSorted;
+		this.markDirty(oldCount, newCount);
+	}
 	appendFace(faceIndex: number): void {
 		this.ensureRecordCapacity(this.count + 1);
 
@@ -599,7 +757,11 @@ class WindingMesh {
 	 * Batched, order-preserving removal.
 	 *
 	 * The slot array is sorted in place. Slot objects themselves are not
-	 * modified.
+	 * modified (the same object can appear in both the straight and reversed
+	 * eviction lists, so merging builds local start/end arrays instead).
+	 * Overlapping/adjacent slots are merged first, so the sorted-records path
+	 * is a single linear cursor pass and the unordered (hole-reuse) path
+	 * binary-searches far fewer intervals.
 	 */
 	removeSlots(slots: FarSlot[]): void {
 		const oldCount = this.count;
@@ -615,6 +777,40 @@ class WindingMesh {
 		}
 
 		slots.sort(compareSlotsByBase);
+
+		// Merge overlapping/adjacent slots into disjoint [start, end) ranges.
+		// Local arrays only; eviction is chunk-move frequent, not per-frame
+		// hot, so O(m) allocation here pays for an O(n+m) record scan.
+		const mergedStarts: number[] = [];
+		const mergedEnds: number[] = [];
+
+		for (let i = 0; i < slotCount; i++) {
+			const slot = slots[i];
+			const slotCountFaces = slot.count;
+
+			if (slotCountFaces <= 0) {
+				continue;
+			}
+
+			const slotStart = slot.base;
+			const slotEnd = slotStart + slotCountFaces;
+			const mergedLength = mergedEnds.length;
+
+			if (mergedLength > 0 && slotStart <= mergedEnds[mergedLength - 1]) {
+				if (slotEnd > mergedEnds[mergedLength - 1]) {
+					mergedEnds[mergedLength - 1] = slotEnd;
+				}
+			} else {
+				mergedStarts.push(slotStart);
+				mergedEnds.push(slotEnd);
+			}
+		}
+
+		const mergedCount = mergedStarts.length;
+
+		if (mergedCount === 0) {
+			return;
+		}
 
 		const records = this.records;
 		const recordsSorted = this.recordsSortedByFaceIndex;
@@ -632,70 +828,43 @@ class WindingMesh {
 			let remove = false;
 
 			if (recordsSorted) {
-				while (intervalIndex < slotCount) {
-					const interval = slots[intervalIndex];
-
-					if (
-						interval.count <= 0 ||
-						faceIndex >= interval.base + interval.count
-					) {
-						intervalIndex++;
-						continue;
-					}
-
-					break;
+				// Linear cursor: both records and merged intervals ascend, so
+				// each advances at most once over the whole pass.
+				while (
+					intervalIndex < mergedCount &&
+					faceIndex >= mergedEnds[intervalIndex]
+				) {
+					intervalIndex++;
 				}
 
-				if (intervalIndex < slotCount) {
-					let scanIndex = intervalIndex;
-
-					while (scanIndex < slotCount) {
-						const interval = slots[scanIndex];
-
-						if (interval.count <= 0) {
-							scanIndex++;
-							continue;
-						}
-
-						if (interval.base > faceIndex) {
-							break;
-						}
-
-						if (faceIndex < interval.base + interval.count) {
-							remove = true;
-							break;
-						}
-
-						scanIndex++;
-					}
+				if (
+					intervalIndex < mergedCount &&
+					faceIndex >= mergedStarts[intervalIndex]
+				) {
+					remove = true;
 				}
 			} else {
 				// Records can become unordered when an arena hole is reused.
-				// Find the first interval whose end exceeds faceIndex.
+				// Find the first merged interval whose end exceeds faceIndex.
 				let low = 0;
-				let high = slotCount;
+				let high = mergedCount;
 
 				while (low < high) {
 					const middle = (low + high) >>> 1;
-					const interval = slots[middle];
 
-					if (
-						interval.count <= 0 ||
-						interval.base + interval.count <= faceIndex
-					) {
+					if (mergedEnds[middle] <= faceIndex) {
 						low = middle + 1;
 					} else {
 						high = middle;
 					}
 				}
 
-				if (low < slotCount) {
-					const interval = slots[low];
-
-					remove =
-						interval.count > 0 &&
-						faceIndex >= interval.base &&
-						faceIndex < interval.base + interval.count;
+				if (
+					low < mergedCount &&
+					faceIndex >= mergedStarts[low] &&
+					faceIndex < mergedEnds[low]
+				) {
+					remove = true;
 				}
 			}
 
@@ -996,21 +1165,73 @@ class FarTileManagerImpl {
 	}
 
 	public reset(): void {
+		const straightByLevel = this._evictStraightByLevel;
+		const reversedByLevel = this._evictReversedByLevel;
+		const waterSlots = this._evictWaterSlots;
+
+		waterSlots.length = 0;
+
+		for (let i = 0; i < straightByLevel.length; i++) {
+			straightByLevel[i].length = 0;
+			reversedByLevel[i].length = 0;
+		}
+
 		for (const entry of this.tiles.values()) {
 			const levelIndex = entry.levelIndex;
-			const arena = this.terrainArenas[levelIndex];
-			if (arena && entry.opaque) {
-				arena.free(entry.opaque);
+			const opaque = entry.opaque;
+			const water = entry.water;
+
+			if (opaque) {
+				const arena = this.terrainArenas[levelIndex];
+
+				if (arena) {
+					arena.free(opaque);
+
+					if (levelIndex < straightByLevel.length) {
+						straightByLevel[levelIndex].push(opaque);
+						reversedByLevel[levelIndex].push(opaque);
+					} else {
+						// Ladder grew past the pre-sized scratch arrays (or reset
+						// before init): fall back to a per-tile removal so no
+						// tile leaks its winding records.
+						this.terrainStraight[levelIndex]?.removeSlot(opaque);
+						this.terrainReversed[levelIndex]?.removeSlot(opaque);
+					}
+				}
 			}
-			if (entry.opaque) {
-				this.terrainStraight[levelIndex].removeSlot(entry.opaque);
-				this.terrainReversed[levelIndex].removeSlot(entry.opaque);
+
+			if (water) {
+				this.waterArena.free(water);
+				waterSlots.push(water);
 			}
-			if (entry.water) {
-				this.waterArena.free(entry.water);
-				this.waterReversed.removeSlot(entry.water);
-			}
+
 			this.releaseOrigin(entry.originSlot);
+		}
+
+		/*
+		 * Compact each instance collection once. The previous implementation
+		 * scanned each complete instance array once per tile.
+		 */
+		for (
+			let levelIndex = 0;
+			levelIndex < straightByLevel.length;
+			levelIndex++
+		) {
+			const straightSlots = straightByLevel[levelIndex];
+
+			if (straightSlots.length > 0) {
+				this.terrainStraight[levelIndex]?.removeSlots(straightSlots);
+			}
+
+			const reversedSlots = reversedByLevel[levelIndex];
+
+			if (reversedSlots.length > 0) {
+				this.terrainReversed[levelIndex]?.removeSlots(reversedSlots);
+			}
+		}
+
+		if (waterSlots.length > 0) {
+			this.waterReversed.removeSlots(waterSlots);
 		}
 
 		this.tiles.clear();
@@ -1338,36 +1559,56 @@ class FarTileManagerImpl {
 	}
 
 	public handleResult(data: FarTileGeneratedMessage): void {
-		const key = this.keyByRequestId.get(data.requestId);
-		this.keyByRequestId.delete(data.requestId);
+		const requestId = data.requestId;
+		const key = this.keyByRequestId.get(requestId);
 
-		if (key === undefined) return;
-		this.pendingByKey.delete(key);
+		this.keyByRequestId.delete(requestId);
 
-		// Stale result for an unloaded tile — drop it.
-		if (!this.engine) return;
-		if (!this.pendingIsStillWanted(data.levelIndex, data.tileX, data.tileZ)) {
+		if (key === undefined) {
 			return;
 		}
 
+		this.pendingByKey.delete(key);
+
+		if (
+			!this.engine ||
+			!this.pendingIsStillWanted(data.levelIndex, data.tileX, data.tileZ)
+		) {
+			return;
+		}
+
+		const levelIndex = data.levelIndex;
 		const levels = getFarTileLevels();
-		const lv = levels[data.levelIndex];
-		if (!lv) return;
+		const level = levels[levelIndex];
+		const opaqueArena = this.terrainArenas[levelIndex];
 
-		const arena = this.terrainArenas[data.levelIndex];
-		if (!arena) return;
+		if (!level || !opaqueArena) {
+			return;
+		}
 
-		const opaqueCount = data.opaqueFaces.length >>> 2;
-		const waterCount = data.waterFaces.length >>> 2;
+		const opaqueFaces = data.opaqueFaces;
+		const waterFaces = data.waterFaces;
+		const opaqueCount = opaqueFaces.length >>> 2;
+		const waterCount = waterFaces.length >>> 2;
 
-		const opaqueSlot = opaqueCount > 0 ? arena.alloc(opaqueCount) : null;
-		const waterSlot = waterCount > 0 ? this.waterArena.alloc(waterCount) : null;
-		if ((opaqueCount > 0 && !opaqueSlot) || (waterCount > 0 && !waterSlot)) {
-			// Arena full (binding-size cap) — drop the tile rather than
-			// partially populating it. BUGFIX: roll back the side that DID
-			// allocate, otherwise its faces leak (hole never recovered).
-			if (opaqueSlot) arena.free(opaqueSlot);
-			if (waterSlot) this.waterArena.free(waterSlot);
+		const opaqueSlot =
+			opaqueCount !== 0 ? opaqueArena.alloc(opaqueCount) : null;
+		const waterSlot =
+			waterCount !== 0 ? this.waterArena.alloc(waterCount) : null;
+
+		if (
+			(opaqueCount !== 0 && opaqueSlot === null) ||
+			(waterCount !== 0 && waterSlot === null)
+		) {
+			// Roll back whichever allocation succeeded.
+			if (opaqueSlot) {
+				opaqueArena.free(opaqueSlot);
+			}
+
+			if (waterSlot) {
+				this.waterArena.free(waterSlot);
+			}
+
 			console.warn(
 				`[FarTileManager] arena full, dropping tile ${key} ` +
 					`(opaque ${opaqueCount}, water ${waterCount}).`,
@@ -1375,46 +1616,62 @@ class FarTileManagerImpl {
 			return;
 		}
 
+		const tileWorldScale = level.tileSizeChunks * 32;
 		const originSlot = this.allocOrigin(
-			data.tileX * lv.tileSizeChunks * 32,
-			data.tileZ * lv.tileSizeChunks * 32,
+			data.tileX * tileWorldScale,
+			data.tileZ * tileWorldScale,
 		);
 
-		if (opaqueSlot && opaqueSlot.count > 0) {
-			arena.cpu.set(data.opaqueFaces, opaqueSlot.base * FT_FACE_WORDS);
-			stampOriginSlot(arena.cpu, opaqueSlot, originSlot);
-			arena.pushDirty(opaqueSlot.base, opaqueSlot.count);
+		if (opaqueSlot) {
+			const opaqueBase = opaqueSlot.base;
 
-			const straight = this.terrainStraight[data.levelIndex];
-			const reversed = this.terrainReversed[data.levelIndex];
-			const base = opaqueSlot.base;
-			const faces = data.opaqueFaces;
-			for (let j = 0; j < opaqueCount; j++) {
-				const backFace = (faces[j * 4 + 1] >>> 20) & 1;
-				if (backFace) straight.appendFace(base + j);
-				else reversed.appendFace(base + j);
-			}
+			opaqueArena.cpu.set(opaqueFaces, opaqueBase * FT_FACE_WORDS);
+
+			stampOriginSlot(opaqueArena.cpu, opaqueSlot, originSlot);
+
+			opaqueArena.pushDirty(opaqueBase, opaqueCount);
+
+			const straight = this.terrainStraight[levelIndex];
+			const reversed = this.terrainReversed[levelIndex];
+
+			/*
+			 * Batch insertion performs:
+			 * - one capacity growth per winding side at most
+			 * - one count update per side
+			 * - one dirty-range update per side
+			 *
+			 * The previous loop called appendFace() once per opaque face.
+			 */
+			straight.appendFacesByWinding(opaqueBase, opaqueFaces, 1);
+
+			reversed.appendFacesByWinding(opaqueBase, opaqueFaces, 0);
 		}
-		if (waterSlot && waterSlot.count > 0) {
-			this.waterArena.cpu.set(data.waterFaces, waterSlot.base * FT_FACE_WORDS);
-			stampOriginSlot(this.waterArena.cpu, waterSlot, originSlot);
-			this.waterArena.pushDirty(waterSlot.base, waterSlot.count);
 
+		if (waterSlot) {
 			const waterBase = waterSlot.base;
-			for (let j = 0; j < waterCount; j++) {
-				this.waterReversed.appendFace(waterBase + j);
-			}
+			const waterArena = this.waterArena;
+
+			waterArena.cpu.set(waterFaces, waterBase * FT_FACE_WORDS);
+
+			stampOriginSlot(waterArena.cpu, waterSlot, originSlot);
+
+			waterArena.pushDirty(waterBase, waterCount);
+
+			/*
+			 * Far-tile water always uses reversed winding, so it can be appended
+			 * as one contiguous range without inspecting individual face flags.
+			 */
+			this.waterReversed.appendContiguousFaces(waterBase, waterCount);
 		}
 
-		const entry: TileEntry = {
-			levelIndex: data.levelIndex,
+		this.tiles.set(key, {
+			levelIndex,
 			tx: data.tileX,
 			tz: data.tileZ,
 			opaque: opaqueSlot,
 			water: waterSlot,
 			originSlot,
-		};
-		this.tiles.set(key, entry);
+		});
 	}
 
 	/** Debug/profiling snapshot (HUD "Far" lines). */

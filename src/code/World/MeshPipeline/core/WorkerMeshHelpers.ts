@@ -271,30 +271,38 @@ export class MeshBuildSession implements MeshContext {
 		const lightArray = input.light_array;
 		const neighbors = input.neighbors;
 		const neighborLights = input.neighborLights;
+		const uniformFill = input.uniformFill;
 
 		this.size = size;
 		this.lod = lod;
 		this.disableAO = lod >= 2;
-		this.uniformFillId = input.uniformFill;
+		this.uniformFillId = uniformFill;
 		this.activeGrids = grids;
 		this.blocksChangedThisBuild = !skipBlockFill;
 
-		// Downsampling begins at LOD4 (user spec): LOD4 -> step 2, LOD5 -> 4...
-		// Fall back to full resolution if the chunk size is not evenly
-		// divisible, so the greedy grid always stays integral.
+		// Downsampling begins at LOD4:
+		// LOD4 -> 2, LOD5 -> 4, LOD6 -> 8, ...
+		//
+		// Revert to full resolution if the chunk dimension is not divisible by
+		// the requested step.
 		const rawStep = lod >= 4 ? 1 << (lod - 3) : 1;
-		this.lodStep = size % rawStep === 0 ? rawStep : 1;
-		this.meshGridSize = size / this.lodStep;
+		const lodStep = rawStep <= size && size % rawStep === 0 ? rawStep : 1;
+
+		this.lodStep = lodStep;
+		this.meshGridSize = size / lodStep;
 
 		this.ps = ps;
 		this.ps2 = ps2;
 
-		this.axisOffsets[0] = 1;
-		this.axisOffsets[1] = ps;
-		this.axisOffsets[2] = ps2;
+		const axisOffsets = this.axisOffsets;
+		axisOffsets[0] = 1;
+		axisOffsets[1] = ps;
+		axisOffsets[2] = ps2;
 
-		if (grids) {
-			if (psVol > grids.block.length) {
+		// Bind either externally owned relight-cache grids or session-owned
+		// fallback grids.
+		if (grids !== undefined) {
+			if (grids.block.length < psVol) {
 				grids.block = new Uint16Array(psVol);
 				grids.light = new Uint8Array(psVol);
 				grids.opaque = new Uint8Array(psVol);
@@ -317,7 +325,10 @@ export class MeshBuildSession implements MeshContext {
 		const padded = this.block;
 		const paddedLight = this.light;
 
+		// Missing block neighbors leave stale border cells unless the block grid
+		// is cleared before it is repopulated.
 		let needBlockClear = false;
+
 		if (!skipBlockFill) {
 			for (let i = 0; i < 26; i++) {
 				if (neighbors[i] === undefined) {
@@ -327,74 +338,120 @@ export class MeshBuildSession implements MeshContext {
 			}
 		}
 
-		let needLightClear = lightArray === undefined;
+		// The light grid must be cleared when either the chunk light array or any
+		// neighbor light slab is unavailable.
+		let needLightClear =
+			lightArray === undefined || neighborLights === undefined;
+
 		if (!needLightClear) {
-			if (neighborLights === undefined) {
-				needLightClear = true;
-			} else {
-				for (let i = 0; i < 26; i++) {
-					if (neighborLights[i] === undefined) {
-						needLightClear = true;
-						break;
-					}
+			// Narrow once so the hot loops below do not repeatedly evaluate the
+			// optional neighborLights value.
+			const lights = neighborLights as (Uint8Array | undefined)[];
+
+			for (let i = 0; i < 26; i++) {
+				if (lights[i] === undefined) {
+					needLightClear = true;
+					break;
 				}
 			}
 		}
 
-		if (needBlockClear) padded.fill(0, 0, psVol);
-		if (needLightClear) paddedLight.fill(0, 0, psVol);
+		if (needBlockClear) {
+			padded.fill(0, 0, psVol);
+		}
+
+		if (needLightClear) {
+			paddedLight.fill(0, 0, psVol);
+		}
+
+		// ---------------------------------------------------------------------
+		// Interior block grid
+		// ---------------------------------------------------------------------
 
 		if (!skipBlockFill) {
-			if (input.uniformFill !== undefined) {
-				const fillId = input.uniformFill;
+			if (uniformFill !== undefined) {
+				let paddedZBase = ps2;
 
 				for (let z = 0; z < size; z++) {
-					const pZ = (z + 1) * ps2;
+					let destination = 1 + ps + paddedZBase;
 
 					for (let y = 0; y < size; y++) {
-						const start = 1 + (y + 1) * ps + pZ;
-						padded.fill(fillId, start, start + size);
+						padded.fill(uniformFill, destination, destination + size);
+
+						destination += ps;
 					}
+
+					paddedZBase += ps2;
 				}
-			} else if (blockArray) {
+			} else if (blockArray != null) {
+				// Copy manually instead of using:
+				//
+				//     padded.set(blockArray.subarray(...), ...)
+				//
+				// TypedArray.subarray() creates a new view object for every row.
+				// The manual copy is allocation-free and keeps source/destination
+				// indexing linear within each row.
+				let source = 0;
+				let paddedZBase = ps2;
+
 				for (let z = 0; z < size; z++) {
-					const pZ = (z + 1) * ps2;
-					const cZ = z * size2;
+					let destination = 1 + ps + paddedZBase;
 
 					for (let y = 0; y < size; y++) {
-						const pIdx = 1 + (y + 1) * ps + pZ;
-						const cIdx = y * size + cZ;
+						const rowEnd = source + size;
 
-						// Row-wise memcpy via set(subarray): both grids are x-major,
-						// so each source row is contiguous and lands on a contiguous
-						// padded row segment.
-						padded.set(blockArray.subarray(cIdx, cIdx + size), pIdx);
+						while (source < rowEnd) {
+							padded[destination++] = blockArray[source++];
+						}
+
+						// Skip the two padding cells between padded rows.
+						destination += 2;
 					}
+
+					paddedZBase += ps2;
 				}
 			}
 		}
 
-		if (lightArray) {
+		// ---------------------------------------------------------------------
+		// Interior light grid
+		// ---------------------------------------------------------------------
+
+		if (lightArray !== undefined) {
+			let source = 0;
+			let paddedZBase = ps2;
+
 			for (let z = 0; z < size; z++) {
-				const pZ = (z + 1) * ps2;
-				const cZ = z * size2;
+				let destination = 1 + ps + paddedZBase;
 
 				for (let y = 0; y < size; y++) {
-					const pIdx = 1 + (y + 1) * ps + pZ;
-					const cIdx = y * size + cZ;
+					const rowEnd = source + size;
 
-					paddedLight.set(lightArray.subarray(cIdx, cIdx + size), pIdx);
+					while (source < rowEnd) {
+						paddedLight[destination++] = lightArray[source++];
+					}
+
+					destination += 2;
 				}
+
+				paddedZBase += ps2;
 			}
 		}
+
+		// ---------------------------------------------------------------------
+		// Neighbor padding
+		// ---------------------------------------------------------------------
 
 		for (let ni = 0; ni < 26; ni++) {
 			const neighbor = neighbors[ni];
-			const nLight = neighborLights?.[ni];
+			const neighborLight =
+				neighborLights === undefined ? undefined : neighborLights[ni];
 
-			// Block borders need block data. Light borders only need light data.
-			// This keeps light-only remeshes from depending on block slabs being resent.
-			if (neighbor === undefined && nLight === undefined) continue;
+			// Block borders require block data. Light-only remeshes can populate
+			// padding from light slabs without receiving block slabs again.
+			if (neighbor === undefined && neighborLight === undefined) {
+				continue;
+			}
 
 			const offsetBase = ni * 3;
 			const ox = NEIGHBOR_OFFSETS_FLAT[offsetBase];
@@ -406,62 +463,93 @@ export class MeshBuildSession implements MeshContext {
 			const zCount = oz === 0 ? size : 1;
 
 			const pXStart = ox < 0 ? 0 : ox > 0 ? size + 1 : 1;
+
 			const pYStart = oy < 0 ? 0 : oy > 0 ? size + 1 : 1;
+
 			const pZStart = oz < 0 ? 0 : oz > 0 ? size + 1 : 1;
 
+			let source = 0;
+
 			if (xCount === size) {
-				let ci = 0;
+				// Face slabs are contiguous in X. Copy each row without creating
+				// temporary subarray views.
+				let destinationZBase = pZStart * ps2;
 
 				for (let dz = 0; dz < zCount; dz++) {
-					const pZ = (pZStart + dz) * ps2;
+					let destination = pXStart + pYStart * ps + destinationZBase;
 
 					for (let dy = 0; dy < yCount; dy++) {
-						const destOffset = pXStart + (pYStart + dy) * ps + pZ;
+						const rowEnd = source + size;
 
-						// Face slabs store one contiguous x-row per (dz,dy) step
-						// in the scratch buffers — copy row-wise.
 						if (!skipBlockFill && neighbor !== undefined) {
-							padded.set(neighbor.subarray(ci, ci + size), destOffset);
+							if (neighborLight !== undefined) {
+								while (source < rowEnd) {
+									padded[destination] = neighbor[source];
+
+									paddedLight[destination] = neighborLight[source];
+
+									destination++;
+									source++;
+								}
+							} else {
+								while (source < rowEnd) {
+									padded[destination++] = neighbor[source++];
+								}
+							}
+						} else if (neighborLight !== undefined) {
+							while (source < rowEnd) {
+								paddedLight[destination++] = neighborLight[source++];
+							}
+						} else {
+							// A block slab may be present during a block-fill skip,
+							// but there is deliberately nothing to copy.
+							source = rowEnd;
 						}
 
-						if (nLight !== undefined) {
-							paddedLight.set(nLight.subarray(ci, ci + size), destOffset);
-						}
-
-						ci += size;
+						// Move from the end of this X row to the same X start in
+						// the next padded Y row.
+						destination += ps - size;
 					}
+
+					destinationZBase += ps2;
 				}
 			} else {
-				let ci = 0;
+				// Edge and corner slabs contain one X value per logical cell.
+				// Keep the original generalized loops for clarity and correctness.
+				let destinationZBase = pZStart * ps2;
 
 				for (let dz = 0; dz < zCount; dz++) {
-					const pZ = (pZStart + dz) * ps2;
+					let destinationYBase = pYStart * ps + destinationZBase;
 
 					for (let dy = 0; dy < yCount; dy++) {
-						const pY = (pYStart + dy) * ps;
+						let destination = pXStart + destinationYBase;
 
 						for (let dx = 0; dx < xCount; dx++) {
-							const dest = pXStart + dx + pY + pZ;
-
 							if (!skipBlockFill && neighbor !== undefined) {
-								padded[dest] = neighbor[ci];
+								padded[destination] = neighbor[source];
 							}
 
-							if (nLight !== undefined) {
-								paddedLight[dest] = nLight[ci];
+							if (neighborLight !== undefined) {
+								paddedLight[destination] = neighborLight[source];
 							}
 
-							ci++;
+							destination++;
+							source++;
 						}
+
+						destinationYBase += ps;
 					}
+
+					destinationZBase += ps2;
 				}
 			}
 		}
 
+		// Retain the caller-owned neighbor array without cloning it.
 		this.neighbors = neighbors;
 
 		if (!skipBlockFill) {
-			this.buildOpaqueClassification(psVol, this.lodStep <= 1);
+			this.buildOpaqueClassification(psVol, lodStep <= 1);
 		}
 	}
 
