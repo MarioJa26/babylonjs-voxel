@@ -51,93 +51,76 @@ struct VSOut {
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let singleTileUV = fract(in.vUV);
-  let layer = in.vTileLayer;
-
   let dx = dpdx(in.vUV);
   let dy = dpdy(in.vUV);
 
-  var diffuseColor = textureSampleGrad(
+  let diffuseSample = textureSampleGrad(
     diffuseTexture,
     diffuseTextureSampler,
     singleTileUV,
-    layer,
+    in.vTileLayer,
     dx,
     dy
   );
 
-  if (diffuseColor.a < 0.01) {
+  if (diffuseSample.a < 0.01) {
     discard;
   }
 
   let wetness = shaderUniforms.wetness;
+  let sunIntensity = shaderUniforms.sunLightIntensity;
+  let skyLight = in.vLight.x;
+  let blockLight = in.vLight.y;
 
-  diffuseColor = vec4<f32>(
-    diffuseColor.rgb * mix(1.0, 0.5, wetness),
-    diffuseColor.a
-  );
+  let diffuseRGB = diffuseSample.rgb * (1.0 - wetness * 0.5);
 
-  var normalMap = textureSampleGrad(
+  let sampledNormal = textureSampleGrad(
     normalTexture,
     normalTextureSampler,
     singleTileUV,
-    layer,
+    in.vTileLayer,
     dx,
     dy
   ).rgb;
 
-  normalMap = normalize(normalMap * 2.0 - 1.0);
+  let normalTS = normalize(sampledNormal * 2.0 - 1.0);
 
   let lightDirectionTS = in.vLightDirTS;
-  let viewDirTS = normalize(in.vViewDirTS);
+  let viewDirectionTS = normalize(in.vViewDirTS);
 
-  let normalMapDiffuse = max(0.0, dot(normalMap, lightDirectionTS));
+  let normalMapDiffuse = max(0.0, dot(normalTS, lightDirectionTS));
 
-  let shininess = mix(16.0, 128.0, wetness);
+  let halfwayDirectionTS = normalize(viewDirectionTS + lightDirectionTS);
 
-  let halfwayDirTS = normalize(viewDirTS + lightDirectionTS);
-  let NH = max(dot(normalMap, halfwayDirTS), 0.0);
+  let normalHalf = max(dot(normalTS, halfwayDirectionTS), 0.0);
 
-  let spec = exp2(
-    clamp(shininess * 1.4427 * (NH - 1.0), -126.0, 0.0)
+  let shininess = 16.0 + wetness * 112.0;
+
+  let specularPower = exp2(
+    clamp(
+      shininess * 1.4427 * (normalHalf - 1.0),
+      -126.0,
+      0.0
+    )
   );
 
-  let specIntensity =
-    mix(0.03, 0.7, wetness) *
-    in.vLight.x;
+  let specularIntensity = (0.03 + wetness * 0.67) * skyLight * max(sunIntensity - 0.1, 0.0);
 
-  let specular =
-    vec3<f32>(specIntensity) *
-    spec *
-    max(shaderUniforms.sunLightIntensity - 0.1, 0.0);
+  let specular = vec3<f32>(specularIntensity * specularPower);
 
-  let aoFactor = 1.0 - in.vAO * 0.23;
-
-  let skyScale =
-    in.vLight.x *
-    0.8 *
-    (shaderUniforms.sunLightIntensity + 0.2);
+  let skyScale = skyLight * 0.8 * (sunIntensity + 0.2);
 
   let lightMix = clamp(
-    vec3<f32>(skyScale) +
-      in.vLight.y * vec3<f32>(0.9, 0.6, 0.2),
+    vec3<f32>(skyScale) + blockLight * vec3<f32>(0.9, 0.6, 0.2),
     vec3<f32>(0.2),
     vec3<f32>(1.0)
   );
 
-  let diffuseTerm =
-    in.vDiffuse *
-    normalMapDiffuse;
+  let directLight = 1.0 + in.vDiffuse * normalMapDiffuse * sunIntensity * skyLight;
 
-  let color =
-    (
-      diffuseColor.rgb *
-      (1.0 + diffuseTerm *
-        shaderUniforms.sunLightIntensity *
-        in.vLight.x) +
-      specular
-    ) *
-    lightMix *
-    aoFactor;
+  let aoFactor = 1.0 - in.vAO * 0.23;
+
+  let color = (diffuseRGB * directLight + specular) * lightMix * aoFactor;
 
   return vec4<f32>(color, 1.0);
 }
@@ -183,14 +166,15 @@ return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-let scrollDir = vec2<f32>(
--shaderUniforms.time * 0.3,
-shaderUniforms.time * 0.4
+let time = shaderUniforms.time;
+
+let scrollDirection = vec2<f32>(
+-time * 0.3,
+time * 0.4
 );
 
-let animatedUV = in.vUV + scrollDir;
+let animatedUV = in.vUV + scrollDirection;
 let singleTileUV = fract(animatedUV);
-let layer = in.vTileLayer;
 
 let dx = dpdx(in.vUV);
 let dy = dpdy(in.vUV);
@@ -199,7 +183,7 @@ let diffuseColor = textureSampleGrad(
 diffuseTexture,
 diffuseTextureSampler,
 singleTileUV,
-layer,
+in.vTileLayer,
 dx,
 dy
 );
@@ -208,35 +192,50 @@ if (diffuseColor.a < 0.01) {
 discard;
 }
 
-let wavePos = in.vWorldPosition.xz * 0.3 + scrollDir;
-let eps = 0.05;
-let invEpsWaveStrength = 3.0;
+let wavePosition = in.vWorldPosition.xz * 0.3 + scrollDirection;
 
-let wC = valueNoise(wavePos);
-let wCDX = valueNoise(wavePos + vec2<f32>(eps, 0.0));
-let wCDZ = valueNoise(wavePos + vec2<f32>(0.0, eps));
+let centerWave = valueNoise(wavePosition);
 
-let worldNormal = normalize(vec3<f32>(
--(wCDX - wC) * invEpsWaveStrength,
+let waveGradient = vec2<f32>(
+valueNoise(wavePosition + vec2<f32>(0.05, 0.0)) - centerWave,
+valueNoise(wavePosition + vec2<f32>(0.0, 0.05)) - centerWave
+);
+
+let worldNormal = normalize(
+vec3<f32>(
+-waveGradient.x * 3.0,
 1.0,
--(wCDZ - wC) * invEpsWaveStrength
-));
+-waveGradient.y * 3.0
+)
+);
 
 let lightDirection = shaderUniforms.lightDirection;
-let diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
 
-let halfwayDir = normalize(in.vViewDir + lightDirection);
-let NH = max(dot(worldNormal, halfwayDir), 0.0);
-let spec = exp2(clamp(64.0 * 1.4427 * (NH - 1.0), -126.0, 0.0));
+let sunIntensity = shaderUniforms.sunLightIntensity;
 
 let skyLight = in.vLight.x;
 let blockLight = in.vLight.y;
 let lightLevel = max(skyLight, blockLight);
 
-let specular = vec3<f32>(0.7 * skyLight) * spec * shaderUniforms.sunLightIntensity;
+let diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
 
-let aoFactor = 1.0 - in.vAO * 0.1;
-let skyScale = skyLight * 0.8 * (shaderUniforms.sunLightIntensity + 0.2);
+let halfwayDirection = normalize(in.vViewDir + lightDirection);
+
+let normalHalf = max(dot(worldNormal, halfwayDirection), 0.0);
+
+let specularPower = exp2(
+clamp(
+92.3328 * (normalHalf - 1.0),
+-126.0,
+0.0
+)
+);
+
+let specular = vec3<f32>(
+0.7 * skyLight * specularPower * sunIntensity
+);
+
+let skyScale = skyLight * 0.8 * (sunIntensity + 0.2);
 
 let lightMix = clamp(
 vec3<f32>(skyScale) + blockLight * vec3<f32>(0.9, 0.6, 0.2),
@@ -244,24 +243,29 @@ vec3<f32>(0.0),
 vec3<f32>(1.0)
 );
 
-var litColor =
-diffuseColor.rgb *
-(1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity * skyLight) +
-specular;
+let directLight = 1.0 + diffuseIntensity * sunIntensity * skyLight;
+
+let litColor = diffuseColor.rgb * directLight + specular;
 
 let luminance = dot(litColor, vec3<f32>(0.299, 0.587, 0.114));
 
-litColor = mix(
+let saturatedColor = mix(
 vec3<f32>(luminance),
 litColor,
 lightLevel * 0.5 + 0.5
 );
 
-var finalColor = litColor * max(lightMix * aoFactor, vec3<f32>(0.08));
+let aoFactor = 1.0 - in.vAO * 0.1;
 
-finalColor = mix(finalColor, in.vFogColor, in.vFogFactor);
+let illuminatedColor = saturatedColor * max(lightMix * aoFactor, vec3<f32>(0.08));
 
-let alpha = diffuseColor.a * mix(0.9, 0.4, lightLevel);
+let finalColor = mix(
+illuminatedColor,
+in.vFogColor,
+in.vFogFactor
+);
+
+let alpha = diffuseColor.a * (0.9 - lightLevel * 0.5);
 
 return vec4<f32>(finalColor, alpha);
 }
@@ -282,9 +286,9 @@ struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
   @location(1) @interpolate(flat) vTileLayer : u32,
-  @location(5) @interpolate(flat) vNormal : vec3<f32>,
   @location(6) vAO : f32,
   @location(7) @interpolate(flat) vLight : vec2<f32>,
+  @location(15) @interpolate(flat) vDiffuse : f32,
 };
 
 @fragment
@@ -294,7 +298,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let dx = dpdx(in.vUV);
   let dy = dpdy(in.vUV);
 
-  var diffuseColor = textureSampleGrad(
+  let diffuseColor = textureSampleGrad(
     diffuseTexture,
     diffuseTextureSampler,
     singleTileUV,
@@ -303,23 +307,13 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     dy
   );
 
-  // alphaCutoff is a system uniform: declaring it in the uniforms list routes
-  // it into the auto-generated shaderSystem struct (not shaderUniforms).
   if (diffuseColor.a < shaderSystem.alphaCutoff) {
     discard;
   }
 
-  // Cheap wet look: darken the diffuse only (no normal/specular wetness).
-  diffuseColor = vec4<f32>(
-    diffuseColor.rgb * shaderUniforms.cutoutWetDiffuseMul,
-    diffuseColor.a
-  );
-
   let skyLight = in.vLight.x;
   let blockLight = in.vLight.y;
   let sunIntensity = shaderUniforms.sunLightIntensity;
-
-  let diffuseIntensity = max(0.0, dot(in.vNormal, shaderUniforms.lightDirection));
 
   let aoFactor = 1.0 - in.vAO * 0.1;
   let skyScale = skyLight * 0.8 * (sunIntensity + 0.2);
@@ -330,15 +324,65 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     vec3<f32>(1.0)
   );
 
+  let directLight = 1.0 + in.vDiffuse * sunIntensity * skyLight;
+
   let color =
     diffuseColor.rgb *
-    (1.0 + diffuseIntensity * sunIntensity * skyLight) *
+    shaderUniforms.cutoutWetDiffuseMul *
+    directLight *
     lightMix *
     aoFactor;
 
   return vec4<f32>(color, 1.0);
 }
 `;
+const OPAQUE_VERTEX_OPTIONS: VertexShaderOptions = {
+	tangent: false,
+	worldPosition: false,
+	meta: false,
+	tint: false,
+	fog: false,
+	viewDir: false,
+	tangentSpaceLighting: true,
+	vertexDiffuse: true,
+	rawUnits: false,
+	boundarySentinel: true,
+	ao: true,
+	bakeShade: false,
+};
+
+const TRANSPARENT_VERTEX_OPTIONS: VertexShaderOptions = {
+	tangent: false,
+	worldPosition: true,
+	meta: false,
+	tint: false,
+	fog: true,
+	viewDir: true,
+	tangentSpaceLighting: false,
+	vertexDiffuse: false,
+	rawUnits: false,
+	boundarySentinel: false,
+	ao: true,
+	bakeShade: false,
+};
+
+const CUTOUT_VERTEX_OPTIONS: VertexShaderOptions = {
+	tangent: false,
+	worldPosition: false,
+	meta: false,
+	tint: false,
+	fog: false,
+	viewDir: false,
+	tangentSpaceLighting: false,
+
+	// Exaktes Ergebnis für flache Quad-Normalen.
+	vertexDiffuse: true,
+
+	rawUnits: false,
+	boundarySentinel: true,
+	ao: true,
+	bakeShade: false,
+};
 export interface ChunkMaterialOptions {
 	engine: EngineContext;
 	scene: SceneContext;
@@ -351,6 +395,66 @@ export interface ChunkMaterialOptions {
 }
 
 type ChunkMaterialKind = "opaque" | "transparent" | "cutout";
+
+function buildMaterialUniforms(
+	kind: ChunkMaterialKind,
+	useFog: boolean,
+): ShaderUniformOption[] {
+	const isOpaque = kind === "opaque";
+	const isTransparent = kind === "transparent";
+	const isCutout = kind === "cutout";
+
+	const uniforms: ShaderUniformOption[] = [
+		"world",
+		"worldViewProjection",
+		"cameraPosition",
+		{ name: "atlasMaxTilesU32", type: "u32" },
+		{ name: "lightDirection", type: "vec3<f32>" },
+		{ name: "sunLightIntensity", type: "f32" },
+	];
+
+	if (isOpaque) {
+		uniforms.push({
+			name: "wetness",
+			type: "f32",
+		});
+	}
+
+	if (isCutout) {
+		uniforms.push(
+			{
+				name: "alphaCutoff",
+				type: "f32",
+			},
+			{
+				name: "cutoutWetDiffuseMul",
+				type: "f32",
+			},
+		);
+	}
+
+	if (useFog) {
+		uniforms.push(
+			{
+				name: "fogInfos",
+				type: "vec4<f32>",
+			},
+			{
+				name: "fogColor",
+				type: "vec3<f32>",
+			},
+		);
+	}
+
+	if (isTransparent) {
+		uniforms.push({
+			name: "time",
+			type: "f32",
+		});
+	}
+
+	return uniforms;
+}
 
 function buildChunkMaterial(
 	name: string,
@@ -389,46 +493,7 @@ function buildChunkMaterial(
 		type: "array<vec4<f32>>",
 	};
 
-	const uniforms: ShaderUniformOption[] = [
-		"world",
-		"worldViewProjection",
-		"cameraPosition",
-		{ name: "atlasTileSize", type: "f32" },
-		{ name: "atlasMaxTiles", type: "f32" },
-		{ name: "atlasMaxTilesU32", type: "u32" },
-		{ name: "lightDirection", type: "vec3<f32>" },
-		{ name: "sunLightIntensity", type: "f32" },
-	];
-
-	// Only opaque declares/uses wetness (normal-map specular response).
-	// Cutout gets the cheaper cutoutWetDiffuseMul; transparent water has its
-	// own look.
-	if (isOpaque) {
-		uniforms.push({ name: "wetness", type: "f32" });
-	}
-
-	if (isCutout) {
-		// System uniform: declaring it here both adds alphaCutoff to the
-		// auto-generated shaderSystem struct and creates the material's value
-		// slot so setShaderUniform(material, "alphaCutoff", ...) can set it.
-		uniforms.push(
-			{ name: "alphaCutoff", type: "f32" },
-			// Regular per-material uniform: wet-diffuse multiplier in [1, 0.65],
-			// driven from the shared wetness uniform each frame.
-			{ name: "cutoutWetDiffuseMul", type: "f32" },
-		);
-	}
-
-	if (useFog) {
-		uniforms.push(
-			{ name: "fogInfos", type: "vec4<f32>" },
-			{ name: "fogColor", type: "vec3<f32>" },
-		);
-	}
-
-	if (isTransparent) {
-		uniforms.push({ name: "time", type: "f32" });
-	}
+	const uniforms = buildMaterialUniforms(kind, useFog);
 
 	const material = createShaderMaterial({
 		name,
@@ -468,8 +533,6 @@ function buildChunkMaterial(
 		setShaderTexture(material, "normalTexture", opts.normalTexture);
 	}
 
-	setShaderUniform(material, "atlasTileSize", opts.atlasTileSize);
-	setShaderUniform(material, "atlasMaxTiles", opts.atlasMaxTiles);
 	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles | 0);
 	setShaderUniform(material, "lightDirection", DEFAULT_LIGHT_DIRECTION);
 	setShaderUniform(material, "sunLightIntensity", 1);
@@ -502,16 +565,7 @@ export function createChunkOpaqueMaterial(
 		"chunkOpaqueLite",
 		opaqueChunkFragmentWGSL,
 		"opaque",
-		{
-			tangent: false,
-			worldPosition: false,
-			meta: false,
-			tint: false,
-			fog: false,
-			viewDir: true,
-			tangentSpaceLighting: true,
-			vertexDiffuse: true,
-		},
+		OPAQUE_VERTEX_OPTIONS,
 		opts,
 	);
 }
@@ -523,19 +577,7 @@ export function createChunkTransparentMaterial(
 		"chunkTransparentLite",
 		transparentChunkFragmentWGSL,
 		"transparent",
-		{
-			tangent: false,
-			worldPosition: true,
-			meta: false,
-			tint: false,
-			fog: true,
-			viewDir: true,
-			tangentSpaceLighting: false,
-
-			// Water-only bucket: META_WATER collides with the materialType
-			// field, so the ==3 boundary restore would fire on every face.
-			boundarySentinel: false,
-		},
+		TRANSPARENT_VERTEX_OPTIONS,
 		opts,
 	);
 }
@@ -555,22 +597,7 @@ export function createChunkCutoutMaterial(
 		"chunkCutoutLite",
 		cutoutChunkFragmentWGSL,
 		"cutout",
-		{
-			tangent: false,
-			worldPosition: false,
-			meta: false,
-			tint: false,
-
-			// Cutout skips fog entirely (ChunkMesher.materialUsesFog already
-			// excludes cutoutMaterial): no fog varyings, no fog uniforms.
-			fog: false,
-
-			// No specular in the cheap cutout path.
-			viewDir: false,
-
-			// Not needed for cutout.
-			tangentSpaceLighting: false,
-		},
+		CUTOUT_VERTEX_OPTIONS,
 		opts,
 	);
 }

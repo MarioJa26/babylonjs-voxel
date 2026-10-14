@@ -2,7 +2,7 @@ import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
 import { Chunk } from "../Chunk";
-import { ChunkLifecycle } from "./ChunkLifecycle";
+import { ChunkLifecycle, ResidencyState } from "./ChunkLifecycle";
 import type { QueuedChunkRequest } from "./ChunkStreamingController";
 import { type InFlightProcessState, ProcessStage } from "./ChunkTypes";
 
@@ -609,11 +609,6 @@ export class ChunkProcessScheduler {
 								state.loadBatch.push(loadQueue[i]);
 							}
 
-							this.notifyRequests(
-								this.adapter.onLoadRequestsDequeued,
-								state.loadBatch,
-							);
-
 							if (takeCount < loadQueue.length) {
 								loadQueue.copyWithin(0, takeCount);
 							}
@@ -675,6 +670,16 @@ export class ChunkProcessScheduler {
 								request.includeVoxelData = desiredLod <= 1;
 							}
 
+							/*
+							 * Scheduled -> Loading. The host atomically transfers the request from
+							 * the load queue bookkeeping into the in-flight registry.
+							 */
+							const residency = ChunkLifecycle.dispatchLoad(chunk);
+
+							if (residency !== ResidencyState.Loading) {
+								continue;
+							}
+
 							state.validLoadBatch.push(request);
 
 							if (request.includeVoxelData) {
@@ -683,6 +688,11 @@ export class ChunkProcessScheduler {
 								state.farRequests.push(request);
 							}
 						}
+
+						this.notifyRequests(
+							this.adapter.onLoadRequestsDequeued,
+							state.validLoadBatch,
+						);
 
 						this.adapter.onQueueSnapshotChanged?.();
 
@@ -1027,6 +1037,37 @@ export class ChunkProcessScheduler {
 	 * no longer Loading (culled mid-flight, unload won the race); the request
 	 * is then dropped and the sweep/cull owns the outcome.
 	 */
+	/**
+	 * Notify the adapter about one request without allocating a temporary
+	 * single-element array.
+	 */
+	private notifySingleRequest(
+		callback:
+			| ((requests: ReadonlyArray<QueuedChunkRequest>) => void)
+			| undefined,
+		request: QueuedChunkRequest,
+	): void {
+		if (callback === undefined) {
+			return;
+		}
+
+		const snapshot = this._notificationRequests;
+		snapshot[0] = request;
+
+		try {
+			callback(snapshot);
+		} finally {
+			snapshot.length = 0;
+		}
+	}
+
+	/**
+	 * Move one in-flight request back to the load queue if it is still valid.
+	 *
+	 * ChunkLifecycle owns the Loading -> Scheduled transition. Its host restores
+	 * the retained request object to the queue, so this method must not push the
+	 * request directly.
+	 */
 	private requeueLoadRequest(
 		state: InFlightProcessState,
 		request: QueuedChunkRequest,
@@ -1042,26 +1083,40 @@ export class ChunkProcessScheduler {
 
 		queuedIds.clear();
 
-		for (let i = 0; i < loadQueue.length; i++) {
-			const queuedChunk = loadQueue[i].chunk;
+		try {
+			for (let i = 0, length = loadQueue.length; i < length; i++) {
+				const queuedChunk = loadQueue[i].chunk;
 
-			if (queuedChunk) {
-				queuedIds.add(queuedChunk.id);
+				if (queuedChunk) {
+					queuedIds.add(queuedChunk.id);
+				}
 			}
-		}
 
-		if (queuedIds.has(chunk.id)) {
+			if (queuedIds.has(chunk.id)) {
+				return false;
+			}
+
+			/*
+			 * Loading -> Scheduled. The lifecycle host moves the retained request
+			 * from the in-flight registry back to the load queue.
+			 */
+			const result = ChunkLifecycle.abandonLoad(chunk, "requeue");
+
+			/*
+			 * If the transition was rejected because unloading or disposal won the
+			 * race, the request was not restored and must be treated as dropped.
+			 */
+			if (result !== ResidencyState.Scheduled) {
+				return false;
+			}
+
+			this.notifySingleRequest(this.adapter.onLoadRequestsRecovered, request);
+
+			this.adapter.onQueueSnapshotChanged?.();
+			return true;
+		} finally {
 			queuedIds.clear();
-			return false;
 		}
-
-		ChunkLifecycle.abandonLoad(chunk, "requeue");
-		queuedIds.clear();
-
-		this.notifyRequests(this.adapter.onLoadRequestsRecovered, [request]);
-
-		this.adapter.onQueueSnapshotChanged?.();
-		return true;
 	}
 
 	/**

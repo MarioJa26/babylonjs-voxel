@@ -298,16 +298,21 @@ export function deriveResidencyState(
 	view: ChunkLifecycleView,
 	host: ChunkLifecycleQueries,
 ): ResidencyState {
-	if (host.isUnloading(view)) return ResidencyState.Unloading;
+	if (host.isUnloading(view)) {
+		return ResidencyState.Unloading;
+	}
+
 	if (view.isLoaded) {
 		return view.hasVoxelData ? ResidencyState.Loaded : ResidencyState.LodOnly;
 	}
-	if (view.isTerrainScheduled) {
-		return host.isLoadInFlight(view) || host.isGenerating(view)
-			? ResidencyState.Loading
-			: ResidencyState.Scheduled;
+
+	if (!view.isTerrainScheduled) {
+		return ResidencyState.Absent;
 	}
-	return ResidencyState.Absent;
+
+	return host.isLoadInFlight(view) || host.isGenerating(view)
+		? ResidencyState.Loading
+		: ResidencyState.Scheduled;
 }
 
 /** Reconstruct the mesh-currency state of `view`. */
@@ -335,29 +340,60 @@ export function findResidencyInvariantViolation(
 	view: ChunkLifecycleView,
 	host: ChunkLifecycleQueries,
 ): string | null {
-	const state = deriveResidencyState(view, host);
+	const queued = host.isQueuedForLoad(view);
+	const inFlight = host.isLoadInFlight(view);
+	const generating = host.isGenerating(view);
+	const unloading = host.isUnloading(view);
 
-	if (state === ResidencyState.Scheduled) {
-		// Scheduled must mean "sitting in the load queue". If the host says it
-		// is not queued, the request was lost — the orphan shape.
-		if (!host.isQueuedForLoad(view)) {
-			return "Scheduled but not in the load queue (orphan: lost request)";
+	const activeLoadLocationCount =
+		Number(queued) + Number(inFlight) + Number(generating);
+
+	if (unloading) {
+		if (queued || inFlight || generating) {
+			return "Unloading while still present in the load path";
 		}
+
+		if (view.isTerrainScheduled) {
+			return "Unloading but isTerrainScheduled is still set";
+		}
+
+		return null;
 	}
 
-	if (state === ResidencyState.Loading) {
-		// Loading must mean in-flight OR generating.
-		if (!host.isLoadInFlight(view) && !host.isGenerating(view)) {
-			return "Loading but neither in-flight nor generating (orphan)";
+	if (view.isLoaded) {
+		if (view.isTerrainScheduled) {
+			return "Loaded but isTerrainScheduled is still set";
 		}
+
+		if (queued || inFlight || generating) {
+			return "Loaded but still present in the load path";
+		}
+
+		return null;
 	}
 
-	// A loaded chunk must never still claim to be scheduled.
-	if (
-		(state === ResidencyState.Loaded || state === ResidencyState.LodOnly) &&
-		view.isTerrainScheduled
-	) {
-		return "Loaded but isTerrainScheduled still set";
+	if (!view.isTerrainScheduled) {
+		if (queued) {
+			return "Not scheduled but still present in the load queue";
+		}
+
+		if (inFlight) {
+			return "Not scheduled but still marked as an in-flight load";
+		}
+
+		if (generating) {
+			return "Not scheduled but still queued for worker generation";
+		}
+
+		return null;
+	}
+
+	if (activeLoadLocationCount === 0) {
+		return "Scheduled but absent from the load queue, in-flight set, and generation queue (orphan)";
+	}
+
+	if (activeLoadLocationCount > 1) {
+		return "Scheduled load is present in multiple load-path locations";
 	}
 
 	return null;
@@ -382,17 +418,26 @@ export function surveyResidencyInvariants(
 	host: ChunkLifecycleQueries,
 	limit = 32,
 ): { count: number; samples: ResidencyInvariantViolation[] } {
+	const sampleLimit =
+		Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
+
 	let count = 0;
 	const samples: ResidencyInvariantViolation[] = [];
+
 	for (const view of chunks) {
 		const reason = findResidencyInvariantViolation(view, host);
-		if (reason !== null) {
-			count++;
-			if (samples.length < limit) {
-				samples.push({ view, reason });
-			}
+
+		if (reason === null) {
+			continue;
+		}
+
+		count++;
+
+		if (samples.length < sampleLimit) {
+			samples.push({ view, reason });
 		}
 	}
+
 	return { count, samples };
 }
 
@@ -524,8 +569,19 @@ export const ChunkLifecycle = {
 		if (view.isLoaded && (!includeVoxelData || view.hasVoxelData)) {
 			return deriveResidencyState(view, host);
 		}
+
+		/*
+		 * The owner must write the scheduled flag. Otherwise enqueueLoad
+		 * remains an implicit flag owner, contradicting this module's
+		 * contract.
+		 *
+		 * Enqueue first so an exception cannot leave the chunk marked as
+		 * scheduled without a queue entry.
+		 */
 		host.enqueueLoad(view, request);
-		return deriveResidencyState(view, host);
+		writeResidencyBooleans(view, ResidencyState.Scheduled);
+
+		return ResidencyState.Scheduled;
 	},
 
 	/** The scheduler dequeued the request and is servicing it. Scheduled → Loading. */
@@ -538,8 +594,14 @@ export const ChunkLifecycle = {
 			reportIllegal("dispatchLoad", cur);
 			return cur;
 		}
-		writeResidencyBooleans(view, next);
+
+		/*
+		 * Update host bookkeeping first. If it throws, the flags still
+		 * describe the original queued state.
+		 */
 		host.moveLoadToInFlight(view);
+		writeResidencyBooleans(view, next);
+
 		return next;
 	},
 
@@ -551,9 +613,17 @@ export const ChunkLifecycle = {
 	completeLoad(view: ChunkLifecycleView): ResidencyState {
 		const host = requireHost();
 		const cur = deriveResidencyState(view, host);
+
+		/*
+		 * A completion can arrive after the data layer has already set
+		 * isLoaded. In that case the in-flight entry must still be cleared.
+		 */
 		if (cur === ResidencyState.Loaded || cur === ResidencyState.LodOnly) {
-			return cur; // idempotent
+			host.clearInFlight(view);
+			writeResidencyBooleans(view, cur);
+			return cur;
 		}
+
 		const transition: ResidencyTransition = view.hasVoxelData
 			? "completeLoadVoxel"
 			: "completeLoadFarLod";
@@ -562,8 +632,9 @@ export const ChunkLifecycle = {
 			reportIllegal(transition, cur);
 			return cur;
 		}
-		writeResidencyBooleans(view, next);
 		host.clearInFlight(view);
+		writeResidencyBooleans(view, next);
+
 		return next;
 	},
 
@@ -585,12 +656,14 @@ export const ChunkLifecycle = {
 			reportIllegal(transition, cur);
 			return cur;
 		}
-		writeResidencyBooleans(view, next);
+
 		if (mode === "requeue") {
 			host.moveInFlightToLoad(view);
 		} else {
 			host.clearInFlight(view);
 		}
+
+		writeResidencyBooleans(view, next);
 		return next;
 	},
 
@@ -606,9 +679,16 @@ export const ChunkLifecycle = {
 			reportIllegal("requestUnload", cur);
 			return cur;
 		}
-		writeResidencyBooleans(view, next);
+
+		/*
+		 * Establish the unload queue before exposing Unloading through flags.
+		 * If enqueueUnload can throw, dropFromLoadPath and enqueueUnload
+		 * should ideally be combined into one transactional host operation.
+		 */
 		host.dropFromLoadPath(view);
 		host.enqueueUnload(view);
+		writeResidencyBooleans(view, next);
+
 		return next;
 	},
 
@@ -622,8 +702,9 @@ export const ChunkLifecycle = {
 			reportIllegal("completeUnload", cur);
 			return cur;
 		}
-		writeResidencyBooleans(view, next);
+
 		host.dequeueUnload(view);
+		writeResidencyBooleans(view, next);
 		// Mirror Chunk.dispose's mesh-flag resets so a pooled chunk starts clean.
 		view.isDirty = false;
 		view.remeshQueued = false;
@@ -635,8 +716,7 @@ export const ChunkLifecycle = {
 
 	/** Data changed. Building → Superseded; otherwise → Dirty. */
 	markDirty(view: ChunkLifecycleView): MeshState {
-		const host = activeHost;
-		const cur = deriveMeshState(view, host ?? undefined);
+		const cur = deriveMeshState(view, activeQueries ?? undefined);
 		const next = nextMeshState(cur, "markDirty");
 		if (next === null) {
 			reportIllegal("markDirty", cur);
@@ -660,7 +740,7 @@ export const ChunkLifecycle = {
 	 * design — like requestLoad, it is a command, not a pure table step.
 	 */
 	queueRemesh(view: ChunkLifecycleView): MeshState {
-		const cur = deriveMeshState(view, activeHost ?? undefined);
+		const cur = deriveMeshState(view, activeQueries ?? undefined);
 		if (
 			cur === MeshState.Queued ||
 			cur === MeshState.Building ||
@@ -680,21 +760,26 @@ export const ChunkLifecycle = {
 
 	/** The pool dispatched the remesh to a worker. Queued → Building. */
 	beginRemesh(view: ChunkLifecycleView): MeshState {
-		const host = activeHost;
-		const cur = deriveMeshState(view, host ?? undefined);
+		const cur = deriveMeshState(view, activeQueries ?? undefined);
 		if (cur === MeshState.Building) return cur; // idempotent (double-dispatch)
 		const next = nextMeshState(cur, "beginRemesh");
 		if (next === null) {
 			reportIllegal("beginRemesh", cur);
 			return cur;
 		}
-		// remeshQueued stays true; the worker now owns the in-flight build.
+
+		/*
+		 * Building is represented by host.isRemeshInFlight(). The worker
+		 * pool must register the in-flight build before or immediately
+		 * after this call. No view boolean distinguishes Queued from
+		 * Building.
+		 */
 		return next;
 	},
 
 	/** A remesh result landed. Queued/Building → Clean. */
 	completeRemesh(view: ChunkLifecycleView): MeshState {
-		const cur = deriveMeshState(view, activeHost ?? undefined);
+		const cur = deriveMeshState(view, activeQueries ?? undefined);
 		if (cur === MeshState.Clean) return cur; // idempotent (double-apply)
 		const next = nextMeshState(cur, "completeRemesh");
 		if (next === null) {
@@ -711,7 +796,7 @@ export const ChunkLifecycle = {
 
 	/** Re-run a remesh that was superseded while building. Superseded → Queued. */
 	rerunAfterInflight(view: ChunkLifecycleView): MeshState {
-		const cur = deriveMeshState(view, activeHost ?? undefined);
+		const cur = deriveMeshState(view, activeQueries ?? undefined);
 		const next = nextMeshState(cur, "rerunAfterInflight");
 		if (next === null) {
 			reportIllegal("rerunAfterInflight", cur);

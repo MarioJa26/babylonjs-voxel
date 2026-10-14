@@ -162,6 +162,7 @@ interface PackedMeshState {
 	boundsRevision: number;
 	materialRevision: number;
 	positionRevision: number;
+	offsetRevision: number;
 }
 
 const meshState = new Map<Mesh, PackedMeshState>();
@@ -762,6 +763,34 @@ function freeFaces(arenaIndex: number, base: number, count: number): void {
 	}
 
 	const arena = faceArenas[arenaIndex];
+	const end = base + count;
+
+	/*
+	 * Direkter Tail-Free: High-Water-Mark absenken und anschließend alle
+	 * unmittelbar angrenzenden freien Intervalle ebenfalls einziehen.
+	 */
+	if (end === arena.used) {
+		arena.used = base;
+
+		const free = arena.free;
+
+		while (free.length > 0) {
+			const lastIndex = free.length - 1;
+			const last = free[lastIndex];
+
+			if (last.base + last.count !== arena.used) {
+				break;
+			}
+
+			arena.used = last.base;
+			arena.freeCount -= last.count;
+			free.length = lastIndex;
+			releaseInterval(last);
+		}
+
+		return;
+	}
+
 	freeFaceInterval(arena.free, base, count);
 	arena.freeCount += count;
 }
@@ -1068,8 +1097,13 @@ function uploadFaceRange(arena: number, base: number, count: number): void {
 	);
 }
 
-// Upload only the given arena face ranges (arena-face coordinates). `ranges`
-// are already coalesced by the caller, so each range is one writeBuffer.
+const FACE_UPLOAD_MERGE_GAP_FACES = 16;
+
+// Upload only the given arena face ranges (arena-face coordinates).
+// Nearby dirty ranges are merged when their gap is within
+// FACE_UPLOAD_MERGE_GAP_FACES faces: many small writeBuffer calls are more
+// expensive than a few extra bytes. `ranges` must be sorted by start;
+// sorting happens in the merged-mesh manager, not in this hot upload path.
 // Ranges are clamped to `faceCount` so a stale/mismatched list can never
 // overwrite another mesh's arena block.
 function uploadFaceRanges(
@@ -1078,15 +1112,27 @@ function uploadFaceRanges(
 	faceCount: number,
 	ranges: readonly MergedFaceRange[],
 ): void {
-	if (faceCount <= 0 || ranges.length === 0) return;
+	if (faceCount <= 0 || ranges.length === 0) {
+		return;
+	}
 
-	// Count the call shape up front: a flush that touches N scattered ranges
-	// costs N native writeBuffer calls, and that call count — not the byte
-	// total — is what stalls the queue when it saturates.
-	_faceRangeCalls += ranges.length;
+	let activeStart = -1;
+	let activeEnd = -1;
 
-	for (let r = 0, len = ranges.length; r < len; r++) {
-		const range = ranges[r];
+	const flushActive = (): void => {
+		if (activeStart < 0 || activeEnd <= activeStart) {
+			return;
+		}
+
+		_faceRangeCalls++;
+		uploadFaceRange(arena, faceBase + activeStart, activeEnd - activeStart);
+
+		activeStart = -1;
+		activeEnd = -1;
+	};
+
+	for (let i = 0; i < ranges.length; i++) {
+		const range = ranges[i];
 
 		let start = range.start;
 		let count = range.count;
@@ -1100,12 +1146,31 @@ function uploadFaceRanges(
 			continue;
 		}
 
-		if (start + count > faceCount) {
-			count = faceCount - start;
+		let end = start + count;
+
+		if (end > faceCount) {
+			end = faceCount;
 		}
 
-		uploadFaceRange(arena, faceBase + start, count);
+		if (activeStart < 0) {
+			activeStart = start;
+			activeEnd = end;
+			continue;
+		}
+
+		if (start <= activeEnd + FACE_UPLOAD_MERGE_GAP_FACES) {
+			if (end > activeEnd) {
+				activeEnd = end;
+			}
+			continue;
+		}
+
+		flushActive();
+		activeStart = start;
+		activeEnd = end;
 	}
+
+	flushActive();
 }
 
 function uploadOffsetRange(base: number): void {
@@ -1253,6 +1318,7 @@ export interface PackedMeshInput {
 	boundsRevision?: number;
 	materialRevision?: number;
 	positionRevision?: number;
+	offsetRevision?: number;
 }
 
 function ensureFaceWordViews(
@@ -1366,6 +1432,25 @@ function packOffsets(state: PackedMeshState, input: PackedMeshInput): void {
 		offsetCpu[dst + 2] = source[src + 2];
 		offsetCpu[dst + 3] = 0;
 	}
+}
+
+function updateOffsetsIfNeeded(
+	state: PackedMeshState,
+	input: PackedMeshInput,
+): void {
+	const revision = input.offsetRevision;
+
+	/*
+	 * Ohne Revision bleibt das kompatible Always-Upload-Verhalten erhalten.
+	 */
+	if (revision !== undefined && revision === state.offsetRevision) {
+		return;
+	}
+
+	packOffsets(state, input);
+	uploadOffsetRange(state.offsetBase);
+
+	state.offsetRevision = revision ?? Number.NaN;
 }
 
 /**
@@ -1627,6 +1712,7 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 		boundsRevision: Number.NaN,
 		materialRevision: Number.NaN,
 		positionRevision: Number.NaN,
+		offsetRevision: input.offsetRevision ?? Number.NaN,
 	};
 
 	packFaces(state, input);
@@ -1979,10 +2065,9 @@ export function updatePackedChunkMesh(
 	/*
 	 * offsetBase does not change during remeshing, but chunkOffsets may.
 	 */
-	packOffsets(state, input);
+	updateOffsetsIfNeeded(state, input);
 
 	uploadFaceRange(allocation.arena, allocation.base, faceCount);
-	uploadOffsetRange(state.offsetBase);
 
 	setThinInstancesRange(mesh, candidateMatrices, faceCount, 0, faceCount);
 

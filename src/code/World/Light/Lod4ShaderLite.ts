@@ -34,23 +34,36 @@ interface Lod4RenderOptions {
 	blendMode?: "alpha";
 }
 
-const LOD4_VERTEX_OPTIONS = {
+const LOD4_OPAQUE_VERTEX_OPTIONS = {
 	tangent: false,
 	worldPosition: false,
 	meta: false,
 	tint: true,
 	fog: true,
-
-	// No view-dependent LOD lighting.
 	viewDir: false,
-
-	// Positions and dimensions are already expressed in block units.
+	tangentSpaceLighting: false,
+	vertexDiffuse: false,
 	rawUnits: true,
-
-	// Downsampled sessions disable AO, so omit its decode and varying.
+	boundarySentinel: false,
 	ao: false,
+	bakeShade: true,
+} as const;
 
-	// Hoist wetness, N.L, light mix, and face shade into one flat value.
+const LOD4_WATER_VERTEX_OPTIONS = {
+	tangent: false,
+	worldPosition: false,
+	meta: false,
+
+	// Wird vom Water-Fragmentshader nicht gelesen.
+	tint: false,
+
+	fog: true,
+	viewDir: false,
+	tangentSpaceLighting: false,
+	vertexDiffuse: false,
+	rawUnits: true,
+	boundarySentinel: false,
+	ao: false,
 	bakeShade: true,
 } as const;
 
@@ -169,7 +182,6 @@ struct VSOut {
   @location(1) @interpolate(flat) vTileLayer : u32,
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
-  @location(12) @interpolate(flat) vTint : u32,
   @location(15) @interpolate(flat) vShade : vec3<f32>,
 };
 
@@ -249,6 +261,9 @@ function createStorageBufferDeclarations(
 function buildCommonMaterial(
 	name: string,
 	opts: Lod4MaterialOptions,
+	vertexOptions:
+		| typeof LOD4_OPAQUE_VERTEX_OPTIONS
+		| typeof LOD4_WATER_VERTEX_OPTIONS,
 	fragmentSource: string,
 	renderOptions: Lod4RenderOptions,
 ): ShaderMaterial {
@@ -258,45 +273,60 @@ function buildCommonMaterial(
 
 	const material = createShaderMaterial({
 		name,
-		vertexSource: buildPackedVertexWGSL(arenaCount, LOD4_VERTEX_OPTIONS),
+		vertexSource: buildPackedVertexWGSL(arenaCount, vertexOptions),
 		fragmentSource,
 		attributes: ["position"],
 		uniforms: [
 			"world",
 			"worldViewProjection",
 			"cameraPosition",
-			{ name: "atlasTileSize", type: "f32" },
-			{ name: "atlasMaxTiles", type: "f32" },
-			{ name: "atlasMaxTilesU32", type: "u32" },
-			{ name: "lightDirection", type: "vec3<f32>" },
-			{ name: "sunLightIntensity", type: "f32" },
-			{ name: "wetness", type: "f32" },
-			{ name: "lodFadeProgress", type: "f32" },
-			{ name: "lodFadeDirection", type: "f32" },
-			{ name: "lodFadeSeed", type: "f32" },
-			{ name: "fogInfos", type: "vec4<f32>" },
-			{ name: "fogColor", type: "vec3<f32>" },
+			{
+				name: "atlasMaxTilesU32",
+				type: "u32",
+			},
+			{
+				name: "lightDirection",
+				type: "vec3<f32>",
+			},
+			{
+				name: "sunLightIntensity",
+				type: "f32",
+			},
+			{
+				name: "wetness",
+				type: "f32",
+			},
+			{
+				name: "fogInfos",
+				type: "vec4<f32>",
+			},
+			{
+				name: "fogColor",
+				type: "vec3<f32>",
+			},
 		],
-		samplers: [{ name: "diffuseTexture", viewDimension: "2d-array" }],
-		// NOTE: no tintLUT storage binding — the opaque variant bakes the LUT
-		// into the fragment source, and the water variant does not use it.
+		samplers: [
+			{
+				name: "diffuseTexture",
+				viewDimension: "2d-array",
+			},
+		],
 		storageBuffers,
 		...renderOptions,
 	});
 
 	registerPackedMaterial(material);
+
 	setShaderTexture(material, "diffuseTexture", opts.diffuseTexture);
-	setShaderUniform(material, "atlasTileSize", opts.atlasTileSize);
-	setShaderUniform(material, "atlasMaxTiles", opts.atlasMaxTiles);
-	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles);
+
+	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles | 0);
+
 	setShaderUniform(material, "sunLightIntensity", 1);
 	setShaderUniform(material, "wetness", 0);
-	setShaderUniform(material, "lodFadeProgress", 1);
-	setShaderUniform(material, "lodFadeDirection", 0);
-	setShaderUniform(material, "lodFadeSeed", 0);
 	setShaderUniform(material, "fogInfos", [0, 0, 1000, 0]);
 	setShaderUniform(material, "fogColor", [0.6, 0.7, 0.9]);
 	setShaderUniform(material, "lightDirection", [0, 1, 0]);
+
 	return material;
 }
 
@@ -306,8 +336,11 @@ export function createLod4OpaqueMaterial(
 	return buildCommonMaterial(
 		"lod4OpaqueLite",
 		opts,
+		LOD4_OPAQUE_VERTEX_OPTIONS,
 		makeOpaqueFragmentSource(opts.tintLUT),
-		{ backFaceCulling: true },
+		{
+			backFaceCulling: true,
+		},
 	);
 }
 
@@ -317,6 +350,7 @@ export function createLod4TransparentMaterial(
 	return buildCommonMaterial(
 		"lod4TransparentLite",
 		opts,
+		LOD4_WATER_VERTEX_OPTIONS,
 		makeWaterFragmentSource(),
 		{
 			backFaceCulling: true,
