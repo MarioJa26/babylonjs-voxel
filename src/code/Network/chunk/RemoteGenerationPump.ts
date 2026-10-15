@@ -1,7 +1,10 @@
 import { frameProfiler } from "../../Lib/FrameProfiler";
 import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
 import { Chunk, getChunk } from "../../World/Chunk/Chunk";
-import { packCoords } from "../../World/Chunk/DataStructures/ChunkCoords";
+import {
+	packCoords,
+	unpackChunkCoords,
+} from "../../World/Chunk/DataStructures/ChunkCoords";
 import { ChunkResultKind } from "../protocol/messages";
 import type {
 	RemoteChunkProvider,
@@ -40,7 +43,6 @@ const REMOTE_PENDING_STALE_MS = 45_000;
 const REMOTE_PENDING_REAP_INTERVAL_MS = 5_000;
 const REMOTE_BACKPRESSURE_RETRY_MS = 100;
 
-const keyCache = new WeakMap<Chunk, bigint>();
 const dedupScratch = new Set<number>();
 const queryChunks: Chunk[] = [];
 
@@ -132,7 +134,7 @@ export class RemoteGenerationPump {
 			return;
 		}
 
-		const key = this.remoteKeyFor(chunk);
+		const key = chunk.id;
 
 		if (
 			this.remotePendingChunks.has(key) ||
@@ -235,7 +237,7 @@ export class RemoteGenerationPump {
 	private clearChunkRetryState(chunk: Chunk): void {
 		this.remoteRetryParked.delete(chunk);
 		this.remoteRetryTier.delete(chunk);
-		this.remoteRetryCount.delete(this.remoteKeyFor(chunk));
+		this.remoteRetryCount.delete(chunk.id);
 	}
 
 	private reapStaleRemotePending(): void {
@@ -367,17 +369,6 @@ export class RemoteGenerationPump {
 		this.remoteBackpressureTimer = null;
 	}
 
-	private remoteKeyFor(chunk: Chunk): bigint {
-		let key = keyCache.get(chunk);
-
-		if (key === undefined) {
-			key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-			keyCache.set(chunk, key);
-		}
-
-		return key;
-	}
-
 	private isLiveRemoteRequestChunk(chunk: Chunk | undefined): boolean {
 		return (
 			chunk !== undefined &&
@@ -414,104 +405,117 @@ export class RemoteGenerationPump {
 	private selectColumnBatch(maxCount: number): Chunk[] {
 		this.compactRemoteTaskQueueIfNeeded();
 
+		const result: Chunk[] = [];
+
+		if (maxCount <= 0 || this.remoteTaskQueue.length === 0) {
+			return result;
+		}
+
 		const queue = this.remoteTaskQueue;
 		const queueSet = this.remoteTaskQueueSet;
 		const pending = this.remotePendingChunks;
-		const result: Chunk[] = [];
 
-		const len = queue.length;
+		let anchorX = 0;
+		let anchorZ = 0;
+		let hasAnchor = false;
 
-		if (len === 0 || maxCount <= 0) return result;
+		/*
+		 * Chunk objects are pooled and numericId may be reused. Object identity is
+		 * safe for this operation because queueSet and the queue contain the same
+		 * live object instances.
+		 */
+		const selected = new Set<Chunk>();
 
-		let anchor: Chunk | undefined;
-		let firstValidIndex = -1;
-
-		for (let i = 0; i < len; i++) {
+		/*
+		 * First pass:
+		 * 1. Find the first eligible chunk.
+		 * 2. Prefer other chunks from the same X/Z column.
+		 *
+		 * Continue scanning after reaching maxCount so invalid queue entries can
+		 * still be cleaned during compaction below.
+		 */
+		for (let i = 0; i < queue.length; i++) {
 			const chunk = queue[i];
 
-			if (
-				!queueSet.has(chunk) ||
-				!this.isLiveRemoteRequestChunk(chunk) ||
-				chunk.isLoaded ||
-				pending.has(this.remoteKeyFor(chunk))
-			) {
+			if (!queueSet.has(chunk)) {
 				continue;
 			}
 
-			anchor = chunk;
-			firstValidIndex = i;
-			break;
-		}
-
-		if (anchor === undefined) {
-			for (let i = 0; i < len; i++) {
-				const chunk = queue[i];
+			if (!this.isLiveRemoteRequestChunk(chunk) || chunk.isLoaded) {
 				queueSet.delete(chunk);
-
-				if (!this.isLiveRemoteRequestChunk(chunk) || chunk.isLoaded) {
-					chunk.isTerrainScheduled = false;
-				}
+				chunk.isTerrainScheduled = false;
+				continue;
 			}
 
+			const key = chunk.id;
+
+			if (pending.has(key)) {
+				queueSet.delete(chunk);
+				continue;
+			}
+
+			if (!hasAnchor) {
+				hasAnchor = true;
+				anchorX = chunk.chunkX;
+				anchorZ = chunk.chunkZ;
+
+				selected.add(chunk);
+				result.push(chunk);
+				continue;
+			}
+
+			if (
+				result.length < maxCount &&
+				chunk.chunkX === anchorX &&
+				chunk.chunkZ === anchorZ
+			) {
+				selected.add(chunk);
+				result.push(chunk);
+			}
+		}
+
+		if (!hasAnchor) {
 			queue.length = 0;
 			return result;
 		}
 
-		const selected = dedupScratch;
-		selected.clear();
+		/*
+		 * Second pass:
+		 * Fill remaining capacity with eligible chunks from any column.
+		 */
+		if (result.length < maxCount) {
+			for (let i = 0; i < queue.length && result.length < maxCount; i++) {
+				const chunk = queue[i];
 
-		const anchorX = anchor.chunkX;
-		const anchorZ = anchor.chunkZ;
+				if (
+					selected.has(chunk) ||
+					!queueSet.has(chunk) ||
+					!this.isLiveRemoteRequestChunk(chunk) ||
+					chunk.isLoaded
+				) {
+					continue;
+				}
 
-		result.push(anchor);
-		selected.add(anchor.numericId);
+				if (pending.has(chunk.id)) {
+					queueSet.delete(chunk);
+					continue;
+				}
 
-		for (
-			let i = firstValidIndex + 1;
-			i < len && result.length < maxCount;
-			i++
-		) {
-			const chunk = queue[i];
-
-			if (
-				!queueSet.has(chunk) ||
-				selected.has(chunk.numericId) ||
-				chunk.chunkX !== anchorX ||
-				chunk.chunkZ !== anchorZ ||
-				!this.isLiveRemoteRequestChunk(chunk) ||
-				chunk.isLoaded ||
-				pending.has(this.remoteKeyFor(chunk))
-			) {
-				continue;
+				selected.add(chunk);
+				result.push(chunk);
 			}
-
-			result.push(chunk);
-			selected.add(chunk.numericId);
 		}
 
-		for (let i = 0; i < len && result.length < maxCount; i++) {
-			const chunk = queue[i];
-
-			if (
-				!queueSet.has(chunk) ||
-				selected.has(chunk.numericId) ||
-				!this.isLiveRemoteRequestChunk(chunk) ||
-				chunk.isLoaded ||
-				pending.has(this.remoteKeyFor(chunk))
-			) {
-				continue;
-			}
-
-			result.push(chunk);
-			selected.add(chunk.numericId);
-		}
-
+		/*
+		 * Compact in place, removing selected, disposed, loaded, duplicate, and
+		 * already-pending chunks.
+		 */
 		let write = 0;
 
-		for (let read = 0; read < len; read++) {
+		for (let read = 0; read < queue.length; read++) {
 			const chunk = queue[read];
 
-			if (!queueSet.has(chunk) || selected.has(chunk.numericId)) {
+			if (!queueSet.has(chunk) || selected.has(chunk)) {
 				queueSet.delete(chunk);
 				continue;
 			}
@@ -522,7 +526,7 @@ export class RemoteGenerationPump {
 				continue;
 			}
 
-			if (pending.has(this.remoteKeyFor(chunk))) {
+			if (pending.has(chunk.id)) {
 				queueSet.delete(chunk);
 				continue;
 			}
@@ -531,8 +535,6 @@ export class RemoteGenerationPump {
 		}
 
 		queue.length = write;
-		selected.clear();
-
 		return result;
 	}
 
@@ -587,7 +589,7 @@ export class RemoteGenerationPump {
 			return false;
 		}
 
-		const key = this.remoteKeyFor(chunk);
+		const key = chunk.id;
 
 		if (
 			this.remotePendingChunks.has(key) ||
@@ -661,7 +663,7 @@ export class RemoteGenerationPump {
 				continue;
 			}
 
-			const key = this.remoteKeyFor(chunk);
+			const key = chunk.id;
 
 			if (pending.has(key)) {
 				chunk.isTerrainScheduled = false;
@@ -815,14 +817,14 @@ export class RemoteGenerationPump {
 
 			if (!this.isPromiseLike<RemoteChunkResult>(extra)) {
 				console.warn(
-					`[RemoteGen] Ignoring invalid extra batch ` + `promise at index ${i}`,
+					`[RemoteGen] Ignoring invalid extra batch promise at index ${i}`,
 				);
 				continue;
 			}
 
 			void Promise.resolve(extra).catch((error: unknown) => {
 				console.warn(
-					`[RemoteGen] Unmatched extra batch request ` + `${i} failed:`,
+					`[RemoteGen] Unmatched extra batch request ${i} failed:`,
 					error,
 				);
 			});
@@ -969,7 +971,7 @@ export class RemoteGenerationPump {
 				 * Loaded authoritative replacement requests must be allowed,
 				 * so enqueue directly instead of rejecting loaded chunks.
 				 */
-				const key = this.remoteKeyFor(chunk);
+				const key = chunk.id;
 
 				if (
 					!this.remotePendingChunks.has(key) &&
@@ -1040,11 +1042,14 @@ export class RemoteGenerationPump {
 		const resultKey = packCoords(result.chunkX, result.chunkY, result.chunkZ);
 
 		if (resultKey !== expectedKey) {
+			const got = unpackChunkCoords(resultKey);
+			const want = unpackChunkCoords(expectedKey);
 			this.handleRemoteGenError(
 				new Error(
 					`Remote provider returned coordinates for ` +
-						`${resultKey} while request ${expectedKey} ` +
-						`was pending`,
+						`${resultKey} (${got.x},${got.y},${got.z}) ` +
+						`while request ${expectedKey} ` +
+						`(${want.x},${want.y},${want.z}) was pending`,
 				),
 				expectedEntry.chunk,
 				expectedKey,

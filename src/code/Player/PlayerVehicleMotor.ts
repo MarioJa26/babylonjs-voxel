@@ -1315,6 +1315,19 @@ export class PlayerVehicleMotor implements IPlayerBody {
 				this.voxelPosition,
 				this.#boatSupportLocal,
 			);
+			// Walking on deck integrates into #boatLocalVel (boat space), so
+			// mirror it into world-space `velocity` — the walk anim reads
+			// that and would otherwise stay stale/frozen on boats. This is
+			// the per-substep equivalent of the exit conversion in
+			// #syncBoatMode, and only reflects walking relative to the deck
+			// (standing still on a moving boat correctly stays standing).
+			if (this.#collisionBoat) {
+				this.#toWorld(
+					this.#boatLocalVel,
+					this.#collisionBoat.boatYaw,
+					this.voxelVelocity,
+				);
+			}
 		}
 
 		this.#characterController.setPosition(this.voxelPosition);
@@ -1434,6 +1447,10 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		if (mount) {
 			mount.update();
 			copyVec3(this.voxelPosition, this.#characterController.getPosition());
+			// Driving a boat always shows the standing pose: the rider is
+			// carried by the vehicle, so locomotion velocity stays zero here
+			// by design. (Walking on a boat deck goes through boat-space
+			// physics instead — see integrateVoxelMovementStep.)
 			setVec3(this.voxelVelocity, 0, 0, 0);
 			this.#fallStartY = Number.NaN;
 			this.#isClimbing = false;
