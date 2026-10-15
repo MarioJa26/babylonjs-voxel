@@ -33,7 +33,7 @@ export class PlayerCamera {
 	// Smoothed vertical eye height in world units.
 	// Lazily synchronized by moveWithPlayer/snapToPlayer.
 	#smoothedEyeY = this.#eyeHeight;
-	readonly #verticalSmoothSpeed = 36;
+	readonly #verticalSmoothSpeed = 25;
 
 	#cameraPitch = 0;
 	#cameraYaw = 0;

@@ -11,7 +11,11 @@ import {
 } from "@babylonjs/lite";
 import { Quaternion, setVec3, vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
-import { BoatChunk, type BoatChunkBlock } from "@/code/World/Boat/BoatChunk";
+import {
+	BoatChunk,
+	type BoatChunkBlock,
+	type BoatChunkBounds,
+} from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
@@ -41,186 +45,89 @@ export type CustomBoatOptions = {
 	customVisualLocalYaw?: number;
 	blockCount?: number;
 	boatChunk?: BoatChunk;
-	/** BoatChunk-local coords of the wheel (BoatCreator) block, if any. */
+
+	/**
+	 * BoatChunk-local coordinates of the wheel/BoatCreator block.
+	 */
 	helmLocal?: Vec3;
 };
 
 type SerializedBoatChunk = {
 	blocks: BoatChunkBlock[];
-	center: { x: number; y: number; z: number };
+	center: {
+		x: number;
+		y: number;
+		z: number;
+	};
 };
 
 type CustomBoatSerializedPayload = {
-	position: { x: number; y: number; z: number };
-	collisionHalfExtents: { x: number; y: number; z: number };
+	position: {
+		x: number;
+		y: number;
+		z: number;
+	};
+	collisionHalfExtents: {
+		x: number;
+		y: number;
+		z: number;
+	};
 	initialYaw: number;
 	customVisualLocalYaw: number;
 	blockCount?: number;
 	boatChunk?: SerializedBoatChunk;
-	helmLocal?: { x: number; y: number; z: number };
+	helmLocal?: {
+		x: number;
+		y: number;
+		z: number;
+	};
 };
 
 export class CustomBoat implements IUsable {
-	static readonly CHUNK_ENTITY_TYPE = "custom_boat_v1";
+	public static readonly CHUNK_ENTITY_TYPE = "custom_boat_v1";
+
 	static #chunkReloadContext: {
 		scene: SceneContext;
 		player: Player;
 		waterLevel: number;
 	} | null = null;
+
 	static #chunkLoaderRegistered = false;
 
 	static #activeBoats = new Set<CustomBoat>();
 	static #boatsSnapshot: CustomBoat[] = [];
+	static #boatsSnapshotDirty = true;
+
 	static #boatsByChunk = new Map<BoatChunk, CustomBoat>();
 
-	public static getBoatForChunk(chunk: BoatChunk): CustomBoat | null {
-		return CustomBoat.#boatsByChunk.get(chunk) ?? null;
-	}
-
-	// PERF: Pre-computed boat cull distance squared — avoids recomputing every tick.
-	static #boatCullDistSq =
+	static readonly #boatCullDistSq =
 		(SETTING_PARAMS.RENDER_DISTANCE * Chunk.SIZE * 2) ** 2;
 
-	public static getActiveBoats(): readonly CustomBoat[] {
-		if (CustomBoat.#activeBoats.size !== CustomBoat.#boatsSnapshot.length) {
-			CustomBoat.#boatsSnapshot.length = 0;
-			for (const boat of CustomBoat.#activeBoats) {
-				CustomBoat.#boatsSnapshot.push(boat);
-			}
-		}
-		return CustomBoat.#boatsSnapshot;
-	}
+	/**
+	 * Packed xyz neighbor offsets. This avoids allocating an array and six
+	 * tuples every time a boat block is changed.
+	 */
+	static readonly #neighborOffsets = new Int8Array([
+		1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1,
+	]);
 
-	public static tickAllActiveBoats(
-		scene: SceneContext,
-		deltaMs: number,
-		playerPos?: Vec3,
-	): void {
-		const cullDistSq =
-			playerPos !== undefined ? CustomBoat.#boatCullDistSq : Infinity;
-		for (const boat of CustomBoat.#activeBoats) {
-			if (cullDistSq < Infinity) {
-				const dx = boat.#boat.position.x - playerPos!.x;
-				const dz = boat.#boat.position.z - playerPos!.z;
-				if (dx * dx + dz * dz > cullDistSq) continue;
-			}
-			boat.#tick(scene, deltaMs);
-		}
-	}
+	/**
+	 * Shared synchronous provider result.
+	 *
+	 * Dynamic block consumers must read this object immediately and must not
+	 * retain the reference.
+	 */
+	static readonly #sampleScratch: DynamicBlockSample = {
+		blockId: 0,
+		blockState: 0,
+		lightLevel: 0,
+	};
 
-	public get boatChunk(): BoatChunk | undefined {
-		return this.#boatChunk;
-	}
+	#cachedTotalYaw = Number.NaN;
+	#cachedTotalCos = 1;
+	#cachedTotalSin = 0;
 
-	public get boatYaw(): number {
-		return this.#currentYaw;
-	}
-
-	public worldToBoatChunkLocalPoint(
-		worldPoint: Vec3,
-		out = vec3Zero(),
-	): Vec3 | null {
-		if (!this.#boatChunk) return null;
-
-		const root = this.#boatChunk.visualRoot.position;
-		setVec3(
-			this.#scratchRootLocal,
-			worldPoint.x - root.x,
-			worldPoint.y - root.y,
-			worldPoint.z - root.z,
-		);
-
-		return setVec3(
-			out,
-			this.#scratchRootLocal.x + this.#boatChunk.center.x,
-			this.#scratchRootLocal.y + this.#boatChunk.center.y,
-			this.#scratchRootLocal.z + this.#boatChunk.center.z,
-		);
-	}
-
-	public boatChunkLocalPointToWorld(
-		localPoint: Vec3,
-		out = vec3Zero(),
-	): Vec3 | null {
-		if (!this.#boatChunk) return null;
-
-		const root = this.#boatChunk.visualRoot.position;
-		return setVec3(
-			out,
-			localPoint.x - this.#boatChunk.center.x + root.x,
-			localPoint.y - this.#boatChunk.center.y + root.y,
-			localPoint.z - this.#boatChunk.center.z + root.z,
-		);
-	}
-
-	public static configureChunkReloadContext(
-		player: Player,
-		waterLevel: number,
-	): void {
-		const scene = Map1.mainScene;
-		CustomBoat.#chunkReloadContext = { scene, player, waterLevel };
-		if (CustomBoat.#chunkLoaderRegistered) {
-			return;
-		}
-
-		CustomBoat.#chunkLoaderRegistered = true;
-		registerChunkEntityLoader(CustomBoat.CHUNK_ENTITY_TYPE, (payload) => {
-			const context = CustomBoat.#chunkReloadContext;
-			if (!context) {
-				return;
-			}
-
-			const data = payload as CustomBoatSerializedPayload | undefined;
-			if (!data?.position || !data.collisionHalfExtents) {
-				return;
-			}
-
-			const spawnPosition = vec3(
-				data.position.x,
-				data.position.y,
-				data.position.z,
-			);
-			const collisionHalfExtents = vec3(
-				data.collisionHalfExtents.x,
-				data.collisionHalfExtents.y,
-				data.collisionHalfExtents.z,
-			);
-
-			let restoredBoatChunk: BoatChunk | undefined;
-			let restoredCustomVisualRoot: Mesh | undefined;
-
-			if (data.boatChunk) {
-				// PERF: BoatChunk constructor does not retain the input array
-				// reference — it copies into a Uint16Array blockArray. Shallow
-				// slice isolates from the persisted payload without per-block spread.
-				const snapshotBlocks = data.boatChunk.blocks.slice();
-				restoredBoatChunk = new BoatChunk(
-					snapshotBlocks,
-					vec3(
-						data.boatChunk.center.x,
-						data.boatChunk.center.y,
-						data.boatChunk.center.z,
-					),
-				);
-				restoredCustomVisualRoot = restoredBoatChunk.visualRoot;
-			}
-
-			new CustomBoat(context.player, context.waterLevel, spawnPosition, {
-				collisionHalfExtents,
-				customVisualRoot: restoredCustomVisualRoot,
-				skipDefaultModel: !!restoredBoatChunk,
-				initialYaw: data.initialYaw,
-				customVisualLocalYaw: data.customVisualLocalYaw,
-				blockCount: data.blockCount,
-				boatChunk: restoredBoatChunk,
-				helmLocal: data.helmLocal
-					? vec3(data.helmLocal.x, data.helmLocal.y, data.helmLocal.z)
-					: undefined,
-			});
-		});
-	}
-
-	#cfg = {
+	readonly #cfg = {
 		mass: 11,
 		gravity: -9.81,
 		baseBuoyancyForce: 20,
@@ -233,16 +140,20 @@ export class CustomBoat implements IUsable {
 			airLinear: 0.995,
 			airAngular: 0.98,
 		},
-		dtClamp: { min: 1 / 600, max: 1 / 24 },
+		dtClamp: {
+			min: 1 / 600,
+			max: 1 / 24,
+		},
 	} as const;
 
 	#collisionHalfExtents = vec3(1.15, 0.6, 1.15);
 	#collisionCenterOffset = vec3Zero();
+
 	#boat!: Mesh;
 	#voxelCollider!: VoxelObbCollider;
 
 	#mount!: Mount;
-	static #boatControls: CustomBoatControls;
+	#boatControls!: CustomBoatControls;
 
 	#customVisualRoot?: Mesh;
 	#customVisualLocalYaw = 0;
@@ -251,33 +162,30 @@ export class CustomBoat implements IUsable {
 	#boatChunk?: BoatChunk;
 	#boatChunkCollisionProviderHandle?: symbol;
 	#boatChunkBlockChangeUnsubscribe?: () => void;
+
 	#ignoredDynamicBlockProviders = new Set<symbol>();
 
-	// Helm (ship's wheel) state: BoatChunk-local coords of the BoatCreator
-	// block. The mounted player stands 1 block behind it, on deck.
+	/**
+	 * BoatChunk-local coordinates of the helm block.
+	 */
 	#helmLocal: Vec3 | null = null;
-	// BoatChunk-local Y of the deck top (occupied maxY + 1), used to keep the
-	// rider's feet on deck regardless of where the wheel sits.
+
+	/**
+	 * BoatChunk-local Y coordinate of the top of the occupied deck.
+	 */
 	#deckTopLocalY = Number.NEGATIVE_INFINITY;
-	// Dedicated mount offset/rotation owned by this boat. Mount stores the
-	// references, so mutating them in place updates the rider transform with
-	// zero allocation per tick.
+
+	/**
+	 * Mount owns these object references, so they are updated in place.
+	 */
 	#helmMountOffset = vec3Zero();
 	#helmMountRot = Quaternion.Identity();
 
-	// PERF: single query-options object reused by every voxel probe in the
-	// physics tick (#getWorldBlockForBoatPhysics runs ~1k+/s while floating).
-	// Safe to share because #ignoredDynamicBlockProviders is only mutated
-	// in place (.add/.clear), never reassigned.
+	/**
+	 * Reused by every world voxel query made by this boat.
+	 */
 	#worldQueryOptions: DynamicBlockQueryOptions = {
 		ignoredDynamicBlockProviders: this.#ignoredDynamicBlockProviders,
-	};
-
-	// Reused by #sampleBoatChunkBlock — see the allocation note there.
-	static #sampleScratch: DynamicBlockSample = {
-		blockId: 0,
-		blockState: 0,
-		lightLevel: 0,
 	};
 
 	#currentYaw = 0;
@@ -292,13 +200,12 @@ export class CustomBoat implements IUsable {
 	#chunkBindingHandle?: symbol;
 	#isDisposed = false;
 
-	#tmpWorldPoint = vec3Zero();
 	#tmpTorque = vec3Zero();
 	#tmpLever = vec3Zero();
-	#tmpBoatSampleWorld = vec3Zero();
 	#scratchRootLocal = vec3Zero();
 	#scratchQuat = Quaternion.Identity();
-	#scratchBounds: import("@/code/World/Boat/BoatChunk").BoatChunkBounds = {
+
+	#scratchBounds: BoatChunkBounds = {
 		minX: 0,
 		minY: 0,
 		minZ: 0,
@@ -307,16 +214,133 @@ export class CustomBoat implements IUsable {
 		maxZ: 0,
 	};
 
-	constructor(
+	public static getBoatForChunk(chunk: BoatChunk): CustomBoat | null {
+		return CustomBoat.#boatsByChunk.get(chunk) ?? null;
+	}
+
+	public static getActiveBoats(): readonly CustomBoat[] {
+		if (CustomBoat.#boatsSnapshotDirty) {
+			const snapshot = CustomBoat.#boatsSnapshot;
+			snapshot.length = 0;
+
+			for (const boat of CustomBoat.#activeBoats) {
+				snapshot.push(boat);
+			}
+
+			CustomBoat.#boatsSnapshotDirty = false;
+		}
+
+		return CustomBoat.#boatsSnapshot;
+	}
+
+	public static tickAllActiveBoats(
+		scene: SceneContext,
+		deltaMs: number,
+		playerPos?: Vec3,
+	): void {
+		const useCulling = playerPos !== undefined;
+		const cullDistSq = CustomBoat.#boatCullDistSq;
+
+		for (const boat of CustomBoat.#activeBoats) {
+			if (useCulling) {
+				const dx = boat.#boat.position.x - playerPos.x;
+				const dz = boat.#boat.position.z - playerPos.z;
+
+				if (dx * dx + dz * dz > cullDistSq) {
+					continue;
+				}
+			}
+
+			boat.#tick(scene, deltaMs);
+		}
+	}
+
+	public static configureChunkReloadContext(
+		player: Player,
+		waterLevel: number,
+	): void {
+		const scene = Map1.mainScene;
+
+		CustomBoat.#chunkReloadContext = {
+			scene,
+			player,
+			waterLevel,
+		};
+
+		if (CustomBoat.#chunkLoaderRegistered) {
+			return;
+		}
+
+		CustomBoat.#chunkLoaderRegistered = true;
+
+		registerChunkEntityLoader(CustomBoat.CHUNK_ENTITY_TYPE, (payload) => {
+			const context = CustomBoat.#chunkReloadContext;
+
+			if (!context) {
+				return;
+			}
+
+			const data = payload as CustomBoatSerializedPayload | undefined;
+
+			if (!data?.position || !data.collisionHalfExtents) {
+				return;
+			}
+
+			const spawnPosition = vec3(
+				data.position.x,
+				data.position.y,
+				data.position.z,
+			);
+
+			const collisionHalfExtents = vec3(
+				data.collisionHalfExtents.x,
+				data.collisionHalfExtents.y,
+				data.collisionHalfExtents.z,
+			);
+
+			let restoredBoatChunk: BoatChunk | undefined;
+			let restoredCustomVisualRoot: Mesh | undefined;
+
+			if (data.boatChunk) {
+				const snapshotBlocks = data.boatChunk.blocks.slice();
+
+				restoredBoatChunk = new BoatChunk(
+					snapshotBlocks,
+					vec3(
+						data.boatChunk.center.x,
+						data.boatChunk.center.y,
+						data.boatChunk.center.z,
+					),
+				);
+
+				restoredCustomVisualRoot = restoredBoatChunk.visualRoot;
+			}
+
+			new CustomBoat(context.player, context.waterLevel, spawnPosition, {
+				collisionHalfExtents,
+				customVisualRoot: restoredCustomVisualRoot,
+				skipDefaultModel: restoredBoatChunk !== undefined,
+				initialYaw: data.initialYaw,
+				customVisualLocalYaw: data.customVisualLocalYaw,
+				blockCount: data.blockCount,
+				boatChunk: restoredBoatChunk,
+				helmLocal: data.helmLocal
+					? vec3(data.helmLocal.x, data.helmLocal.y, data.helmLocal.z)
+					: undefined,
+			});
+		});
+	}
+
+	public constructor(
 		player: Player,
 		waterLevel: number,
 		position?: Vec3,
 		options?: CustomBoatOptions,
 	) {
 		const scene = Map1.mainScene;
+
 		CustomBoat.configureChunkReloadContext(player, waterLevel);
 
-		// 1) Options
 		if (options?.collisionHalfExtents) {
 			this.#collisionHalfExtents = vec3(
 				options.collisionHalfExtents.x,
@@ -324,14 +348,18 @@ export class CustomBoat implements IUsable {
 				options.collisionHalfExtents.z,
 			);
 		}
+
 		this.#customVisualRoot = options?.customVisualRoot;
 		this.#boatChunk = options?.boatChunk;
-		this.#skipDefaultModel = Boolean(options?.skipDefaultModel);
+		this.#skipDefaultModel = options?.skipDefaultModel === true;
 
-		if (typeof options?.initialYaw === "number")
+		if (typeof options?.initialYaw === "number") {
 			this.#currentYaw = options.initialYaw;
-		if (typeof options?.customVisualLocalYaw === "number")
+		}
+
+		if (typeof options?.customVisualLocalYaw === "number") {
 			this.#customVisualLocalYaw = options.customVisualLocalYaw;
+		}
 
 		if (typeof options?.blockCount === "number" && options.blockCount > 1) {
 			this.#angularResponseScale = Math.max(
@@ -339,6 +367,7 @@ export class CustomBoat implements IUsable {
 				1 / Math.sqrt(options.blockCount),
 			);
 		}
+
 		if (options?.helmLocal) {
 			this.#helmLocal = vec3(
 				options.helmLocal.x,
@@ -347,15 +376,16 @@ export class CustomBoat implements IUsable {
 			);
 		}
 
-		// 2) Create hull & collider
 		this.#boat = this.#createHull(scene, position, waterLevel);
+
 		this.#registerBoatChunkCollisionProvider();
 
 		this.#voxelCollider = new VoxelObbCollider(
 			this.#collisionHalfExtents,
 			(x, y, z) => {
-				const id = this.#getWorldBlockForBoatPhysics(x, y, z);
-				return isCollidableBlock(id);
+				const blockId = this.#getWorldBlockForBoatPhysics(x, y, z);
+
+				return isCollidableBlock(blockId);
 			},
 			this.#cfg.collisionEpsilon,
 			{
@@ -365,52 +395,247 @@ export class CustomBoat implements IUsable {
 				renderOrder: 1,
 			},
 		);
+
+		this.#ensureTotalYawCache();
+		this.#voxelCollider.setYaw(this.#cachedTotalYaw);
+
 		this.#subscribeBoatChunkBlockChanges();
 		this.#syncCollisionFromBoatChunk();
 
-		// 3) Metadata
 		(this.#boat as any).metadata = new MetadataContainer();
-		(this.#boat.metadata as any).set("use", (p: Player) => this.use(p));
+
+		(this.#boat.metadata as any).set("use", (targetPlayer: Player) =>
+			this.use(targetPlayer),
+		);
 
 		if (this.#boatChunk) {
 			(this.#boat.metadata as any).set("boatChunk", this.#boatChunk);
 		}
 
-		// 4) Visuals
 		if (this.#customVisualRoot) {
 			this.#attachCustomVisual(this.#customVisualRoot);
+
 			this.#applyCustomVisualMetadata(this.#customVisualRoot);
 		}
 
-		// 5) Buoyancy points
 		this.#buildBuoyancyPoints();
 
-		// 6) Controls
-		CustomBoat.#boatControls = new CustomBoatControls(this, player);
-		this.#mount = new Mount(this.#boat, CustomBoat.#boatControls);
+		this.#boatControls = new CustomBoatControls(this, player);
+
+		this.#mount = new Mount(this.#boat, this.#boatControls);
+
 		if (this.#helmLocal && this.#boatChunk) {
-			// Yaw-aware helm mount: Mount stores these references, and #tick
-			// rewrites them in place so the rider stays behind the wheel.
 			this.#mount.setMountOffset(this.#helmMountOffset);
+
 			this.#mount.setMountRotationOffset(this.#helmMountRot);
+
 			this.#computeHelmMountOffset();
 		}
+
 		if (this.#boatChunk) {
 			CustomBoat.#boatsByChunk.set(this.#boatChunk, this);
 		}
 
-		// 7) Tick loop (centralized via tickAllActiveBoats)
-
 		this.#chunkBindingHandle = registerChunkBoundEntity({
 			getWorldPosition: () => this.#boat.position,
 			unload: () => this.dispose(),
-			isAlive: () => !(this.#boat as any).isDisposed?.(),
+			isAlive: () => !this.#isDisposed && !(this.#boat as any).isDisposed?.(),
 			serializeForChunkReload: () => this.#createSerializedPayload(),
 		});
 
-		// 8) Cleanup
 		(this.#boat as any).onDisposeObservable?.add?.(() => this.dispose());
+
 		CustomBoat.#activeBoats.add(this);
+		CustomBoat.#boatsSnapshotDirty = true;
+	}
+
+	public get boatChunk(): BoatChunk | undefined {
+		return this.#boatChunk;
+	}
+
+	public get boatYaw(): number {
+		return this.#currentYaw;
+	}
+
+	public get totalYaw(): number {
+		return this.#currentYaw + this.#customVisualLocalYaw;
+	}
+
+	public get boatMesh(): Mesh {
+		return this.#boat;
+	}
+
+	public get boatPosition(): Vec3 {
+		return vec3(
+			this.#boat.position.x,
+			this.#boat.position.y,
+			this.#boat.position.z,
+		);
+	}
+
+	public get mount(): Mount {
+		return this.#mount;
+	}
+
+	public get submergedPoints(): number {
+		return this.#submergedPoints;
+	}
+
+	public get currentYaw(): number {
+		return this.#currentYaw;
+	}
+
+	public get rawYaw(): number {
+		return this.#currentYaw;
+	}
+
+	public get collisionHalfExtents(): Vec3 {
+		return this.#collisionHalfExtents;
+	}
+
+	public getBoatPositionToRef(out: Vec3): void {
+		out.x = this.#boat.position.x;
+		out.y = this.#boat.position.y;
+		out.z = this.#boat.position.z;
+	}
+
+	public getBoatTopYToRef(out: Vec3): void {
+		const bounds = (this.#boat as any).getBoundingInfo?.();
+
+		out.x = this.#boat.position.x;
+		out.y = bounds ? bounds.boundingBox.maximumWorld.y : this.#boat.position.y;
+		out.z = this.#boat.position.z;
+	}
+
+	public getBoatTopY(): Vec3 {
+		const bounds = (this.#boat as any).getBoundingInfo?.();
+
+		return vec3(
+			this.#boat.position.x,
+			bounds ? bounds.boundingBox.maximumWorld.y : this.#boat.position.y,
+			this.#boat.position.z,
+		);
+	}
+
+	public worldToBoatChunkLocalPoint(
+		worldPoint: Vec3,
+		out = vec3Zero(),
+	): Vec3 | null {
+		const boatChunk = this.#boatChunk;
+
+		if (!boatChunk) {
+			return null;
+		}
+
+		this.#ensureTotalYawCache();
+
+		const root = boatChunk.visualRoot.position;
+		const center = boatChunk.center;
+		const c = this.#cachedTotalCos;
+		const s = this.#cachedTotalSin;
+
+		const dx = worldPoint.x - root.x;
+		const dy = worldPoint.y - root.y;
+		const dz = worldPoint.z - root.z;
+
+		return setVec3(
+			out,
+			dx * c - dz * s + center.x,
+			dy + center.y,
+			dx * s + dz * c + center.z,
+		);
+	}
+
+	public boatChunkLocalPointToWorld(
+		localPoint: Vec3,
+		out = vec3Zero(),
+	): Vec3 | null {
+		const boatChunk = this.#boatChunk;
+
+		if (!boatChunk) {
+			return null;
+		}
+
+		this.#ensureTotalYawCache();
+
+		const root = boatChunk.visualRoot.position;
+		const center = boatChunk.center;
+		const c = this.#cachedTotalCos;
+		const s = this.#cachedTotalSin;
+
+		const localX = localPoint.x - center.x;
+		const localY = localPoint.y - center.y;
+		const localZ = localPoint.z - center.z;
+
+		return setVec3(
+			out,
+			root.x + localX * c + localZ * s,
+			root.y + localY,
+			root.z - localX * s + localZ * c,
+		);
+	}
+
+	public applyImpulse(impulse: Vec3, point: Vec3): void {
+		this.#applyForceAtPoint(impulse.x, impulse.y, impulse.z, point, 1);
+	}
+
+	public applyAngularImpulse(impulse: Vec3): void {
+		const scale = (1 / this.#cfg.mass) * this.#angularResponseScale;
+
+		this.#angularVelocity.x += impulse.x * scale;
+		this.#angularVelocity.y += impulse.y * scale;
+		this.#angularVelocity.z += impulse.z * scale;
+	}
+
+	public use(player: Player): void {
+		if (this.#isDisposed) {
+			return;
+		}
+
+		this.#computeHelmMountOffset();
+		this.#mount.mount(player);
+	}
+
+	public dispose(): void {
+		if (this.#isDisposed) {
+			return;
+		}
+
+		this.#isDisposed = true;
+
+		unregisterChunkBoundEntity(this.#chunkBindingHandle);
+
+		this.#chunkBindingHandle = undefined;
+
+		unregisterDynamicBlockProvider(this.#boatChunkCollisionProviderHandle);
+
+		this.#boatChunkCollisionProviderHandle = undefined;
+
+		this.#boatChunkBlockChangeUnsubscribe?.();
+		this.#boatChunkBlockChangeUnsubscribe = undefined;
+
+		this.#ignoredDynamicBlockProviders.clear();
+
+		if (this.#mount?.isMounted()) {
+			this.#mount.dismount();
+		}
+
+		this.#voxelCollider?.dispose();
+
+		const boatChunk = this.#boatChunk;
+
+		if (boatChunk) {
+			CustomBoat.#boatsByChunk.delete(boatChunk);
+
+			boatChunk.dispose();
+			this.#boatChunk = undefined;
+		}
+
+		if (CustomBoat.#activeBoats.delete(this)) {
+			CustomBoat.#boatsSnapshotDirty = true;
+		}
+
+		removeFromScene(Map1.mainScene, this.#boat);
 	}
 
 	#createHull(
@@ -418,30 +643,30 @@ export class CustomBoat implements IUsable {
 		position: Vec3 | undefined,
 		waterLevel: number,
 	): Mesh {
-		// The hull is a real, rendered box mesh (not a TransformNode) so the GPU
-		// ray picker used by the USE interaction can hit it. In the Lite port the
-		// picker skips `visible = false` meshes (they aren't drawn to the pick
-		// buffer), so instead of hiding it we make it fully transparent (alpha 0)
-		// — it still renders (and is pickable) but is invisible to the eye. The
-		// Mount vehicle drives from this mesh's transform.
 		const px = position?.x ?? 0;
 		const py = position?.y ?? waterLevel + 10;
 		const pz = position?.z ?? 0;
 
 		const hull = createBox(Map1.engine, 1);
+
 		hull.name = "boatHull";
 		hull.position.set(px, py, pz);
+
 		hull.scaling.set(
 			this.#collisionHalfExtents.x * 2,
 			this.#collisionHalfExtents.y * 2,
 			this.#collisionHalfExtents.z * 2,
 		);
 
-		const mat = createStandardMaterial();
-		mat.diffuseColor = [0.8, 0.6, 0.2];
-		mat.alpha = 0; // Invisible but still rendered → pickable by GPU picker.
-		hull.material = mat;
+		const material = createStandardMaterial();
 
+		material.diffuseColor = [0.8, 0.6, 0.2];
+
+		// It must remain rendered for the GPU picking buffer, but it should
+		// not be visible to the player.
+		material.alpha = 0;
+
+		hull.material = material;
 		hull.pickable = true;
 
 		addToScene(scene, hull);
@@ -451,20 +676,24 @@ export class CustomBoat implements IUsable {
 
 	#attachCustomVisual(visual: Mesh): void {
 		visual.position.copyFrom(this.#boat.position);
-		const q = Quaternion.RotationYawPitchRoll(
-			this.#currentYaw + this.#customVisualLocalYaw,
-			0,
-			0,
-		);
-		visual.rotationQuaternion.copyFrom(q);
+
+		Quaternion.FromEulerAnglesToRef(0, this.totalYaw, 0, this.#scratchQuat);
+
+		visual.rotationQuaternion.copyFrom(this.#scratchQuat);
+
 		visual.scaling.set(1, 1, 1);
 	}
 
 	#applyCustomVisualMetadata(root: Mesh): void {
-		for (const mesh of [
-			root,
-			...((root as any).getChildMeshes?.(false) ?? []),
-		]) {
+		root.pickable = true;
+		root.renderOrder = 1;
+		root.metadata = this.#boat.metadata;
+
+		const childMeshes = (root as any).getChildMeshes?.(false) ?? [];
+
+		for (let index = 0; index < childMeshes.length; index++) {
+			const mesh = childMeshes[index];
+
 			mesh.pickable = true;
 			mesh.renderOrder = 1;
 			mesh.metadata = this.#boat.metadata;
@@ -472,49 +701,204 @@ export class CustomBoat implements IUsable {
 	}
 
 	#buildBuoyancyPoints(): void {
-		const y = -this.#collisionHalfExtents.y - 0.3;
-		const ox = this.#collisionHalfExtents.x * 0.85;
-		const oz = this.#collisionHalfExtents.z * 0.85;
-		const ix = this.#collisionHalfExtents.x * 0.45;
-		const iz = this.#collisionHalfExtents.z * 0.45;
-		const cox = this.#collisionCenterOffset.x;
-		const coz = this.#collisionCenterOffset.z;
+		const halfExtents = this.#collisionHalfExtents;
+
+		const localY = -halfExtents.y - 0.3;
+		const outerX = halfExtents.x * 0.85;
+		const outerZ = halfExtents.z * 0.85;
+		const innerX = halfExtents.x * 0.45;
+		const innerZ = halfExtents.z * 0.45;
+		const centerX = this.#collisionCenterOffset.x;
+		const centerZ = this.#collisionCenterOffset.z;
 
 		if (this.#buoyancyPoints.length === 0) {
-			// PERF: Pre-allocate array once, update in-place on subsequent calls.
-			for (let i = 0; i < 9; i++) this.#buoyancyPoints.push(vec3Zero());
+			for (let index = 0; index < 9; index++) {
+				this.#buoyancyPoints.push(vec3Zero());
+			}
 		}
-		const bp = this.#buoyancyPoints;
 
-		setVec3(bp[0], cox - ox, y, coz - oz);
-		setVec3(bp[1], cox + ox, y, coz - oz);
-		setVec3(bp[2], cox - ox, y, coz + oz);
-		setVec3(bp[3], cox + ox, y, coz + oz);
-		setVec3(bp[4], cox, y, coz);
-		setVec3(bp[5], cox - ix, y, coz - iz);
-		setVec3(bp[6], cox + ix, y, coz - iz);
-		setVec3(bp[7], cox - ix, y, coz + iz);
-		setVec3(bp[8], cox + ix, y, coz + iz);
+		const points = this.#buoyancyPoints;
+
+		setVec3(points[0], centerX - outerX, localY, centerZ - outerZ);
+
+		setVec3(points[1], centerX + outerX, localY, centerZ - outerZ);
+
+		setVec3(points[2], centerX - outerX, localY, centerZ + outerZ);
+
+		setVec3(points[3], centerX + outerX, localY, centerZ + outerZ);
+
+		setVec3(points[4], centerX, localY, centerZ);
+
+		setVec3(points[5], centerX - innerX, localY, centerZ - innerZ);
+
+		setVec3(points[6], centerX + innerX, localY, centerZ - innerZ);
+
+		setVec3(points[7], centerX - innerX, localY, centerZ + innerZ);
+
+		setVec3(points[8], centerX + innerX, localY, centerZ + innerZ);
 	}
-	// Replace the existing yaw-cache initialization.
-	#cachedYaw = Number.NaN;
-	#cachedCos = 1;
-	#cachedSin = 0;
+
 	/**
-	 * Apply a vertical buoyancy force at a sampled world position.
-	 *
-	 * This is the hot-path specialization of #applyForceAtPoint for:
-	 *
-	 *     force = (0, forceY, 0)
-	 *
-	 * The simplified cross product is:
-	 *
-	 *     torque.x = -lever.z * forceY
-	 *     torque.y = 0
-	 *     torque.z =  lever.x * forceY
-	 *
-	 * This avoids two setVec3 calls, temporary lever/torque writes, and the
-	 * multiplications by zero performed by the generic force method.
+	 * Refreshes the cached total yaw and trigonometric values without
+	 * allocating a temporary result object.
+	 */
+	#ensureTotalYawCache(): void {
+		const totalYaw = this.#currentYaw + this.#customVisualLocalYaw;
+
+		if (totalYaw === this.#cachedTotalYaw) {
+			return;
+		}
+
+		this.#cachedTotalYaw = totalYaw;
+		this.#cachedTotalCos = Math.cos(totalYaw);
+		this.#cachedTotalSin = Math.sin(totalYaw);
+	}
+
+	#tick(_scene: SceneContext, deltaMs: number): void {
+		if (deltaMs <= 0 || this.#isDisposed) {
+			return;
+		}
+
+		const cfg = this.#cfg;
+
+		const dt = Math.min(
+			cfg.dtClamp.max,
+			Math.max(cfg.dtClamp.min, deltaMs * 0.001),
+		);
+
+		const boatPosition = this.#boat.position;
+		const linearVelocity = this.#linearVelocity;
+		const angularVelocity = this.#angularVelocity;
+
+		linearVelocity.y += cfg.gravity * dt;
+
+		const inverseMass = 1 / cfg.mass;
+
+		const angularForceScale =
+			cfg.torqueScale * this.#angularResponseScale * inverseMass * dt;
+
+		this.#ensureTotalYawCache();
+
+		const cosYaw = this.#cachedTotalCos;
+		const sinYaw = this.#cachedTotalSin;
+
+		const boatX = boatPosition.x;
+		const boatY = boatPosition.y;
+		const boatZ = boatPosition.z;
+
+		const buoyancyPoints = this.#buoyancyPoints;
+
+		let submergedPoints = 0;
+
+		for (let index = 0; index < buoyancyPoints.length; index++) {
+			const localPoint = buoyancyPoints[index];
+
+			const localX = localPoint.x;
+			const localZ = localPoint.z;
+
+			const worldX = boatX + localX * cosYaw + localZ * sinYaw;
+
+			const worldY = boatY + localPoint.y;
+
+			const worldZ = boatZ - localX * sinYaw + localZ * cosYaw;
+
+			const voxelX = Math.floor(worldX);
+			const voxelY = Math.floor(worldY);
+			const voxelZ = Math.floor(worldZ);
+
+			if (
+				this.#getWorldBlockForBoatPhysics(voxelX, voxelY, voxelZ) !==
+				BlockType.Water
+			) {
+				continue;
+			}
+
+			const blockAbove = this.#getWorldBlockForBoatPhysics(
+				voxelX,
+				voxelY + 1,
+				voxelZ,
+			);
+
+			const submersion =
+				blockAbove === BlockType.Water
+					? 1
+					: Math.max(0, Math.min(1, voxelY + 1 - worldY));
+
+			if (submersion <= 0) {
+				continue;
+			}
+
+			this.#applyVerticalBuoyancyForce(
+				submersion * cfg.baseBuoyancyForce,
+				worldX,
+				worldZ,
+				dt,
+				inverseMass,
+				angularForceScale,
+			);
+
+			submergedPoints++;
+		}
+
+		this.#submergedPoints = submergedPoints;
+
+		const isInWater = submergedPoints !== 0;
+		const dampingTimeScale = dt * 60;
+
+		const linearDamping = isInWater
+			? cfg.damping.waterLinear
+			: cfg.damping.airLinear;
+
+		const angularDamping = isInWater
+			? cfg.damping.waterAngular
+			: cfg.damping.airAngular;
+
+		scaleVec3InPlace(linearVelocity, linearDamping ** dampingTimeScale);
+
+		scaleVec3InPlace(angularVelocity, angularDamping ** dampingTimeScale);
+
+		this.#integrateRotation(dt);
+		this.#ensureTotalYawCache();
+
+		const totalYaw = this.#cachedTotalYaw;
+
+		this.#voxelCollider.setYaw(totalYaw);
+
+		const moveX = linearVelocity.x * dt;
+		const moveY = linearVelocity.y * dt;
+		const moveZ = linearVelocity.z * dt;
+
+		if (moveX !== 0) {
+			this.#moveAxis(Axis.X, moveX);
+		}
+
+		if (moveY !== 0) {
+			this.#moveAxis(Axis.Y, moveY);
+		}
+
+		if (moveZ !== 0) {
+			this.#moveAxis(Axis.Z, moveZ);
+		}
+
+		const customVisualRoot = this.#customVisualRoot;
+
+		if (customVisualRoot) {
+			customVisualRoot.position.copyFrom(boatPosition);
+
+			Quaternion.FromEulerAnglesToRef(0, totalYaw, 0, this.#scratchQuat);
+
+			customVisualRoot.rotationQuaternion.copyFrom(this.#scratchQuat);
+		}
+
+		this.#syncHelmMount();
+		this.#mount.update();
+		this.#boatChunk?.syncVisualMeshes();
+
+		this.#voxelCollider.syncDebugMesh(boatPosition);
+	}
+
+	/**
+	 * Applies vertical buoyancy without constructing temporary force vectors.
 	 */
 	#applyVerticalBuoyancyForce(
 		forceY: number,
@@ -534,301 +918,77 @@ export class CustomBoat implements IUsable {
 
 		this.#angularVelocity.z += leverX * forceY * angularScale;
 	}
-	#tick(_scene: SceneContext, deltaMs: number): void {
-		if (deltaMs <= 0) {
-			return;
-		}
-
-		const cfg = this.#cfg;
-
-		let dt = deltaMs * 0.001;
-
-		if (dt < cfg.dtClamp.min) {
-			dt = cfg.dtClamp.min;
-		} else if (dt > cfg.dtClamp.max) {
-			dt = cfg.dtClamp.max;
-		}
-
-		let submergedPoints = 0;
-
-		/*
-		 * Number.NaN initializes #cachedYaw, so this also runs on the first frame.
-		 * The previous zero initialization left #cachedCos at zero when the initial
-		 * yaw was zero, collapsing every buoyancy point onto the boat center.
-		 */
-		const yaw = this.#currentYaw;
-
-		if (yaw !== this.#cachedYaw) {
-			this.#cachedYaw = yaw;
-			this.#cachedCos = Math.cos(yaw);
-			this.#cachedSin = Math.sin(yaw);
-		}
-
-		const cosYaw = this.#cachedCos;
-		const sinYaw = this.#cachedSin;
-
-		const boatPosition = this.#boat.position;
-		const boatX = boatPosition.x;
-		const boatY = boatPosition.y;
-		const boatZ = boatPosition.z;
-
-		const linearVelocity = this.#linearVelocity;
-		const angularVelocity = this.#angularVelocity;
-
-		linearVelocity.y += cfg.gravity * dt;
-
-		const inverseMass = 1 / cfg.mass;
-
-		/*
-		 * Includes dt because the generic #applyForceAtPoint multiplied its torque
-		 * scale by dt before applying angular velocity.
-		 */
-		const angularForceScale =
-			cfg.torqueScale * this.#angularResponseScale * inverseMass * dt;
-
-		const buoyancyScale = cfg.baseBuoyancyForce;
-
-		const buoyancyPoints = this.#buoyancyPoints;
-
-		/*
-		 * Indexed iteration avoids the array iterator in this per-boat,
-		 * per-frame loop.
-		 */
-		for (let index = 0; index < buoyancyPoints.length; index++) {
-			const localPoint = buoyancyPoints[index];
-
-			const rotatedX = localPoint.x * cosYaw - localPoint.z * sinYaw;
-
-			const rotatedZ = localPoint.x * sinYaw + localPoint.z * cosYaw;
-
-			const worldX = boatX + rotatedX;
-			const worldY = boatY + localPoint.y;
-			const worldZ = boatZ + rotatedZ;
-
-			/*
-			 * Reuse the point object because the submersion helper currently accepts
-			 * Vec3. If this remains prominent in profiles, add a scalar
-			 * #getWaterSubmersionAtXYZ helper and remove this write entirely.
-			 */
-			const worldPoint = this.#tmpWorldPoint;
-
-			worldPoint.x = worldX;
-			worldPoint.y = worldY;
-			worldPoint.z = worldZ;
-
-			const submersion = this.#getWaterSubmersionAtPoint(worldPoint);
-
-			if (submersion <= 0) {
-				continue;
-			}
-
-			this.#applyVerticalBuoyancyForce(
-				submersion * buoyancyScale,
-				worldX,
-				worldZ,
-				dt,
-				inverseMass,
-				angularForceScale,
-			);
-
-			submergedPoints++;
-		}
-
-		this.#submergedPoints = submergedPoints;
-
-		const isSubmerged = submergedPoints !== 0;
-
-		const linearDamping = isSubmerged
-			? cfg.damping.waterLinear
-			: cfg.damping.airLinear;
-
-		const angularDamping = isSubmerged
-			? cfg.damping.waterAngular
-			: cfg.damping.airAngular;
-
-		const dampingTimeScale = dt * 60;
-
-		scaleVec3InPlace(linearVelocity, linearDamping ** dampingTimeScale);
-
-		scaleVec3InPlace(angularVelocity, angularDamping ** dampingTimeScale);
-
-		/*
-		 * Skip collider calls for zero movement. Depending on VoxelObbCollider,
-		 * this can avoid coordinate resolution and collision sweeps while the boat
-		 * is fully stationary.
-		 */
-		const moveX = linearVelocity.x * dt;
-		const moveY = linearVelocity.y * dt;
-		const moveZ = linearVelocity.z * dt;
-
-		if (moveX !== 0) {
-			this.#moveAxis(Axis.X, moveX);
-		}
-
-		if (moveY !== 0) {
-			this.#moveAxis(Axis.Y, moveY);
-		}
-
-		if (moveZ !== 0) {
-			this.#moveAxis(Axis.Z, moveZ);
-		}
-
-		this.#integrateRotation(dt);
-
-		const currentYaw = this.#currentYaw;
-		const customVisualRoot = this.#customVisualRoot;
-
-		if (customVisualRoot !== undefined) {
-			customVisualRoot.position.copyFrom(boatPosition);
-
-			Quaternion.FromEulerAnglesToRef(
-				0,
-				currentYaw + this.#customVisualLocalYaw,
-				0,
-				this.#scratchQuat,
-			);
-
-			customVisualRoot.rotationQuaternion.copyFrom(this.#scratchQuat);
-		}
-
-		this.#voxelCollider.setYaw(currentYaw);
-
-		this.#syncHelmMount();
-		this.#mount.update();
-		this.#boatChunk?.syncVisualMeshes();
-		this.#voxelCollider.syncDebugMesh(boatPosition);
-	}
 
 	#applyForceAtPoint(
-		fx: number,
-		fy: number,
-		fz: number,
+		forceX: number,
+		forceY: number,
+		forceZ: number,
 		worldPoint: Vec3,
 		dt: number,
 	): void {
-		const invMass = 1 / this.#cfg.mass;
+		const inverseMass = 1 / this.#cfg.mass;
 
-		this.#linearVelocity.x += fx * invMass * dt;
-		this.#linearVelocity.y += fy * invMass * dt;
-		this.#linearVelocity.z += fz * invMass * dt;
+		this.#linearVelocity.x += forceX * inverseMass * dt;
+
+		this.#linearVelocity.y += forceY * inverseMass * dt;
+
+		this.#linearVelocity.z += forceZ * inverseMass * dt;
+
+		const boatPosition = this.#boat.position;
 
 		setVec3(
 			this.#tmpLever,
-			worldPoint.x - this.#boat.position.x,
-			worldPoint.y - this.#boat.position.y,
-			worldPoint.z - this.#boat.position.z,
+			worldPoint.x - boatPosition.x,
+			worldPoint.y - boatPosition.y,
+			worldPoint.z - boatPosition.z,
 		);
+
+		const lever = this.#tmpLever;
 
 		setVec3(
 			this.#tmpTorque,
-			this.#tmpLever.y * fz - this.#tmpLever.z * fy,
-			this.#tmpLever.z * fx - this.#tmpLever.x * fz,
-			this.#tmpLever.x * fy - this.#tmpLever.y * fx,
+			lever.y * forceZ - lever.z * forceY,
+			lever.z * forceX - lever.x * forceZ,
+			lever.x * forceY - lever.y * forceX,
 		);
 
 		const torqueScale =
-			this.#cfg.torqueScale * this.#angularResponseScale * invMass * dt;
+			this.#cfg.torqueScale * this.#angularResponseScale * inverseMass * dt;
 
-		this.#angularVelocity.x += this.#tmpTorque.x * torqueScale;
-		this.#angularVelocity.y += this.#tmpTorque.y * torqueScale;
-		this.#angularVelocity.z += this.#tmpTorque.z * torqueScale;
+		const torque = this.#tmpTorque;
+
+		this.#angularVelocity.x += torque.x * torqueScale;
+
+		this.#angularVelocity.y += torque.y * torqueScale;
+
+		this.#angularVelocity.z += torque.z * torqueScale;
 	}
 
-	#integrateRotation(dt: number) {
+	#integrateRotation(dt: number): void {
 		this.#currentYaw += this.#angularVelocity.y * dt;
+
 		this.#angularVelocity.y *= 0.985;
 
+		// Pitch and roll are not currently integrated into the boat transform.
 		this.#angularVelocity.x = 0;
 		this.#angularVelocity.z = 0;
 
 		if (this.#currentYaw > Math.PI || this.#currentYaw < -Math.PI) {
+			const fullTurn = Math.PI * 2;
+
 			this.#currentYaw =
-				((this.#currentYaw + Math.PI) % (2 * Math.PI)) - Math.PI;
+				((((this.#currentYaw + Math.PI) % fullTurn) + fullTurn) % fullTurn) -
+				Math.PI;
 		}
 	}
 
-	#moveAxis(axis: Axis, delta: number) {
+	#moveAxis(axis: Axis, delta: number): void {
 		this.#voxelCollider.moveAxis(
 			this.#boat.position,
 			this.#linearVelocity,
 			axis,
 			delta,
 			this.#cfg.collisionStepSize,
-		);
-	}
-
-	#getWaterSubmersionAtPoint(worldPoint: Vec3): number {
-		const x = Math.floor(worldPoint.x);
-		const y = Math.floor(worldPoint.y);
-		const z = Math.floor(worldPoint.z);
-
-		const id = this.#getWorldBlockForBoatPhysics(x, y, z);
-		if (id !== BlockType.Water) return 0;
-
-		const above = this.#getWorldBlockForBoatPhysics(x, y + 1, z);
-		if (above === BlockType.Water) return 1;
-
-		return Math.max(0, Math.min(1, y + 1 - worldPoint.y));
-	}
-
-	public applyImpulse(impulse: Vec3, point: Vec3) {
-		this.#applyForceAtPoint(impulse.x, impulse.y, impulse.z, point, 1);
-	}
-
-	public applyAngularImpulse(impulse: Vec3): void {
-		const scale = (1 / this.#cfg.mass) * this.#angularResponseScale;
-
-		this.#angularVelocity.x += impulse.x * scale;
-		this.#angularVelocity.y += impulse.y * scale;
-		this.#angularVelocity.z += impulse.z * scale;
-	}
-
-	public get boatMesh(): Mesh {
-		return this.#boat;
-	}
-
-	public get boatPosition(): Vec3 {
-		return vec3(
-			this.#boat.position.x,
-			this.#boat.position.y,
-			this.#boat.position.z,
-		);
-	}
-	public getBoatPositionToRef(out: Vec3): void {
-		out.x = this.#boat.position.x;
-		out.y = this.#boat.position.y;
-		out.z = this.#boat.position.z;
-	}
-
-	public get mount(): Mount {
-		return this.#mount;
-	}
-
-	public get submergedPoints(): number {
-		return this.#submergedPoints;
-	}
-
-	public get currentYaw(): number {
-		return this.#currentYaw;
-	}
-
-	public get collisionHalfExtents(): Vec3 {
-		return this.#collisionHalfExtents;
-	}
-
-	public getBoatTopYToRef(out: Vec3): void {
-		const b = (this.#boat as any).getBoundingInfo?.();
-		out.x = this.#boat.position.x;
-		out.y = b ? b.boundingBox.maximumWorld.y : this.#boat.position.y;
-		out.z = this.#boat.position.z;
-	}
-
-	public getBoatTopY(): Vec3 {
-		const b = (this.#boat as any).getBoundingInfo?.();
-		return vec3(
-			this.#boat.position.x,
-			b ? b.boundingBox.maximumWorld.y : this.#boat.position.y,
-			this.#boat.position.z,
 		);
 	}
 
@@ -853,13 +1013,14 @@ export class CustomBoat implements IUsable {
 			customVisualLocalYaw: this.#customVisualLocalYaw,
 			blockCount: boatChunkSnapshot?.blocks.length,
 			helmLocal: this.#helmLocal
-				? { x: this.#helmLocal.x, y: this.#helmLocal.y, z: this.#helmLocal.z }
+				? {
+						x: this.#helmLocal.x,
+						y: this.#helmLocal.y,
+						z: this.#helmLocal.z,
+					}
 				: undefined,
 			boatChunk: boatChunkSnapshot
 				? {
-						// PERF: toSnapshot() already returns a fresh array with fresh
-						// block objects. Shallow copy of the array isolates the
-						// snapshot from the live blocks without per-block spread.
 						blocks: boatChunkSnapshot.blocks.slice(),
 						center: {
 							x: boatChunkSnapshot.center.x,
@@ -876,148 +1037,127 @@ export class CustomBoat implements IUsable {
 		};
 	}
 
-	public use(player: Player): void {
-		this.#computeHelmMountOffset();
-		this.#mount.mount(player);
-	}
-
-	/**
-	 * Recompute the rider transform so the player stands 1 block behind the
-	 * wheel (helm) block, feet on deck, facing boat-forward. Runs every tick
-	 * while mounted because the boat yaws; pure yaw math (no world-matrix
-	 * dependency), matching the visual root's RotationYawPitchRoll frame.
-	 */
 	#syncHelmMount(): void {
-		if (!this.#mount.isMounted()) return;
+		if (!this.#mount.isMounted()) {
+			return;
+		}
+
 		this.#computeHelmMountOffset();
 	}
 
 	#computeHelmMountOffset(): void {
-		if (!this.#helmLocal || !this.#boatChunk) return;
-		const center = this.#boatChunk.center;
-		const totalYaw = this.#currentYaw + this.#customVisualLocalYaw;
-		const c = Math.cos(totalYaw);
-		const s = Math.sin(totalYaw);
-		const dx = this.#helmLocal.x + 0.5 - center.x;
-		const dy = this.#helmLocal.y + 0.5 - center.y;
-		const dz = this.#helmLocal.z + 0.5 - center.z;
-		const helmX = this.#boat.position.x + dx * c + dz * s;
-		const helmY = this.#boat.position.y + dy;
-		const helmZ = this.#boat.position.z - dx * s + dz * c;
+		const helmLocal = this.#helmLocal;
+		const boatChunk = this.#boatChunk;
 
-		// Boat forward is +Z rotated by currentYaw (see CustomBoatControls).
-		const behindDistance = 1.0;
-		const fx = Math.sin(this.#currentYaw);
-		const fz = Math.cos(this.#currentYaw);
+		if (!helmLocal || !boatChunk) {
+			return;
+		}
 
-		const deckTopWorldY =
-			this.#boat.position.y + (this.#deckTopLocalY - center.y);
-		const feetY = Math.max(helmY - 0.45, deckTopWorldY + 0.02);
+		this.#ensureTotalYawCache();
+
+		const center = boatChunk.center;
+		const boatPosition = this.#boat.position;
+
+		const cosTotalYaw = this.#cachedTotalCos;
+		const sinTotalYaw = this.#cachedTotalSin;
+
+		const localX = helmLocal.x + 0.5 - center.x;
+
+		const localY = helmLocal.y + 0.5 - center.y;
+
+		const localZ = helmLocal.z + 0.5 - center.z;
+
+		const helmOffsetX = localX * cosTotalYaw + localZ * sinTotalYaw;
+
+		const helmOffsetZ = -localX * sinTotalYaw + localZ * cosTotalYaw;
+
+		const helmWorldY = boatPosition.y + localY;
+
+		const behindDistance = 1;
+		const forwardX = Math.sin(this.#currentYaw);
+		const forwardZ = Math.cos(this.#currentYaw);
+
+		const deckTopWorldY = boatPosition.y + this.#deckTopLocalY - center.y;
+
+		const feetY = Math.max(helmWorldY - 0.45, deckTopWorldY + 0.02);
 
 		setVec3(
 			this.#helmMountOffset,
-			helmX - fx * behindDistance - this.#boat.position.x,
-			feetY - this.#boat.position.y,
-			helmZ - fz * behindDistance - this.#boat.position.z,
+			helmOffsetX - forwardX * behindDistance,
+			feetY - boatPosition.y,
+			helmOffsetZ - forwardZ * behindDistance,
 		);
+
 		Quaternion.FromEulerAnglesToRef(0, this.#currentYaw, 0, this.#helmMountRot);
 	}
 
-	public dispose(): void {
-		if (this.#isDisposed) {
+	#subscribeBoatChunkBlockChanges(): void {
+		const boatChunk = this.#boatChunk;
+
+		if (!boatChunk) {
 			return;
 		}
-		this.#isDisposed = true;
 
-		unregisterChunkBoundEntity(this.#chunkBindingHandle);
-		this.#chunkBindingHandle = undefined;
-		unregisterDynamicBlockProvider(this.#boatChunkCollisionProviderHandle);
-		this.#boatChunkCollisionProviderHandle = undefined;
 		this.#boatChunkBlockChangeUnsubscribe?.();
-		this.#boatChunkBlockChangeUnsubscribe = undefined;
-		this.#ignoredDynamicBlockProviders.clear();
 
-		if (this.#mount?.isMounted()) {
-			this.#mount.dismount();
-		}
-
-		this.#voxelCollider?.dispose();
-		if (this.#boatChunk) {
-			CustomBoat.#boatsByChunk.delete(this.#boatChunk);
-		}
-		this.#boatChunk?.dispose();
-		this.#boatChunk = undefined;
-		CustomBoat.#activeBoats.delete(this);
-		removeFromScene(Map1.mainScene, this.#boat);
-	}
-
-	#subscribeBoatChunkBlockChanges(): void {
-		if (!this.#boatChunk) return;
-		this.#boatChunkBlockChangeUnsubscribe?.();
-		this.#boatChunkBlockChangeUnsubscribe = this.#boatChunk.onBlockChanged(
-			() => {
-				this.#syncCollisionFromBoatChunk();
-			},
-		);
+		this.#boatChunkBlockChangeUnsubscribe = boatChunk.onBlockChanged(() => {
+			this.#syncCollisionFromBoatChunk();
+		});
 	}
 
 	#syncCollisionFromBoatChunk(): void {
-		if (!this.#boatChunk) return;
-		const occupied = this.#boatChunk.getOccupiedBoundsLocalToRef(
-			this.#scratchBounds,
-		);
-		if (!occupied) return;
+		const boatChunk = this.#boatChunk;
+
+		if (!boatChunk) {
+			return;
+		}
+
+		const occupied = boatChunk.getOccupiedBoundsLocalToRef(this.#scratchBounds);
+
+		if (!occupied) {
+			return;
+		}
+
 		this.#deckTopLocalY = occupied.maxY + 1;
 
-		const center = this.#boatChunk.center;
-		const pad = 0.05;
-		const minX = occupied.minX - center.x;
-		const maxX = occupied.maxX + 1 - center.x;
-		const minZ = occupied.minZ - center.z;
-		const maxZ = occupied.maxZ + 1 - center.z;
+		const center = boatChunk.center;
+		const padding = 0.05;
 
-		// Boat chunk visuals may have a fixed local yaw offset relative to the boat
-		// collider frame, so project occupied XZ bounds into boat-local space first.
-		const c = Math.cos(this.#customVisualLocalYaw);
-		const s = Math.sin(this.#customVisualLocalYaw);
-		const corners: readonly [number, number][] = [
-			[minX, minZ],
-			[minX, maxZ],
-			[maxX, minZ],
-			[maxX, maxZ],
-		];
-		let obbMinX = Infinity;
-		let obbMaxX = -Infinity;
-		let obbMinZ = Infinity;
-		let obbMaxZ = -Infinity;
-		for (const [x, z] of corners) {
-			const bx = x * c + z * s;
-			const bz = -x * s + z * c;
-			if (bx < obbMinX) obbMinX = bx;
-			if (bx > obbMaxX) obbMaxX = bx;
-			if (bz < obbMinZ) obbMinZ = bz;
-			if (bz > obbMaxZ) obbMaxZ = bz;
-		}
+		const obbMinX = occupied.minX - center.x;
+
+		const obbMaxX = occupied.maxX + 1 - center.x;
+
+		const obbMinZ = occupied.minZ - center.z;
+
+		const obbMaxZ = occupied.maxZ + 1 - center.z;
 
 		setVec3(
 			this.#collisionCenterOffset,
-			(obbMaxX + obbMinX) / 2,
+			(obbMaxX + obbMinX) * 0.5,
 			0,
-			(obbMaxZ + obbMinZ) / 2,
+			(obbMaxZ + obbMinZ) * 0.5,
 		);
 
-		const halfX = (obbMaxX - obbMinX) / 2;
-		const halfZ = (obbMaxZ - obbMinZ) / 2;
+		const halfX = (obbMaxX - obbMinX) * 0.5;
+
+		const halfZ = (obbMaxZ - obbMinZ) * 0.5;
 
 		const halfY = Math.max(
 			center.y - occupied.minY,
 			occupied.maxY + 1 - center.y,
 		);
 
-		setVec3(this.#collisionHalfExtents, halfX + pad, halfY + pad, halfZ + pad);
+		setVec3(
+			this.#collisionHalfExtents,
+			halfX + padding,
+			halfY + padding,
+			halfZ + padding,
+		);
 
 		this.#voxelCollider.setHalfExtents(this.#collisionHalfExtents);
+
 		this.#voxelCollider.setCenterOffset(this.#collisionCenterOffset);
+
 		this.#buildBuoyancyPoints();
 	}
 
@@ -1026,23 +1166,29 @@ export class CustomBoat implements IUsable {
 		localY: number,
 		localZ: number,
 	): boolean {
-		if (!this.#boatChunk) return false;
+		const boatChunk = this.#boatChunk;
 
-		const dirs: readonly [number, number, number][] = [
-			[1, 0, 0],
-			[-1, 0, 0],
-			[0, 1, 0],
-			[0, -1, 0],
-			[0, 0, 1],
-			[0, 0, -1],
-		];
+		if (!boatChunk) {
+			return false;
+		}
 
-		for (const [dx, dy, dz] of dirs) {
-			const nx = localX + dx;
-			const ny = localY + dy;
-			const nz = localZ + dz;
-			if (!this.#boatChunk.isInsideLocalBounds(nx, ny, nz)) continue;
-			if (this.#boatChunk.getBlockLocal(nx, ny, nz) !== BlockType.Air) {
+		const offsets = CustomBoat.#neighborOffsets;
+
+		for (let index = 0; index < offsets.length; index += 3) {
+			const neighborX = localX + offsets[index];
+
+			const neighborY = localY + offsets[index + 1];
+
+			const neighborZ = localZ + offsets[index + 2];
+
+			if (!boatChunk.isInsideLocalBounds(neighborX, neighborY, neighborZ)) {
+				continue;
+			}
+
+			if (
+				boatChunk.getBlockLocal(neighborX, neighborY, neighborZ) !==
+				BlockType.Air
+			) {
 				return true;
 			}
 		}
@@ -1055,15 +1201,16 @@ export class CustomBoat implements IUsable {
 			return;
 		}
 
-		this.#boatChunkCollisionProviderHandle = registerDynamicBlockProvider(
+		const handle = registerDynamicBlockProvider(
 			(worldX, worldY, worldZ) =>
 				this.#sampleBoatChunkBlock(worldX, worldY, worldZ),
 			(worldX, worldY, worldZ, blockId, blockState) =>
 				this.#setBoatChunkBlock(worldX, worldY, worldZ, blockId, blockState),
 		);
-		this.#ignoredDynamicBlockProviders.add(
-			this.#boatChunkCollisionProviderHandle,
-		);
+
+		this.#boatChunkCollisionProviderHandle = handle;
+
+		this.#ignoredDynamicBlockProviders.add(handle);
 	}
 
 	#sampleBoatChunkBlock(
@@ -1072,48 +1219,57 @@ export class CustomBoat implements IUsable {
 		worldZ: number,
 	): DynamicBlockSample | null {
 		const boatChunk = this.#boatChunk;
+
 		if (!boatChunk) {
 			return null;
 		}
 
-		// worldToLocalBlock is a pure translation (world - root + center), so
-		// the sample region is an axis-aligned box. Reject far-away probes with
-		// six compares instead of paying a transform + bounds check per voxel —
-		// this provider sits on every getBlockByWorldCoords call engine-wide
-		// while any boat exists (collision sweeps, raycasts, debris...).
 		const root = boatChunk.visualRoot.position;
+
 		const center = boatChunk.center;
-		const originX = root.x - center.x;
 		const originY = root.y - center.y;
-		const originZ = root.z - center.z;
-		if (
-			worldX < originX ||
-			worldY < originY ||
-			worldZ < originZ ||
-			worldX >= originX + Chunk.SIZE ||
-			worldY >= originY + Chunk.SIZE ||
-			worldZ >= originZ + Chunk.SIZE
-		) {
+
+		if (worldY < originY || worldY >= originY + Chunk.SIZE) {
 			return null;
 		}
 
-		const localX = worldX - originX;
-		const localY = worldY - originY;
-		const localZ = worldZ - originZ;
+		const deltaX = worldX + 0.5 - root.x;
+
+		const deltaZ = worldZ + 0.5 - root.z;
+
+		if (deltaX < -48 || deltaX > 48 || deltaZ < -48 || deltaZ > 48) {
+			return null;
+		}
+
+		this.#ensureTotalYawCache();
+
+		const cosYaw = this.#cachedTotalCos;
+		const sinYaw = this.#cachedTotalSin;
+
+		const localX = Math.floor(deltaX * cosYaw - deltaZ * sinYaw + center.x);
+
+		const localY = Math.floor(worldY + 0.5 - root.y + center.y);
+
+		const localZ = Math.floor(deltaX * sinYaw + deltaZ * cosYaw + center.z);
+
+		if (!boatChunk.isInsideLocalBounds(localX, localY, localZ)) {
+			return null;
+		}
 
 		const blockId = boatChunk.getBlockLocal(localX, localY, localZ);
+
 		if (blockId === BlockType.Air) {
 			return null;
 		}
 
-		// Shared scratch: every consumer (getBlockByWorldCoords /
-		// getBlockStateByWorldCoords / getLightByWorldCoords) reads the fields
-		// synchronously and never retains the sample object, so reusing one
-		// instance removes two allocations per solid probe.
 		const sample = CustomBoat.#sampleScratch;
+
 		sample.blockId = blockId;
+
 		sample.blockState = boatChunk.getBlockStateLocal(localX, localY, localZ);
+
 		sample.lightLevel = boatChunk.getLightLocal(localX, localY, localZ);
+
 		return sample;
 	}
 
@@ -1124,30 +1280,35 @@ export class CustomBoat implements IUsable {
 		blockId: number,
 		blockState: number,
 	): boolean {
-		const local = this.#worldToBoatLocal(worldX, worldY, worldZ);
-		if (!local || !this.#boatChunk) {
+		const boatChunk = this.#boatChunk;
+
+		if (!boatChunk) {
 			return false;
 		}
 
-		const existing = this.#boatChunk.getBlockLocal(local.x, local.y, local.z);
+		const local = this.#worldToBoatLocal(worldX, worldY, worldZ);
+
+		if (!local) {
+			return false;
+		}
+
+		const existing = boatChunk.getBlockLocal(local.x, local.y, local.z);
+
 		const targetIsOccupied = existing !== BlockType.Air;
+
 		const wantsDelete = blockId === BlockType.Air;
-		const isAttachToBoat =
+
+		const canAttachToBoat =
 			!targetIsOccupied &&
 			!wantsDelete &&
 			this.#hasOccupiedBoatNeighbor(local.x, local.y, local.z);
 
-		if (!targetIsOccupied && !isAttachToBoat) {
+		if (!targetIsOccupied && !canAttachToBoat) {
 			return false;
 		}
 
-		this.#boatChunk.setBlockLocal(
-			local.x,
-			local.y,
-			local.z,
-			blockId,
-			blockState,
-		);
+		boatChunk.setBlockLocal(local.x, local.y, local.z, blockId, blockState);
+
 		return true;
 	}
 
@@ -1156,27 +1317,37 @@ export class CustomBoat implements IUsable {
 		worldY: number,
 		worldZ: number,
 	): Vec3 | null {
-		if (!this.#boatChunk) {
+		const boatChunk = this.#boatChunk;
+
+		if (!boatChunk) {
 			return null;
 		}
 
-		setVec3(this.#tmpBoatSampleWorld, worldX + 0.5, worldY + 0.5, worldZ + 0.5);
+		this.#ensureTotalYawCache();
 
-		this.#boatChunk.worldToLocalBlockToRef(
-			this.#tmpBoatSampleWorld,
-			this.#scratchRootLocal,
-		);
-		if (
-			!this.#boatChunk.isInsideLocalBounds(
-				this.#scratchRootLocal.x,
-				this.#scratchRootLocal.y,
-				this.#scratchRootLocal.z,
-			)
-		) {
+		const root = boatChunk.visualRoot.position;
+
+		const center = boatChunk.center;
+		const cosYaw = this.#cachedTotalCos;
+		const sinYaw = this.#cachedTotalSin;
+
+		const deltaX = worldX + 0.5 - root.x;
+
+		const deltaY = worldY + 0.5 - root.y;
+
+		const deltaZ = worldZ + 0.5 - root.z;
+
+		const localX = Math.floor(deltaX * cosYaw - deltaZ * sinYaw + center.x);
+
+		const localY = Math.floor(deltaY + center.y);
+
+		const localZ = Math.floor(deltaX * sinYaw + deltaZ * cosYaw + center.z);
+
+		if (!boatChunk.isInsideLocalBounds(localX, localY, localZ)) {
 			return null;
 		}
 
-		return this.#scratchRootLocal;
+		return setVec3(this.#scratchRootLocal, localX, localY, localZ);
 	}
 
 	#getWorldBlockForBoatPhysics(x: number, y: number, z: number): number {

@@ -72,19 +72,27 @@ export class VoxelObbCollider {
 	}
 
 	/** Set yaw in radians */
-	public setYaw(yaw: number) {
+	public setYaw(yaw: number): void {
+		if (yaw === this.#yaw) return;
+
 		this.#yaw = yaw;
 		this.#updateRotAxes();
+
+		if (this.#debugMesh) {
+			Quaternion.FromEulerAnglesToRef(0, yaw, 0, this.#debugRot);
+			this.#debugMesh.rotationQuaternion.copyFrom(this.#debugRot);
+		}
 	}
 
 	public setHalfExtents(halfExtents: Vec3): void {
 		copyVec3(this.#halfExtents, halfExtents);
 
 		if (this.#debugMesh) {
-			this.#disposeDebugMesh();
-			if (VoxelObbCollider.#debugEnabled) {
-				this.#ensureDebugMesh();
-			}
+			this.#debugMesh.scaling.set(
+				halfExtents.x * 2,
+				halfExtents.y * 2,
+				halfExtents.z * 2,
+			);
 		}
 	}
 
@@ -92,38 +100,46 @@ export class VoxelObbCollider {
 		copyVec3(this.#centerOffset, offset);
 	}
 
-	#updateRotAxes() {
+	#updateRotAxes(): void {
 		const c = Math.cos(this.#yaw);
 		const s = Math.sin(this.#yaw);
 
-		// RIGHT vector (local +X)
+		// Matches Matrix.RotationY() and transformCoordinatesVec3ToRef().
 		setVec3(this.#rotX, c, 0, -s);
-
-		// FORWARD vector (local +Z)
 		setVec3(this.#rotZ, s, 0, c);
 	}
 
 	/** Create debug OBB wireframe */
 	#createDebugMesh(options: VoxelObbDebugOptions): void {
-		if (this.#debugMesh) {
-			return;
-		}
+		if (this.#debugMesh) return;
+
 		const name = options.name ?? "voxelObbDebug";
-		const size =
-			((this.#halfExtents.x + this.#halfExtents.y + this.#halfExtents.z) * 2) /
-			3;
-		this.#debugMesh = createBox(options.scene.surface.engine, size);
+
+		// Create a unit cube, then scale it to the full OBB dimensions.
+		this.#debugMesh = createBox(options.scene.surface.engine, 1);
 		this.#debugMesh.name = name;
 		this.#debugMesh.pickable = false;
+		this.#debugMesh.renderOrder = options.renderOrder ?? 1;
+
+		this.#debugMesh.scaling.set(
+			this.#halfExtents.x * 2,
+			this.#halfExtents.y * 2,
+			this.#halfExtents.z * 2,
+		);
+
+		Quaternion.FromEulerAnglesToRef(0, this.#yaw, 0, this.#debugRot);
+		this.#debugMesh.rotationQuaternion.copyFrom(this.#debugRot);
 
 		const material = createStandardMaterial();
 		material.name = `${name}Mat`;
-		material.alpha = 0;
+		material.alpha = 0.25;
 		material.diffuseColor = [1, 0.2, 0.2];
+
 		this.#debugMesh.material = material;
 		addToScene(options.scene, this.#debugMesh);
+
 		if (options.position) {
-			this.#debugMesh.position.copyFrom(options.position);
+			this.syncDebugMesh(options.position);
 		}
 	}
 
@@ -184,7 +200,6 @@ export class VoxelObbCollider {
 		return false;
 	}
 
-	/** Simple separating-axis test for yaw-only OBB vs voxel cube */
 	#obbIntersectsVoxel(
 		px: number,
 		py: number,
@@ -196,21 +211,55 @@ export class VoxelObbCollider {
 		vy: number,
 		vz: number,
 	): boolean {
-		const cx = vx + 0.5;
-		const cy = vy + 0.5;
-		const cz = vz + 0.5;
+		const rx = vx + 0.5 - px;
+		const ry = vy + 0.5 - py;
+		const rz = vz + 0.5 - pz;
 
-		// Relative position from OBB center to voxel center
-		const rx = cx - px;
-		const ry = cy - py;
-		const rz = cz - pz;
+		// Y remains axis-aligned.
+		if (Math.abs(ry) > hy + 0.5 - this.#epsilon) {
+			return false;
+		}
 
-		// Project voxel onto OBB axes
-		const projX = Math.abs(rx * this.#rotX.x + rz * this.#rotX.z) <= hx + 0.5;
-		const projZ = Math.abs(rx * this.#rotZ.x + rz * this.#rotZ.z) <= hz + 0.5;
-		const projY = Math.abs(ry) <= hy + 0.5;
+		const rxX = this.#rotX.x;
+		const rxZ = this.#rotX.z;
+		const rzX = this.#rotZ.x;
+		const rzZ = this.#rotZ.z;
 
-		return projX && projZ && projY;
+		/*
+		 * Test the two OBB axes. The voxel projection radius is the projection
+		 * of its 0.5 x 0.5 horizontal half-extents onto each rotated axis.
+		 */
+		const distanceOnObbX = Math.abs(rx * rxX + rz * rxZ);
+		const voxelRadiusOnObbX = 0.5 * Math.abs(rxX) + 0.5 * Math.abs(rxZ);
+
+		if (distanceOnObbX > hx + voxelRadiusOnObbX - this.#epsilon) {
+			return false;
+		}
+
+		const distanceOnObbZ = Math.abs(rx * rzX + rz * rzZ);
+		const voxelRadiusOnObbZ = 0.5 * Math.abs(rzX) + 0.5 * Math.abs(rzZ);
+
+		if (distanceOnObbZ > hz + voxelRadiusOnObbZ - this.#epsilon) {
+			return false;
+		}
+
+		/*
+		 * Test the voxel's world X and Z axes. These were missing from the
+		 * previous implementation, so it was not a complete SAT test.
+		 */
+		const obbRadiusOnWorldX = hx * Math.abs(rxX) + hz * Math.abs(rzX);
+
+		if (Math.abs(rx) > obbRadiusOnWorldX + 0.5 - this.#epsilon) {
+			return false;
+		}
+
+		const obbRadiusOnWorldZ = hx * Math.abs(rxZ) + hz * Math.abs(rzZ);
+
+		if (Math.abs(rz) > obbRadiusOnWorldZ + 0.5 - this.#epsilon) {
+			return false;
+		}
+
+		return true;
 	}
 
 	/** Same API as AABB collider — used by boat physics */
@@ -256,9 +305,9 @@ export class VoxelObbCollider {
 		if (VoxelObbCollider.#debugEnabled) {
 			this.#ensureDebugMesh();
 		}
+
 		if (!this.#debugMesh) return;
 
-		// Position at the offset center (rotate local offset into world space)
 		this.#debugMesh.position.set(
 			position.x +
 				this.#centerOffset.x * this.#rotX.x +
@@ -269,7 +318,7 @@ export class VoxelObbCollider {
 				this.#centerOffset.z * this.#rotZ.z,
 		);
 
-		this.#debugRot.copyFrom(Quaternion.RotationYawPitchRoll(this.#yaw, 0, 0));
+		Quaternion.FromEulerAnglesToRef(0, this.#yaw, 0, this.#debugRot);
 		this.#debugMesh.rotationQuaternion.copyFrom(this.#debugRot);
 	}
 

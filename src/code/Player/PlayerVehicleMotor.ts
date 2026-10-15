@@ -30,9 +30,9 @@ import type { Mount } from "../Entities/Mount";
 import { playLandingDust } from "../Maps/BlockBreakParticles";
 import type { BoatChunk } from "../World/Boat/BoatChunk";
 import {
-	type ResolvedBlock,
 	getBlockAndStateByWorldCoordsInto,
 	getBlockByWorldCoords,
+	type ResolvedBlock,
 	resolveBlockAtWorldCoordsInto,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
