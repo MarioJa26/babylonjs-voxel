@@ -1,4 +1,4 @@
-import { addVec3ToRef, type Vec3, vec3 } from "@babylonjs/lite";
+import { type Vec3, vec3 } from "@babylonjs/lite";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import type { Player } from "@/code/Player/Player";
@@ -23,8 +23,34 @@ type VoxelBlock = {
 
 type VisualMode = "blocks" | "aabb";
 
+type HullBounds = {
+	minX: number;
+	minY: number;
+	minZ: number;
+	maxX: number;
+	maxY: number;
+	maxZ: number;
+	sizeX: number;
+	sizeY: number;
+	sizeZ: number;
+	center: Vec3;
+	halfExtents: Vec3;
+};
+
+type FloodEntry = {
+	x: number;
+	y: number;
+	z: number;
+	blockId: number;
+};
+
 const LOCAL_CHUNK_PADDING = 1;
-const FLOOD_DIRECTIONS: ReadonlyArray<[number, number, number]> = [
+const MAX_FLOOD_BLOCKS = 8192;
+const TWO_PI = Math.PI * 2;
+const HALF_PI = Math.PI * 0.5;
+const YAW_EPSILON = 0.001;
+
+const FLOOD_DIRECTIONS: ReadonlyArray<readonly [number, number, number]> = [
 	[1, 0, 0],
 	[-1, 0, 0],
 	[0, 1, 0],
@@ -33,23 +59,28 @@ const FLOOD_DIRECTIONS: ReadonlyArray<[number, number, number]> = [
 	[0, 0, -1],
 ];
 
-// Expand this set with any additional block IDs that should be treated as hull.
 let sourceBlockIds = new Set<number>([
 	6, 10, 12, 37, 41, 42, 60, 61, 62, 63, 22,
 ]);
-const maxFloodBlocks = 8192;
+
 let visualMode: VisualMode = "blocks";
 
 export function setSourceBlockIds(ids: Iterable<number>): void {
-	sourceBlockIds = new Set<number>();
+	const nextIds = new Set<number>();
+
 	for (const id of ids) {
-		if (Number.isInteger(id) && id >= 0) sourceBlockIds.add(id);
+		if (Number.isInteger(id) && id >= 0) {
+			nextIds.add(id);
+		}
 	}
+
+	sourceBlockIds = nextIds;
 }
 
 export function addSourceBlockId(id: number): void {
-	if (!Number.isInteger(id) || id < 0) return;
-	sourceBlockIds.add(id);
+	if (Number.isInteger(id) && id >= 0) {
+		sourceBlockIds.add(id);
+	}
 }
 
 export function removeSourceBlockId(id: number): void {
@@ -57,7 +88,7 @@ export function removeSourceBlockId(id: number): void {
 }
 
 export function getSourceBlockIds(): number[] {
-	return [...sourceBlockIds.values()];
+	return Array.from(sourceBlockIds);
 }
 
 export function setVisualMode(mode: VisualMode): void {
@@ -71,96 +102,123 @@ export function tryCreateBoatFromMarker(
 	markerZ: number,
 ): CustomBoat | null {
 	const hullBlocks = collectConnectedHullBlocks(markerX, markerY, markerZ);
-	if (hullBlocks.length === 0) return null;
 
-	const bounds = computeBounds(hullBlocks);
-	const paddedSizeX = bounds.sizeX + LOCAL_CHUNK_PADDING * 2;
-	const paddedSizeY = bounds.sizeY + LOCAL_CHUNK_PADDING * 2;
-	const paddedSizeZ = bounds.sizeZ + LOCAL_CHUNK_PADDING * 2;
-	if (
-		visualMode === "blocks" &&
-		(paddedSizeX > Chunk.SIZE ||
-			paddedSizeY > Chunk.SIZE ||
-			paddedSizeZ > Chunk.SIZE)
-	) {
-		console.warn(
-			"Boat creator hull exceeds single chunk size and cannot be converted yet.",
-			{
-				sizeX: bounds.sizeX,
-				sizeY: bounds.sizeY,
-				sizeZ: bounds.sizeZ,
-				paddedSizeX,
-				paddedSizeY,
-				paddedSizeZ,
-				max: Chunk.SIZE,
-			},
-		);
+	if (hullBlocks.length === 0) {
 		return null;
 	}
 
-	const center = bounds.center;
-	const initialYaw = computeForwardYaw(bounds, markerX, markerZ);
+	const bounds = computeBounds(hullBlocks);
 
-	let hx = bounds.sizeX * 0.5;
-	const _hy = bounds.sizeY * 0.5;
-	let hz = bounds.sizeZ * 0.5;
+	if (visualMode === "blocks") {
+		const padding = LOCAL_CHUNK_PADDING * 2;
+		const paddedSizeX = bounds.sizeX + padding;
+		const paddedSizeY = bounds.sizeY + padding;
+		const paddedSizeZ = bounds.sizeZ + padding;
 
-	const yaw = initialYaw % (Math.PI * 2);
+		if (
+			paddedSizeX > Chunk.SIZE ||
+			paddedSizeY > Chunk.SIZE ||
+			paddedSizeZ > Chunk.SIZE
+		) {
+			console.warn(
+				"Boat creator hull exceeds single chunk size and cannot be converted yet.",
+				{
+					sizeX: bounds.sizeX,
+					sizeY: bounds.sizeY,
+					sizeZ: bounds.sizeZ,
+					paddedSizeX,
+					paddedSizeY,
+					paddedSizeZ,
+					max: Chunk.SIZE,
+				},
+			);
 
-	// If yaw is ±90° → swap X and Z extents
-	if (
-		Math.abs(yaw - Math.PI / 2) < 0.001 ||
-		Math.abs(yaw + Math.PI / 2) < 0.001
-	) {
-		[hx, hz] = [hz, hx];
+			return null;
+		}
 	}
 
-	let boatChunk: BoatChunk | undefined;
-	// The marker block is kept as the ship's wheel: it travels with the boat
-	// and becomes the usable control block once on board.
+	const initialYaw = computeForwardYaw(bounds, markerX, markerZ);
+
 	const helmLocal = vec3(
 		markerX - bounds.minX + LOCAL_CHUNK_PADDING,
 		markerY - bounds.minY + LOCAL_CHUNK_PADDING,
 		markerZ - bounds.minZ + LOCAL_CHUNK_PADDING,
 	);
+
+	let boatChunk: BoatChunk | undefined;
+
 	if (visualMode === "blocks") {
-		const localBlocks: BoatChunkBlock[] = hullBlocks.map((block) => ({
-			x: block.x - bounds.minX + LOCAL_CHUNK_PADDING,
-			y: block.y - bounds.minY + LOCAL_CHUNK_PADDING,
-			z: block.z - bounds.minZ + LOCAL_CHUNK_PADDING,
-			blockId: block.blockId,
-			blockState: block.blockState,
-			lightLevel: block.lightLevel,
-		}));
-		localBlocks.push({
+		const hullCount = hullBlocks.length;
+		const localBlocks = new Array<BoatChunkBlock>(hullCount + 1);
+
+		for (let i = 0; i < hullCount; i++) {
+			const block = hullBlocks[i];
+
+			localBlocks[i] = {
+				x: block.x - bounds.minX + LOCAL_CHUNK_PADDING,
+				y: block.y - bounds.minY + LOCAL_CHUNK_PADDING,
+				z: block.z - bounds.minZ + LOCAL_CHUNK_PADDING,
+				blockId: block.blockId,
+				blockState: block.blockState,
+				lightLevel: block.lightLevel,
+			};
+		}
+
+		localBlocks[hullCount] = {
 			x: helmLocal.x,
 			y: helmLocal.y,
 			z: helmLocal.z,
 			blockId: getBlockByWorldCoords(markerX, markerY, markerZ),
 			blockState: getBlockStateByWorldCoords(markerX, markerY, markerZ),
 			lightLevel: getLightByWorldCoords(markerX, markerY, markerZ),
-		});
+		};
+
 		const localCenter = vec3(
 			LOCAL_CHUNK_PADDING + bounds.sizeX * 0.5,
 			LOCAL_CHUNK_PADDING + bounds.sizeY * 0.5,
 			LOCAL_CHUNK_PADDING + bounds.sizeZ * 0.5,
 		);
+
 		boatChunk = new BoatChunk(localBlocks, localCenter);
 	}
 
-	const customVisual = boatChunk?.visualRoot;
-
-	// Consume source blocks and the marker block from the world.
-	for (const block of hullBlocks) {
+	/*
+	 * Capture everything needed above before mutating the world. This prevents
+	 * a partially constructed BoatChunk from reading blocks after removal.
+	 */
+	for (let i = 0; i < hullBlocks.length; i++) {
+		const block = hullBlocks[i];
 		setBlock(block.x, block.y, block.z, BlockType.Air, 0);
 	}
+
 	setBlock(markerX, markerY, markerZ, BlockType.Air, 0);
 
-	const paddedHalfExtents = vec3(0, 0, 0);
-	addVec3ToRef(center, vec3(0.5, 0.5, 0.5), paddedHalfExtents);
-	const boat = new CustomBoat(player, GenerationParams.SEA_LEVEL, center, {
-		collisionHalfExtents: paddedHalfExtents,
-		customVisualRoot: customVisual,
+	/*
+	 * Bounds are expressed in voxel-edge coordinates, so size / 2 is the
+	 * correct collision half-extent. Swap horizontal extents when the boat's
+	 * initial orientation rotates its local X and Z axes by 90 degrees.
+	 */
+	let collisionHalfX = bounds.halfExtents.x;
+	const collisionHalfY = bounds.halfExtents.y;
+	let collisionHalfZ = bounds.halfExtents.z;
+
+	const normalizedYaw = normalizeYaw(initialYaw);
+
+	if (Math.abs(Math.abs(normalizedYaw) - HALF_PI) < YAW_EPSILON) {
+		const previousX = collisionHalfX;
+		collisionHalfX = collisionHalfZ;
+		collisionHalfZ = previousX;
+	}
+
+	const collisionHalfExtents = vec3(
+		collisionHalfX,
+		collisionHalfY,
+		collisionHalfZ,
+	);
+
+	return new CustomBoat(player, GenerationParams.SEA_LEVEL, bounds.center, {
+		collisionHalfExtents,
+		customVisualRoot: boatChunk?.visualRoot,
 		skipDefaultModel: visualMode === "blocks",
 		initialYaw,
 		customVisualLocalYaw: -initialYaw,
@@ -168,8 +226,6 @@ export function tryCreateBoatFromMarker(
 		boatChunk,
 		helmLocal,
 	});
-
-	return boat;
 }
 
 function collectConnectedHullBlocks(
@@ -177,95 +233,112 @@ function collectConnectedHullBlocks(
 	markerY: number,
 	markerZ: number,
 ): VoxelBlock[] {
-	const queue: Array<{ x: number; y: number; z: number }> = [];
+	const stack: FloodEntry[] = [];
 	const visited = new Set<string>();
-	const out: VoxelBlock[] = [];
+	const blocks: VoxelBlock[] = [];
 
-	for (const [dx, dy, dz] of FLOOD_DIRECTIONS) {
-		const nx = markerX + dx;
-		const ny = markerY + dy;
-		const nz = markerZ + dz;
-		const neighborId = getBlockByWorldCoords(nx, ny, nz);
-		if (!sourceBlockIds.has(neighborId)) continue;
-		queue.push({ x: nx, y: ny, z: nz });
-	}
+	/*
+	 * Mark a coordinate visited before checking or enqueueing it. Boundary air
+	 * blocks can otherwise be queried repeatedly from several hull blocks.
+	 */
+	const tryEnqueue = (x: number, y: number, z: number): void => {
+		const key = `${x}|${y}|${z}`;
 
-	while (queue.length > 0 && out.length < maxFloodBlocks) {
-		const current = queue.pop()!;
-		const key = `${current.x}|${current.y}|${current.z}`;
-		if (visited.has(key)) continue;
+		if (visited.has(key)) {
+			return;
+		}
+
 		visited.add(key);
 
-		const blockId = getBlockByWorldCoords(current.x, current.y, current.z);
-		if (!sourceBlockIds.has(blockId)) continue;
+		/*
+		 * The marker is a separate helm block and must not be absorbed into
+		 * the hull if its ID is also present in sourceBlockIds.
+		 */
+		if (x === markerX && y === markerY && z === markerZ) {
+			return;
+		}
 
-		const blockState = getBlockStateByWorldCoords(
-			current.x,
-			current.y,
-			current.z,
+		const blockId = getBlockByWorldCoords(x, y, z);
+
+		if (!sourceBlockIds.has(blockId)) {
+			return;
+		}
+
+		stack.push({ x, y, z, blockId });
+	};
+
+	for (let i = 0; i < FLOOD_DIRECTIONS.length; i++) {
+		const direction = FLOOD_DIRECTIONS[i];
+
+		tryEnqueue(
+			markerX + direction[0],
+			markerY + direction[1],
+			markerZ + direction[2],
 		);
-		const lightLevel = getLightByWorldCoords(current.x, current.y, current.z);
+	}
 
-		out.push({
+	while (stack.length > 0 && blocks.length < MAX_FLOOD_BLOCKS) {
+		const current = stack.pop()!;
+
+		blocks.push({
 			x: current.x,
 			y: current.y,
 			z: current.z,
-			blockId,
-			blockState,
-			lightLevel,
+			blockId: current.blockId,
+			blockState: getBlockStateByWorldCoords(current.x, current.y, current.z),
+			lightLevel: getLightByWorldCoords(current.x, current.y, current.z),
 		});
 
-		for (const [dx, dy, dz] of FLOOD_DIRECTIONS) {
-			queue.push({
-				x: current.x + dx,
-				y: current.y + dy,
-				z: current.z + dz,
-			});
+		for (let i = 0; i < FLOOD_DIRECTIONS.length; i++) {
+			const direction = FLOOD_DIRECTIONS[i];
+
+			tryEnqueue(
+				current.x + direction[0],
+				current.y + direction[1],
+				current.z + direction[2],
+			);
 		}
 	}
 
-	return out;
+	if (stack.length > 0) {
+		console.warn(
+			`Boat hull flood fill reached the ${MAX_FLOOD_BLOCKS}-block limit.`,
+		);
+	}
+
+	return blocks;
 }
 
-function computeBounds(blocks: VoxelBlock[]): {
-	minX: number;
-	minY: number;
-	minZ: number;
-	maxX: number;
-	maxY: number;
-	maxZ: number;
-	sizeX: number;
-	sizeY: number;
-	sizeZ: number;
-	center: Vec3;
-	halfExtents: Vec3;
-} {
-	let minX = Number.POSITIVE_INFINITY;
-	let minY = Number.POSITIVE_INFINITY;
-	let minZ = Number.POSITIVE_INFINITY;
-	let maxX = Number.NEGATIVE_INFINITY;
-	let maxY = Number.NEGATIVE_INFINITY;
-	let maxZ = Number.NEGATIVE_INFINITY;
+function computeBounds(blocks: readonly VoxelBlock[]): HullBounds {
+	const first = blocks[0];
 
-	for (const block of blocks) {
+	let minX = first.x;
+	let minY = first.y;
+	let minZ = first.z;
+	let maxX = first.x;
+	let maxY = first.y;
+	let maxZ = first.z;
+
+	for (let i = 1; i < blocks.length; i++) {
+		const block = blocks[i];
+
 		if (block.x < minX) minX = block.x;
+		else if (block.x > maxX) maxX = block.x;
+
 		if (block.y < minY) minY = block.y;
+		else if (block.y > maxY) maxY = block.y;
+
 		if (block.z < minZ) minZ = block.z;
-		if (block.x > maxX) maxX = block.x;
-		if (block.y > maxY) maxY = block.y;
-		if (block.z > maxZ) maxZ = block.z;
+		else if (block.z > maxZ) maxZ = block.z;
 	}
 
 	const sizeX = maxX - minX + 1;
 	const sizeY = maxY - minY + 1;
 	const sizeZ = maxZ - minZ + 1;
 
-	const halfExtents = vec3(sizeX * 0.5, sizeY * 0.5, sizeZ * 0.5);
-	const center = vec3(
-		minX + halfExtents.x,
-		minY + halfExtents.y,
-		minZ + halfExtents.z,
-	);
+	const halfX = sizeX * 0.5;
+	const halfY = sizeY * 0.5;
+	const halfZ = sizeZ * 0.5;
 
 	return {
 		minX,
@@ -277,42 +350,42 @@ function computeBounds(blocks: VoxelBlock[]): {
 		sizeX,
 		sizeY,
 		sizeZ,
-		center,
-		halfExtents,
+		center: vec3(minX + halfX, minY + halfY, minZ + halfZ),
+		halfExtents: vec3(halfX, halfY, halfZ),
 	};
 }
 
 function computeForwardYaw(
-	bounds: {
-		minX: number;
-		minZ: number;
-		maxX: number;
-		maxZ: number;
-		sizeX: number;
-		sizeZ: number;
-	},
+	bounds: Pick<
+		HullBounds,
+		"minX" | "minZ" | "maxX" | "maxZ" | "sizeX" | "sizeZ"
+	>,
 	markerX: number,
 	markerZ: number,
 ): number {
-	// Long-side axis decides orientation axis, marker proximity to short edge
-	// decides forward sign. Tie-breaker: prefer X axis and min edge.
-	const useXAxis = bounds.sizeX >= bounds.sizeZ;
-
-	if (useXAxis) {
+	if (bounds.sizeX >= bounds.sizeZ) {
 		const markerCenterX = markerX + 0.5;
-		const minEdge = bounds.minX;
-		const maxEdge = bounds.maxX + 1;
-		const distToMin = Math.abs(markerCenterX - minEdge);
-		const distToMax = Math.abs(maxEdge - markerCenterX);
-		const forwardPositiveX = distToMax < distToMin;
-		return forwardPositiveX ? Math.PI * 0.5 : -Math.PI * 0.5;
+		const distToMin = markerCenterX - bounds.minX;
+		const distToMax = bounds.maxX + 1 - markerCenterX;
+
+		return distToMax < distToMin ? HALF_PI : -HALF_PI;
 	}
 
 	const markerCenterZ = markerZ + 0.5;
-	const minEdge = bounds.minZ;
-	const maxEdge = bounds.maxZ + 1;
-	const distToMin = Math.abs(markerCenterZ - minEdge);
-	const distToMax = Math.abs(maxEdge - markerCenterZ);
-	const forwardPositiveZ = distToMax < distToMin;
-	return forwardPositiveZ ? 0 : Math.PI;
+	const distToMin = markerCenterZ - bounds.minZ;
+	const distToMax = bounds.maxZ + 1 - markerCenterZ;
+
+	return distToMax < distToMin ? 0 : Math.PI;
+}
+
+function normalizeYaw(yaw: number): number {
+	let normalized = yaw % TWO_PI;
+
+	if (normalized > Math.PI) {
+		normalized -= TWO_PI;
+	} else if (normalized < -Math.PI) {
+		normalized += TWO_PI;
+	}
+
+	return normalized;
 }
