@@ -691,17 +691,20 @@ export class Chunk {
 			this.light_array = sharedLight;
 		}
 
-		const block = this._block_array;
+		const blockArray = this._block_array;
 
-		if (block !== null && !(block.buffer instanceof SharedArrayBuffer)) {
-			if (block instanceof Uint16Array) {
-				const sharedBlock = makeSharedUint16(block.length);
-				sharedBlock.set(block);
-				this._block_array = sharedBlock;
+		if (
+			blockArray !== null &&
+			!(blockArray.buffer instanceof SharedArrayBuffer)
+		) {
+			if (blockArray instanceof Uint16Array) {
+				const sharedBlocks = makeSharedUint16(blockArray.length);
+				sharedBlocks.set(blockArray);
+				this._block_array = sharedBlocks;
 			} else {
-				const sharedBlock = makeSharedUint8(block.length);
-				sharedBlock.set(block);
-				this._block_array = sharedBlock;
+				const sharedBlocks = makeSharedUint8(blockArray.length);
+				sharedBlocks.set(blockArray);
+				this._block_array = sharedBlocks;
 			}
 		}
 
@@ -711,12 +714,29 @@ export class Chunk {
 			const sharedPalette = makeSharedUint16(palette.length);
 			sharedPalette.set(palette);
 			this._palette = sharedPalette;
-			this._paletteMap = new Map();
-			for (let i = 0; i < sharedPalette.length; i++) {
-				this._paletteMap.set(sharedPalette[i], i);
+
+			/*
+			 * Do not rebuild _paletteMap here. Copying the palette preserves every
+			 * value and index, so the existing map remains valid.
+			 *
+			 * Build it only when missing, which also safely handles legacy or
+			 * externally hydrated chunks that did not initialize the map.
+			 */
+			if (this._paletteMap === null) {
+				const paletteMap = new Map<number, number>();
+
+				for (let i = 0; i < sharedPalette.length; i++) {
+					paletteMap.set(sharedPalette[i], i);
+				}
+
+				this._paletteMap = paletteMap;
 			}
 		}
 
+		/*
+		 * Rebuild the cached Uint32Array view if light_array was replaced.
+		 * updateLightView() already returns early when the existing view is valid.
+		 */
 		this.updateLightView();
 	}
 
@@ -1113,11 +1133,8 @@ export class Chunk {
 			return;
 		}
 
-		// Voxel storage has been released (LOD-only load, or an explicit
-		// far-LOD release). The _isUniform branch below would build a 2-entry
-		// palette over a freshly allocated all-air volume, so a single edit
-		// would silently delete the rest of the chunk. Refuse instead: the
-		// streaming layer re-hydrates a chunk before it can be edited.
+		// A LOD-only chunk has no usable voxel payload. Expanding its uniform
+		// sentinel would incorrectly reconstruct the missing volume as air.
 		if (!this._hasVoxelData) {
 			if (import.meta.env?.DEV) {
 				console.warn(
@@ -1146,20 +1163,28 @@ export class Chunk {
 				return;
 			}
 
-			this._isUniform = false;
-			this._hasVoxelData = true;
-
 			const palette = makeSharedUint16(2);
 			palette[0] = oldPacked;
 			palette[1] = packedBlock;
 
+			/*
+			 * New typed-array memory is zero-filled, so every voxel initially
+			 * references palette entry 0. Only the edited voxel must be changed
+			 * to palette entry 1.
+			 */
+			const packedIndices = makeSharedUint8(Chunk.SIZE3 >>> 1);
+			const byteIndex = index >>> 1;
+
+			packedIndices[byteIndex] = (index & 1) === 0 ? 1 : 1 << 4;
+
+			this._isUniform = false;
+			this._uniformBlockId = 0;
 			this._palette = palette;
-			this._paletteMap = new Map([
+			this._paletteMap = new Map<number, number>([
 				[oldPacked, 0],
 				[packedBlock, 1],
 			]);
-			this._block_array = makeSharedUint8(Chunk.SIZE3 >>> 1);
-			this.setNibble(index, 1);
+			this._block_array = packedIndices;
 
 			storageLayoutChanged = true;
 			paletteChanged = true;
@@ -1167,26 +1192,55 @@ export class Chunk {
 			const palette = this._palette;
 
 			if (palette !== null) {
-				const paletteIndex = this.getNibble(index);
+				const packedIndices = this._block_array as Uint8Array;
+				const byteIndex = index >>> 1;
+				const byte = packedIndices[byteIndex];
+
+				const paletteIndex = (index & 1) === 0 ? byte & 0x0f : byte >>> 4;
+
 				oldPacked = palette[paletteIndex];
 
 				if (oldPacked === packedBlock) {
 					return;
 				}
 
-				let newPaletteIndex = this._paletteMap?.get(packedBlock) ?? -1;
+				let paletteMap = this._paletteMap;
+				let newPaletteIndex = paletteMap?.get(packedBlock) ?? -1;
 
-				if (newPaletteIndex === -1) {
+				/*
+				 * Preserve the defensive linear-search fallback in case a
+				 * hydrated or legacy chunk has a missing or incomplete map.
+				 */
+				if (newPaletteIndex < 0) {
 					for (let i = 0; i < palette.length; i++) {
 						if (palette[i] === packedBlock) {
 							newPaletteIndex = i;
 							break;
 						}
 					}
+
+					if (newPaletteIndex >= 0) {
+						if (paletteMap === null) {
+							paletteMap = new Map<number, number>();
+
+							for (let i = 0; i < palette.length; i++) {
+								paletteMap.set(palette[i], i);
+							}
+
+							this._paletteMap = paletteMap;
+						} else {
+							paletteMap.set(packedBlock, newPaletteIndex);
+						}
+					}
 				}
 
 				if (newPaletteIndex >= 0) {
-					this.setNibble(index, newPaletteIndex);
+					const nibble = newPaletteIndex & 0x0f;
+
+					packedIndices[byteIndex] =
+						(index & 1) === 0
+							? (byte & 0xf0) | nibble
+							: (byte & 0x0f) | (nibble << 4);
 				} else if (palette.length < 16) {
 					newPaletteIndex = palette.length;
 
@@ -1196,33 +1250,75 @@ export class Chunk {
 					expandedPalette[newPaletteIndex] = packedBlock;
 
 					this._palette = expandedPalette;
-					this._paletteMap = new Map();
-					for (let i = 0; i < expandedPalette.length; i++) {
-						this._paletteMap.set(expandedPalette[i], i);
+
+					/*
+					 * Reuse the existing lookup map instead of rebuilding all
+					 * entries after every one-element palette expansion.
+					 */
+					if (paletteMap === null) {
+						paletteMap = new Map<number, number>();
+
+						for (let i = 0; i < palette.length; i++) {
+							paletteMap.set(palette[i], i);
+						}
+
+						this._paletteMap = paletteMap;
 					}
-					this.setNibble(index, newPaletteIndex);
+
+					paletteMap.set(packedBlock, newPaletteIndex);
+
+					const nibble = newPaletteIndex & 0x0f;
+
+					packedIndices[byteIndex] =
+						(index & 1) === 0
+							? (byte & 0xf0) | nibble
+							: (byte & 0x0f) | (nibble << 4);
+
 					paletteChanged = true;
 				} else {
-					// Palette is full. Expand directly to dense packed values.
+					/*
+					 * A nibble can address only 16 palette entries. Convert the
+					 * packed palette indices directly to dense Uint16 values.
+					 */
 					const dense = makeSharedUint16(Chunk.SIZE3);
-					const nibbleStorage = this._block_array as Uint8Array;
+					const denseLength = dense.length;
 
-					for (let i = 0; i < Chunk.SIZE3; i++) {
-						const byte = nibbleStorage[i >>> 1];
-						const nibble = (i & 1) === 0 ? byte & 0x0f : byte >>> 4;
+					let denseIndex = 0;
+					let sourceIndex = 0;
 
-						dense[i] = palette[nibble];
+					// Each source byte contains two palette indices.
+					while (denseIndex + 1 < denseLength) {
+						const packedIndicesByte = packedIndices[sourceIndex++];
+
+						dense[denseIndex++] = palette[packedIndicesByte & 0x0f];
+
+						dense[denseIndex++] = palette[packedIndicesByte >>> 4];
+					}
+
+					/*
+					 * Chunk.SIZE3 is currently even, but retain a safe tail for
+					 * configurations where the voxel count is odd.
+					 */
+					if (denseIndex < denseLength) {
+						dense[denseIndex] = palette[packedIndices[sourceIndex] & 0x0f];
 					}
 
 					dense[index] = packedBlock;
+
 					this._block_array = dense;
 					this._palette = null;
+					this._paletteMap = null;
 					this._paletteOpacity = null;
+
 					storageLayoutChanged = true;
 				}
 			} else {
 				let blockArray = this._block_array!;
 
+				/*
+				 * Uint8 dense storage cannot represent this packed value.
+				 * Promote the complete volume to Uint16 before writing it.
+				 */
 				if (packedBlock > 0xff && blockArray instanceof Uint8Array) {
 					const dense = makeSharedUint16(Chunk.SIZE3);
 					dense.set(blockArray);
@@ -1268,14 +1364,12 @@ export class Chunk {
 		this.persistenceRevision++;
 		this.connectivityDirty = true;
 		this.blockRevision++;
+
 		queueConnectivityRecompute(this);
 
 		/*
-		 * Fences and other dynamic shapes depend on their neighbours, and a
-		 * mutation that crosses a chunk border drags a neighbour's lighting into
-		 * the same pass. Both facts are recorded here, at the only place either
-		 * is known, rather than inferred later by a consumer that would have to
-		 * re-derive them.
+		 * Fences and other dynamic shapes depend on adjacent blocks. Record the
+		 * connectivity change at the point where the mutation is known.
 		 */
 		noteMutationConnectivityChanged();
 
@@ -1285,31 +1379,46 @@ export class Chunk {
 		const last = Chunk.SM1;
 		const neighbors = this.neighborRefs;
 
+		const onMinX = localX === 0;
+		const onMaxX = localX === last;
+		const onMinY = localY === 0;
+		const onMaxY = localY === last;
+		const onMinZ = localZ === 0;
+		const onMaxZ = localZ === last;
+
 		/*
-		 * A boundary mutation changes the neighbour's exposed-face set, so the
-		 * neighbour is dirtied too. That is also a light-propagation event
-		 * across the border.
+		 * Preserve the original semantics: a corner mutation reports one lighting
+		 * change per boundary axis and dirties each affected face neighbour.
 		 */
-		if (localX === 0 || localX === last) {
+		if (onMinX || onMaxX) {
 			noteMutationLightingChanged();
+
+			if (onMinX) {
+				markChunkDirtyForRemesh(neighbors[1]);
+			} else {
+				markChunkDirtyForRemesh(neighbors[0]);
+			}
 		}
 
-		if (localY === 0 || localY === last) {
+		if (onMinY || onMaxY) {
 			noteMutationLightingChanged();
+
+			if (onMinY) {
+				markChunkDirtyForRemesh(neighbors[3]);
+			} else {
+				markChunkDirtyForRemesh(neighbors[2]);
+			}
 		}
 
-		if (localZ === 0 || localZ === last) {
+		if (onMinZ || onMaxZ) {
 			noteMutationLightingChanged();
+
+			if (onMinZ) {
+				markChunkDirtyForRemesh(neighbors[5]);
+			} else {
+				markChunkDirtyForRemesh(neighbors[4]);
+			}
 		}
-
-		if (localX === 0) markChunkDirtyForRemesh(neighbors[1]);
-		else if (localX === last) markChunkDirtyForRemesh(neighbors[0]);
-
-		if (localY === 0) markChunkDirtyForRemesh(neighbors[3]);
-		else if (localY === last) markChunkDirtyForRemesh(neighbors[2]);
-
-		if (localZ === 0) markChunkDirtyForRemesh(neighbors[5]);
-		else if (localZ === last) markChunkDirtyForRemesh(neighbors[4]);
 	}
 
 	/**

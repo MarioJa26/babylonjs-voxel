@@ -1461,19 +1461,15 @@ export class RemoteChunkProvider {
 	private _priorityScratch = new Float64Array(MIN_BATCH_TO_SORT);
 
 	/**
-	 * Sort an outgoing request batch into streaming-priority order, in place.
+	 * Sort an outgoing request batch in place.
 	 *
-	 * `requests` and `createdKeys` are parallel arrays — the send-failure path
-	 * zips them together — so both are permuted together. `results` is indexed by
-	 * the CALLER's original order and is deliberately left untouched.
+	 * Ordering:
+	 * 1. Requests with a cached payload first. The server can usually answer
+	 *    these with a small unchanged response.
+	 * 2. Within each group, lower streaming-priority score first.
 	 *
-	 * Cache hits sort ahead of misses: the server answers those from its own
-	 * version map without generating anything, so their wire position cannot
-	 * affect arrival order. Sorting them first stops a hit from displacing a real
-	 * fetch.
-	 *
-	 * Skipped below {@link MIN_BATCH_TO_SORT}, where sorting costs more than the
-	 * reordering saves.
+	 * `requests` and `createdKeys` remain aligned. Equal-priority entries retain
+	 * their original order because insertion sort is stable.
 	 */
 	private sortRequestsByPriority(
 		requests: ChunkRequestEntry[],
@@ -1496,33 +1492,41 @@ export class RemoteChunkProvider {
 				request.cx,
 				request.cy,
 				request.cz,
-				DEFAULT_LOD,
+				request.lod,
 				0,
 			);
 		}
 
-		/*
-		 * Insertion sort. Batches are small — the worker pool caps outstanding
-		 * remote requests at MAX_OUTSTANDING_REMOTE — so this avoids allocating
-		 * an index permutation and paying a comparator call per comparison.
-		 */
 		for (let i = 1; i < count; i++) {
-			const score = scores[i];
 			const request = requests[i];
 			const key = createdKeys[i];
+			const score = scores[i];
+			const isCacheHit = request.cachedVersion !== 0;
 
 			let j = i - 1;
 
-			while (j >= 0 && scores[j] > score) {
-				scores[j + 1] = scores[j];
-				requests[j + 1] = requests[j];
+			while (j >= 0) {
+				const previousRequest = requests[j];
+				const previousIsCacheHit = previousRequest.cachedVersion !== 0;
+
+				const shouldShift =
+					// Cache misses move behind cache hits.
+					(!previousIsCacheHit && isCacheHit) ||
+					// Within the same group, sort by streaming priority.
+					(previousIsCacheHit === isCacheHit && scores[j] > score);
+
+				if (!shouldShift) break;
+
+				requests[j + 1] = previousRequest;
 				createdKeys[j + 1] = createdKeys[j];
+				scores[j + 1] = scores[j];
+
 				j--;
 			}
 
-			scores[j + 1] = score;
 			requests[j + 1] = request;
 			createdKeys[j + 1] = key;
+			scores[j + 1] = score;
 		}
 	}
 
