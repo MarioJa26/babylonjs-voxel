@@ -262,7 +262,6 @@ export class MeshBuildSession implements MeshContext {
 		grids?: PaddedGrids,
 		skipBlockFill = false,
 	): void {
-		const size2 = size * size;
 		const ps = size + 2;
 		const ps2 = ps * ps;
 		const psVol = ps2 * ps;

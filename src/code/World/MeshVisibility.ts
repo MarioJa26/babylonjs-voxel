@@ -3,24 +3,33 @@ import { type Mesh, setMeshVisible } from "@babylonjs/lite";
 /**
  * Two independent visibility gates:
  *
- *   visible = base && !culled
+ *   visible = baseVisible && !culled
  *
- * All effective visibility changes must pass through `setMeshVisible` so
- * Babylon Lite can invalidate cached render bundles when necessary.
+ * Default values are represented by missing properties:
+ *
+ *   __visBase === undefined   means true
+ *   __visCulled === undefined means false
+ *
+ * All effective visibility changes pass through setMeshVisible so Babylon
+ * Lite can invalidate cached render bundles when necessary.
  */
 interface GatedMesh extends Mesh {
-	__visBase?: boolean;
-	__visCulled?: boolean;
+	__visBase?: false;
+	__visCulled?: true;
 }
 
 function applyMeshVisibility(mesh: GatedMesh): void {
-	const visible = mesh.__visBase !== false && mesh.__visCulled !== true;
+	const shouldBeVisible = mesh.__visBase !== false && mesh.__visCulled !== true;
 
-	// An undefined `visible` field has the same effective meaning as `true`.
-	// Avoid an unnecessary initial write and visibility-epoch bump.
-	if ((mesh.visible ?? true) === visible) return;
+	/*
+	 * An undefined visible field has the same effective meaning as true.
+	 * Avoid unnecessary writes and Babylon visibility-epoch invalidation.
+	 */
+	if ((mesh.visible ?? true) === shouldBeVisible) {
+		return;
+	}
 
-	setMeshVisible(mesh, visible);
+	setMeshVisible(mesh, shouldBeVisible);
 }
 
 /**
@@ -30,12 +39,29 @@ export function setMeshCulled(
 	mesh: Mesh | null | undefined,
 	culled: boolean,
 ): void {
-	if (mesh == null) return;
+	if (mesh == null) {
+		return;
+	}
 
 	const gatedMesh = mesh as GatedMesh;
-	if (gatedMesh.__visCulled === culled) return;
+	const currentlyCulled = gatedMesh.__visCulled === true;
 
-	gatedMesh.__visCulled = culled;
+	if (currentlyCulled !== culled) {
+		/*
+		 * Store only the non-default state. Deleting the property restores
+		 * the default without retaining an explicit false value.
+		 */
+		if (culled) {
+			gatedMesh.__visCulled = true;
+		} else {
+			delete gatedMesh.__visCulled;
+		}
+	}
+
+	/*
+	 * Apply even when the gate is unchanged. Another subsystem could have
+	 * changed mesh.visible directly since the previous call.
+	 */
 	applyMeshVisibility(gatedMesh);
 }
 
@@ -44,14 +70,27 @@ export function setMeshCulled(
  */
 export function setMeshBaseVisible(
 	mesh: Mesh | null | undefined,
-	base: boolean,
+	baseVisible: boolean,
 ): void {
-	if (mesh == null) return;
+	if (mesh == null) {
+		return;
+	}
 
 	const gatedMesh = mesh as GatedMesh;
-	if (gatedMesh.__visBase === base) return;
+	const currentlyBaseVisible = gatedMesh.__visBase !== false;
 
-	gatedMesh.__visBase = base;
+	if (currentlyBaseVisible !== baseVisible) {
+		/*
+		 * Store only false because true is the default represented by an
+		 * absent property.
+		 */
+		if (baseVisible) {
+			delete gatedMesh.__visBase;
+		} else {
+			gatedMesh.__visBase = false;
+		}
+	}
+
 	applyMeshVisibility(gatedMesh);
 }
 
@@ -61,9 +100,13 @@ export function isMeshCulled(mesh: Mesh | null | undefined): boolean {
 
 /**
  * Transfers the current culling decision to a replacement mesh.
+ *
+ * The destination mesh keeps its own base-visibility gate.
  */
 export function carryMeshCulled(from: Mesh | null | undefined, to: Mesh): void {
-	if (from == null || from === to) return;
+	if (from == null || from === to) {
+		return;
+	}
 
 	setMeshCulled(to, (from as GatedMesh).__visCulled === true);
 }
