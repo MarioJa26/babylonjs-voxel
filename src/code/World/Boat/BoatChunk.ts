@@ -125,8 +125,12 @@ export class BoatChunk {
 		// Collect all emission / explicit light sources so we can dispatch a
 		// single batched LightAddEmission message per block instead of
 		// running an inline BFS per cell.
-		const emissions: Array<{ x: number; y: number; z: number; level: number }> =
-			[];
+		const emissions: Array<{
+			x: number;
+			y: number;
+			z: number;
+			level: number;
+		}> = [];
 		const pool = Chunk._lightPool;
 
 		for (const block of blocks) {
@@ -422,6 +426,7 @@ export class BoatChunk {
 		this.#centerChunk.setBlockLight(x, y, z, blockLight);
 		this.#centerChunk.scheduleRemesh();
 	}
+	#scratchInverseWorldMatrix = new Matrix();
 
 	public worldToLocalBlock(worldPosition: Vec3): Vec3 {
 		this.worldToLocalBlockToRef(worldPosition, this.#scratchLocal);
@@ -433,19 +438,36 @@ export class BoatChunk {
 	}
 
 	public worldToLocalBlockToRef(worldPosition: Vec3, ref: Vec3): void {
-		const root = this.#visualRoot.position;
-		setVec3(
-			ref,
-			worldPosition.x - root.x + this.#center.x,
-			worldPosition.y - root.y + this.#center.y,
-			worldPosition.z - root.z + this.#center.z,
+		const source = this.#visualRoot.worldMatrix;
+		const target = this.#scratchWorldMatrix.m;
+
+		// Convert the lite mesh matrix into the local Matrix representation.
+		for (let i = 0; i < 16; i++) {
+			target[i] = source[i];
+		}
+
+		Matrix.InvertToRef(
+			this.#scratchWorldMatrix,
+			this.#scratchInverseWorldMatrix,
 		);
+
+		// World position -> visualRoot-local position.
+		transformCoordinatesVec3ToRef(
+			worldPosition,
+			this.#scratchInverseWorldMatrix,
+			ref,
+		);
+
+		// visualRoot-local position -> BoatChunk voxel coordinates.
+		ref.x += this.#center.x;
+		ref.y += this.#center.y;
+		ref.z += this.#center.z;
 	}
 
 	public localToWorldCenter(x: number, y: number, z: number): Vec3 {
-		const ref = vec3(0, 0, 0);
-		this.localToWorldCenterToRef(x, y, z, ref);
-		return ref;
+		const result = vec3Zero();
+		this.localToWorldCenterToRef(x, y, z, result);
+		return result;
 	}
 
 	public localToWorldCenterToRef(
@@ -454,14 +476,22 @@ export class BoatChunk {
 		z: number,
 		ref: Vec3,
 	): void {
-		const lx = x + 0.5 - this.#center.x;
-		const ly = y + 0.5 - this.#center.y;
-		const lz = z + 0.5 - this.#center.z;
-		const wm = this.#visualRoot.worldMatrix;
-		const sm = this.#scratchWorldMatrix.m;
-		for (let i = 0; i < 16; i++) sm[i] = wm[i];
+		setVec3(
+			this.#scratchLocalInput,
+			x + 0.5 - this.#center.x,
+			y + 0.5 - this.#center.y,
+			z + 0.5 - this.#center.z,
+		);
+
+		const source = this.#visualRoot.worldMatrix;
+		const target = this.#scratchWorldMatrix.m;
+
+		for (let i = 0; i < 16; i++) {
+			target[i] = source[i];
+		}
+
 		transformCoordinatesVec3ToRef(
-			setVec3(this.#scratchLocalInput, lx, ly, lz),
+			this.#scratchLocalInput,
 			this.#scratchWorldMatrix,
 			ref,
 		);

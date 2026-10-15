@@ -46,9 +46,7 @@ type FloodEntry = {
 
 const LOCAL_CHUNK_PADDING = 1;
 const MAX_FLOOD_BLOCKS = 8192;
-const TWO_PI = Math.PI * 2;
 const HALF_PI = Math.PI * 0.5;
-const YAW_EPSILON = 0.001;
 
 const FLOOD_DIRECTIONS: ReadonlyArray<readonly [number, number, number]> = [
 	[1, 0, 0],
@@ -193,27 +191,10 @@ export function tryCreateBoatFromMarker(
 
 	setBlock(markerX, markerY, markerZ, BlockType.Air, 0);
 
-	/*
-	 * Bounds are expressed in voxel-edge coordinates, so size / 2 is the
-	 * correct collision half-extent. Swap horizontal extents when the boat's
-	 * initial orientation rotates its local X and Z axes by 90 degrees.
-	 */
-	let collisionHalfX = bounds.halfExtents.x;
-	const collisionHalfY = bounds.halfExtents.y;
-	let collisionHalfZ = bounds.halfExtents.z;
-
-	const normalizedYaw = normalizeYaw(initialYaw);
-
-	if (Math.abs(Math.abs(normalizedYaw) - HALF_PI) < YAW_EPSILON) {
-		const previousX = collisionHalfX;
-		collisionHalfX = collisionHalfZ;
-		collisionHalfZ = previousX;
-	}
-
 	const collisionHalfExtents = vec3(
-		collisionHalfX,
-		collisionHalfY,
-		collisionHalfZ,
+		bounds.halfExtents.x,
+		bounds.halfExtents.y,
+		bounds.halfExtents.z,
 	);
 
 	return new CustomBoat(player, GenerationParams.SEA_LEVEL, bounds.center, {
@@ -376,16 +357,4 @@ function computeForwardYaw(
 	const distToMax = bounds.maxZ + 1 - markerCenterZ;
 
 	return distToMax < distToMin ? 0 : Math.PI;
-}
-
-function normalizeYaw(yaw: number): number {
-	let normalized = yaw % TWO_PI;
-
-	if (normalized > Math.PI) {
-		normalized -= TWO_PI;
-	} else if (normalized < -Math.PI) {
-		normalized += TWO_PI;
-	}
-
-	return normalized;
 }

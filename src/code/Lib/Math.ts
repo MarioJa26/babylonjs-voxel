@@ -735,7 +735,11 @@ export class Quaternion {
 }
 
 export class Matrix {
-	constructor(public m: number[] = Matrix.Identity().m.slice()) {}
+	public m: number[];
+
+	constructor(m?: number[]) {
+		this.m = m ?? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+	}
 
 	static Identity(): Matrix {
 		return new Matrix([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
