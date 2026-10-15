@@ -9,18 +9,18 @@ import { BlockType } from "@/code/World/Texture/BlockType";
 /** Default blast radius in blocks. */
 export const TNT_BLAST_RADIUS = 4;
 
-/** Blast radius for half-size TNT variants (slab, half wall). */
+/** Blast radius for half-size TNT variants. */
 export const TNT_HALF_BLAST_RADIUS = TNT_BLAST_RADIUS / 2;
 
 /** Damage at the explosion center. */
 export const TNT_MAX_DAMAGE = 40;
 
-/** Max TNT blocks ignited as chains by a single blast. */
+/** Maximum TNT blocks ignited as chains by a single blast. */
 export const TNT_MAX_CHAIN = 20;
 
 /**
  * Blocks that explosions never destroy.
- * Additional blast-proof blocks can be added here.
+ * Additional blast-resistant blocks can be added here.
  */
 export const BLAST_RESISTANT_BLOCKS: ReadonlySet<number> = new Set([
 	BlockType.Obsidian,
@@ -41,21 +41,26 @@ export type ExplosionTargets = {
 	chain: ExplosionTarget[];
 };
 
+/*
+ * Resolve virtual TNT IDs once at module initialization rather than calling
+ * getVirtualBlockId() for every block visited by every explosion.
+ */
+const TNT_SLAB_BLOCK_ID = getVirtualBlockId(BlockType.Tnt, "slab");
+
+const TNT_HALF_WALL_BLOCK_ID = getVirtualBlockId(BlockType.Tnt, "half_wall");
+
 /**
- * Blast radius for an ignitable block, or null when the block cannot be
- * ignited. Full TNT blocks get the full range; the half-size mason variants
- * (slab, half wall) get half range. Other shapes (stairs, pane, fence) and
- * all other blocks are not ignitable.
+ * Blast radius for an ignitable block, or null when it cannot be ignited.
+ *
+ * Full TNT receives the standard range. Slab and half-wall TNT variants
+ * receive half range. Other shapes are not ignitable.
  */
 export function tntBlastRadius(blockId: number): number | null {
 	if (blockId === BlockType.Tnt) {
 		return TNT_BLAST_RADIUS;
 	}
 
-	if (
-		blockId === getVirtualBlockId(BlockType.Tnt, "slab") ||
-		blockId === getVirtualBlockId(BlockType.Tnt, "half_wall")
-	) {
+	if (blockId === TNT_SLAB_BLOCK_ID || blockId === TNT_HALF_WALL_BLOCK_ID) {
 		return TNT_HALF_BLAST_RADIUS;
 	}
 
@@ -63,7 +68,8 @@ export function tntBlastRadius(blockId: number): number | null {
 }
 
 /**
- * Linear falloff:
+ * Linear blast falloff:
+ *
  * - 1 at or behind the center
  * - 0 at or beyond the radius
  */
@@ -93,7 +99,7 @@ export function explosionDamage(
 		return Math.floor(maxDamage);
 	}
 
-	return Math.floor((1 - distance / radius) * maxDamage);
+	return Math.floor(maxDamage - distance * (maxDamage / radius));
 }
 
 /**
@@ -102,7 +108,11 @@ export function explosionDamage(
  * Mobs at or beyond the blast radius receive zero damage.
  */
 export function blastMobDamages(
-	mobs: ReadonlyArray<{ x: number; y: number; z: number }>,
+	mobs: ReadonlyArray<{
+		x: number;
+		y: number;
+		z: number;
+	}>,
 	cx: number,
 	cy: number,
 	cz: number,
@@ -116,37 +126,44 @@ export function blastMobDamages(
 		return damages;
 	}
 
-	// Preserve explosionFalloff behavior for invalid or zero radii while
-	// avoiding unnecessary position calculations.
-	if (radius <= 0) {
+	/*
+	 * Preserve explosionFalloff() behavior for invalid or zero radii while
+	 * avoiding all position calculations.
+	 */
+	if (!(radius > 0)) {
 		damages.fill(0);
 		return damages;
 	}
 
 	const radiusSquared = radius * radius;
 	const damageScale = maxDamage / radius;
+	const centerDamage = Math.floor(maxDamage);
 
 	for (let i = 0; i < mobCount; i++) {
 		const mob = mobs[i];
-		const dx = mob.x - cx;
-		const dy = mob.y - cy;
-		const dz = mob.z - cz;
-		const distanceSquared = dx * dx + dy * dy + dz * dz;
 
-		// Avoid Math.sqrt for mobs at or outside the blast radius.
+		const deltaX = mob.x - cx;
+		const deltaY = mob.y - cy;
+		const deltaZ = mob.z - cz;
+
+		const distanceSquared = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+
+		/*
+		 * Reject mobs outside the sphere without calculating a square root.
+		 * The comparison also rejects an infinite distance.
+		 */
 		if (distanceSquared >= radiusSquared) {
 			damages[i] = 0;
 			continue;
 		}
 
 		if (distanceSquared <= 0) {
-			damages[i] = Math.floor(maxDamage);
+			damages[i] = centerDamage;
 			continue;
 		}
 
-		// Equivalent to:
-		// floor((1 - distance / radius) * maxDamage)
 		const distance = Math.sqrt(distanceSquared);
+
 		damages[i] = Math.floor(maxDamage - distance * damageScale);
 	}
 
@@ -156,10 +173,9 @@ export function blastMobDamages(
 /**
  * Collects blast targets in a sphere around the explosion center.
  *
- * Distance is measured from the explosion center to voxel centers.
- * Air, water, and blast-resistant blocks are skipped. Ignitable TNT (full
- * blocks plus slab / half wall variants, see tntBlastRadius) is placed in
- * `chain` until TNT_MAX_CHAIN is reached, after which it is destroyed.
+ * Distance is measured from the explosion center to voxel centers. Air,
+ * water, and blast-resistant blocks are skipped. Ignitable TNT is placed in
+ * `chain` until TNT_MAX_CHAIN is reached; further TNT is destroyed.
  */
 export function collectExplosionTargets(
 	cx: number,
@@ -171,56 +187,96 @@ export function collectExplosionTargets(
 	const destroy: ExplosionTarget[] = [];
 	const chain: ExplosionTarget[] = [];
 
-	if (radius < 0) {
+	/*
+	 * A non-finite radius would otherwise produce an unbounded loop for
+	 * positive Infinity. NaN and negative radii naturally contain no blocks.
+	 */
+	if (!Number.isFinite(radius) || radius < 0) {
 		return { destroy, chain };
 	}
 
-	const range = Math.ceil(radius);
 	const radiusSquared = radius * radius;
+	const range = Math.ceil(radius);
 
 	const centerBlockX = Math.floor(cx);
 	const centerBlockY = Math.floor(cy);
 	const centerBlockZ = Math.floor(cz);
 
-	// Offset from the explosion center to the center of its containing voxel.
-	// For each loop iteration, adding the integer delta gives the candidate
-	// voxel-center displacement without recalculating world coordinates.
+	/*
+	 * Displacement from the explosion center to the center of the containing
+	 * voxel. Integer loop deltas then produce candidate-center displacement.
+	 */
 	const baseOffsetX = centerBlockX + 0.5 - cx;
+
 	const baseOffsetY = centerBlockY + 0.5 - cy;
+
 	const baseOffsetZ = centerBlockZ + 0.5 - cz;
 
-	for (let dx = -range; dx <= range; dx++) {
-		const offsetX = baseOffsetX + dx;
+	let chainCount = 0;
+
+	for (let deltaX = -range; deltaX <= range; deltaX++) {
+		const offsetX = baseOffsetX + deltaX;
+
 		const offsetXSquared = offsetX * offsetX;
 
-		// No point scanning this entire yz plane if its x distance alone
-		// already lies outside the sphere.
 		if (offsetXSquared > radiusSquared) {
 			continue;
 		}
 
-		const x = centerBlockX + dx;
+		const x = centerBlockX + deltaX;
 
-		for (let dy = -range; dy <= range; dy++) {
-			const offsetY = baseOffsetY + dy;
+		for (let deltaY = -range; deltaY <= range; deltaY++) {
+			const offsetY = baseOffsetY + deltaY;
+
 			const xyDistanceSquared = offsetXSquared + offsetY * offsetY;
 
-			// Skip the entire z row when x and y already exceed the radius.
 			if (xyDistanceSquared > radiusSquared) {
 				continue;
 			}
 
-			const y = centerBlockY + dy;
+			const y = centerBlockY + deltaY;
 
-			for (let dz = -range; dz <= range; dz++) {
-				const offsetZ = baseOffsetZ + dz;
+			/*
+			 * Solve:
+			 *
+			 *   xyDistanceSquared + offsetZ² <= radiusSquared
+			 *
+			 * This restricts the inner loop to the Z coordinates that can
+			 * actually lie in the sphere, instead of scanning the full cube.
+			 */
+			const maximumZDistance = Math.sqrt(radiusSquared - xyDistanceSquared);
+
+			let minimumDeltaZ = Math.ceil(-maximumZDistance - baseOffsetZ);
+
+			let maximumDeltaZ = Math.floor(maximumZDistance - baseOffsetZ);
+
+			/*
+			 * Clamp for floating-point boundary safety and to retain the
+			 * original bounding-cube limits.
+			 */
+			if (minimumDeltaZ < -range) {
+				minimumDeltaZ = -range;
+			}
+
+			if (maximumDeltaZ > range) {
+				maximumDeltaZ = range;
+			}
+
+			for (let deltaZ = minimumDeltaZ; deltaZ <= maximumDeltaZ; deltaZ++) {
+				const offsetZ = baseOffsetZ + deltaZ;
+
+				/*
+				 * Retain the exact sphere test. Although the calculated bounds
+				 * normally guarantee inclusion, this protects against floating
+				 * point rounding at the sphere boundary.
+				 */
 				const distanceSquared = xyDistanceSquared + offsetZ * offsetZ;
 
 				if (distanceSquared > radiusSquared) {
 					continue;
 				}
 
-				const z = centerBlockZ + dz;
+				const z = centerBlockZ + deltaZ;
 				const blockId = getBlock(x, y, z);
 
 				if (
@@ -238,15 +294,27 @@ export function collectExplosionTargets(
 					blockId,
 				};
 
-				if (tntBlastRadius(blockId) !== null && chain.length < TNT_MAX_CHAIN) {
+				const isIgnitableTnt =
+					blockId === BlockType.Tnt ||
+					blockId === TNT_SLAB_BLOCK_ID ||
+					blockId === TNT_HALF_WALL_BLOCK_ID;
+
+				if (isIgnitableTnt && chainCount < TNT_MAX_CHAIN) {
 					chain.push(target);
+					chainCount++;
 				} else {
-					// Overflow TNT is destroyed to prevent runaway chains.
+					/*
+					 * TNT beyond the chain limit is destroyed instead of
+					 * ignited, preventing unbounded chain reactions.
+					 */
 					destroy.push(target);
 				}
 			}
 		}
 	}
 
-	return { destroy, chain };
+	return {
+		destroy,
+		chain,
+	};
 }

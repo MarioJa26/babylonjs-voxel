@@ -1,21 +1,11 @@
 /**
- * Advanced Cave Culling — Graph-based BFS Occlusion Culler.
+ * Advanced Cave Culling: graph-based BFS occlusion culler.
  *
- * All BFS state lives directly on Chunk objects (query stamps, visited-face
- * bits, and packed face-step words). Ring buffers store Chunk refs
- * directly — no Map.get() on dequeue, no bigint/number conversion.
+ * BFS state is stored directly on Chunk objects. Fixed-capacity ring buffers
+ * hold Chunk references and are cleared as entries are consumed.
  *
- * [TYPED ARRAYS]   FACE_PAIR_FLAT: 6×6 Int32Array for connectivity lookups.
- *                  Frustum planes cached in a Float64Array (6 planes × 4 floats).
- *                  Ring buffer entry/steps stay typed (Int8Array / Uint16Array).
- *
- * [LOOP HOISTING]  Chunk.SIZE, this._lastCamC*, queryId, SEA_LEVEL all hoisted
- *                  to local const before every hot loop.
- *
- * [MERGED GROUPS]  All terrain renders through merged 4×4×4 groups (individual
- *                  chunk meshes exist only for boat chunks, which manage their
- *                  own visibility), so visibility is decided per GROUP:
- *                  frustum AABB + range check + BFS reachability gate.
+ * Queue overflow is handled fail-open. An incomplete BFS must never classify
+ * potentially reachable terrain as occluded.
  */
 
 import type { FreeCamera, Mat4 } from "@babylonjs/lite";
@@ -40,7 +30,6 @@ import {
 	traverseGroupOctree,
 } from "./GroupOctree";
 
-// ---------------------------------------------------------------------------
 export interface OcclusionStats {
 	total: number;
 	occluded: number;
@@ -48,12 +37,12 @@ export interface OcclusionStats {
 }
 
 // ---------------------------------------------------------------------------
-// Tuning & Sizing
+// Tuning and sizing
 // ---------------------------------------------------------------------------
+
 const NEAR_CHUNKS = 1;
 const MAX_BFS_STEPS = 32;
-// The cull range must cover every streamed LOD ring — RENDER_DISTANCE plus the
-// largest LOD offset — otherwise loaded terrain pops out at the cull boundary.
+
 const MAX_RENDER_RADIUS =
 	SETTING_PARAMS.RENDER_DISTANCE +
 	Math.max(
@@ -64,38 +53,50 @@ const MAX_RENDER_RADIUS =
 		SETTING_PARAMS.LOD_5_OFFSET,
 	) +
 	2;
+
 const SEA_LEVEL = GenerationParams.SEA_LEVEL;
-const FRUSTUM_MARGIN = 32.0;
-/** Chunks per merged-group axis (`gridX/Y/Z` is `chunkX >> 2`). */
+const FRUSTUM_MARGIN = 32;
 const GROUP_CHUNKS = 4;
 
-// TEMP DEBUG: set true to disable frustum culling (for testing the gap).
 const DISABLE_FRUSTUM_CULL = false;
 
 const BFS_FRAME_BUDGET = 1500;
-const BFS_CAP = 32768; // must be power-of-2
+const BFS_CAP = 32768;
 const BFS_MASK = BFS_CAP - 1;
+const BFS_ORIGIN_BIT = 1 << 7;
 
 // ---------------------------------------------------------------------------
-// FACE_PAIR_BIT — flattened 6×6 Int32Array
+// Face-pair connectivity tables
 // ---------------------------------------------------------------------------
+
 const FACE_PAIR_FLAT = new Int32Array(36);
+const FACE_PAIR_MASK_FLAT = new Int32Array(36);
+
 let _facePairTableInitialized = false;
 
 function initFacePairTable(): void {
-	for (let i = 0; i < 6; i++) {
-		for (let j = 0; j < 6; j++) {
-			const min = Math.min(i, j);
-			const max = Math.max(i, j);
-			FACE_PAIR_FLAT[i * 6 + j] = facePairIndex(min, max);
+	for (let entryFace = 0; entryFace < 6; entryFace++) {
+		const row = entryFace * 6;
+
+		for (let exitFace = 0; exitFace < 6; exitFace++) {
+			const min = entryFace < exitFace ? entryFace : exitFace;
+
+			const max = entryFace > exitFace ? entryFace : exitFace;
+
+			const pair = facePairIndex(min, max);
+
+			FACE_PAIR_FLAT[row + exitFace] = pair;
+			FACE_PAIR_MASK_FLAT[row + exitFace] = 1 << pair;
 		}
 	}
+
 	_facePairTableInitialized = true;
 }
 
 // ---------------------------------------------------------------------------
-// Ring-buffer pools — Chunk refs directly, no ID→Chunk lookup on dequeue.
+// BFS ring buffers
 // ---------------------------------------------------------------------------
+
 const _bfsChunks = new Array<Chunk | null>(BFS_CAP).fill(null);
 const _bfsEntry = new Int8Array(BFS_CAP);
 const _bfsSteps = new Uint16Array(BFS_CAP);
@@ -104,58 +105,77 @@ const _incBfsChunks = new Array<Chunk | null>(BFS_CAP).fill(null);
 const _incBfsEntry = new Int8Array(BFS_CAP);
 const _incBfsSteps = new Uint16Array(BFS_CAP);
 
-// Scratch array for fallback nearby-chunk collection — reused to avoid per-call allocation.
 const _nearbyChunksScratch: Chunk[] = [];
 
 // ---------------------------------------------------------------------------
-// Frustum plane cache — packed Float32Array
+// Frustum state
 // ---------------------------------------------------------------------------
+
 const _frustumPacked = new Float32Array(24);
-let _frustumValid = false;
-// Full VP matrix from the previous frame, used to detect ANY camera change
-// (translation or rotation). A hash over 4 diagonal elements truncated to int
-// was too collision-prone and froze the frustum planes / visibility sweep.
 const _lastVP = new Float32Array(16);
 
-// VP matrix + scratch vectors are derived per-frame from Lite camera math (see update()).
+let _frustumValid = false;
 
-// Write one frustum plane (normal.xyz, d) into the packed Float32Array,
-// normalising it so the aabbInFrustum margin test stays in world units —
-// this mirrors Babylon's Frustum.GetPlanes, which normalises each plane.
 function setFrustumPlane(
-	off: number,
+	offset: number,
 	nx: number,
 	ny: number,
 	nz: number,
 	d: number,
 ): void {
-	// PERF: Math.sqrt(x*x+y*y+z*z) avoids Math.hypot's varargs + overflow
-	// handling; this runs 6x per view-projection change.
-	const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-	_frustumPacked[off] = nx / len;
-	_frustumPacked[off + 1] = ny / len;
-	_frustumPacked[off + 2] = nz / len;
-	_frustumPacked[off + 3] = d / len;
+	const length = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+
+	_frustumPacked[offset] = nx / length;
+	_frustumPacked[offset + 1] = ny / length;
+	_frustumPacked[offset + 2] = nz / length;
+	_frustumPacked[offset + 3] = d / length;
 }
 
-// Lite's Mat4 is column-major (m[col*4 + row]). Frustum planes come from
-// clip-space half-space inequalities on VP = P*V. Babylon Lite runs on WebGPU,
-// whose clip space is 0 <= z <= w (not OpenGL's -w <= z <= w), and its
-// projection is REVERSE-Z (mat4PerspectiveLH: depth 1 at near, 0 at far).
-// Reverse-Z swaps which row maps to which boundary: row2 (z_clip >= 0) is the
-// FAR plane and row3 - row2 (z_clip <= w) is the NEAR plane. Both are
-// extracted below, so the 6-plane set is correct regardless; col3 + col2
-// (the OpenGL -w <= z near) must NOT be used.
 function cacheFrustumPlanes(vp: Mat4): void {
-	const m = vp;
-	// Clip-space half-space extraction (column-major VP): side planes are
-	// (col3 +/- colN); the two z boundaries are col2 and col3 - col2.
-	setFrustumPlane(0, m[3] + m[0], m[7] + m[4], m[11] + m[8], m[15] + m[12]); // left
-	setFrustumPlane(4, m[3] - m[0], m[7] - m[4], m[11] - m[8], m[15] - m[12]); // right
-	setFrustumPlane(8, m[3] + m[1], m[7] + m[5], m[11] + m[9], m[15] + m[13]); // bottom
-	setFrustumPlane(12, m[3] - m[1], m[7] - m[5], m[11] - m[9], m[15] - m[13]); // top
-	setFrustumPlane(16, m[2], m[6], m[10], m[14]); // far (reverse-Z: z_clip >= 0)
-	setFrustumPlane(20, m[3] - m[2], m[7] - m[6], m[11] - m[10], m[15] - m[14]); // near (reverse-Z: z_clip <= w)
+	const matrix = vp;
+
+	setFrustumPlane(
+		0,
+		matrix[3] + matrix[0],
+		matrix[7] + matrix[4],
+		matrix[11] + matrix[8],
+		matrix[15] + matrix[12],
+	);
+
+	setFrustumPlane(
+		4,
+		matrix[3] - matrix[0],
+		matrix[7] - matrix[4],
+		matrix[11] - matrix[8],
+		matrix[15] - matrix[12],
+	);
+
+	setFrustumPlane(
+		8,
+		matrix[3] + matrix[1],
+		matrix[7] + matrix[5],
+		matrix[11] + matrix[9],
+		matrix[15] + matrix[13],
+	);
+
+	setFrustumPlane(
+		12,
+		matrix[3] - matrix[1],
+		matrix[7] - matrix[5],
+		matrix[11] - matrix[9],
+		matrix[15] - matrix[13],
+	);
+
+	setFrustumPlane(16, matrix[2], matrix[6], matrix[10], matrix[14]);
+
+	setFrustumPlane(
+		20,
+		matrix[3] - matrix[2],
+		matrix[7] - matrix[6],
+		matrix[11] - matrix[10],
+		matrix[15] - matrix[14],
+	);
+
 	_frustumValid = true;
 }
 
@@ -167,112 +187,48 @@ function aabbInFrustum(
 	maxY: number,
 	maxZ: number,
 ): boolean {
-	// Positive-vertex test vs the 6 cached inward-normal planes (frustum
-	// interior is n·x+d >= 0): the box is outside iff even its p-vertex
-	// (corner maximizing n·x) falls beyond -FRUSTUM_MARGIN on some plane.
-	// NOTE: the vertex choice here used to be flipped (n-vertex), which
-	// over-culled boxes straddling the side planes — visible slivers up to a
-	// group wide popped out at the screen edges. Fixed alongside the
-	// GroupOctree introduction; both were verified against live Lite VP
-	// matrices (dead-ahead visible, behind culled, straddlers visible).
-	let off = 0;
-	let nx = _frustumPacked[off];
-	let ny = _frustumPacked[off + 1];
-	let nz = _frustumPacked[off + 2];
-	let d = _frustumPacked[off + 3];
-	if (
-		nx * (nx >= 0 ? maxX : minX) +
-			ny * (ny >= 0 ? maxY : minY) +
-			nz * (nz >= 0 ? maxZ : minZ) +
-			d <
-		-FRUSTUM_MARGIN
-	)
-		return false;
-	off = 4;
-	nx = _frustumPacked[off];
-	ny = _frustumPacked[off + 1];
-	nz = _frustumPacked[off + 2];
-	d = _frustumPacked[off + 3];
-	if (
-		nx * (nx >= 0 ? maxX : minX) +
-			ny * (ny >= 0 ? maxY : minY) +
-			nz * (nz >= 0 ? maxZ : minZ) +
-			d <
-		-FRUSTUM_MARGIN
-	)
-		return false;
-	off = 8;
-	nx = _frustumPacked[off];
-	ny = _frustumPacked[off + 1];
-	nz = _frustumPacked[off + 2];
-	d = _frustumPacked[off + 3];
-	if (
-		nx * (nx >= 0 ? maxX : minX) +
-			ny * (ny >= 0 ? maxY : minY) +
-			nz * (nz >= 0 ? maxZ : minZ) +
-			d <
-		-FRUSTUM_MARGIN
-	)
-		return false;
-	off = 12;
-	nx = _frustumPacked[off];
-	ny = _frustumPacked[off + 1];
-	nz = _frustumPacked[off + 2];
-	d = _frustumPacked[off + 3];
-	if (
-		nx * (nx >= 0 ? maxX : minX) +
-			ny * (ny >= 0 ? maxY : minY) +
-			nz * (nz >= 0 ? maxZ : minZ) +
-			d <
-		-FRUSTUM_MARGIN
-	)
-		return false;
-	off = 16;
-	nx = _frustumPacked[off];
-	ny = _frustumPacked[off + 1];
-	nz = _frustumPacked[off + 2];
-	d = _frustumPacked[off + 3];
-	if (
-		nx * (nx >= 0 ? maxX : minX) +
-			ny * (ny >= 0 ? maxY : minY) +
-			nz * (nz >= 0 ? maxZ : minZ) +
-			d <
-		-FRUSTUM_MARGIN
-	)
-		return false;
-	off = 20;
-	nx = _frustumPacked[off];
-	ny = _frustumPacked[off + 1];
-	nz = _frustumPacked[off + 2];
-	d = _frustumPacked[off + 3];
-	if (
-		nx * (nx >= 0 ? maxX : minX) +
-			ny * (ny >= 0 ? maxY : minY) +
-			nz * (nz >= 0 ? maxZ : minZ) +
-			d <
-		-FRUSTUM_MARGIN
-	)
-		return false;
+	const planes = _frustumPacked;
+	const negativeMargin = -FRUSTUM_MARGIN;
+
+	for (let offset = 0; offset < 24; offset += 4) {
+		const nx = planes[offset];
+		const ny = planes[offset + 1];
+		const nz = planes[offset + 2];
+
+		const px = nx >= 0 ? maxX : minX;
+		const py = ny >= 0 ? maxY : minY;
+		const pz = nz >= 0 ? maxZ : minZ;
+
+		if (nx * px + ny * py + nz * pz + planes[offset + 3] < negativeMargin) {
+			return false;
+		}
+	}
+
 	return true;
 }
 
 // ---------------------------------------------------------------------------
+// BFS helpers
+// ---------------------------------------------------------------------------
+
 function getFStep(chunk: Chunk, face: number): number {
 	const steps = face < 4 ? chunk.bfsSteps0 : chunk.bfsSteps1;
+
 	return (steps >>> ((face & 3) * 8)) & 0xff;
 }
 
 function setFStep(chunk: Chunk, face: number, value: number): void {
 	const shift = (face & 3) * 8;
 	const mask = ~(0xff << shift);
+	const encoded = (value & 0xff) << shift;
+
 	if (face < 4) {
-		chunk.bfsSteps0 = (chunk.bfsSteps0 & mask) | (value << shift);
+		chunk.bfsSteps0 = (chunk.bfsSteps0 & mask) | encoded;
 	} else {
-		chunk.bfsSteps1 = (chunk.bfsSteps1 & mask) | (value << shift);
+		chunk.bfsSteps1 = (chunk.bfsSteps1 & mask) | encoded;
 	}
 }
 
-/** Reset a chunk's BFS state for a new query. */
 function resetChunkBfs(chunk: Chunk, queryId: number): void {
 	chunk.bfsQueryId = queryId;
 	chunk.bfsVisitedFaces = 0;
@@ -280,62 +236,133 @@ function resetChunkBfs(chunk: Chunk, queryId: number): void {
 	chunk.bfsSteps1 = 0;
 }
 
-/**
- * Lazily populate a chunk's neighborRefs array from chunkInstances.
- * Called on first BFS encounter and whenever a slot is null. Chunk disposal
- * nulls individual slots in live neighbours (Chunk.dispose), so slots are
- * re-resolved lazily here — this is what keeps the BFS graph connected across
- * chunk unload/reload cycles at the render edge.
- */
 function ensureNeighborRefs(chunk: Chunk): void {
 	const refs = chunk.neighborRefs;
-	for (let d = 0; d < 6; d++) {
-		if (refs[d] === null) {
-			refs[d] = chunk.getNeighborChunk(d) ?? null;
+
+	for (let direction = 0; direction < 6; direction++) {
+		if (refs[direction] === null) {
+			refs[direction] = chunk.getNeighborChunk(direction) ?? null;
 		}
 	}
 }
 
-/** Find minimum non-zero fSteps value across 6 faces. */
 function minFSteps(chunk: Chunk): number {
-	let min = 255;
+	let minimum = 255;
+
 	for (let face = 0; face < 6; face++) {
 		const steps = getFStep(chunk, face);
-		if (steps > 0 && steps < min) min = steps;
+
+		if (steps > 0 && steps < minimum) {
+			minimum = steps;
+		}
 	}
-	return min === 255 ? 0 : min;
+
+	return minimum === 255 ? 0 : minimum;
 }
 
-/** Hand-unrolled connectivity check: does the neighbour have face connectivity from any visited face to the exit face? */
 function hasConnectivity(
-	neighborVisited: number,
+	visitedFaces: number,
 	exitFace: number,
-	fc: number,
+	connectivity: number,
 ): boolean {
-	if (neighborVisited & 1) {
-		if (fc & (1 << FACE_PAIR_FLAT[exitFace])) return true;
+	if (
+		(visitedFaces & 1) !== 0 &&
+		(connectivity & FACE_PAIR_MASK_FLAT[exitFace]) !== 0
+	) {
+		return true;
 	}
-	if (neighborVisited & 2) {
-		if (fc & (1 << FACE_PAIR_FLAT[6 + exitFace])) return true;
+
+	if (
+		(visitedFaces & 2) !== 0 &&
+		(connectivity & FACE_PAIR_MASK_FLAT[6 + exitFace]) !== 0
+	) {
+		return true;
 	}
-	if (neighborVisited & 4) {
-		if (fc & (1 << FACE_PAIR_FLAT[12 + exitFace])) return true;
+
+	if (
+		(visitedFaces & 4) !== 0 &&
+		(connectivity & FACE_PAIR_MASK_FLAT[12 + exitFace]) !== 0
+	) {
+		return true;
 	}
-	if (neighborVisited & 8) {
-		if (fc & (1 << FACE_PAIR_FLAT[18 + exitFace])) return true;
+
+	if (
+		(visitedFaces & 8) !== 0 &&
+		(connectivity & FACE_PAIR_MASK_FLAT[18 + exitFace]) !== 0
+	) {
+		return true;
 	}
-	if (neighborVisited & 16) {
-		if (fc & (1 << FACE_PAIR_FLAT[24 + exitFace])) return true;
+
+	if (
+		(visitedFaces & 16) !== 0 &&
+		(connectivity & FACE_PAIR_MASK_FLAT[24 + exitFace]) !== 0
+	) {
+		return true;
 	}
-	if (neighborVisited & 32) {
-		if (fc & (1 << FACE_PAIR_FLAT[30 + exitFace])) return true;
+
+	return (
+		(visitedFaces & 32) !== 0 &&
+		(connectivity & FACE_PAIR_MASK_FLAT[30 + exitFace]) !== 0
+	);
+}
+
+function chunkWithinBfsRange(
+	chunkX: number,
+	chunkY: number,
+	chunkZ: number,
+	cameraX: number,
+	cameraY: number,
+	cameraZ: number,
+	radius: number,
+): boolean {
+	return (
+		Math.abs(chunkX - cameraX) <= radius &&
+		Math.abs(chunkY - cameraY) <= radius &&
+		Math.abs(chunkZ - cameraZ) <= radius
+	);
+}
+
+function nextBfsStepCost(
+	previousSteps: number,
+	chunk: Chunk,
+	chunkSize: number,
+): number {
+	let steps = previousSteps + 1;
+
+	if (chunk.chunkY * chunkSize < SEA_LEVEL) {
+		steps++;
 	}
-	return false;
+
+	if (chunk.isDarkCached()) {
+		steps += 3;
+	}
+
+	return steps;
+}
+
+function isLiveChunk(chunk: Chunk): boolean {
+	return (
+		chunk.isLoaded &&
+		getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ) === chunk
+	);
+}
+
+function clearChunkRing(
+	chunks: Array<Chunk | null>,
+	head: number,
+	tail: number,
+): void {
+	while (head !== tail) {
+		chunks[head] = null;
+		head = (head + 1) & BFS_MASK;
+	}
 }
 
 // ---------------------------------------------------------------------------
+
 export class OcclusionCuller {
 	private _topoVisibleChunks: Chunk[] = [];
+
 	private _currentQueryId = 0;
 	private _lastCompletedQueryId = 0;
 
@@ -343,15 +370,10 @@ export class OcclusionCuller {
 	private _lastCamCY = -99999;
 	private _lastCamCZ = -99999;
 
-	// Throttle for the topology-triggered BFS restart: a burst of block edits
-	// collapses into one restart every N frames instead of one per edit. The
-	// "is there anything to recompute" test is just `pendingConnectivity.length`
-	// — chunks enqueue themselves on edit, so there is no per-frame scan.
 	private _topoDirtyFrameCount = 0;
+
 	private static readonly TOPO_THROTTLE_FRAMES = 3;
 
-	// Cached visibility results so we can skip the O(groups) sweep when nothing
-	// that affects visibility has changed since last frame.
 	private _lastTotal = 0;
 	private _lastOccluded = 0;
 
@@ -359,48 +381,38 @@ export class OcclusionCuller {
 	private _bfsQHead = 0;
 	private _bfsQTail = 0;
 
-	// True when the last BFS restart found no seed chunk at all (camera inside
-	// unloaded space). While set, the group loop bypasses BFS reachability
-	// gating — fail-open so a missing origin can never blank out the world.
+	/*
+	 * True when no usable seed exists, or when BFS overflow prevented a
+	 * complete reachability result. In either case reachability fails open.
+	 */
 	private _bfsOriginMissing = true;
 
-	// Temporal slicing for the merged-group sweep: far groups re-evaluate on
-	// a rotating 1/N frame slot while near groups run every frame. Visibility
-	// state persists between visits, so a far group's cull decision can lag
-	// N-1 frames — imperceptible at horizon distances, ~N× cheaper sweep.
+	/*
+	 * Records fixed-ring saturation. It is cleared on every BFS restart.
+	 */
+	private _bfsQueueOverflowed = false;
+
 	private static readonly SWEEP_AMORTIZE_FRAMES = 3;
 	private static readonly SWEEP_NEAR_DIST_SQ = (10 * Chunk.SIZE) ** 2;
+
 	private _sweepSlot = 0;
 
-	/**
-	 * Does the group's fixed 4×4×4 chunk block contain an ocean-floor band
-	 * chunk? Answered from grid coordinates alone — a group never moves, so
-	 * the result is derived once and cached on the group for its whole
-	 * lifetime.
-	 *
-	 * The previous implementation walked `membersArray` and memoised the
-	 * answer in a WeakMap that was dropped wholesale on ANY group mutation,
-	 * so one stream-in event made the next sweep re-walk every group's
-	 * members and re-run `columnMinHeight` noise for every below-sea-level
-	 * group. It was also load-order dependent: a group whose ocean-floor
-	 * member had not streamed in yet got `false`.
-	 *
-	 * For a column the band is the chunk range `[floor(minH / SIZE), -1]`, so
-	 * probing `min(baseY + 3, -1)` is exactly "does any band chunk fall inside
-	 * this block" — `isOceanFloorBandChunk` already applies the `chunkY < 0`
-	 * and `minH < SEA_LEVEL` filters, so one call per column is exact.
-	 */
 	private hasOceanFloorGroupMember(group: MergedMeshGroup): boolean {
 		const cached = group.oceanFloorBand;
-		if (cached !== undefined) return cached;
+
+		if (cached !== undefined) {
+			return cached;
+		}
 
 		const baseX = group.gridX * GROUP_CHUNKS;
 		const baseY = group.gridY * GROUP_CHUNKS;
 		const baseZ = group.gridZ * GROUP_CHUNKS;
 
 		let hasOceanFloor = false;
+
 		if (baseY < 0) {
 			const probeY = Math.min(baseY + GROUP_CHUNKS - 1, -1);
+
 			for (let dx = 0; dx < GROUP_CHUNKS && !hasOceanFloor; dx++) {
 				for (let dz = 0; dz < GROUP_CHUNKS; dz++) {
 					if (isOceanFloorBandChunk(baseX + dx, probeY, baseZ + dz)) {
@@ -415,32 +427,33 @@ export class OcclusionCuller {
 		return hasOceanFloor;
 	}
 
-	// ─── update ────────────────────────────────────────────────────────────────
 	update(out: OcclusionStats): OcclusionStats {
 		const camera = (Map1.mainScene?.camera as FreeCamera) ?? null;
-		if (!camera) {
+
+		if (camera === null) {
 			out.total = 0;
 			out.occluded = 0;
 			out.timeMs = 0;
 			return out;
 		}
 
-		const t0 = performance.now();
-		const SIZE = Chunk.SIZE;
+		const startTime = performance.now();
+		const chunkSize = Chunk.SIZE;
 
-		const camPos = getCameraPosition(camera);
-		const camCX = Math.floor(camPos.x / SIZE);
-		const camCY = Math.floor(camPos.y / SIZE);
-		const camCZ = Math.floor(camPos.z / SIZE);
+		const cameraPosition = getCameraPosition(camera);
 
-		const currentLoadedSize = Chunk.loadedChunks.size;
+		const camCX = Math.floor(cameraPosition.x / chunkSize);
+		const camCY = Math.floor(cameraPosition.y / chunkSize);
+		const camCZ = Math.floor(cameraPosition.z / chunkSize);
 
-		// Topology-dirty check: chunks push themselves onto `pendingConnectivity`
-		// the instant a block edit invalidates their face connectivity, so this
-		// is an array-length read instead of the old O(reachable-chunks) walk.
+		const loadedChunkCount = Chunk.loadedChunks.size;
+
 		let topologyTrigger = false;
+
 		if (pendingConnectivity.length > 0) {
-			if (++this._topoDirtyFrameCount >= OcclusionCuller.TOPO_THROTTLE_FRAMES) {
+			this._topoDirtyFrameCount++;
+
+			if (this._topoDirtyFrameCount >= OcclusionCuller.TOPO_THROTTLE_FRAMES) {
 				topologyTrigger = true;
 				this._topoDirtyFrameCount = 0;
 			}
@@ -451,157 +464,152 @@ export class OcclusionCuller {
 			camCY !== this._lastCamCY ||
 			camCZ !== this._lastCamCZ;
 
-		const needInitialBFS = this._currentQueryId === 0 && currentLoadedSize > 0;
+		const needInitialBFS = this._currentQueryId === 0 && loadedChunkCount > 0;
 
 		if (cameraMoved || needInitialBFS || topologyTrigger) {
 			this._lastCamCX = camCX;
 			this._lastCamCY = camCY;
 			this._lastCamCZ = camCZ;
+
 			this._startBFS(camCX, camCY, camCZ);
 		}
 
+		/*
+		 * Capture state before stepping. If the BFS completes or overflows in
+		 * this call, visibility must still be swept this frame.
+		 */
+		const bfsWasInProgress = this._bfsInProgress;
+		const overflowBeforeStep = this._bfsQueueOverflowed;
+
 		this._stepBFS(BFS_FRAME_BUDGET);
 
-		// ── Decide whether the expensive visibility sweep must run ──────────────
-		// The BFS topology restart above is already gated on camera-chunk
-		// movement. The merged-group loop is O(groups) with matrix math, so we
-		// skip it entirely when the camera hasn't moved/rotated, no BFS is in
-		// flight, and no group membership/mesh changed — visibility is then
-		// identical to the previous frame.
-		const bfsWasInProgress = this._bfsInProgress;
+		const bfsStateChanged =
+			bfsWasInProgress !== this._bfsInProgress ||
+			overflowBeforeStep !== this._bfsQueueOverflowed;
 
-		// VP matrix — recompute frustum planes whenever the full matrix changes
-		// (translation OR rotation). The previous 4-element integer hash was too
-		// collision-prone and left the planes / sweep frozen on camera rotation.
 		const canvas = Map1.engine.canvas;
 		const aspect = canvas.height > 0 ? canvas.width / canvas.height : 1;
-		const vp = getViewProjectionMatrix(camera, aspect);
 
-		let vpChanged = !_frustumValid;
-		if (!vpChanged) {
+		const viewProjection = getViewProjectionMatrix(camera, aspect);
+
+		let viewProjectionChanged = !_frustumValid;
+
+		if (!viewProjectionChanged) {
 			for (let i = 0; i < 16; i++) {
-				if (Math.abs(vp[i] - _lastVP[i]) > 1e-6) {
-					vpChanged = true;
+				if (Math.abs(viewProjection[i] - _lastVP[i]) > 1e-6) {
+					viewProjectionChanged = true;
 					break;
 				}
 			}
 		}
-		if (vpChanged) {
-			cacheFrustumPlanes(vp);
-			_lastVP.set(vp);
+
+		if (viewProjectionChanged) {
+			cacheFrustumPlanes(viewProjection);
+			_lastVP.set(viewProjection);
 		}
 
 		const groupsMutated = consumeGroupsMutated();
+
 		const needSweep =
 			cameraMoved ||
-			vpChanged ||
+			viewProjectionChanged ||
 			bfsWasInProgress ||
+			bfsStateChanged ||
 			needInitialBFS ||
+			topologyTrigger ||
 			groupsMutated;
 
 		if (!needSweep) {
 			out.total = this._lastTotal;
 			out.occluded = this._lastOccluded;
-			out.timeMs = performance.now() - t0;
+			out.timeMs = performance.now() - startTime;
+
 			return out;
 		}
 
-		// ── Merged-group visibility: frustum AABB + range + BFS reachability ────
-		// All terrain renders through merged groups, so this loop is the single
-		// culling point. Individual chunk meshes exist only for boat chunks,
-		// which manage their own visibility.
-		//
-		// Frustum stage is hierarchical: traverseGroupOctree() skips whole
-		// outside/inside subtrees (hint OUTSIDE/INSIDE) so genuinely straddling
-		// groups (hint INTERSECT) are the only ones paying per-group plane
-		// math. If the octree ever disagrees with the group registry about how
-		// many groups exist (should be impossible — both update in the same
-		// MergedMeshManager functions), fall back to the flat loop so no group
-		// can get stuck with a stale visibility flag.
 		const allGroups = getAllGroups();
-		const G = GROUP_CHUNKS;
-		const groupExtent = G * SIZE;
-		const gHalf = groupExtent * 0.5;
+
+		const groupChunks = GROUP_CHUNKS;
+		const groupExtent = groupChunks * chunkSize;
+		const groupHalf = groupExtent * 0.5;
+
 		const queryId = this._currentQueryId;
 		const bfsInProgress = this._bfsInProgress;
-		// Cave state comes from the shared runtime flag (player Y <= -16), not
-		// from the sea level — "below sea level" also matches swimming, diving
-		// and coastal walks where the full LOD range must stay visible.
 		const cameraUnderground = isInCave();
-		// Fail-open: while no BFS seed exists (teleport into unloaded space),
-		// skip reachability gating — worst case is over-rendering, never a
-		// blank world.
-		const bfsGateActive = !this._bfsOriginMissing;
+
+		/*
+		 * Missing origin and overflow both disable reachability gating.
+		 */
+		const bfsGateActive = !this._bfsOriginMissing && !this._bfsQueueOverflowed;
 
 		let groupTotal = 0;
 		let groupHidden = 0;
 
-		// Full pass on structural changes; otherwise far groups rotate
-		// through slots and near groups always evaluate.
-		const fullPass = groupsMutated || needInitialBFS || topologyTrigger;
+		const fullPass =
+			groupsMutated ||
+			needInitialBFS ||
+			topologyTrigger ||
+			bfsStateChanged ||
+			this._bfsQueueOverflowed;
+
 		const slotCount = OcclusionCuller.SWEEP_AMORTIZE_FRAMES;
 		const activeSlot = this._sweepSlot;
-		const nearDistSq = OcclusionCuller.SWEEP_NEAR_DIST_SQ;
+		const nearDistanceSquared = OcclusionCuller.SWEEP_NEAR_DIST_SQ;
 
 		const processGroup = (
 			group: MergedMeshGroup,
-			i: number,
+			ordinal: number,
 			hint: FrustumHint,
 		): void => {
 			const minGX = group.gridX * groupExtent;
 			const minGY = group.gridY * groupExtent;
 			const minGZ = group.gridZ * groupExtent;
 
-			const centerGX = minGX + gHalf;
-			const centerGY = minGY + gHalf;
-			const centerGZ = minGZ + gHalf;
+			const maxGX = minGX + groupExtent;
+			const maxGY = minGY + groupExtent;
+			const maxGZ = minGZ + groupExtent;
 
-			const ddx = centerGX - camPos.x;
-			const ddy = centerGY - camPos.y;
-			const ddz = centerGZ - camPos.z;
+			const centerGX = minGX + groupHalf;
+			const centerGY = minGY + groupHalf;
+			const centerGZ = minGZ + groupHalf;
 
-			// Temporal slicing: near groups every frame, far groups rotate
-			// through 1/N slots. Skipped groups keep their last visibility
-			// state untouched.
+			const dx = centerGX - cameraPosition.x;
+			const dy = centerGY - cameraPosition.y;
+			const dz = centerGZ - cameraPosition.z;
+
 			if (!fullPass) {
-				const distSq = ddx * ddx + ddy * ddy + ddz * ddz;
-				if (distSq > nearDistSq && i % slotCount !== activeSlot) {
+				const distanceSquared = dx * dx + dy * dy + dz * dz;
+
+				if (
+					distanceSquared > nearDistanceSquared &&
+					ordinal % slotCount !== activeSlot
+				) {
 					return;
 				}
 			}
 
-			const isSurfaceGroup = centerGY >= SEA_LEVEL;
+			const eyeInsideGroup =
+				cameraPosition.x >= minGX &&
+				cameraPosition.x <= maxGX &&
+				cameraPosition.y >= minGY &&
+				cameraPosition.y <= maxGY &&
+				cameraPosition.z >= minGZ &&
+				cameraPosition.z <= maxGZ;
 
 			let inFrustum: boolean;
-			// Fail-open: a group containing the eye always intersects the
-			// frustum. Checked before trusting an OUTSIDE hint so a stale or
-			// misaligned octree node can never hide the chunks around the
-			// camera (the traversal has the same guard, this is belt-and-braces).
-			const maxGXEarly = minGX + groupExtent;
-			const maxGYEarly = minGY + groupExtent;
-			const maxGZEarly = minGZ + groupExtent;
-			const eyeInGroupAABB =
-				camPos.x >= minGX &&
-				camPos.x <= maxGXEarly &&
-				camPos.y >= minGY &&
-				camPos.y <= maxGYEarly &&
-				camPos.z >= minGZ &&
-				camPos.z <= maxGZEarly;
-			if (eyeInGroupAABB) {
+
+			if (eyeInsideGroup) {
 				inFrustum = true;
 			} else if (hint === FrustumHint.OUTSIDE) {
-				// An ancestor octree node proved fully outside all 6 planes
-				// (the eye-in-node fail-open is handled inside the traversal,
-				// so eye-containing groups never arrive with this hint).
 				inFrustum = false;
 			} else {
-				// Distance check between group AABB and camera chunk range in chunk coordinates.
-				const minChunkX = group.gridX * G;
-				const maxChunkX = minChunkX + G - 1;
-				const minChunkY = group.gridY * G;
-				const maxChunkY = minChunkY + G - 1;
-				const minChunkZ = group.gridZ * G;
-				const maxChunkZ = minChunkZ + G - 1;
+				const minChunkX = group.gridX * groupChunks;
+				const minChunkY = group.gridY * groupChunks;
+				const minChunkZ = group.gridZ * groupChunks;
+
+				const maxChunkX = minChunkX + groupChunks - 1;
+				const maxChunkY = minChunkY + groupChunks - 1;
+				const maxChunkZ = minChunkZ + groupChunks - 1;
 
 				const inRange =
 					minChunkX <= camCX + MAX_RENDER_RADIUS &&
@@ -614,325 +622,421 @@ export class OcclusionCuller {
 				if (!inRange) {
 					inFrustum = false;
 				} else if (hint === FrustumHint.INSIDE || DISABLE_FRUSTUM_CULL) {
-					// An ancestor node proved fully inside — no plane math.
 					inFrustum = true;
 				} else {
-					const maxGX = minGX + groupExtent;
-					const maxGY = minGY + groupExtent;
-					const maxGZ = minGZ + groupExtent;
-
-					// An AABB that contains the eye (camera) always intersects the
-					// frustum. The positive-vertex test below can otherwise falsely cull
-					// it on the near plane (its far corner sits behind z=0 by more than
-					// FRUSTUM_MARGIN), hiding the very chunks around the camera.
-					const eyeInAABB =
-						camPos.x >= minGX &&
-						camPos.x <= maxGX &&
-						camPos.y >= minGY &&
-						camPos.y <= maxGY &&
-						camPos.z >= minGZ &&
-						camPos.z <= maxGZ;
-
-					inFrustum =
-						eyeInAABB ||
-						aabbInFrustum(minGX, minGY, minGZ, maxGX, maxGY, maxGZ);
+					inFrustum = aabbInFrustum(minGX, minGY, minGZ, maxGX, maxGY, maxGZ);
 				}
 			}
 
-			/*
-			 * Out of the frustum the answer is already `false`, and the
-			 * reachability scan below can only confirm it — but that scan has
-			 * an early return that deliberately KEEPS the previous visibility
-			 * while the BFS is still spreading, which would leave an
-			 * out-of-frustum group drawn. Decide first, and skip the
-			 * ocean-floor probe and member walk entirely while we're here.
-			 */
 			if (!inFrustum) {
 				groupTotal++;
 				groupHidden++;
+
 				setMeshCulled(group.opaqueMeshRef, true);
 				setMeshCulled(group.waterMeshRef, true);
 				setMeshCulled(group.cutoutMeshRef, true);
+
 				return;
 			}
+
+			const isSurfaceGroup = centerGY >= SEA_LEVEL;
 
 			const isOceanFloorGroup =
 				!isSurfaceGroup && this.hasOceanFloorGroupMember(group);
 
-			// BFS reachability — hide groups sealed off from the camera's air
-			// region (Minecraft-style cave culling). Surface groups bypass the
-			// gate while the camera is outside, so open-sky terrain never pays
-			// the reachability cost.
 			const bypassBFS =
 				!bfsGateActive ||
 				(isSurfaceGroup && !cameraUnderground) ||
 				isOceanFloorGroup;
 
-			let vis: boolean;
+			let visible: boolean;
+
 			if (bypassBFS) {
-				vis = true;
+				visible = true;
 			} else {
-				let bfsReachable = false;
-				let bfsPrevious = false;
+				let currentlyReachable = false;
+				let previouslyReachable = false;
+
 				const members = group.membersArray;
-				for (let j = 0, mlen = members.length; j < mlen; j++) {
-					const chunk = members[j]?.chunk;
-					if (chunk.isLoaded) {
-						if (chunk.bfsQueryId === queryId) {
-							bfsReachable = true;
-							break;
-						}
-						if (
-							(this._lastCompletedQueryId > 0 &&
-								chunk.bfsQueryId === this._lastCompletedQueryId) ||
-							chunk.bfsQueryId === queryId - 1
-						) {
-							bfsPrevious = true;
-						}
+
+				for (let index = 0; index < members.length; index++) {
+					const chunk = members[index]?.chunk;
+
+					if (chunk === undefined || !chunk.isLoaded) {
+						continue;
+					}
+
+					if (chunk.bfsQueryId === queryId) {
+						currentlyReachable = true;
+						break;
+					}
+
+					if (
+						(this._lastCompletedQueryId > 0 &&
+							chunk.bfsQueryId === this._lastCompletedQueryId) ||
+						chunk.bfsQueryId === queryId - 1
+					) {
+						previouslyReachable = true;
 					}
 				}
 
-				// Keep last-known visibility while the BFS is still spreading.
-				// The group still counts toward sweep totals; its occluded
-				// state is whatever its meshes currently render.
-				if (!bfsReachable && bfsPrevious && bfsInProgress) {
+				if (!currentlyReachable && previouslyReachable && bfsInProgress) {
 					groupTotal++;
+
 					const mesh = group.opaqueMeshRef;
-					if (!mesh || mesh.visible === false) groupHidden++;
+
+					if (mesh === null || mesh === undefined || mesh.visible === false) {
+						groupHidden++;
+					}
+
 					return;
 				}
 
-				vis = bfsReachable;
+				visible = currentlyReachable;
 			}
 
 			groupTotal++;
-			if (!vis) groupHidden++;
 
-			setMeshCulled(group.opaqueMeshRef, !vis);
-			setMeshCulled(group.waterMeshRef, !vis);
-			setMeshCulled(group.cutoutMeshRef, !vis);
+			if (!visible) {
+				groupHidden++;
+			}
+
+			setMeshCulled(group.opaqueMeshRef, !visible);
+			setMeshCulled(group.waterMeshRef, !visible);
+			setMeshCulled(group.cutoutMeshRef, !visible);
 		};
 
 		if (_frustumValid && getOctreeGroupCount() === allGroups.length) {
 			let ordinal = 0;
+
 			traverseGroupOctree(
 				_frustumPacked,
 				FRUSTUM_MARGIN,
-				camPos.x,
-				camPos.y,
-				camPos.z,
+				cameraPosition.x,
+				cameraPosition.y,
+				cameraPosition.z,
 				(group, hint) => {
-					processGroup(group as MergedMeshGroup, ordinal++, hint);
+					processGroup(group as MergedMeshGroup, ordinal, hint);
+
+					ordinal++;
 				},
 			);
 		} else {
-			for (let i = 0; i < allGroups.length; i++) {
-				processGroup(allGroups[i], i, FrustumHint.INTERSECT);
+			for (let index = 0; index < allGroups.length; index++) {
+				processGroup(allGroups[index], index, FrustumHint.INTERSECT);
 			}
 		}
 
-		out.total = groupTotal;
-		out.occluded = groupHidden;
-
 		this._sweepSlot = (this._sweepSlot + 1) % slotCount;
-		out.timeMs = performance.now() - t0;
+
 		this._lastTotal = groupTotal;
 		this._lastOccluded = groupHidden;
+
+		out.total = groupTotal;
+		out.occluded = groupHidden;
+		out.timeMs = performance.now() - startTime;
+
 		return out;
 	}
 
-	// ─── incrementalAdd ────────────────────────────────────────────────────────
 	incrementalAdd(newChunk: Chunk): void {
 		const queryId = this._currentQueryId;
-		if (queryId === 0) return;
 
-		const SIZE = Chunk.SIZE;
+		if (queryId === 0 || !isLiveChunk(newChunk)) {
+			return;
+		}
+
+		if (!_facePairTableInitialized) {
+			initFacePairTable();
+		}
+
+		const chunkSize = Chunk.SIZE;
 		const camCX = this._lastCamCX;
 		const camCY = this._lastCamCY;
 		const camCZ = this._lastCamCZ;
-		const R = MAX_RENDER_RADIUS;
-
-		const nX = newChunk.chunkX;
-		const nY = newChunk.chunkY;
-		const nZ = newChunk.chunkZ;
+		const radius = MAX_RENDER_RADIUS;
 
 		if (
-			nX - camCX > R ||
-			camCX - nX > R ||
-			nY - camCY > R ||
-			camCY - nY > R ||
-			nZ - camCZ > R ||
-			camCZ - nZ > R
-		)
+			!chunkWithinBfsRange(
+				newChunk.chunkX,
+				newChunk.chunkY,
+				newChunk.chunkZ,
+				camCX,
+				camCY,
+				camCZ,
+				radius,
+			)
+		) {
 			return;
+		}
 
-		if (newChunk.connectivityDirty) newChunk.computeFaceConnectivity();
+		if (newChunk.connectivityDirty) {
+			newChunk.computeFaceConnectivity();
+		}
+
 		ensureNeighborRefs(newChunk);
 
-		let qHead = 0;
-		let qTail = 0;
+		let queueHead = 0;
+		let queueTail = 0;
+		let overflowed = false;
 
-		const neighborRefs = newChunk.neighborRefs;
+		const enqueue = (
+			chunk: Chunk,
+			entryFace: number,
+			steps: number,
+		): boolean => {
+			const nextTail = (queueTail + 1) & BFS_MASK;
 
-		// Scan neighbours that already belong to this BFS pass
-		for (let d = 0; d < 6; d++) {
-			const neighbor = neighborRefs[d];
-			if (!neighbor) continue;
-
-			if (neighbor.bfsQueryId !== queryId) continue;
-
-			const exitFace = d;
-			const entryForNew = exitFace ^ 1;
-
-			// Check neighbour face connectivity
-			const neighborVisited = neighbor.bfsVisitedFaces;
-			let canPass = true;
-
-			if (!(neighborVisited & (1 << 7))) {
-				canPass = hasConnectivity(
-					neighborVisited,
-					exitFace,
-					neighbor.faceConnectivity,
-				);
+			if (nextTail === queueHead) {
+				overflowed = true;
+				return false;
 			}
-			if (!canPass) continue;
 
-			// Derive step count from cheapest neighbour entry
-			const minNbrSteps = minFSteps(neighbor);
+			_incBfsChunks[queueTail] = chunk;
+			_incBfsEntry[queueTail] = entryFace;
+			_incBfsSteps[queueTail] = steps;
 
-			let newSteps = minNbrSteps + 1;
-			if (nY * SIZE < SEA_LEVEL) newSteps++;
-			if (newChunk.isDarkCached()) newSteps += 3;
-			if (newSteps > MAX_BFS_STEPS) continue;
+			queueTail = nextTail;
+			return true;
+		};
 
-			// Initialise new chunk for this query if needed
+		const initialNeighbors = newChunk.neighborRefs;
+
+		for (let direction = 0; direction < 6; direction++) {
+			const neighbor = initialNeighbors[direction];
+
+			if (
+				neighbor === null ||
+				!isLiveChunk(neighbor) ||
+				neighbor.bfsQueryId !== queryId
+			) {
+				continue;
+			}
+
+			const visitedFaces = neighbor.bfsVisitedFaces;
+
+			if (
+				(visitedFaces & BFS_ORIGIN_BIT) === 0 &&
+				!hasConnectivity(visitedFaces, direction, neighbor.faceConnectivity)
+			) {
+				continue;
+			}
+
+			const entryFace = direction ^ 1;
+
+			const newSteps = nextBfsStepCost(
+				minFSteps(neighbor),
+				newChunk,
+				chunkSize,
+			);
+
+			if (newSteps > MAX_BFS_STEPS) {
+				continue;
+			}
+
 			if (newChunk.bfsQueryId !== queryId) {
 				resetChunkBfs(newChunk, queryId);
 				this._topoVisibleChunks.push(newChunk);
 			}
 
-			const faceBit = 1 << entryForNew;
-			newChunk.bfsVisitedFaces |= faceBit;
-			setFStep(newChunk, entryForNew, newSteps);
+			const faceBit = 1 << entryFace;
 
-			// Enqueue new chunk for BFS propagation
-			const nextTail = (qTail + 1) & BFS_MASK;
-			if (nextTail !== qHead) {
-				_incBfsChunks[qTail] = newChunk;
-				_incBfsEntry[qTail] = entryForNew;
-				_incBfsSteps[qTail] = newSteps;
-				qTail = nextTail;
+			if (
+				(newChunk.bfsVisitedFaces & faceBit) !== 0 &&
+				newSteps >= getFStep(newChunk, entryFace)
+			) {
+				continue;
+			}
+
+			newChunk.bfsVisitedFaces |= faceBit;
+			setFStep(newChunk, entryFace, newSteps);
+
+			if (!enqueue(newChunk, entryFace, newSteps)) {
+				break;
 			}
 		}
 
-		// BFS propagation from newChunk outward
-		while (qHead !== qTail) {
-			const current = _incBfsChunks[qHead]!;
-			const entryFace = _incBfsEntry[qHead];
-			const steps = _incBfsSteps[qHead];
-			qHead = (qHead + 1) & BFS_MASK;
+		while (queueHead !== queueTail && !overflowed) {
+			const slot = queueHead;
+			const current = _incBfsChunks[slot];
+			const entryFace = _incBfsEntry[slot];
+			const steps = _incBfsSteps[slot];
 
-			const curFc = current.faceConnectivity;
-			const curNeighborRefs = current.neighborRefs;
+			_incBfsChunks[slot] = null;
+			queueHead = (queueHead + 1) & BFS_MASK;
 
-			for (let d = 0; d < 6; d++) {
-				const nbr = curNeighborRefs[d];
-				if (!nbr) continue;
+			if (
+				current === null ||
+				current.bfsQueryId !== queryId ||
+				!isLiveChunk(current)
+			) {
+				continue;
+			}
 
-				const nx = nbr.chunkX;
-				const ny = nbr.chunkY;
-				const nz = nbr.chunkZ;
+			if (current.connectivityDirty) {
+				current.computeFaceConnectivity();
+			}
+
+			const connectivity = current.faceConnectivity;
+			const connectivityRow = entryFace * 6;
+			const neighbors = current.neighborRefs;
+
+			for (let direction = 0; direction < 6; direction++) {
+				const neighbor = neighbors[direction];
+
+				if (neighbor === null || !isLiveChunk(neighbor)) {
+					continue;
+				}
 
 				if (
-					nx - camCX > R ||
-					camCX - nx > R ||
-					ny - camCY > R ||
-					camCY - ny > R ||
-					nz - camCZ > R ||
-					camCZ - nz > R
-				)
+					!chunkWithinBfsRange(
+						neighbor.chunkX,
+						neighbor.chunkY,
+						neighbor.chunkZ,
+						camCX,
+						camCY,
+						camCZ,
+						radius,
+					)
+				) {
 					continue;
-
-				const exitFace = d;
-				const nextEntry = exitFace ^ 1;
-
-				let newSteps = steps + 1;
-				if (ny * SIZE < SEA_LEVEL) newSteps++;
-				if (nbr.isDarkCached()) newSteps += 3;
-				if (newSteps > MAX_BFS_STEPS) continue;
-
-				// Connectivity gate
-				if (entryFace >= 0) {
-					const bit = FACE_PAIR_FLAT[entryFace * 6 + exitFace];
-					if (!(curFc & (1 << bit))) continue;
 				}
-				if (nbr.bfsQueryId !== queryId) {
-					ensureNeighborRefs(nbr);
-					resetChunkBfs(nbr, queryId);
-					this._topoVisibleChunks.push(nbr);
+
+				if (
+					(connectivity & FACE_PAIR_MASK_FLAT[connectivityRow + direction]) ===
+					0
+				) {
+					continue;
 				}
+
+				const nextEntry = direction ^ 1;
+
+				const newSteps = nextBfsStepCost(steps, neighbor, chunkSize);
+
+				if (newSteps > MAX_BFS_STEPS) {
+					continue;
+				}
+
+				if (neighbor.bfsQueryId !== queryId) {
+					ensureNeighborRefs(neighbor);
+					resetChunkBfs(neighbor, queryId);
+					this._topoVisibleChunks.push(neighbor);
+				}
+
 				const faceBit = 1 << nextEntry;
-				if ((nbr.bfsVisitedFaces & faceBit) !== 0) {
-					if (newSteps >= getFStep(nbr, nextEntry)) continue;
+
+				if (
+					(neighbor.bfsVisitedFaces & faceBit) !== 0 &&
+					newSteps >= getFStep(neighbor, nextEntry)
+				) {
+					continue;
 				}
 
-				if (nbr.connectivityDirty) nbr.computeFaceConnectivity();
+				neighbor.bfsVisitedFaces |= faceBit;
 
-				nbr.bfsVisitedFaces |= faceBit;
-				setFStep(nbr, nextEntry, newSteps);
-				const nextTail = (qTail + 1) & BFS_MASK;
-				if (nextTail !== qHead) {
-					_incBfsChunks[qTail] = nbr;
-					_incBfsEntry[qTail] = nextEntry;
-					_incBfsSteps[qTail] = newSteps;
-					qTail = nextTail;
+				setFStep(neighbor, nextEntry, newSteps);
+
+				if (!enqueue(neighbor, nextEntry, newSteps)) {
+					break;
 				}
 			}
+		}
+
+		clearChunkRing(_incBfsChunks, queueHead, queueTail);
+
+		if (overflowed) {
+			/*
+			 * The incremental result is incomplete. Restart the authoritative
+			 * sliced BFS rather than accepting missing reachability.
+			 */
+			this._startBFS(camCX, camCY, camCZ);
+			return;
 		}
 
 		if (newChunk.bfsQueryId === queryId && newChunk.mesh) {
 			newChunk.mesh.visible = true;
-			if (newChunk.waterMesh) newChunk.waterMesh.visible = true;
-			if (newChunk.cutoutMesh) newChunk.cutoutMesh.visible = true;
+
+			if (newChunk.waterMesh) {
+				newChunk.waterMesh.visible = true;
+			}
+
+			if (newChunk.cutoutMesh) {
+				newChunk.cutoutMesh.visible = true;
+			}
 		}
 	}
 
-	// ─── _startBFS ─────────────────────────────────────────────────────────────
 	private _startBFS(camCX: number, camCY: number, camCZ: number): void {
-		if (!_facePairTableInitialized) initFacePairTable();
-
-		this._currentQueryId++;
-		const queryId = this._currentQueryId;
-
-		this._topoVisibleChunks.length = 0;
-
-		// Batch connectivity recomputation before BFS. Entries arrive here
-		// straight from the block-edit path, so nothing is scanned to find them.
-		const dirty = pendingConnectivity;
-		const dirtyLen = dirty.length;
-		for (let i = 0; i < dirtyLen; i++) {
-			const c = dirty[i];
-			if (c.connectivityDirty) c.computeFaceConnectivity();
-			c.bfsQueuedForConnectivity = false;
+		if (!_facePairTableInitialized) {
+			initFacePairTable();
 		}
+
+		/*
+		 * Clear references from an interrupted previous query.
+		 */
+		clearChunkRing(_bfsChunks, this._bfsQHead, this._bfsQTail);
+
+		let queryId = (this._currentQueryId + 1) >>> 0;
+
+		if (queryId === 0) {
+			queryId = 1;
+		}
+
+		this._currentQueryId = queryId;
+		this._topoVisibleChunks.length = 0;
+		this._bfsQueueOverflowed = false;
+
+		const dirty = pendingConnectivity;
+		const dirtyLength = dirty.length;
+
+		for (let index = 0; index < dirtyLength; index++) {
+			const chunk = dirty[index];
+
+			if (chunk.connectivityDirty) {
+				chunk.computeFaceConnectivity();
+			}
+
+			chunk.bfsQueuedForConnectivity = false;
+		}
+
 		dirty.length = 0;
 
-		let qTail = 0;
+		let queueHead = 0;
+		let queueTail = 0;
 
-		const originChunk: Chunk | null = getChunk(camCX, camCY, camCZ) ?? null;
+		const enqueueSeed = (chunk: Chunk): boolean => {
+			const nextTail = (queueTail + 1) & BFS_MASK;
 
-		if (originChunk) {
-			if (originChunk.connectivityDirty) originChunk.computeFaceConnectivity();
-			ensureNeighborRefs(originChunk);
-			resetChunkBfs(originChunk, queryId);
-			originChunk.bfsVisitedFaces = 1 << 7; // origin marker
-			this._topoVisibleChunks.push(originChunk);
-			_bfsChunks[qTail] = originChunk;
-			_bfsEntry[qTail] = -1;
-			_bfsSteps[qTail] = 0;
-			qTail = 1;
+			if (nextTail === queueHead) {
+				this._bfsQueueOverflowed = true;
+				return false;
+			}
+
+			_bfsChunks[queueTail] = chunk;
+			_bfsEntry[queueTail] = -1;
+			_bfsSteps[queueTail] = 0;
+
+			queueTail = nextTail;
+			return true;
+		};
+
+		const origin = getChunk(camCX, camCY, camCZ) ?? null;
+
+		if (origin !== null && isLiveChunk(origin)) {
+			if (origin.connectivityDirty) {
+				origin.computeFaceConnectivity();
+			}
+
+			ensureNeighborRefs(origin);
+			resetChunkBfs(origin, queryId);
+
+			origin.bfsVisitedFaces = BFS_ORIGIN_BIT;
+
+			this._topoVisibleChunks.push(origin);
+			enqueueSeed(origin);
 		} else {
 			_nearbyChunksScratch.length = 0;
+
 			Chunk.loadedChunkIndex.queryCollect(
 				camCX,
 				camCY,
@@ -941,131 +1045,209 @@ export class OcclusionCuller {
 				NEAR_CHUNKS,
 				_nearbyChunksScratch,
 			);
-			for (let i = 0; i < _nearbyChunksScratch.length; i++) {
-				const chunk = _nearbyChunksScratch[i]!;
-				if (chunk.bfsQueryId === queryId) continue;
+
+			for (let index = 0; index < _nearbyChunksScratch.length; index++) {
+				const chunk = _nearbyChunksScratch[index];
+
+				if (!isLiveChunk(chunk) || chunk.bfsQueryId === queryId) {
+					continue;
+				}
+
+				if (chunk.connectivityDirty) {
+					chunk.computeFaceConnectivity();
+				}
+
 				ensureNeighborRefs(chunk);
 				resetChunkBfs(chunk, queryId);
-				chunk.bfsVisitedFaces = 1 << 7;
+
+				chunk.bfsVisitedFaces = BFS_ORIGIN_BIT;
+
 				this._topoVisibleChunks.push(chunk);
-				const nextTail = (qTail + 1) & BFS_MASK;
-				if (nextTail !== 0) {
-					_bfsChunks[qTail] = chunk;
-					_bfsEntry[qTail] = -1;
-					_bfsSteps[qTail] = 0;
-					qTail = nextTail;
+
+				if (!enqueueSeed(chunk)) {
+					break;
 				}
 			}
+
+			_nearbyChunksScratch.length = 0;
 		}
 
-		// Fail-open marker: with no seed chunk at all (camera inside unloaded
-		// space) the group loop bypasses BFS gating until a restart finds one.
-		this._bfsOriginMissing = qTail === 0;
+		if (this._bfsQueueOverflowed) {
+			clearChunkRing(_bfsChunks, queueHead, queueTail);
 
-		this._bfsQHead = 0;
-		this._bfsQTail = qTail;
-		this._bfsInProgress = qTail > 0;
+			queueHead = 0;
+			queueTail = 0;
+		}
+
+		this._bfsOriginMissing =
+			queueHead === queueTail || this._bfsQueueOverflowed;
+
+		this._bfsQHead = queueHead;
+		this._bfsQTail = queueTail;
+
+		this._bfsInProgress = queueHead !== queueTail && !this._bfsQueueOverflowed;
 	}
 
-	// ─── _stepBFS ──────────────────────────────────────────────────────────────
 	private _stepBFS(budget: number): void {
-		if (!this._bfsInProgress) return;
+		if (!this._bfsInProgress || budget <= 0) {
+			return;
+		}
 
 		const queryId = this._currentQueryId;
-		const SIZE = Chunk.SIZE;
+		const chunkSize = Chunk.SIZE;
+
 		const camCX = this._lastCamCX;
 		const camCY = this._lastCamCY;
 		const camCZ = this._lastCamCZ;
-		const R = MAX_RENDER_RADIUS;
+		const radius = MAX_RENDER_RADIUS;
 
-		let qHead = this._bfsQHead;
-		let qTail = this._bfsQTail;
+		let queueHead = this._bfsQHead;
+		let queueTail = this._bfsQTail;
 		let processed = 0;
 
-		while (qHead !== qTail && processed < budget) {
-			const current = _bfsChunks[qHead]!;
-			const entryFace = _bfsEntry[qHead];
-			const steps = _bfsSteps[qHead];
-			qHead = (qHead + 1) & BFS_MASK;
+		let overflowed = this._bfsQueueOverflowed;
+
+		while (queueHead !== queueTail && processed < budget && !overflowed) {
+			const slot = queueHead;
+			const current = _bfsChunks[slot];
+			const entryFace = _bfsEntry[slot];
+			const steps = _bfsSteps[slot];
+
+			/*
+			 * Release the queued strong reference immediately.
+			 */
+			_bfsChunks[slot] = null;
+
+			queueHead = (queueHead + 1) & BFS_MASK;
 			processed++;
 
-			// Block edits invalidate face connectivity lazily — refresh before
-			// the outbound gates read it, otherwise mined-out tunnels keep
-			// stale (sealed) connectivity and the culler hides reachable terrain.
-			if (current.connectivityDirty) current.computeFaceConnectivity();
+			if (
+				current === null ||
+				current.bfsQueryId !== queryId ||
+				!isLiveChunk(current)
+			) {
+				continue;
+			}
 
-			const curFc = current.faceConnectivity;
-			const curNeighborRefs = current.neighborRefs;
+			if (current.connectivityDirty) {
+				current.computeFaceConnectivity();
+			}
 
-			for (let d = 0; d < 6; d++) {
-				const nbr = curNeighborRefs[d];
-				if (!nbr) continue;
+			const connectivity = current.faceConnectivity;
+			const neighbors = current.neighborRefs;
 
-				const nx = nbr.chunkX;
-				const ny = nbr.chunkY;
-				const nz = nbr.chunkZ;
+			const connectivityRow = entryFace >= 0 ? entryFace * 6 : -1;
+
+			for (let direction = 0; direction < 6; direction++) {
+				const neighbor = neighbors[direction];
+
+				if (neighbor === null || !isLiveChunk(neighbor)) {
+					continue;
+				}
 
 				if (
-					nx - camCX > R ||
-					camCX - nx > R ||
-					ny - camCY > R ||
-					camCY - ny > R ||
-					nz - camCZ > R ||
-					camCZ - nz > R
-				)
+					!chunkWithinBfsRange(
+						neighbor.chunkX,
+						neighbor.chunkY,
+						neighbor.chunkZ,
+						camCX,
+						camCY,
+						camCZ,
+						radius,
+					)
+				) {
 					continue;
-
-				const exitFace = d;
-				const nextEntry = exitFace ^ 1;
-
-				let newSteps = steps + 1;
-				if (ny * SIZE < SEA_LEVEL) newSteps++;
-				if (nbr.isDarkCached()) newSteps += 3;
-				if (newSteps > MAX_BFS_STEPS) continue;
-
-				// Connectivity gate
-				if (entryFace >= 0) {
-					const bit = FACE_PAIR_FLAT[entryFace * 6 + exitFace];
-					if (!(curFc & (1 << bit))) continue;
 				}
-				if (nbr.bfsQueryId !== queryId) {
-					ensureNeighborRefs(nbr);
-					resetChunkBfs(nbr, queryId);
-					this._topoVisibleChunks.push(nbr);
+
+				if (
+					connectivityRow >= 0 &&
+					(connectivity & FACE_PAIR_MASK_FLAT[connectivityRow + direction]) ===
+						0
+				) {
+					continue;
 				}
+
+				const nextEntry = direction ^ 1;
+
+				const newSteps = nextBfsStepCost(steps, neighbor, chunkSize);
+
+				if (newSteps > MAX_BFS_STEPS) {
+					continue;
+				}
+
+				if (neighbor.bfsQueryId !== queryId) {
+					ensureNeighborRefs(neighbor);
+					resetChunkBfs(neighbor, queryId);
+
+					this._topoVisibleChunks.push(neighbor);
+				}
+
 				const faceBit = 1 << nextEntry;
-				if ((nbr.bfsVisitedFaces & faceBit) !== 0) {
-					if (newSteps >= getFStep(nbr, nextEntry)) continue;
-				}
-				nbr.bfsVisitedFaces |= faceBit;
-				setFStep(nbr, nextEntry, newSteps);
 
-				const nextTail = (qTail + 1) & BFS_MASK;
-				if (nextTail !== qHead) {
-					_bfsChunks[qTail] = nbr;
-					_bfsEntry[qTail] = nextEntry;
-					_bfsSteps[qTail] = newSteps;
-					qTail = nextTail;
+				if (
+					(neighbor.bfsVisitedFaces & faceBit) !== 0 &&
+					newSteps >= getFStep(neighbor, nextEntry)
+				) {
+					continue;
 				}
+
+				neighbor.bfsVisitedFaces |= faceBit;
+
+				setFStep(neighbor, nextEntry, newSteps);
+
+				const nextTail = (queueTail + 1) & BFS_MASK;
+
+				if (nextTail === queueHead) {
+					overflowed = true;
+					break;
+				}
+
+				_bfsChunks[queueTail] = neighbor;
+				_bfsEntry[queueTail] = nextEntry;
+				_bfsSteps[queueTail] = newSteps;
+
+				queueTail = nextTail;
 			}
 		}
 
-		this._bfsQHead = qHead;
-		this._bfsQTail = qTail;
+		this._bfsQHead = queueHead;
+		this._bfsQTail = queueTail;
+		this._bfsQueueOverflowed = overflowed;
 
-		// BFS complete — compact visible list, evict stale entries
-		if (qHead === qTail) {
+		if (overflowed) {
+			/*
+			 * The frontier is incomplete, so this query cannot safely occlude
+			 * anything by reachability.
+			 */
+			clearChunkRing(_bfsChunks, queueHead, queueTail);
+
+			this._bfsQHead = 0;
+			this._bfsQTail = 0;
 			this._bfsInProgress = false;
-			const vis = this._topoVisibleChunks;
-			let writeIdx = 0;
-			for (let i = 0; i < vis.length; i++) {
-				const chunk = vis[i];
-				if (chunk.bfsQueryId === queryId) {
-					vis[writeIdx++] = chunk;
-				}
-			}
-			vis.length = writeIdx;
-			this._lastCompletedQueryId = queryId;
+			this._bfsOriginMissing = true;
+
+			return;
 		}
+
+		if (queueHead !== queueTail) {
+			return;
+		}
+
+		this._bfsInProgress = false;
+
+		const visible = this._topoVisibleChunks;
+
+		let writeIndex = 0;
+
+		for (let index = 0; index < visible.length; index++) {
+			const chunk = visible[index];
+
+			if (chunk.bfsQueryId === queryId && isLiveChunk(chunk)) {
+				visible[writeIndex++] = chunk;
+			}
+		}
+
+		visible.length = writeIndex;
+		this._lastCompletedQueryId = queryId;
 	}
 }

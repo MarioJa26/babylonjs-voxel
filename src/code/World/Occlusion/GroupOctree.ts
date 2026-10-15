@@ -77,7 +77,7 @@ interface OctreeNode {
 // Module state
 // ---------------------------------------------------------------------------
 
-const _roots = new Map<number, OctreeNode>();
+const _roots = new Map<string, OctreeNode>();
 let _groupCount = 0;
 
 export function getOctreeGroupCount(): number {
@@ -104,8 +104,71 @@ export function groupMinZ(gridZ: number): number {
 	return gridZ * OCTREE_GROUP_EXTENT;
 }
 
-function rootKeyFor(rx: number, ry: number, rz: number): number {
-	return (rx & 0xffff) * 0x1000000 + (ry & 0xffff) * 0x10000 + (rz & 0xffff);
+function rootKeyFor(rx: number, ry: number, rz: number): string {
+	return `${rx},${ry},${rz}`;
+}
+function classifyAabbAgainstPlanes(
+	minX: number,
+	minY: number,
+	minZ: number,
+	maxX: number,
+	maxY: number,
+	maxZ: number,
+	packed: Float32Array,
+	negativeMargin: number,
+): FrustumHint {
+	let fullyInside = true;
+
+	for (let offset = 0; offset < 24; offset += 4) {
+		const nx = packed[offset];
+		const ny = packed[offset + 1];
+		const nz = packed[offset + 2];
+		const d = packed[offset + 3];
+
+		let positiveX: number;
+		let positiveY: number;
+		let positiveZ: number;
+		let negativeX: number;
+		let negativeY: number;
+		let negativeZ: number;
+
+		if (nx >= 0) {
+			positiveX = maxX;
+			negativeX = minX;
+		} else {
+			positiveX = minX;
+			negativeX = maxX;
+		}
+
+		if (ny >= 0) {
+			positiveY = maxY;
+			negativeY = minY;
+		} else {
+			positiveY = minY;
+			negativeY = maxY;
+		}
+
+		if (nz >= 0) {
+			positiveZ = maxZ;
+			negativeZ = minZ;
+		} else {
+			positiveZ = minZ;
+			negativeZ = maxZ;
+		}
+
+		if (nx * positiveX + ny * positiveY + nz * positiveZ + d < negativeMargin) {
+			return FrustumHint.OUTSIDE;
+		}
+
+		if (
+			fullyInside &&
+			nx * negativeX + ny * negativeY + nz * negativeZ + d < negativeMargin
+		) {
+			fullyInside = false;
+		}
+	}
+
+	return fullyInside ? FrustumHint.INSIDE : FrustumHint.INTERSECT;
 }
 
 function makeNode(
@@ -157,17 +220,22 @@ export function aabbOutsidePlanes(
 	packed: Float32Array,
 	margin: number,
 ): boolean {
-	for (let p = 0; p < 6; p++) {
-		const off = p * 4;
-		const nx = packed[off];
-		const ny = packed[off + 1];
-		const nz = packed[off + 2];
-		const d = packed[off + 3];
+	const negativeMargin = -margin;
+
+	for (let offset = 0; offset < 24; offset += 4) {
+		const nx = packed[offset];
+		const ny = packed[offset + 1];
+		const nz = packed[offset + 2];
+
 		const px = nx >= 0 ? maxX : minX;
 		const py = ny >= 0 ? maxY : minY;
 		const pz = nz >= 0 ? maxZ : minZ;
-		if (nx * px + ny * py + nz * pz + d < -margin) return true;
+
+		if (nx * px + ny * py + nz * pz + packed[offset + 3] < negativeMargin) {
+			return true;
+		}
 	}
+
 	return false;
 }
 
@@ -182,17 +250,22 @@ export function aabbInsidePlanes(
 	packed: Float32Array,
 	margin: number,
 ): boolean {
-	for (let p = 0; p < 6; p++) {
-		const off = p * 4;
-		const nx = packed[off];
-		const ny = packed[off + 1];
-		const nz = packed[off + 2];
-		const d = packed[off + 3];
+	const negativeMargin = -margin;
+
+	for (let offset = 0; offset < 24; offset += 4) {
+		const nx = packed[offset];
+		const ny = packed[offset + 1];
+		const nz = packed[offset + 2];
+
 		const qx = nx >= 0 ? minX : maxX;
 		const qy = ny >= 0 ? minY : maxY;
 		const qz = nz >= 0 ? minZ : maxZ;
-		if (nx * qx + ny * qy + nz * qz + d < -margin) return false;
+
+		if (nx * qx + ny * qy + nz * qz + packed[offset + 3] < negativeMargin) {
+			return false;
+		}
 	}
+
 	return true;
 }
 
@@ -411,21 +484,20 @@ function visitClassifiedSubtree(
 	hint: FrustumHint,
 	visit: (group: OctreeGroupLike, hint: FrustumHint) => void,
 ): number {
-	let visited = 0;
-
 	_collectStack.length = 0;
 	_collectStack.push(root);
 
-	while (_collectStack.length > 0) {
-		const node = _collectStack.pop()!;
+	while (_collectStack.length !== 0) {
+		const node = _collectStack.pop();
+
+		if (node === undefined) {
+			break;
+		}
 
 		if (node.depth === OCTREE_MAX_DEPTH) {
 			const groups = node.groups;
-			const groupCount = groups.length;
 
-			visited += groupCount;
-
-			for (let i = 0; i < groupCount; i++) {
+			for (let i = 0; i < groups.length; i++) {
 				visit(groups[i], hint);
 			}
 
@@ -434,20 +506,41 @@ function visitClassifiedSubtree(
 
 		const children = node.children;
 
-		if (!children) {
+		if (children === null) {
 			continue;
 		}
 
 		for (let i = 0; i < 8; i++) {
 			const child = children[i];
 
-			if (child && child.subtreeCount > 0) {
+			if (child !== null && child.subtreeCount !== 0) {
 				_collectStack.push(child);
 			}
 		}
 	}
 
-	return visited;
+	return root.subtreeCount;
+}
+
+function aabbContainsEye(
+	minX: number,
+	minY: number,
+	minZ: number,
+	maxX: number,
+	maxY: number,
+	maxZ: number,
+	eyeX: number,
+	eyeY: number,
+	eyeZ: number,
+): boolean {
+	return (
+		eyeX >= minX &&
+		eyeX <= maxX &&
+		eyeY >= minY &&
+		eyeY <= maxY &&
+		eyeZ >= minZ &&
+		eyeZ <= maxZ
+	);
 }
 
 /**
@@ -476,199 +569,193 @@ export function traverseGroupOctree(
 	let culledSubtrees = 0;
 	let insideFastPath = 0;
 
+	const negativeMargin = -margin;
+
 	/*
-	 * Defensive reset in case a callback from an earlier traversal threw.
-	 * The stacks remain shared and allocation-free.
+	 * Shared stacks avoid normal per-frame allocation. The finally block is
+	 * required because visit() is user code and may throw.
 	 */
 	_travNodes.length = 0;
 	_travHints.length = 0;
 	_collectStack.length = 0;
 
-	for (const root of _roots.values()) {
-		if (root.subtreeCount === 0) {
-			continue;
-		}
+	try {
+		for (const root of _roots.values()) {
+			if (root.subtreeCount === 0) {
+				continue;
+			}
 
-		const rootMaxX = root.minX + root.size;
-		const rootMaxY = root.minY + root.size;
-		const rootMaxZ = root.minZ + root.size;
+			const rootMinX = root.minX;
+			const rootMinY = root.minY;
+			const rootMinZ = root.minZ;
+			const rootMaxX = rootMinX + root.size;
+			const rootMaxY = rootMinY + root.size;
+			const rootMaxZ = rootMinZ + root.size;
 
-		let rootHint: FrustumHint;
-		/*
-		 * Fail open for the node containing the eye. The positive-vertex
-		 * outside test can otherwise reject the volume containing the camera.
-		 */
-		if (
-			eyeX >= root.minX &&
-			eyeX <= rootMaxX &&
-			eyeY >= root.minY &&
-			eyeY <= rootMaxY &&
-			eyeZ >= root.minZ &&
-			eyeZ <= rootMaxZ
-		) {
-			rootHint = FrustumHint.INTERSECT;
-		} else if (
-			aabbOutsidePlanes(
-				root.minX,
-				root.minY,
-				root.minZ,
-				rootMaxX,
-				rootMaxY,
-				rootMaxZ,
-				packedPlanes,
-				margin,
-			)
-		) {
-			culledSubtrees++;
+			let rootHint: FrustumHint;
 
-			visitedGroups += visitClassifiedSubtree(root, FrustumHint.OUTSIDE, visit);
+			if (
+				aabbContainsEye(
+					rootMinX,
+					rootMinY,
+					rootMinZ,
+					rootMaxX,
+					rootMaxY,
+					rootMaxZ,
+					eyeX,
+					eyeY,
+					eyeZ,
+				)
+			) {
+				rootHint = FrustumHint.INTERSECT;
+			} else {
+				rootHint = classifyAabbAgainstPlanes(
+					rootMinX,
+					rootMinY,
+					rootMinZ,
+					rootMaxX,
+					rootMaxY,
+					rootMaxZ,
+					packedPlanes,
+					negativeMargin,
+				);
+			}
 
-			continue;
-		} else if (
-			aabbInsidePlanes(
-				root.minX,
-				root.minY,
-				root.minZ,
-				rootMaxX,
-				rootMaxY,
-				rootMaxZ,
-				packedPlanes,
-				margin,
-			)
-		) {
-			rootHint = FrustumHint.INSIDE;
-		} else {
-			rootHint = FrustumHint.INTERSECT;
-		}
-
-		_travNodes.push(root);
-		_travHints.push(rootHint);
-
-		while (_travNodes.length > 0) {
-			const node = _travNodes.pop()!;
-			const hint = _travHints.pop()!;
-
-			/*
-			 * Leaves are exactly one group cell. All groups in this leaf,
-			 * including different LOD buckets, share the leaf AABB and
-			 * therefore share its already-computed classification.
-			 */
-			if (node.depth === OCTREE_MAX_DEPTH) {
-				const groups = node.groups;
-				const groupCount = groups.length;
-
-				visitedGroups += groupCount;
-
-				if (hint === FrustumHint.INSIDE) {
-					insideFastPath += groupCount;
+			if (rootHint !== FrustumHint.INTERSECT) {
+				if (rootHint === FrustumHint.OUTSIDE) {
+					culledSubtrees++;
+				} else {
+					insideFastPath += root.subtreeCount;
 				}
 
-				for (let i = 0; i < groupCount; i++) {
-					visit(groups[i], hint);
-				}
+				visitedGroups += visitClassifiedSubtree(root, rootHint, visit);
 
 				continue;
 			}
 
-			if (!node.children) continue;
+			_travNodes.push(root);
+			_travHints.push(FrustumHint.INTERSECT);
 
-			/*
-			 * Once an ancestor is fully inside or outside, skip all remaining
-			 * AABB tests and walk directly to its leaves.
-			 */
-			if (hint !== FrustumHint.INTERSECT) {
-				for (let i = 0; i < 8; i++) {
-					const child = node.children[i];
+			while (_travNodes.length !== 0) {
+				const node = _travNodes.pop();
+				const hint = _travHints.pop();
 
-					if (!child || child.subtreeCount === 0) {
-						continue;
-					}
+				if (node === undefined || hint === undefined) {
+					break;
+				}
 
-					const emitted = visitClassifiedSubtree(child, hint, visit);
+				if (node.depth === OCTREE_MAX_DEPTH) {
+					const groups = node.groups;
+					const groupCount = groups.length;
 
-					visitedGroups += emitted;
+					visitedGroups += groupCount;
 
 					if (hint === FrustumHint.INSIDE) {
-						insideFastPath += emitted;
+						insideFastPath += groupCount;
 					}
-				}
 
-				continue;
-			}
+					for (let i = 0; i < groupCount; i++) {
+						visit(groups[i], hint);
+					}
 
-			/*
-			 * The parent intersects the frustum, so classify each populated
-			 * child exactly once. A depth-3 child is already the final group
-			 * AABB and needs no later per-group refinement.
-			 */
-			for (let i = 0; i < 8; i++) {
-				const child = node.children[i];
-
-				if (!child || child.subtreeCount === 0) {
 					continue;
 				}
 
-				const childMaxX = child.minX + child.size;
-				const childMaxY = child.minY + child.size;
-				const childMaxZ = child.minZ + child.size;
+				const children = node.children;
 
-				let childHint: FrustumHint;
-
-				if (
-					eyeX >= child.minX &&
-					eyeX <= childMaxX &&
-					eyeY >= child.minY &&
-					eyeY <= childMaxY &&
-					eyeZ >= child.minZ &&
-					eyeZ <= childMaxZ
-				) {
-					childHint = FrustumHint.INTERSECT;
-				} else if (
-					aabbOutsidePlanes(
-						child.minX,
-						child.minY,
-						child.minZ,
-						childMaxX,
-						childMaxY,
-						childMaxZ,
-						packedPlanes,
-						margin,
-					)
-				) {
-					childHint = FrustumHint.OUTSIDE;
-					culledSubtrees++;
-				} else if (
-					aabbInsidePlanes(
-						child.minX,
-						child.minY,
-						child.minZ,
-						childMaxX,
-						childMaxY,
-						childMaxZ,
-						packedPlanes,
-						margin,
-					)
-				) {
-					childHint = FrustumHint.INSIDE;
-				} else {
-					childHint = FrustumHint.INTERSECT;
+				if (children === null) {
+					continue;
 				}
 
-				_travNodes.push(child);
-				_travHints.push(childHint);
+				/*
+				 * This branch is retained defensively. Current traversal emits
+				 * classified subtrees immediately, so stack entries normally
+				 * carry INTERSECT.
+				 */
+				if (hint !== FrustumHint.INTERSECT) {
+					const emitted = visitClassifiedSubtree(node, hint, visit);
+
+					visitedGroups += emitted;
+
+					if (hint === FrustumHint.OUTSIDE) {
+						culledSubtrees++;
+					} else {
+						insideFastPath += emitted;
+					}
+
+					continue;
+				}
+
+				for (let i = 0; i < 8; i++) {
+					const child = children[i];
+
+					if (child === null || child.subtreeCount === 0) {
+						continue;
+					}
+
+					const childMinX = child.minX;
+					const childMinY = child.minY;
+					const childMinZ = child.minZ;
+					const childMaxX = childMinX + child.size;
+					const childMaxY = childMinY + child.size;
+					const childMaxZ = childMinZ + child.size;
+
+					let childHint: FrustumHint;
+
+					if (
+						aabbContainsEye(
+							childMinX,
+							childMinY,
+							childMinZ,
+							childMaxX,
+							childMaxY,
+							childMaxZ,
+							eyeX,
+							eyeY,
+							eyeZ,
+						)
+					) {
+						childHint = FrustumHint.INTERSECT;
+					} else {
+						childHint = classifyAabbAgainstPlanes(
+							childMinX,
+							childMinY,
+							childMinZ,
+							childMaxX,
+							childMaxY,
+							childMaxZ,
+							packedPlanes,
+							negativeMargin,
+						);
+					}
+
+					if (childHint === FrustumHint.INTERSECT) {
+						_travNodes.push(child);
+						_travHints.push(childHint);
+						continue;
+					}
+
+					if (childHint === FrustumHint.OUTSIDE) {
+						culledSubtrees++;
+					} else {
+						insideFastPath += child.subtreeCount;
+					}
+
+					visitedGroups += visitClassifiedSubtree(child, childHint, visit);
+				}
 			}
 		}
+	} finally {
+		/*
+		 * Ensure a throwing callback cannot leave stale nodes that retain
+		 * groups or corrupt the next traversal.
+		 */
+		_travNodes.length = 0;
+		_travHints.length = 0;
+		_collectStack.length = 0;
 	}
 
-	/*
-	 * Leave shared stacks clean even if future changes inspect them outside
-	 * this function.
-	 */
-	_travNodes.length = 0;
-	_travHints.length = 0;
-	_collectStack.length = 0;
-
-	if (stats) {
+	if (stats !== undefined && stats !== null) {
 		stats.visitedGroups = visitedGroups;
 		stats.culledSubtrees = culledSubtrees;
 		stats.insideFastPath = insideFastPath;

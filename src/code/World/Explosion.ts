@@ -124,9 +124,9 @@ export function explode(
 ): ExplosionResult {
 	const radius = options.radius ?? TNT_BLAST_RADIUS;
 	const maxDamage = options.maxDamage ?? TNT_MAX_DAMAGE;
-	const igniter = options.chainIgniter ?? null;
+	const chainIgniter = options.chainIgniter ?? null;
 
-	const { destroy, chain } = collectExplosionTargets(
+	const targets = collectExplosionTargets(
 		cx,
 		cy,
 		cz,
@@ -134,32 +134,43 @@ export function explode(
 		getBlockByWorldCoords,
 	);
 
-	const destroyLength = destroy.length;
-	const chainLength = chain.length;
-	const destroyChainAsTerrain = igniter === null;
-	const destroyed = destroyLength + (destroyChainAsTerrain ? chainLength : 0);
-	const chained = destroyChainAsTerrain ? 0 : chainLength;
+	const destroyTargets = targets.destroy;
+	const chainTargets = targets.chain;
 
-	// Keep the two target arrays separate. This avoids growing `destroy`
-	// to create a temporary combined list when chained TNT is terrain.
+	const destroyCount = destroyTargets.length;
+	const chainCount = chainTargets.length;
+	const destroyChainedTnt = chainIgniter === null;
+
+	const destroyedCount = destroyCount + (destroyChainedTnt ? chainCount : 0);
+
+	const chainedCount = destroyChainedTnt ? 0 : chainCount;
+
+	/*
+	 * Keep chain targets separate from ordinary destruction targets. This
+	 * avoids allocating a combined target array and preserves chain-reaction
+	 * behavior.
+	 */
 	Chunk.beginBlockEditBatch();
 
 	try {
-		if (igniter !== null) {
-			for (let i = 0; i < chainLength; i++) {
-				const target = chain[i];
-				igniter(target.x, target.y, target.z);
+		if (chainIgniter !== null) {
+			for (let i = 0; i < chainCount; i++) {
+				const target = chainTargets[i];
+
+				chainIgniter(target.x, target.y, target.z);
 			}
 		}
 
-		for (let i = 0; i < destroyLength; i++) {
-			const target = destroy[i];
+		for (let i = 0; i < destroyCount; i++) {
+			const target = destroyTargets[i];
+
 			deleteBlock(target.x, target.y, target.z);
 		}
 
-		if (destroyChainAsTerrain) {
-			for (let i = 0; i < chainLength; i++) {
-				const target = chain[i];
+		if (destroyChainedTnt) {
+			for (let i = 0; i < chainCount; i++) {
+				const target = chainTargets[i];
+
 				deleteBlock(target.x, target.y, target.z);
 			}
 		}
@@ -168,29 +179,45 @@ export function explode(
 	}
 
 	if (options.syncExplosion !== false) {
-		getOnExplosion()?.(cx, cy, cz, radius);
+		const notifyExplosion = getOnExplosion();
+
+		if (notifyExplosion !== undefined) {
+			notifyExplosion(cx, cy, cz, radius);
+		}
 	}
 
+	/*
+	 * Read lighting after terrain edits so explosion particles use the
+	 * resulting crater lighting, matching the original behavior.
+	 */
 	const packedLight = getLightByWorldCoords(cx, cy, cz);
 
 	playExplosion(cx, cy, cz, radius, packedLight);
 
-	const maxBurstBlocks = options.maxBurstBlocks ?? 8;
+	/*
+	 * Debris work must be integral. A fractional maxBurstBlocks previously
+	 * allowed one extra iteration because the loop compared an integer
+	 * counter against a fractional upper bound.
+	 */
+	const requestedBurstCount = Math.floor(options.maxBurstBlocks ?? 8);
+
 	const debrisCount =
-		maxBurstBlocks > 0 && destroyed > 0
-			? Math.min(maxBurstBlocks, destroyed)
+		requestedBurstCount > 0 && destroyedCount > 0
+			? Math.min(requestedBurstCount, destroyedCount)
 			: 0;
 
 	if (debrisCount > 0) {
 		const debrisPower = 1 + radius / TNT_BLAST_RADIUS;
-		const debrisStep = destroyed / debrisCount;
+
+		const debrisStep = destroyedCount / debrisCount;
 
 		for (let i = 0; i < debrisCount; i++) {
-			const targetIndex = Math.floor(i * debrisStep);
+			const combinedIndex = Math.floor(i * debrisStep);
+
 			const target =
-				targetIndex < destroyLength
-					? destroy[targetIndex]
-					: chain[targetIndex - destroyLength];
+				combinedIndex < destroyCount
+					? destroyTargets[combinedIndex]
+					: chainTargets[combinedIndex - destroyCount];
 
 			playExplosionDebris(
 				target.x + 0.5,
@@ -204,9 +231,14 @@ export function explode(
 	}
 
 	playLandingDust(cx, cy, cz, radius * 2);
+
 	playExplosionSound(1);
 
-	// Undefined selects the current local player. Explicit null means FX-only.
+	/*
+	 * Undefined selects the current local player. Explicit null requests
+	 * effects only, with no player damage, impulse, trauma, or distance-based
+	 * flash attenuation.
+	 */
 	const player =
 		options.player === undefined ? Map1.mainPlayer : options.player;
 
@@ -214,26 +246,34 @@ export function explode(
 
 	if (player !== null) {
 		const position = player.position;
-		const dx = position.x - cx;
-		const dy = position.y + 0.9 - cy;
-		const dz = position.z - cz;
-		const distanceSquared = dx * dx + dy * dy + dz * dz;
+
+		const deltaX = position.x - cx;
+		const deltaY = position.y + 0.9 - cy;
+		const deltaZ = position.z - cz;
+
+		const distanceSquared = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+
 		const distance = Math.sqrt(distanceSquared);
 		const falloff = explosionFalloff(distance, radius);
 
 		if (falloff > 0) {
 			if (player.stats.gamemode !== Gamemodes.Creative) {
-				player.stats.takeDamage(Math.floor(falloff * maxDamage));
+				const damage = Math.floor(falloff * maxDamage);
+
+				if (damage > 0) {
+					player.stats.takeDamage(damage);
+				}
 			}
 
 			const force = falloff * 11;
 			const inverseDistance = 1 / Math.max(distance, 0.5);
-			const scaledForce = inverseDistance * force;
+
+			const horizontalScale = inverseDistance * force;
 
 			player.playerVehicle.addExplosionImpulse(
-				dx * scaledForce,
-				(dy * inverseDistance * 0.6 + 0.65) * force,
-				dz * scaledForce,
+				deltaX * horizontalScale,
+				(deltaY * inverseDistance * 0.6 + 0.65) * force,
+				deltaZ * horizontalScale,
 			);
 
 			player.playerCamera.addTrauma(Math.min(1, falloff + 0.25));
@@ -257,25 +297,24 @@ export function explode(
 		flashScreen(flashStrength);
 	}
 
-	const registry = Map1.mobRegistry;
+	const mobRegistry = Map1.mobRegistry;
 
-	if (registry) {
+	if (mobRegistry !== null && mobRegistry !== undefined) {
 		/*
-		 * These arrays remain necessary because blastMobDamages accepts a
-		 * position array, while applying its results requires retaining the
-		 * matching mob for each position.
-		 *
-		 * Per-call arrays are safer than module-level scratch buffers because
-		 * mob.takeDamage may synchronously cause another explosion.
+		 * Per-explosion arrays are intentional. Reusing module-level buffers
+		 * would be unsafe because takeDamage() may synchronously trigger a
+		 * nested explosion.
 		 */
 		const liveMobs: Mob[] = [];
 		const mobPositions: Mob["position"][] = [];
 
-		for (const mob of registry.getAllMobs()) {
-			if (!mob.isDisposed) {
-				liveMobs.push(mob);
-				mobPositions.push(mob.position);
+		for (const mob of mobRegistry.getAllMobs()) {
+			if (mob.isDisposed) {
+				continue;
 			}
+
+			liveMobs.push(mob);
+			mobPositions.push(mob.position);
 		}
 
 		const mobCount = liveMobs.length;
@@ -290,7 +329,13 @@ export function explode(
 				maxDamage,
 			);
 
-			for (let i = 0; i < mobCount; i++) {
+			/*
+			 * Use the shorter length defensively in case the simulation
+			 * implementation returns fewer entries than positions.
+			 */
+			const resultCount = Math.min(mobCount, damages.length);
+
+			for (let i = 0; i < resultCount; i++) {
 				const damage = damages[i];
 
 				if (damage <= 0) {
@@ -298,20 +343,31 @@ export function explode(
 				}
 
 				const mob = liveMobs[i];
-				const position = mob.position;
-				const x = position.x;
-				const y = position.y;
-				const z = position.z;
 
-				// Keep this object per call in case takeDamage retains it.
-				mob.takeDamage(damage, { x, y, z });
+				/*
+				 * Capture the impact position before takeDamage(). The call
+				 * may dispose or relocate the mob synchronously.
+				 */
+				const position = mob.position;
+				const impactX = position.x;
+				const impactY = position.y;
+				const impactZ = position.z;
+
+				mob.takeDamage(damage, {
+					x: impactX,
+					y: impactY,
+					z: impactZ,
+				});
 
 				if (mob.isDisposed) {
-					playMobDeath(x, y, z);
+					playMobDeath(impactX, impactY, impactZ);
 				}
 			}
 		}
 	}
 
-	return { destroyed, chained };
+	return {
+		destroyed: destroyedCount,
+		chained: chainedCount,
+	};
 }

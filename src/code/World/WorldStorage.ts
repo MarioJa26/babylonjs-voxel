@@ -38,6 +38,16 @@ const ENTITY_PREFIX = "entity:";
  */
 const CHUNK_EXISTS_WITHOUT_BLOCKS: SavedChunkData = { blocks: null };
 
+type NumericChunkStore = LevelDbChunkStore & {
+	hasChunksNumeric?: (
+		coords: readonly ChunkReadCoord[],
+	) => Promise<Set<number>>;
+
+	readChunksNumeric?: (
+		coords: readonly ChunkReadCoord[],
+	) => Promise<Map<number, Uint8Array>>;
+};
+
 class WorldStorageImpl {
 	private store: LevelDbChunkStore | null = null;
 	private initPromise: Promise<void> | null = null;
@@ -264,74 +274,125 @@ class WorldStorageImpl {
 		outMap?: Map<bigint, SavedChunkData>,
 	): Promise<Map<bigint, SavedChunkData>> {
 		const result = outMap ?? new Map<bigint, SavedChunkData>();
-		const n = chunkIds.length;
 
-		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING || n === 0) {
+		const count = chunkIds.length;
+
+		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING || count === 0) {
 			return result;
 		}
 
 		const store = this.store ?? (await this.getStore());
-		if (!store) return result;
 
-		const includeVoxelData = options?.includeVoxelData ?? true;
-		const coords: ChunkReadCoord[] = new Array(n);
-		const out: ChunkCoordsOut = { cx: 0, cy: 0, cz: 0 };
-
-		for (let i = 0; i < n; i++) {
-			const id = chunkIds[i];
-			chunkIdToCoordsOut(id, out);
-			coords[i] = { id, cx: out.cx, cy: out.cy, cz: out.cz };
-		}
-
-		if (!includeVoxelData) {
-			// Use numeric hasChunks to avoid string alloc per entry
-			const hasNumeric = await (
-				store as unknown as {
-					hasChunksNumeric?: (
-						c: readonly ChunkReadCoord[],
-					) => Promise<Set<number>>;
-				}
-			).hasChunksNumeric?.(coords);
-			if (hasNumeric) {
-				for (let i = 0; i < n; i++) {
-					const c = coords[i];
-					const nk = packChunkKeyNumeric(c.cx, c.cy, c.cz);
-					if (hasNumeric.has(nk))
-						result.set(c.id!, CHUNK_EXISTS_WITHOUT_BLOCKS);
-				}
-			} else {
-				// fallback string path
-				for (let i = 0; i < n; i++)
-					coords[i].key = `${coords[i].cx},${coords[i].cy},${coords[i].cz}`;
-				const existing = await store.hasChunks(coords);
-				for (let i = 0; i < n; i++)
-					if (existing.has(coords[i].key!))
-						result.set(coords[i].id!, CHUNK_EXISTS_WITHOUT_BLOCKS);
-			}
+		if (store === null) {
 			return result;
 		}
 
-		// Prefer numeric read to avoid per-entry string keys
-		const storeAny = store as unknown as {
-			readChunksNumeric?: (
-				c: readonly ChunkReadCoord[],
-			) => Promise<Map<number, Uint8Array>>;
-		};
-		if (storeAny.readChunksNumeric) {
-			const readResults = await storeAny.readChunksNumeric(coords);
-			for (let i = 0; i < n; i++) {
-				const c = coords[i];
-				const nk = packChunkKeyNumeric(c.cx, c.cy, c.cz);
-				const blob = readResults.get(nk);
-				if (blob) result.set(c.id!, deserializeVoxelDataShared(blob));
+		const includeVoxelData = options?.includeVoxelData !== false;
+
+		/*
+		 * Store the caller's bigint ID in each coordinate entry so results can
+		 * be written directly into the output map without maintaining a second
+		 * parallel ID array.
+		 */
+		const coords = new Array<ChunkReadCoord>(count);
+
+		for (let i = 0; i < count; i++) {
+			const chunkId = chunkIds[i];
+
+			/*
+			 * Decode directly inside the loop. The low and high conversions are
+			 * each performed exactly once per ID, with the remaining extraction
+			 * handled using Number bit operations.
+			 */
+			const low = Number(chunkId & LOW32_MASK);
+			const high = Number((chunkId >> 32n) & LOW32_MASK);
+
+			coords[i] = {
+				id: chunkId,
+				cx: (low & 0x1fffff) - BIAS_NUM,
+				cy: (((low >>> 21) | (high << 11)) & 0x1fffff) - BIAS_NUM,
+				cz: ((high >>> 10) & 0x1fffff) - BIAS_NUM,
+			};
+		}
+
+		const numericStore = store as NumericChunkStore;
+
+		if (!includeVoxelData) {
+			const hasChunksNumeric = numericStore.hasChunksNumeric;
+
+			if (hasChunksNumeric !== undefined) {
+				const existingKeys = await hasChunksNumeric.call(numericStore, coords);
+
+				for (let i = 0; i < count; i++) {
+					const coord = coords[i];
+
+					const numericKey = packChunkKeyNumeric(coord.cx, coord.cy, coord.cz);
+
+					if (existingKeys.has(numericKey)) {
+						result.set(coord.id as bigint, CHUNK_EXISTS_WITHOUT_BLOCKS);
+					}
+				}
+
+				return result;
 			}
-		} else {
-			for (let i = 0; i < n; i++)
-				coords[i].key = `${coords[i].cx},${coords[i].cy},${coords[i].cz}`;
-			const readResults = await store.readChunks(coords);
-			for (let i = 0; i < n; i++) {
-				const blob = readResults.get(coords[i].key!);
-				if (blob) result.set(coords[i].id!, deserializeVoxelDataShared(blob));
+
+			/*
+			 * Construct string keys only when the store does not expose the
+			 * numeric API. The normal numeric path performs no coordinate-key
+			 * string allocations.
+			 */
+			assignStringChunkKeys(coords);
+
+			const existingKeys = await store.hasChunks(coords);
+
+			for (let i = 0; i < count; i++) {
+				const coord = coords[i];
+				const key = coord.key;
+
+				if (key !== undefined && existingKeys.has(key)) {
+					result.set(coord.id as bigint, CHUNK_EXISTS_WITHOUT_BLOCKS);
+				}
+			}
+
+			return result;
+		}
+
+		const readChunksNumeric = numericStore.readChunksNumeric;
+
+		if (readChunksNumeric !== undefined) {
+			const blobs = await readChunksNumeric.call(numericStore, coords);
+
+			for (let i = 0; i < count; i++) {
+				const coord = coords[i];
+
+				const numericKey = packChunkKeyNumeric(coord.cx, coord.cy, coord.cz);
+
+				const blob = blobs.get(numericKey);
+
+				if (blob !== undefined) {
+					result.set(coord.id as bigint, deserializeVoxelDataShared(blob));
+				}
+			}
+
+			return result;
+		}
+
+		assignStringChunkKeys(coords);
+
+		const blobs = await store.readChunks(coords);
+
+		for (let i = 0; i < count; i++) {
+			const coord = coords[i];
+			const key = coord.key;
+
+			if (key === undefined) {
+				continue;
+			}
+
+			const blob = blobs.get(key);
+
+			if (blob !== undefined) {
+				result.set(coord.id as bigint, deserializeVoxelDataShared(blob));
 			}
 		}
 
@@ -471,6 +532,13 @@ function chunkIdToCoords(chunkId: bigint): [number, number, number] {
 	chunkIdToCoordsOut(chunkId, _coordsOutScratch);
 	const s = _coordsOutScratch;
 	return [s.cx, s.cy, s.cz];
+}
+
+function assignStringChunkKeys(coords: ChunkReadCoord[]): void {
+	for (let i = 0, length = coords.length; i < length; i++) {
+		const coord = coords[i];
+		coord.key = `${coord.cx},${coord.cy},${coord.cz}`;
+	}
 }
 
 /**

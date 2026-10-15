@@ -2,27 +2,35 @@
 //
 // Worker-safe single source of truth for virtual mason shape-variant IDs.
 //
-// Virtual IDs are allocated deterministically (must match BlockTextures.ts
-// and Shape/BlockShapes.ts):
-//   virtualId = VIRTUAL_BLOCK_ID_START + (sourceBlockId - 1) * VIRTUAL_SHAPE_COUNT + shapeIdx
-// with VIRTUAL_SHAPE_COUNT = 5 (slab, stairs, half_wall, pane, fence).
+// Virtual IDs are allocated deterministically and must match BlockTextures.ts
+// and Shape/BlockShapes.ts:
 //
-// Transparent materials (glass/water) must survive the shape change:
-// a glass stairs block must still read as glass, not opaque. Every
-// transparency/material lookup should resolve through getSourceBlockId()
-// first, so virtual variants inherit their source block's material.
+//   virtualId =
+//       VIRTUAL_BLOCK_ID_START +
+//       (sourceBlockId - 1) * VIRTUAL_SHAPE_COUNT +
+//       shapeIdx
+//
+// VIRTUAL_SHAPE_COUNT = 5:
+//   0 = slab
+//   1 = stairs
+//   2 = half_wall
+//   3 = pane
+//   4 = fence
+//
+// Material lookups must resolve virtual IDs through getSourceBlockId() so
+// transparent materials such as glass and water retain their behavior.
 
 export const VIRTUAL_BLOCK_ID_START = 500;
 export const VIRTUAL_SHAPE_COUNT = 5;
 
-/** Block ids are packed into 10 bits (see Chunk/DataStructures/BlockEncoding). */
+/** Block IDs are packed into 10 bits. */
 export const BLOCK_ID_LIMIT = 1024;
 
 /**
- * Highest source block id that could receive shape variants before the highest
- * generated virtual id overflows the 10-bit block-id space.
+ * Highest source ID whose complete set of variants fits in the block-ID space.
  *
- * Worst case is shapeIdx = VIRTUAL_SHAPE_COUNT - 1:
+ * Worst case:
+ *
  *   START + (source - 1) * COUNT + (COUNT - 1) <= BLOCK_ID_LIMIT - 1
  */
 const BLOCK_BUDGET_SOURCE_MAX =
@@ -32,81 +40,74 @@ const BLOCK_BUDGET_SOURCE_MAX =
 	) + 1;
 
 /**
- * Highest source block id that actually gets shape variants.
- *
- * The 10-bit budget allows 104, but the real ceiling is lower: source block
- * 101 maps to virtual ids 1000-1004, which collide with the hand-authored
- * wooden tool items (1000-1004), and 102/103/104 collide with the stone
- * (1005-1009) and iron (1010-1014) tool items. Those collisions were silent —
- * `registerItem` shallow-merges, so the tool's icon and `maxStack: 1` survived
- * while its name, blockId and useAction were overwritten, turning each tool
- * into a placeable ore slab.
- *
- * Capping at 100 keeps every generated virtual id below 1000 and leaves
- * 101-499 free for real blocks. Blocks 101-104 (ruby / sapphire / emerald ore
- * and TempleGlyph) therefore place as cubes only, which costs nothing.
+ * Source IDs 101 and above would generate IDs starting at 1000, colliding
+ * with hand-authored tool items. Keep all generated variants below 1000.
  */
 export const MAX_SHAPE_VARIANT_SOURCE_ID = Math.min(
 	100,
 	BLOCK_BUDGET_SOURCE_MAX,
 );
 
-/** Number of virtual variant ids generated below {@link MAX_SHAPE_VARIANT_SOURCE_ID}. */
+/** Number of generated virtual block IDs. */
 export const VIRTUAL_BLOCK_ID_COUNT =
 	MAX_SHAPE_VARIANT_SOURCE_ID * VIRTUAL_SHAPE_COUNT;
+
+/** Exclusive upper bound of the generated virtual block-ID range. */
+export const VIRTUAL_BLOCK_ID_END =
+	VIRTUAL_BLOCK_ID_START + VIRTUAL_BLOCK_ID_COUNT;
 
 export const GLASS_01_BLOCK_ID = 60;
 export const GLASS_02_BLOCK_ID = 61;
 export const WATER_SOURCE_BLOCK_ID = 30;
 
-/** Base IDs that count as transparent for occlusion/meshing/light. */
-const TRANSPARENT_BASE_IDS = new Set([30, 60, 61, 64, 66]);
-
+/**
+ * Returns true only for IDs that belong to the generated virtual block range.
+ *
+ * IDs at or above VIRTUAL_BLOCK_ID_END are not virtual blocks, even if they
+ * are numerically above VIRTUAL_BLOCK_ID_START.
+ */
 export function isVirtualBlockId(blockId: number): boolean {
 	return (
-		typeof blockId === "number" &&
 		Number.isInteger(blockId) &&
-		blockId >= VIRTUAL_BLOCK_ID_START
+		blockId >= VIRTUAL_BLOCK_ID_START &&
+		blockId < VIRTUAL_BLOCK_ID_END
 	);
 }
 
 /**
- * Map any block ID back to its material source.
- * Non-virtual IDs return unchanged; virtual IDs return the source cube ID.
- * Out-of-range / non-integer inputs return the input unchanged.
+ * Maps a valid virtual block ID back to its material source.
+ *
+ * Non-virtual, out-of-range, and non-integer values are returned unchanged.
  */
 export function getSourceBlockId(blockId: number): number {
-	if (
-		typeof blockId !== "number" ||
-		!Number.isFinite(blockId) ||
-		blockId < VIRTUAL_BLOCK_ID_START
-	) {
+	if (!isVirtualBlockId(blockId)) {
 		return blockId;
 	}
-	const offset = Math.floor(blockId) - VIRTUAL_BLOCK_ID_START;
-	if (offset < 0) return blockId;
-	const source = Math.floor(offset / VIRTUAL_SHAPE_COUNT) + 1;
-	if (source < 1) return blockId;
-	return source;
+
+	return (
+		Math.floor((blockId - VIRTUAL_BLOCK_ID_START) / VIRTUAL_SHAPE_COUNT) + 1
+	);
 }
 
 /**
- * All virtual IDs derived from one source block (slab/stairs/half_wall/pane/fence).
+ * Returns all virtual variants derived from a source block:
+ * slab, stairs, half-wall, pane, and fence.
+ *
+ * Sources outside the configured variant range return an empty array.
  */
 export function getVirtualBlockIdsForSource(sourceBlockId: number): number[] {
 	if (
-		typeof sourceBlockId !== "number" ||
-		!Number.isFinite(sourceBlockId) ||
-		sourceBlockId < 1
+		!Number.isInteger(sourceBlockId) ||
+		sourceBlockId < 1 ||
+		sourceBlockId > MAX_SHAPE_VARIANT_SOURCE_ID
 	) {
 		return [];
 	}
+
 	const base =
-		VIRTUAL_BLOCK_ID_START +
-		(Math.floor(sourceBlockId) - 1) * VIRTUAL_SHAPE_COUNT;
-	const out: number[] = [];
-	for (let i = 0; i < VIRTUAL_SHAPE_COUNT; i++) out.push(base + i);
-	return out;
+		VIRTUAL_BLOCK_ID_START + (sourceBlockId - 1) * VIRTUAL_SHAPE_COUNT;
+
+	return [base, base + 1, base + 2, base + 3, base + 4];
 }
 
 export function isGlassSourceId(sourceId: number): boolean {
@@ -117,26 +118,53 @@ export function isWaterSourceId(sourceId: number): boolean {
 	return sourceId === WATER_SOURCE_BLOCK_ID;
 }
 
-/** True for base glass IDs and any virtual variant derived from glass. */
+/**
+ * Returns true for transparent source materials.
+ *
+ * A switch avoids allocating or consulting a Set for this small, fixed list.
+ */
+export function isTransparentSourceId(sourceId: number): boolean {
+	switch (sourceId) {
+		case WATER_SOURCE_BLOCK_ID:
+		case GLASS_01_BLOCK_ID:
+		case GLASS_02_BLOCK_ID:
+		case 64:
+		case 66:
+			return true;
+
+		default:
+			return false;
+	}
+}
+
+/** True for base glass IDs and valid virtual variants derived from glass. */
 export function isGlassBlockId(blockId: number): boolean {
-	if (typeof blockId !== "number" || !Number.isFinite(blockId)) return false;
-	return isGlassSourceId(getSourceBlockId(Math.floor(blockId)));
+	return (
+		Number.isInteger(blockId) && isGlassSourceId(getSourceBlockId(blockId))
+	);
 }
 
-/** True for base water ID and any virtual variant derived from water. */
+/** True for the base water ID and valid virtual variants derived from water. */
 export function isWaterBlockId(blockId: number): boolean {
-	if (typeof blockId !== "number" || !Number.isFinite(blockId)) return false;
-	return isWaterSourceId(getSourceBlockId(Math.floor(blockId)));
+	return (
+		Number.isInteger(blockId) && isWaterSourceId(getSourceBlockId(blockId))
+	);
 }
 
-/** True for any transparent base material, including via virtual inheritance. */
+/**
+ * True for transparent base materials and valid virtual variants inheriting
+ * from those materials.
+ */
 export function isTransparentBlockId(blockId: number): boolean {
-	if (typeof blockId !== "number" || !Number.isFinite(blockId)) return false;
-	return TRANSPARENT_BASE_IDS.has(getSourceBlockId(Math.floor(blockId)));
+	return (
+		Number.isInteger(blockId) &&
+		isTransparentSourceId(getSourceBlockId(blockId))
+	);
 }
 
-/** Water filters full sunlight (carries the tinted-sun behavior). */
+/** Water filters full sunlight, including valid virtual water variants. */
 export function isFullSunFilterBlockId(blockId: number): boolean {
-	if (typeof blockId !== "number" || !Number.isFinite(blockId)) return false;
-	return isWaterSourceId(getSourceBlockId(Math.floor(blockId)));
+	return (
+		Number.isInteger(blockId) && isWaterSourceId(getSourceBlockId(blockId))
+	);
 }

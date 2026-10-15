@@ -1,97 +1,131 @@
 import type { ExplosionData } from "@/code/Network/protocol/messages";
 
 /**
- * Recent explosion ids, for redelivery suppression.
+ * Highest explosion serial number applied by this connection.
  *
- * PERF/RATIONALE: an explosion used to cross the network as a bare coordinate
- * triple plus radius, with no way to tell a NEW detonation from a redelivered
- * one. Every effect it triggered — particles, sound, screen flash, the terrain
- * mutation — was therefore non-idempotent: a single duplicated packet replayed
- * all of it. Making the event carry an id turns the whole thing into one
- * operation that can be applied exactly once.
+ * The server assigns monotonically increasing unsigned 32-bit IDs. RFC-1982
+ * serial arithmetic handles wraparound without resetting this value.
  *
- * A single high-water mark rather than a set of recent ids. The server assigns
- * ids monotonically, so "strictly newer than everything seen" is a complete
- * test for "not a redelivery" — a ring of recent ids would reject exactly the
- * same set, and a set that outgrows its window would start ACCEPTING old
- * packets, which is the one behaviour a dedup check must never have.
- *
- * Comparison is serial-number arithmetic, so the u32 wrap needs no reset.
+ * ID 0 is reserved for legacy messages that do not carry a usable event ID.
  */
 let lastSeenId = 0;
 
+const U32_HALF_RANGE = 0x80000000;
+
+const DISTANT_RANGE = 96;
+const OFFSCREEN_RANGE = 256;
+
+const DISTANT_RANGE_SQUARED = DISTANT_RANGE * DISTANT_RANGE;
+
+const OFFSCREEN_RANGE_SQUARED = OFFSCREEN_RANGE * OFFSCREEN_RANGE;
+
+// Coordinate hash quantization and constants.
+const VISUAL_SEED_SCALE = 16;
+const HASH_X = 73856093;
+const HASH_Y = 19349663;
+const HASH_Z = 83492791;
+
 /**
- * True when `id` has not been applied before.
+ * True when an explosion event has not already been applied.
  *
- * Consumes the id: a second call with the same id returns false. Callers must
- * therefore invoke this exactly once per received event, before doing any work.
+ * This function consumes accepted nonzero IDs. Call it exactly once for each
+ * received event, before applying terrain changes or audiovisual effects.
+ *
+ * ID 0 means the server did not provide a usable ID, so those events cannot
+ * be deduplicated and are always accepted.
  */
 export function claimExplosionEvent(id: number): boolean {
-	// 0 means "no id on the wire" — an older or partial server. Nothing to
-	// dedup against, so treat every such event as new.
-	if (id === 0) return true;
+	/*
+	 * Convert the wire value to its unsigned 32-bit representation once.
+	 * This also keeps serial arithmetic consistent if the decoder exposes a
+	 * signed int32 value.
+	 */
+	const normalizedId = id >>> 0;
 
-	if (lastSeenId === 0) {
-		lastSeenId = id;
+	if (normalizedId === 0) {
 		return true;
 	}
 
-	// Anything not strictly newer than the high-water mark is a duplicate or a
-	// straggler, and replaying an old explosion is worse than dropping a new one.
-	if (!isNewer(id, lastSeenId)) return false;
+	const previousId = lastSeenId;
 
-	lastSeenId = id;
+	if (previousId === 0) {
+		lastSeenId = normalizedId;
+		return true;
+	}
+
+	if (!isNewer(normalizedId, previousId)) {
+		return false;
+	}
+
+	lastSeenId = normalizedId;
 	return true;
 }
 
-/** RFC-1982 style comparison for wrapping u32 counters. */
+/**
+ * RFC-1982-style comparison for unsigned 32-bit serial numbers.
+ *
+ * A is newer than B when the forward distance is in the open interval
+ * (0, 2^31). A distance of exactly 2^31 is intentionally treated as
+ * ambiguous and therefore not newer.
+ */
 function isNewer(a: number, b: number): boolean {
-	return (a - b) >>> 0 !== 0 && (a - b) >>> 0 < 0x80000000;
+	const delta = (a - b) >>> 0;
+
+	return delta !== 0 && delta < U32_HALF_RANGE;
 }
 
-/** Forget all history. Call on connect, so a new room starts clean. */
+/** Forget deduplication history when starting a new server connection. */
 export function resetExplosionDedup(): void {
 	lastSeenId = 0;
 }
 
 /**
- * Deterministic visual seed for one explosion.
+ * Returns a deterministic unsigned 32-bit visual seed for an explosion.
  *
- * Every client derives the same value from the same server-assigned seed, so
- * particles are identical across clients instead of each client producing
- * whatever its local PRNG happened to emit.
+ * A nonzero server-provided seed is preferred. Legacy events derive a stable
+ * seed from coordinates so all clients render the same particle pattern.
  */
 export function explosionVisualSeed(data: ExplosionData): number {
-	if (data.seed !== undefined && data.seed !== 0) return data.seed >>> 0;
+	const providedSeed = data.seed;
 
-	// Fallback for a server that does not send a seed: derive from the
-	// coordinates so all clients still agree, at the cost of two explosions at
-	// the same place looking alike.
+	if (providedSeed !== undefined && providedSeed !== 0) {
+		return providedSeed >>> 0;
+	}
+
+	const x = Math.round(data.x * VISUAL_SEED_SCALE);
+	const y = Math.round(data.y * VISUAL_SEED_SCALE);
+	const z = Math.round(data.z * VISUAL_SEED_SCALE);
+
 	return (
-		((Math.round(data.x * 16) * 73856093) ^
-			(Math.round(data.y * 16) * 19349663) ^
-			(Math.round(data.z * 16) * 83492791)) >>>
-		0
+		(Math.imul(x, HASH_X) ^ Math.imul(y, HASH_Y) ^ Math.imul(z, HASH_Z)) >>> 0
 	);
 }
 
-/** Effect fidelity for an explosion, from distance alone. */
+/** Effect fidelity for an explosion, selected from camera distance. */
 export const enum ExplosionVisualTier {
-	/** Full particles and collision. */
+	/** Full particles and debris collision. */
 	Near,
-	/** Flash and smoke, no debris collision. */
+
+	/** Flash and smoke, without debris collision. */
 	Distant,
-	/** Almost nothing — audio only. */
+
+	/** Minimal visual work; audio only. */
 	Offscreen,
 }
 
 /**
- * Pick an explosion's visual tier.
+ * Select an explosion's visual tier from squared camera distance.
  *
- * @param distanceSq Squared distance from the camera.
+ * Passing squared distance avoids a square root in the caller.
  */
 export function explosionVisualTier(distanceSq: number): ExplosionVisualTier {
-	if (distanceSq > 256 * 256) return ExplosionVisualTier.Offscreen;
-	if (distanceSq > 96 * 96) return ExplosionVisualTier.Distant;
+	if (distanceSq > OFFSCREEN_RANGE_SQUARED) {
+		return ExplosionVisualTier.Offscreen;
+	}
+
+	if (distanceSq > DISTANT_RANGE_SQUARED) {
+		return ExplosionVisualTier.Distant;
+	}
+
 	return ExplosionVisualTier.Near;
 }

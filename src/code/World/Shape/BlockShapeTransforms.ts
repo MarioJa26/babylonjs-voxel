@@ -15,9 +15,21 @@ export type ShapeBounds = {
 	faceMask: number;
 };
 
+type ShapeTransformConfig = {
+	rotateY: boolean;
+	allowFlipY: boolean;
+	usesSliceState: boolean;
+};
+
 export const getSliceAxis = (rotation: number): number => {
-	const sliceAxisRaw = rotation & 3;
-	return sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
+	switch (rotation & 3) {
+		case 1:
+			return 0;
+		case 2:
+			return 2;
+		default:
+			return 1;
+	}
 };
 
 export const transformBox = (
@@ -38,45 +50,39 @@ export const transformBox = (
 
 	switch (rotation & 3) {
 		case 1: {
-			const oldMinX = minX;
-			const oldMaxX = maxX;
-			const oldMinZ = minZ;
-			const oldMaxZ = maxZ;
-			minX = 1 - oldMaxZ;
-			maxX = 1 - oldMinZ;
-			minZ = oldMinX;
-			maxZ = oldMaxX;
+			const sourceMinX = minX;
+			const sourceMaxX = maxX;
+
+			minX = 1 - maxZ;
+			maxX = 1 - minZ;
+			minZ = sourceMinX;
+			maxZ = sourceMaxX;
 			break;
 		}
-		case 2: {
-			const oldMinX = minX;
-			const oldMaxX = maxX;
-			const oldMinZ = minZ;
-			const oldMaxZ = maxZ;
-			minX = 1 - oldMaxX;
-			maxX = 1 - oldMinX;
-			minZ = 1 - oldMaxZ;
-			maxZ = 1 - oldMinZ;
+
+		case 2:
+			minX = 1 - maxX;
+			maxX = 1 - min[0];
+			minZ = 1 - maxZ;
+			maxZ = 1 - min[2];
 			break;
-		}
+
 		case 3: {
-			const oldMinX = minX;
-			const oldMaxX = maxX;
-			const oldMinZ = minZ;
-			const oldMaxZ = maxZ;
-			minX = oldMinZ;
-			maxX = oldMaxZ;
-			minZ = 1 - oldMaxX;
-			maxZ = 1 - oldMinX;
+			const sourceMinX = minX;
+			const sourceMaxX = maxX;
+
+			minX = minZ;
+			maxX = maxZ;
+			minZ = 1 - sourceMaxX;
+			maxZ = 1 - sourceMinX;
 			break;
 		}
 	}
 
 	if (flipY) {
-		const newMinY = 1 - maxY;
-		const newMaxY = 1 - minY;
-		minY = newMinY;
-		maxY = newMaxY;
+		const sourceMinY = minY;
+		minY = 1 - maxY;
+		maxY = 1 - sourceMinY;
 	}
 
 	return {
@@ -86,100 +92,90 @@ export const transformBox = (
 };
 
 /**
- * Transform the face mask together with the geometry.
+ * Transforms a face mask using the same rotation and vertical flip applied
+ * to its corresponding geometry.
  *
- * IMPORTANT:
- * - Y rotation changes horizontal faces (+X/-X/+Z/-Z)
- * - flipY swaps top/bottom (+Y/-Y)
- *
- * This is what fixes upside-down stairs:
- * the quarter-box mask must change from hiding bottom to hiding top.
+ * This function is only used to initialize FACE_MASK_TRANSFORM_LUT.
  */
 const transformFaceMaskSlow = (
 	faceMask: number,
 	rotation: number,
 	flipY: boolean,
 ): number => {
-	const has = (bit: number) => (faceMask & bit) !== 0;
+	let px = (faceMask & FACE_PX) !== 0;
+	let nx = (faceMask & FACE_NX) !== 0;
+	let py = (faceMask & FACE_PY) !== 0;
+	let ny = (faceMask & FACE_NY) !== 0;
+	let pz = (faceMask & FACE_PZ) !== 0;
+	let nz = (faceMask & FACE_NZ) !== 0;
 
-	let px = has(FACE_PX);
-	let nx = has(FACE_NX);
-	let py = has(FACE_PY);
-	let ny = has(FACE_NY);
-	let pz = has(FACE_PZ);
-	let nz = has(FACE_NZ);
-
-	// Rotate horizontal faces around Y
 	switch (rotation & 3) {
-		case 0:
-			break;
-
 		case 1: {
-			const oldPx = px;
-			const oldNx = nx;
-			const oldPz = pz;
-			const oldNz = nz;
+			const sourcePx = px;
+			const sourceNx = nx;
+			const sourcePz = pz;
+			const sourceNz = nz;
 
-			px = oldNz;
-			nx = oldPz;
-			pz = oldPx;
-			nz = oldNx;
+			px = sourceNz;
+			nx = sourcePz;
+			pz = sourcePx;
+			nz = sourceNx;
 			break;
 		}
 
 		case 2: {
-			const oldPx = px;
-			const oldNx = nx;
-			const oldPz = pz;
-			const oldNz = nz;
+			const sourcePx = px;
+			const sourceNx = nx;
+			const sourcePz = pz;
+			const sourceNz = nz;
 
-			px = oldNx;
-			nx = oldPx;
-			pz = oldNz;
-			nz = oldPz;
+			px = sourceNx;
+			nx = sourcePx;
+			pz = sourceNz;
+			nz = sourcePz;
 			break;
 		}
 
 		case 3: {
-			const oldPx = px;
-			const oldNx = nx;
-			const oldPz = pz;
-			const oldNz = nz;
+			const sourcePx = px;
+			const sourceNx = nx;
+			const sourcePz = pz;
+			const sourceNz = nz;
 
-			px = oldPz;
-			nx = oldNz;
-			pz = oldNx;
-			nz = oldPx;
+			px = sourcePz;
+			nx = sourceNz;
+			pz = sourceNx;
+			nz = sourcePx;
 			break;
 		}
 	}
 
-	// Flip vertically: swap top/bottom
 	if (flipY) {
-		const oldPy = py;
+		const sourcePy = py;
 		py = ny;
-		ny = oldPy;
+		ny = sourcePy;
 	}
 
-	let out = 0;
-	if (px) out |= FACE_PX;
-	if (nx) out |= FACE_NX;
-	if (py) out |= FACE_PY;
-	if (ny) out |= FACE_NY;
-	if (pz) out |= FACE_PZ;
-	if (nz) out |= FACE_NZ;
-
-	return out;
+	return (
+		(px ? FACE_PX : 0) |
+		(nx ? FACE_NX : 0) |
+		(py ? FACE_PY : 0) |
+		(ny ? FACE_NY : 0) |
+		(pz ? FACE_PZ : 0) |
+		(nz ? FACE_NZ : 0)
+	);
 };
 
 const FACE_MASK_TRANSFORM_LUT = new Uint8Array(64 * 4 * 2);
-for (let mask = 0; mask < 64; mask++) {
-	for (let rot = 0; rot < 4; rot++) {
-		for (let flip = 0; flip < 2; flip++) {
-			const index = mask | (rot << 6) | (flip << 8);
-			FACE_MASK_TRANSFORM_LUT[index] = transformFaceMaskSlow(
+
+for (let flip = 0; flip < 2; flip++) {
+	for (let rotation = 0; rotation < 4; rotation++) {
+		const offset = (rotation << 6) | (flip << 8);
+
+		for (let mask = 0; mask < 64; mask++) {
+			FACE_MASK_TRANSFORM_LUT[offset | mask] = transformFaceMaskSlow(
 				mask,
-				rot,
+				rotation,
 				flip === 1,
 			);
 		}
@@ -188,26 +184,26 @@ for (let mask = 0; mask < 64; mask++) {
 
 const transformedShapeCache = new Map<number, ShapeBounds[]>();
 
-function getRelevantStateForShape(
+const getRelevantStateForShape = (
 	blockState: number,
-	shape: {
-		rotateY: boolean;
-		allowFlipY: boolean;
-		usesSliceState: boolean;
-	},
-): number {
-	let relevant = 0;
+	shape: ShapeTransformConfig,
+): number => {
+	let relevantState = 0;
+
 	if (shape.rotateY) {
-		relevant |= blockState & 3;
+		relevantState |= blockState & 3;
 	}
+
 	if (shape.allowFlipY) {
-		relevant |= blockState & 4;
+		relevantState |= blockState & 4;
 	}
+
 	if (shape.usesSliceState) {
-		relevant |= blockState & 0x38;
+		relevantState |= blockState & 0x38;
 	}
-	return relevant;
-}
+
+	return relevantState;
+};
 
 export const getTransformedShapeBoxes = (
 	blockId: number,
@@ -216,177 +212,183 @@ export const getTransformedShapeBoxes = (
 	const shape = getShapeForBlockId(blockId);
 	const relevantState = getRelevantStateForShape(blockState, shape);
 	const canCache = areShapesInitialized();
-	const cacheKey = ((blockId & 0xffff) << 6) | (relevantState & 63);
+
+	/*
+	 * Multiplication avoids the collisions caused by truncating blockId to
+	 * 16 bits. This remains an exact integer while blockId is comfortably
+	 * below Number.MAX_SAFE_INTEGER / 64.
+	 */
+	const cacheKey = blockId * 64 + relevantState;
 
 	if (canCache) {
 		const cached = transformedShapeCache.get(cacheKey);
-		if (cached !== undefined) return cached;
+
+		if (cached !== undefined) {
+			return cached;
+		}
 	}
 
 	const rotation = shape.rotateY ? blockState & 3 : 0;
 	const flipY = shape.allowFlipY && (blockState & 4) !== 0;
 	const usesSliceState = shape.usesSliceState;
-
-	const noTransform = rotation === 0 && !flipY && !usesSliceState;
-
 	const sourceBoxes = shape.boxes;
-	const out: ShapeBounds[] = new Array(sourceBoxes.length);
-	let outLen = 0;
 
-	if (noTransform) {
+	if (rotation === 0 && !flipY && !usesSliceState) {
+		const result = new Array<ShapeBounds>(sourceBoxes.length);
+
 		for (let i = 0; i < sourceBoxes.length; i++) {
 			const box = sourceBoxes[i];
-			out[outLen++] = {
+
+			result[i] = {
 				min: box.min,
 				max: box.max,
 				faceMask: box.faceMask,
 			};
 		}
 
-		out.length = outLen;
-
 		if (canCache) {
-			transformedShapeCache.set(cacheKey, out);
+			transformedShapeCache.set(cacheKey, result);
 		}
 
-		return out;
+		return result;
 	}
 
 	const slice = usesSliceState ? (blockState >> 3) & 7 : 0;
 	const hasSlice = slice !== 0;
-	const heightScale = slice / 8;
+	const sliceScale = slice * 0.125;
 
-	// Preserve existing behavior: slice orientation uses the raw state bits,
-	// not the shape-gated rotation/flip flags.
+	/*
+	 * Preserve the existing behavior: slice orientation is based on the raw
+	 * state bits rather than the shape-gated rotation and flip settings.
+	 */
 	const sliceRotation = blockState & 7;
 	const sliceAxis = hasSlice ? getSliceAxis(sliceRotation) : 1;
 	const sliceFlipped = hasSlice && (sliceRotation & 4) !== 0;
 
-	const faceMaskTransformOffset =
-		((rotation & 3) << 6) | ((flipY ? 1 : 0) << 8);
+	const faceMaskOffset = (rotation << 6) | ((flipY ? 1 : 0) << 8);
+
+	const result = new Array<ShapeBounds>(sourceBoxes.length);
+	let resultLength = 0;
 
 	for (let i = 0; i < sourceBoxes.length; i++) {
 		const box = sourceBoxes[i];
-		const boxMin = box.min;
-		const boxMax = box.max;
 
-		let minX = boxMin[0];
-		let minY = boxMin[1];
-		let minZ = boxMin[2];
-		let maxX = boxMax[0];
-		let maxY = boxMax[1];
-		let maxZ = boxMax[2];
+		let minX = box.min[0];
+		let minY = box.min[1];
+		let minZ = box.min[2];
+		let maxX = box.max[0];
+		let maxY = box.max[1];
+		let maxZ = box.max[2];
 
 		if (hasSlice) {
-			if (sliceAxis === 0) {
-				if (sliceFlipped) {
-					minX = 1 - (1 - minX) * heightScale;
-					maxX = 1 - (1 - maxX) * heightScale;
-				} else {
-					minX *= heightScale;
-					maxX *= heightScale;
-				}
+			switch (sliceAxis) {
+				case 0:
+					if (sliceFlipped) {
+						minX = 1 - (1 - minX) * sliceScale;
+						maxX = 1 - (1 - maxX) * sliceScale;
+					} else {
+						minX *= sliceScale;
+						maxX *= sliceScale;
+					}
 
-				if (minX > maxX) {
-					const tmp = minX;
-					minX = maxX;
-					maxX = tmp;
-				}
-			} else if (sliceAxis === 1) {
-				if (sliceFlipped) {
-					minY = 1 - (1 - minY) * heightScale;
-					maxY = 1 - (1 - maxY) * heightScale;
-				} else {
-					minY *= heightScale;
-					maxY *= heightScale;
-				}
+					if (minX > maxX) {
+						const temporary = minX;
+						minX = maxX;
+						maxX = temporary;
+					}
+					break;
 
-				if (minY > maxY) {
-					const tmp = minY;
-					minY = maxY;
-					maxY = tmp;
-				}
-			} else {
-				if (sliceFlipped) {
-					minZ = 1 - (1 - minZ) * heightScale;
-					maxZ = 1 - (1 - maxZ) * heightScale;
-				} else {
-					minZ *= heightScale;
-					maxZ *= heightScale;
-				}
+				case 1:
+					if (sliceFlipped) {
+						minY = 1 - (1 - minY) * sliceScale;
+						maxY = 1 - (1 - maxY) * sliceScale;
+					} else {
+						minY *= sliceScale;
+						maxY *= sliceScale;
+					}
 
-				if (minZ > maxZ) {
-					const tmp = minZ;
-					minZ = maxZ;
-					maxZ = tmp;
-				}
+					if (minY > maxY) {
+						const temporary = minY;
+						minY = maxY;
+						maxY = temporary;
+					}
+					break;
+
+				case 2:
+					if (sliceFlipped) {
+						minZ = 1 - (1 - minZ) * sliceScale;
+						maxZ = 1 - (1 - maxZ) * sliceScale;
+					} else {
+						minZ *= sliceScale;
+						maxZ *= sliceScale;
+					}
+
+					if (minZ > maxZ) {
+						const temporary = minZ;
+						minZ = maxZ;
+						maxZ = temporary;
+					}
+					break;
 			}
 		}
 
 		switch (rotation) {
 			case 1: {
-				const oldMinX = minX;
-				const oldMaxX = maxX;
-				const oldMinZ = minZ;
-				const oldMaxZ = maxZ;
+				const sourceMinX = minX;
+				const sourceMaxX = maxX;
 
-				minX = 1 - oldMaxZ;
-				maxX = 1 - oldMinZ;
-				minZ = oldMinX;
-				maxZ = oldMaxX;
+				minX = 1 - maxZ;
+				maxX = 1 - minZ;
+				minZ = sourceMinX;
+				maxZ = sourceMaxX;
 				break;
 			}
 
 			case 2: {
-				const oldMinX = minX;
-				const oldMaxX = maxX;
-				const oldMinZ = minZ;
-				const oldMaxZ = maxZ;
+				const sourceMinX = minX;
+				const sourceMinZ = minZ;
 
-				minX = 1 - oldMaxX;
-				maxX = 1 - oldMinX;
-				minZ = 1 - oldMaxZ;
-				maxZ = 1 - oldMinZ;
+				minX = 1 - maxX;
+				maxX = 1 - sourceMinX;
+				minZ = 1 - maxZ;
+				maxZ = 1 - sourceMinZ;
 				break;
 			}
 
 			case 3: {
-				const oldMinX = minX;
-				const oldMaxX = maxX;
-				const oldMinZ = minZ;
-				const oldMaxZ = maxZ;
+				const sourceMinX = minX;
+				const sourceMaxX = maxX;
 
-				minX = oldMinZ;
-				maxX = oldMaxZ;
-				minZ = 1 - oldMaxX;
-				maxZ = 1 - oldMinX;
+				minX = minZ;
+				maxX = maxZ;
+				minZ = 1 - sourceMaxX;
+				maxZ = 1 - sourceMinX;
 				break;
 			}
 		}
 
 		if (flipY) {
-			const oldMinY = minY;
+			const sourceMinY = minY;
 			minY = 1 - maxY;
-			maxY = 1 - oldMinY;
+			maxY = 1 - sourceMinY;
 		}
 
 		if (maxX <= minX || maxY <= minY || maxZ <= minZ) {
 			continue;
 		}
 
-		out[outLen++] = {
+		result[resultLength++] = {
 			min: [minX, minY, minZ],
 			max: [maxX, maxY, maxZ],
-			faceMask:
-				FACE_MASK_TRANSFORM_LUT[(box.faceMask & 63) | faceMaskTransformOffset],
+			faceMask: FACE_MASK_TRANSFORM_LUT[faceMaskOffset | (box.faceMask & 63)],
 		};
 	}
 
-	out.length = outLen;
+	result.length = resultLength;
 
 	if (canCache) {
-		transformedShapeCache.set(cacheKey, out);
+		transformedShapeCache.set(cacheKey, result);
 	}
 
-	return out;
+	return result;
 };
