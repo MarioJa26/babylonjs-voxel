@@ -15,32 +15,54 @@ const definitions = new Map<number, ItemDefinition>();
 
 // Reverse index:
 // blockId -> blockState -> item definition
-// Avoids string-key allocation on register and lookup.
+// Numeric nested maps avoid string-key allocation during registration and lookup.
 const blockIndex = new Map<number, Map<number, ItemDefinition>>();
 
-// Cached sorted snapshot; invalidated on any write to `definitions`.
+// Cached sorted snapshot, invalidated whenever `definitions` changes.
 let sortedCache: ItemDefinition[] | null = null;
 
-function getBlockState(def: ItemDefinition): number {
-	return def.blockState ?? 0;
+function getBlockState(definition: ItemDefinition): number {
+	return definition.blockState ?? 0;
 }
 
 function setBlockIndex(
 	blockId: number,
 	blockState: number,
-	def: ItemDefinition,
+	definition: ItemDefinition,
 ): void {
 	let stateMap = blockIndex.get(blockId);
+
 	if (stateMap === undefined) {
 		stateMap = new Map<number, ItemDefinition>();
+
 		blockIndex.set(blockId, stateMap);
 	}
-	stateMap.set(blockState, def);
+
+	stateMap.set(blockState, definition);
 }
 
-function deleteBlockIndex(blockId: number, blockState: number): void {
+/**
+ * Removes an index entry only when it is still owned by the supplied
+ * definition.
+ *
+ * Multiple item IDs may temporarily claim the same block/state pair. Because
+ * the most recently registered definition owns that reverse-index entry,
+ * re-registering an older definition must not delete the newer owner's entry.
+ */
+function deleteBlockIndex(
+	blockId: number,
+	blockState: number,
+	expectedDefinition: ItemDefinition,
+): void {
 	const stateMap = blockIndex.get(blockId);
-	if (stateMap === undefined) return;
+
+	if (stateMap === undefined) {
+		return;
+	}
+
+	if (stateMap.get(blockState) !== expectedDefinition) {
+		return;
+	}
 
 	stateMap.delete(blockState);
 
@@ -58,136 +80,187 @@ export function registerItemToDisplayName(rawName: string): string {
 	);
 }
 
+/**
+ * Registers block-backed default items from the texture definitions.
+ *
+ * initialized is set before registration to make this function re-entry-safe
+ * if registration code performs a registry lookup.
+ */
 function initDefaults(): void {
-	if (initialized) return;
+	if (initialized) {
+		return;
+	}
 
 	if (import.meta.env?.DEV && loadPromise === null) {
 		console.warn(
-			"ItemRegistry: reading definitions before ensureItemRegistryLoaded() " +
-				"has been called. TextureDefinitions may be incomplete.",
+			"ItemRegistry: reading definitions before " +
+				"ensureItemRegistryLoaded() has been called. " +
+				"TextureDefinitions may be incomplete.",
 		);
 	}
 
 	initialized = true;
 
-	for (let i = 0, len = TextureDefinitions.length; i < len; i++) {
-		const textureDef = TextureDefinitions[i];
-		const defaultState = 0;
-		const shape = textureDef.shape || "cube";
-		const baseLabel = registerItemToDisplayName(textureDef.name);
+	for (
+		let index = 0, length = TextureDefinitions.length;
+		index < length;
+		index++
+	) {
+		const textureDefinition = TextureDefinitions[index];
+
+		const blockState = 0;
+		const shape = textureDefinition.shape || "cube";
+
+		const baseLabel = registerItemToDisplayName(textureDefinition.name);
+
 		const itemLabel = shape === "slab" ? `${baseLabel} Full Block` : baseLabel;
 
 		registerItem({
-			id: textureDef.id,
+			id: textureDefinition.id,
 			name: itemLabel,
 			description:
 				`Shape: ${shape}\n` +
-				`ID: ${textureDef.id}\n` +
-				`Path: ${textureDef.path}\n` +
+				`ID: ${textureDefinition.id}\n` +
+				`Path: ${textureDefinition.path}\n` +
 				`Name: ${itemLabel}\n` +
-				`blockId: ${textureDef.id}\n` +
-				`blockState: ${defaultState}`,
+				`blockId: ${textureDefinition.id}\n` +
+				`blockState: ${blockState}`,
 			useAction: "place_block",
-			blockId: textureDef.id,
-			blockState: defaultState,
+			blockId: textureDefinition.id,
+			blockState,
 			shape,
 		});
 	}
 }
 
-export async function ensureItemRegistryLoaded(
+/**
+ * Loads the registry once.
+ *
+ * Concurrent calls share one promise. The URL supplied by the first caller
+ * owns the registry load for the lifetime of this module.
+ */
+export function ensureItemRegistryLoaded(
 	url = DEFAULT_ITEMS_URL,
 ): Promise<void> {
 	if (loadPromise !== null) {
 		if (loadedUrl !== null && loadedUrl !== url) {
 			console.warn(
-				`ItemRegistry: ensureItemRegistryLoaded already loaded from "${loadedUrl}"; ` +
+				"ItemRegistry: ensureItemRegistryLoaded " +
+					`already started with "${loadedUrl}"; ` +
 					`ignoring second call with "${url}".`,
 			);
 		}
+
 		return loadPromise;
 	}
 
 	loadedUrl = url;
 
-	loadPromise = (async () => {
-		await TextureDefinitionsReady;
-		initDefaults();
-		await loadRegisteredItemFromUrl(url);
-		registerProceduralTools(registerItem);
-	})();
-
+	loadPromise = loadItemRegistry(url);
 	return loadPromise;
 }
 
-async function loadRegisteredItemFromUrl(url: string): Promise<void> {
+async function loadItemRegistry(url: string): Promise<void> {
+	await TextureDefinitionsReady;
+
+	initDefaults();
+
+	await loadRegisteredItemsFromUrl(url);
+
+	registerProceduralTools(registerItem);
+}
+
+async function loadRegisteredItemsFromUrl(url: string): Promise<void> {
 	try {
 		const response = await fetch(url);
+
 		if (!response.ok) {
-			throw new Error(`Failed to load items: ${response.status}`);
+			throw new Error(
+				`Failed to load items from "${url}": ` +
+					`${response.status} ${response.statusText}`,
+			);
 		}
 
-		const data = (await response.json()) as unknown;
+		const data: unknown = await response.json();
+
 		if (!Array.isArray(data)) {
-			throw new Error("Items JSON must be an array.");
+			throw new Error("Items JSON must contain an array.");
 		}
 
-		for (let i = 0, len = data.length; i < len; i++) {
-			const entry = data[i];
+		for (let index = 0, length = data.length; index < length; index++) {
+			const entry: unknown = data[index];
 
 			if (!isValidDefinition(entry)) {
-				console.warn("Skipping invalid item definition:", entry);
+				console.warn("ItemRegistry: skipping invalid item definition:", entry);
+
 				continue;
 			}
 
 			registerItem(entry);
 		}
 	} catch (error) {
-		console.warn("ItemRegistry load failed:", error);
+		console.warn(`ItemRegistry: failed to load "${url}":`, error);
 	}
 }
 
-export function registerItem(def: ItemDefinition): void {
-	const existing = definitions.get(def.id);
+/**
+ * Registers or updates an item definition.
+ *
+ * Existing definitions are shallowly merged so partial programmatic
+ * registrations continue to preserve fields omitted by the incoming
+ * definition.
+ */
+export function registerItem(definition: ItemDefinition): void {
+	const existing = definitions.get(definition.id);
 
-	// Re-registering an id under a *different* blockId means two unrelated
-	// things (a tool and a mason shape variant, say) claim the same id. The
-	// shallow merge below silently produces a chimera that keeps the first
-	// definition's icon and maxStack while adopting the second's name, blockId
-	// and useAction — so a pickaxe turns into a placeable ore slab that still
-	// draws a pickaxe icon. Report it loudly instead.
-	if (existing !== undefined && existing.blockId !== def.blockId) {
+	if (existing !== undefined && existing.blockId !== definition.blockId) {
 		console.warn(
-			`ItemRegistry: item id ${def.id} registered twice with different ` +
-				`blockIds — existing "${existing.name}" (blockId ` +
-				`${String(existing.blockId)}) vs incoming "${def.name}" ` +
-				`(blockId ${String(def.blockId)}). One of the two data sources ` +
-				`is using an id range it does not own.`,
+			`ItemRegistry: item id ${definition.id} was registered ` +
+				"twice with different blockIds. " +
+				`Existing "${existing.name}" uses blockId ` +
+				`${String(existing.blockId)}; incoming ` +
+				`"${definition.name}" uses blockId ` +
+				`${String(definition.blockId)}. ` +
+				"One of the data sources may be using an item ID " +
+				"range it does not own.",
 		);
 	}
 
 	if (existing !== undefined && existing.blockId !== undefined) {
-		deleteBlockIndex(existing.blockId, getBlockState(existing));
+		deleteBlockIndex(existing.blockId, getBlockState(existing), existing);
 	}
 
-	const merged = existing === undefined ? def : { ...existing, ...def };
+	const registeredDefinition =
+		existing === undefined
+			? definition
+			: {
+					...existing,
+					...definition,
+				};
 
-	definitions.set(def.id, merged);
+	definitions.set(definition.id, registeredDefinition);
+
 	sortedCache = null;
 
-	if (merged.blockId !== undefined) {
-		setBlockIndex(merged.blockId, getBlockState(merged), merged);
+	if (registeredDefinition.blockId !== undefined) {
+		setBlockIndex(
+			registeredDefinition.blockId,
+			getBlockState(registeredDefinition),
+			registeredDefinition,
+		);
 	}
 }
 
 export function getRegisteredItemById(id: number): ItemDefinition | undefined {
 	initDefaults();
+
 	return definitions.get(id);
 }
 
 /**
- * Reverse lookup: find the item that places a given block/state pair.
- * O(1) via nested numeric index instead of scanning all definitions.
+ * Finds the item that places the supplied block/state pair.
+ *
+ * Lookup complexity is O(1) through the nested numeric reverse index.
  */
 export function getItemByBlock(
 	blockId: number,
@@ -195,32 +268,56 @@ export function getItemByBlock(
 ): ItemDefinition | undefined {
 	initDefaults();
 
-	const stateMap = blockIndex.get(blockId);
-	return stateMap === undefined ? undefined : stateMap.get(blockState);
+	return blockIndex.get(blockId)?.get(blockState);
 }
 
+/**
+ * Returns the cached ID-sorted registry snapshot.
+ *
+ * Callers must treat the returned array as read-only. The ItemDefinition[]
+ * return type is retained for compatibility with existing call sites.
+ */
 export function getAllRegisteredItems(): ItemDefinition[] {
 	initDefaults();
 
 	if (sortedCache === null) {
-		sortedCache = [...definitions.values()].sort(compareItemIds);
+		sortedCache = Array.from(definitions.values());
+
+		sortedCache.sort(compareItemIds);
 	}
 
 	return sortedCache;
 }
 
-function compareItemIds(a: ItemDefinition, b: ItemDefinition): number {
-	return a.id - b.id;
+function compareItemIds(first: ItemDefinition, second: ItemDefinition): number {
+	return first.id - second.id;
 }
 
 function isValidDefinition(value: unknown): value is ItemDefinition {
-	if (value === null || typeof value !== "object") return false;
+	if (value === null || typeof value !== "object") {
+		return false;
+	}
 
 	const candidate = value as Partial<ItemDefinition>;
 
-	return (
-		Number.isInteger(candidate.id) &&
-		typeof candidate.name === "string" &&
-		candidate.name.length > 0
-	);
+	if (
+		!Number.isInteger(candidate.id) ||
+		typeof candidate.name !== "string" ||
+		candidate.name.length === 0
+	) {
+		return false;
+	}
+
+	if (candidate.blockId !== undefined && !Number.isInteger(candidate.blockId)) {
+		return false;
+	}
+
+	if (
+		candidate.blockState !== undefined &&
+		!Number.isInteger(candidate.blockState)
+	) {
+		return false;
+	}
+
+	return true;
 }

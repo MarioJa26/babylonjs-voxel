@@ -548,10 +548,18 @@ export class Item implements IUsable {
 	/** Restore durability, clamped to the budget. Returns the amount restored. */
 	public repairDurability(amount: number): number {
 		const restored = repairAmount(this.durability, this.maxDurability, amount);
+
 		if (restored <= 0) return 0;
-		// Leaving the spent state is the only transition worth a DOM write.
-		if (this.durability <= 0) this._applyDepletedStyle();
+
+		const wasSpent = this.durability <= 0;
 		this.durability += restored;
+
+		// Update the DOM after changing durability so `isSpent` observes the
+		// repaired value and removes the depleted class correctly.
+		if (wasSpent) {
+			this._applyDepletedStyle();
+		}
+
 		return restored;
 	}
 
@@ -602,7 +610,8 @@ export class Item implements IUsable {
 	}
 
 	public set stackSize(value: number) {
-		this._stackSize = value > this._maxStack ? this._maxStack : value;
+		const normalized = Number.isFinite(value) ? Math.max(0, value | 0) : 0;
+		this._stackSize = normalized > this._maxStack ? this._maxStack : normalized;
 		this._updateLabel();
 	}
 

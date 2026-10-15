@@ -2,23 +2,33 @@ import { PlayerHud } from "../Hud/PlayerHud";
 import { Item } from "./Item";
 import { PlayerInventory } from "./PlayerInventory";
 
+/**
+ * The source slot of the current native HTML drag operation.
+ *
+ * Only one native drag can be active at a time, so module-level state avoids
+ * attaching additional metadata to the DataTransfer payload.
+ */
 let draggedItem: ItemSlot | null = null;
 
 export class ItemSlot implements EventListenerObject {
 	#item: Item | null = null;
 	#divItemSlot: HTMLDivElement;
 	#destroysDroppedItems = false;
+	#initialized = false;
 
 	/**
-	 * Called after a drop where this slot was the drag source. Used by the
-	 * creative palette to refill itself (its items are infinite copies).
+	 * Called after a drop where this slot was the drag source.
+	 *
+	 * The creative palette uses this callback to refill its infinite source
+	 * item after the drop operation.
 	 */
 	onDraggedOut?: (slot: ItemSlot) => void;
 
 	/**
-	 * Fired whenever this slot's contents change (swap, set, clear, or an
-	 * in-place stack merge). The crate UI uses it to push live deltas to the
-	 * server; singleplayer leaves it unset (zero overhead when undefined).
+	 * Called whenever this slot's contents change through a set, clear, swap,
+	 * or in-place stack merge.
+	 *
+	 * The crate UI uses this callback to publish live inventory deltas.
 	 */
 	onChanged?: (slot: ItemSlot) => void;
 
@@ -26,25 +36,25 @@ export class ItemSlot implements EventListenerObject {
 	col: number;
 
 	/**
-	 * Equipment slots live outside the inventory grid and must behave
-	 * differently in two ways:
+	 * Equipment slots live outside the normal inventory-grid address space.
 	 *
-	 *  - their (row, col) is a disjoint address, because the grid's address
-	 *    space is 0..y-1 / 0..x-1 and reusing a pair would let
-	 *    `PlayerInventory.#deleteItemNoNotify` clear a real inventory slot;
-	 *  - they must not become `PlayerInventory.currentlyHoveredSlot`, because
-	 *    that static is the target of shift-move and Q-drop, which would yank a
-	 *    equipped helmet into the hotbar or throw it on the floor.
+	 * They also must not become PlayerInventory.currentlyHoveredSlot because
+	 * that static value is used by shift-move and Q-drop handling.
 	 */
 	isEquipmentSlot = false;
 
 	/**
-	 * Optional constraint on what this slot will accept. Equipment uses it to
-	 * stop a chestplate landing in the helmet slot. Null means "anything".
+	 * Optional constraint controlling which items this slot accepts.
+	 *
+	 * Null means every item is accepted.
 	 */
 	acceptsItem: ((item: Item) => boolean) | null = null;
 
-	/** Stable id for equipment slots (e.g. "head", "ring7"). Ignored by the grid. */
+	/**
+	 * Stable identifier for equipment slots such as "head" or "ring7".
+	 *
+	 * Normal inventory-grid slots leave this as null.
+	 */
 	equipmentSlotId: string | null = null;
 
 	constructor(row: number, col: number) {
@@ -58,23 +68,28 @@ export class ItemSlot implements EventListenerObject {
 		this.initialize();
 	}
 
-	/** Whether `item` may be placed in this slot. Always true for the grid. */
+	/**
+	 * Returns whether the supplied item may be placed in this slot.
+	 */
 	public canAccept(item: Item | null): boolean {
-		if (item === null) return true;
-		if (this.acceptsItem === null) return true;
-		return this.acceptsItem(item);
+		return item === null || this.acceptsItem === null || this.acceptsItem(item);
 	}
 
+	/**
+	 * Swaps or merges this slot with another slot.
+	 *
+	 * The operation is atomic with respect to slot constraints. If either
+	 * slot rejects the item it would receive, neither slot is modified.
+	 */
 	public swapSlots(slot: ItemSlot): void {
 		if (slot === this) return;
 
 		const targetItem = this.#item;
 		const sourceItem = slot.#item;
 
-		// Refuse rather than silently refuse-and-hide: dropping the wrong piece
-		// on a slot should leave both items where they were.
-		if (!this.canAccept(sourceItem)) return;
-		if (!slot.canAccept(targetItem)) return;
+		if (!this.canAccept(sourceItem) || !slot.canAccept(targetItem)) {
+			return;
+		}
 
 		if (
 			targetItem !== null &&
@@ -85,38 +100,42 @@ export class ItemSlot implements EventListenerObject {
 
 			if (remainder <= 0) {
 				slot.#item = null;
-				slot.#render();
 			}
 
-			this.onChanged?.(this);
-			slot.onChanged?.(slot);
+			/*
+			 * stackItemAtoB mutates Item instances in place. Re-render both
+			 * slots even when their Item references remain unchanged so stack
+			 * counts cannot remain visually stale.
+			 */
+			this.#render();
+			slot.#render();
+
+			this.#notifyChanged();
+			slot.#notifyChanged();
+
 			return;
 		}
 
 		this.#item = sourceItem;
 		slot.#item = targetItem;
 
-		if (sourceItem !== null) {
-			sourceItem.row = this.row;
-			sourceItem.col = this.col;
-		}
-
-		if (targetItem !== null) {
-			targetItem.row = slot.row;
-			targetItem.col = slot.col;
-		}
+		this.#syncItemCoordinates();
+		slot.#syncItemCoordinates();
 
 		this.#render();
 		slot.#render();
-		this.onChanged?.(this);
-		slot.onChanged?.(slot);
+
+		this.#notifyChanged();
+		slot.#notifyChanged();
 	}
 
 	public get divItemSlot(): HTMLDivElement {
 		return this.#divItemSlot;
 	}
 
-	/** When true, items dropped onto this slot are destroyed (creative trash). */
+	/**
+	 * When true, an item dropped onto this slot is destroyed.
+	 */
 	public get destroysDroppedItems(): boolean {
 		return this.#destroysDroppedItems;
 	}
@@ -125,15 +144,16 @@ export class ItemSlot implements EventListenerObject {
 		this.#destroysDroppedItems = value;
 	}
 
+	/**
+	 * Replaces the slot's DOM container while preserving its contents and
+	 * event behavior.
+	 */
 	public set divItemSlot(div: HTMLDivElement) {
-		const oldDiv = this.#divItemSlot;
+		if (div === this.#divItemSlot) {
+			return;
+		}
 
-		oldDiv.removeEventListener("dragstart", this);
-		oldDiv.removeEventListener("dragend", this);
-		oldDiv.removeEventListener("dragover", this);
-		oldDiv.removeEventListener("drop", this);
-		oldDiv.removeEventListener("mouseover", this);
-		oldDiv.removeEventListener("mouseout", this);
+		this.#removeEventListeners();
 
 		div.classList.add("inventory-slot");
 		this.#divItemSlot = div;
@@ -142,33 +162,52 @@ export class ItemSlot implements EventListenerObject {
 		this.#render();
 	}
 
+	/**
+	 * Replaces this slot's item and publishes the change.
+	 *
+	 * Assigning the same Item reference still refreshes the slot because the
+	 * Item may have been mutated in place.
+	 */
 	public set item(item: Item | null) {
 		this.#item = item;
 
-		if (item !== null) {
-			item.row = this.row;
-			item.col = this.col;
-		}
-
+		this.#syncItemCoordinates();
 		this.#render();
-		this.onChanged?.(this);
+		this.#notifyChanged();
 	}
 
 	public get item(): Item | null {
 		return this.#item;
 	}
 
+	/**
+	 * Clears the slot and publishes the change.
+	 */
 	public clearItemSlots(): void {
 		this.#item = null;
+
 		this.#render();
-		this.onChanged?.(this);
+		this.#notifyChanged();
 
 		if (draggedItem === this) {
 			draggedItem = null;
 		}
+
+		if (PlayerInventory.currentlyHoveredSlot === this) {
+			PlayerInventory.currentlyHoveredSlot = null;
+			PlayerHud.hideItemTooltip();
+		}
 	}
 
+	/**
+	 * Attaches this slot's event listeners.
+	 *
+	 * The initialization guard prevents duplicate listener registration when
+	 * initialize() is called repeatedly for the same element.
+	 */
 	public initialize(): void {
+		if (this.#initialized) return;
+
 		const div = this.#divItemSlot;
 
 		div.addEventListener("dragstart", this);
@@ -177,17 +216,15 @@ export class ItemSlot implements EventListenerObject {
 		div.addEventListener("drop", this);
 		div.addEventListener("mouseover", this);
 		div.addEventListener("mouseout", this);
+
+		this.#initialized = true;
 	}
 
+	/**
+	 * Removes this slot's DOM listeners and releases global references to it.
+	 */
 	public dispose(): void {
-		const div = this.#divItemSlot;
-
-		div.removeEventListener("dragstart", this);
-		div.removeEventListener("dragend", this);
-		div.removeEventListener("dragover", this);
-		div.removeEventListener("drop", this);
-		div.removeEventListener("mouseover", this);
-		div.removeEventListener("mouseout", this);
+		this.#removeEventListeners();
 
 		if (draggedItem === this) {
 			draggedItem = null;
@@ -202,66 +239,196 @@ export class ItemSlot implements EventListenerObject {
 	public handleEvent(event: Event): void {
 		switch (event.type) {
 			case "dragstart":
-				draggedItem = this;
+				this.#handleDragStart(event as DragEvent);
 				return;
 
 			case "dragend":
-				if (draggedItem === this) {
-					draggedItem = null;
-				}
+				this.#handleDragEnd();
 				return;
 
 			case "dragover":
-				event.preventDefault();
+				this.#handleDragOver(event as DragEvent);
 				return;
 
-			case "drop": {
-				event.preventDefault();
-
-				const source = draggedItem;
-				draggedItem = null;
-
-				if (source === null || source === this) {
-					return;
-				}
-
-				if (this.#destroysDroppedItems) {
-					// Creative palette: dropping an item here destroys it.
-					source.clearItemSlots();
-					source.onDraggedOut?.(source);
-					return;
-				}
-
-				this.swapSlots(source);
-				source.onDraggedOut?.(source);
-
+			case "drop":
+				this.#handleDrop(event as DragEvent);
 				return;
-			}
 
-			case "mouseover": {
-				// Equipment slots still show a tooltip but must not become the
-				// hovered slot: that static drives shift-move and Q-drop, which
-				// would pull equipped gear into the hotbar or onto the floor.
-				PlayerInventory.currentlyHoveredSlot = this.isEquipmentSlot
-					? null
-					: this;
-
-				const item = this.#item;
-				if (item !== null) {
-					PlayerHud.showItemTooltip(item.name, event as MouseEvent);
-				}
-
+			case "mouseover":
+				this.#handleMouseOver(event as MouseEvent);
 				return;
-			}
 
 			case "mouseout":
-				if (PlayerInventory.currentlyHoveredSlot === this) {
-					PlayerInventory.currentlyHoveredSlot = null;
-				}
-
-				PlayerHud.hideItemTooltip();
+				this.#handleMouseOut(event as MouseEvent);
 				return;
 		}
+	}
+
+	#handleDragStart(event: DragEvent): void {
+		/*
+		 * Empty slots cannot be meaningful drag sources. Preventing the drag
+		 * also clears any stale source reference left by an interrupted native
+		 * drag operation.
+		 */
+		if (this.#item === null) {
+			draggedItem = null;
+			event.preventDefault();
+			return;
+		}
+
+		draggedItem = this;
+
+		const dataTransfer = event.dataTransfer;
+
+		if (dataTransfer !== null) {
+			/*
+			 * Firefox may require data to be present before it starts a native
+			 * drag operation. The value is not used for inventory transfer.
+			 */
+			dataTransfer.setData("text/plain", "inventory-item");
+
+			dataTransfer.effectAllowed = "move";
+		}
+	}
+
+	#handleDragEnd(): void {
+		if (draggedItem === this) {
+			draggedItem = null;
+		}
+	}
+
+	#handleDragOver(event: DragEvent): void {
+		const source = draggedItem;
+
+		if (source === null || source === this) {
+			return;
+		}
+
+		/*
+		 * Trash slots accept any active source item. Normal slots advertise a
+		 * valid drop only when both sides satisfy their slot constraints.
+		 */
+		const validDrop =
+			this.#destroysDroppedItems ||
+			(this.canAccept(source.#item) && source.canAccept(this.#item));
+
+		if (!validDrop) return;
+
+		event.preventDefault();
+
+		if (event.dataTransfer !== null) {
+			event.dataTransfer.dropEffect = "move";
+		}
+	}
+
+	#handleDrop(event: DragEvent): void {
+		const source = draggedItem;
+
+		/*
+		 * Clear global drag state before performing mutations or callbacks.
+		 * Callbacks may synchronously clear, replace, or dispose either slot.
+		 */
+		draggedItem = null;
+
+		if (source === null || source === this) {
+			return;
+		}
+
+		if (this.#destroysDroppedItems) {
+			event.preventDefault();
+
+			source.clearItemSlots();
+			source.onDraggedOut?.(source);
+
+			return;
+		}
+
+		if (!this.canAccept(source.#item) || !source.canAccept(this.#item)) {
+			return;
+		}
+
+		event.preventDefault();
+
+		this.swapSlots(source);
+		source.onDraggedOut?.(source);
+	}
+
+	#handleMouseOver(event: MouseEvent): void {
+		/*
+		 * mouseover bubbles when the pointer moves between descendants. Ignore
+		 * those events so entering an item's child elements does not repeatedly
+		 * recreate the tooltip.
+		 */
+		if (this.#isInternalPointerTransition(event.relatedTarget)) {
+			return;
+		}
+
+		PlayerInventory.currentlyHoveredSlot = this.isEquipmentSlot ? null : this;
+
+		const item = this.#item;
+
+		if (item === null) {
+			PlayerHud.hideItemTooltip();
+			return;
+		}
+
+		PlayerHud.showItemTooltip(item.name, event);
+	}
+
+	#handleMouseOut(event: MouseEvent): void {
+		/*
+		 * Ignore movement between the slot and its descendants. The pointer is
+		 * still inside the same logical slot, so the tooltip should remain.
+		 */
+		if (this.#isInternalPointerTransition(event.relatedTarget)) {
+			return;
+		}
+
+		if (PlayerInventory.currentlyHoveredSlot === this) {
+			PlayerInventory.currentlyHoveredSlot = null;
+		}
+
+		PlayerHud.hideItemTooltip();
+	}
+
+	/**
+	 * Returns true when a pointer transition remains inside this slot.
+	 */
+	#isInternalPointerTransition(relatedTarget: EventTarget | null): boolean {
+		return (
+			relatedTarget instanceof Node && this.#divItemSlot.contains(relatedTarget)
+		);
+	}
+
+	/**
+	 * Updates the contained item's inventory coordinates.
+	 */
+	#syncItemCoordinates(): void {
+		const item = this.#item;
+
+		if (item === null) return;
+
+		item.row = this.row;
+		item.col = this.col;
+	}
+
+	#notifyChanged(): void {
+		this.onChanged?.(this);
+	}
+
+	#removeEventListeners(): void {
+		if (!this.#initialized) return;
+
+		const div = this.#divItemSlot;
+
+		div.removeEventListener("dragstart", this);
+		div.removeEventListener("dragend", this);
+		div.removeEventListener("dragover", this);
+		div.removeEventListener("drop", this);
+		div.removeEventListener("mouseover", this);
+		div.removeEventListener("mouseout", this);
+
+		this.#initialized = false;
 	}
 
 	#render(): void {
@@ -269,9 +436,22 @@ export class ItemSlot implements EventListenerObject {
 		const div = this.#divItemSlot;
 
 		if (item === null) {
-			div.replaceChildren();
-		} else {
-			div.replaceChildren(item.div);
+			if (div.firstChild !== null) {
+				div.replaceChildren();
+			}
+
+			return;
 		}
+
+		/*
+		 * Avoid detaching and reattaching the same Item element. Item is
+		 * responsible for updating the presentation inside its own element
+		 * when its stack quantity changes.
+		 */
+		if (div.childNodes.length === 1 && div.firstChild === item.div) {
+			return;
+		}
+
+		div.replaceChildren(item.div);
 	}
 }

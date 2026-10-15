@@ -56,73 +56,131 @@ import {
 import { PlayerStats } from "./PlayerStats";
 import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
 
-// Mount ↔ Player bridge: Mount must not import Player (cycle), so the
-// Player module registers the structural predicate Mount.mount() gates on.
-// Without this, mount() refuses every rider and boats can never be driven.
-Mount.isMountableUser = (value: unknown): value is IMountableUser =>
-	typeof value === "object" &&
-	value !== null &&
-	"playerVehicle" in value &&
-	"playerCamera" in value &&
-	"keyboardControls" in value &&
-	"defaultKeyboardControls" in value;
+const BODY_LIGHT_REFRESH_INTERVAL_MS = 250;
+const BODY_WALK_SMOOTHING_RATE = 10;
+const BODY_YAW_INTERPOLATION = 0.25;
+const BODY_MOVEMENT_EPSILON_SQUARED = 1e-6;
+const SECONDS_PER_MILLISECOND = 0.001;
+const THROW_VELOCITY = 8;
+
+interface WorldBlockPosition {
+	x: number;
+	y: number;
+	z: number;
+}
+
+interface BoatDynamicContext {
+	kind?: unknown;
+	boatChunk?: BoatChunk;
+}
+
+interface BlockEditCallbacks {
+	onBlockPlaced: (
+		x: number,
+		y: number,
+		z: number,
+		blockId: number,
+		blockState: number,
+	) => void;
+	onBlockBroken: (x: number, y: number, z: number, blockId: number) => void;
+	onExplosion: (x: number, y: number, z: number, radius: number) => void;
+	onTntIgnite: (
+		x: number,
+		y: number,
+		z: number,
+		fuse: number,
+		radius: number,
+	) => void;
+}
+
+function floorBlockPosition(
+	position: Pick<WorldBlockPosition, "x" | "y" | "z">,
+): WorldBlockPosition {
+	return {
+		x: Math.floor(position.x),
+		y: Math.floor(position.y),
+		z: Math.floor(position.z),
+	};
+}
+
+// Mount must not import Player because that would introduce an import cycle.
+// The Player module therefore supplies the structural mountability predicate.
+Mount.isMountableUser = (value: unknown): value is IMountableUser => {
+	if (value === null || typeof value !== "object") {
+		return false;
+	}
+
+	return (
+		"playerVehicle" in value &&
+		"playerCamera" in value &&
+		"keyboardControls" in value &&
+		"defaultKeyboardControls" in value
+	);
+};
 
 /**
- * Lite (native) port of the Player.
+ * Lite native Player implementation.
  *
- * Wires gameplay clusters into the Babylon Lite runtime:
- *   - movement is owned by `PlayerVehicleMotor`
- *   - per-frame: move, update terrain/player body, refresh HUD/controller loop
+ * Movement is owned by PlayerVehicleMotor. Player coordinates input, HUD,
+ * world interaction, third-person rendering and multiplayer callbacks.
  */
 export class Player {
-	#playerCamera: PlayerCamera;
-	#stats: PlayerStats;
-	#playerVehicle: PlayerVehicleMotor;
-	#walkingControls: WalkingControls;
-	#flashlight: PlayerFlashLight;
-	#playerInventory: PlayerInventory;
+	public static readonly USE_REPEAT_INTERVAL_MS = 120;
+
+	readonly #engine: EngineContext;
+	readonly #scene: SceneContext;
+	readonly #canvas: HTMLCanvasElement;
+
+	readonly #playerCamera: PlayerCamera;
+	readonly #stats: PlayerStats;
+	readonly #playerVehicle: PlayerVehicleMotor;
+	readonly #walkingControls: WalkingControls;
+	readonly #flashlight: PlayerFlashLight;
+	readonly #playerInventory: PlayerInventory;
+	readonly #inputController: PlayerInputController;
+
 	#playerHud!: PlayerHud;
 	#pauseMenu!: PauseMenu;
-	#inputController: PlayerInputController;
+	#loopController!: PlayerLoopController;
+
 	#pickInFlight = false;
-	// E-hold vacuum: while the use key is held, tryPickupItem() repeats on
-	// a throttle so holding E collects every nearby drop. Block
-	// interactions (doors, TNT, mounts) stay single-press only.
 	#useHeld = false;
 	#lastUseRepeatMs = 0;
-	static readonly USE_REPEAT_INTERVAL_MS = 120;
-	#loopController!: PlayerLoopController;
+
 	#playerBodyMesh: Mesh | null = null;
 	#playerBodyMat: ShaderMaterial | null = null;
 	#bodyHeldItem: HeldItemView | null = null;
 	#bodySkinBound = false;
-	// Third-person body facing: derived from movement (Minecraft-style).
+
 	#lastBodyX = Number.NaN;
 	#lastBodyZ = Number.NaN;
 	#bodyYaw = 0;
-	// Voxel-light sampling cache (re-tint on voxel change OR every 250ms so
-	// the day/night sun factor updates while standing still).
+
 	#bodyLightX = Number.NaN;
 	#bodyLightY = Number.NaN;
 	#bodyLightZ = Number.NaN;
 	#bodyLightSampleMs = Number.NEGATIVE_INFINITY;
-	// Walk-swing state for the third-person rig.
+
 	#bodyWalkPhase = 0;
 	#bodyWalkAmp = 0;
-	// Punch/mining swing progress in [0, 1); Infinity = rest pose.
+
+	// Infinity represents the resting punch pose.
 	#punchT = Number.POSITIVE_INFINITY;
 
-	networkManager?: import("../Network/NetworkManager").NetworkManager;
+	public networkManager?: import("../Network/NetworkManager").NetworkManager;
 
-	// Current keyboard control scheme.
-	keyboardControls: IControls<unknown>;
+	/** Current active keyboard control scheme. */
+	public keyboardControls: IControls<unknown>;
 
 	constructor(
-		private engine: EngineContext,
-		private scene: SceneContext,
+		engine: EngineContext,
+		scene: SceneContext,
 		playerCam: PlayerCamera,
-		private canvas: HTMLCanvasElement,
+		canvas: HTMLCanvasElement,
 	) {
+		this.#engine = engine;
+		this.#scene = scene;
+		this.#canvas = canvas;
 		this.#playerCamera = playerCam;
 		this.#stats = new PlayerStats();
 
@@ -138,6 +196,7 @@ export class Player {
 		this.keyboardControls = this.#walkingControls;
 
 		this.#flashlight = new PlayerFlashLight(scene, playerCam.playerCamera);
+
 		this.#playerInventory = new PlayerInventory(scene, this, 10, 10);
 
 		this.#inputController = new PlayerInputController(
@@ -152,10 +211,12 @@ export class Player {
 	}
 
 	/**
-	 * Build the HUD once the world has initialized.
+	 * Builds the HUD after world initialization.
 	 */
 	public createHud(scene: SceneContext): void {
-		if (this.#playerHud) return;
+		if (this.#playerHud) {
+			return;
+		}
 
 		this.#playerHud = new PlayerHud(scene, this);
 		this.#createPlayerBody(scene);
@@ -167,117 +228,128 @@ export class Player {
 			this.#playerHud,
 			this.#playerCamera,
 			() => this.keyboardControls,
-			() => this.position,
+			() => this.#playerVehicle.position,
 		);
 
 		this.#loopController.bind();
 
 		this.#pauseMenu = new PauseMenu(() => this.#resume(), this);
+
 		this.#pauseMenu.setLeaveServerCallback(() => {
 			this.networkManager?.disconnect();
 			window.location.href = "/";
 		});
 	}
 
-	/** Visible Minecraft-style player model for third-person mode. */
+	/**
+	 * Creates the visible Minecraft-style third-person body.
+	 */
 	#createPlayerBody(scene: SceneContext): void {
-		const body = createPlayerRigMesh(this.engine, "playerBodyRig", "center");
-		const mat = createRigShaderMaterial("playerBodyRigMat");
+		const body = createPlayerRigMesh(this.#engine, "playerBodyRig", "center");
 
-		body.material = mat;
+		const material = createRigShaderMaterial("playerBodyRigMat");
+
+		body.material = material;
 		body.pickable = false;
-		// Hidden until the skin texture binds (unbound sampler = invalid pass).
+
+		// An unbound skin sampler produces an invalid render pass.
 		body.visible = false;
 
 		addToScene(scene, body);
+
 		this.#playerBodyMesh = body;
-		this.#playerBodyMat = mat;
+		this.#playerBodyMat = material;
 		this.#bodyHeldItem = new HeldItemView();
 
-		applyRigSkin(this.engine, mat, () => {
+		applyRigSkin(this.#engine, material, () => {
 			this.#bodySkinBound = true;
 		});
 	}
 
-	/** Recompute spawn height against the loaded terrain. */
+	/**
+	 * Recomputes spawn height against currently loaded terrain.
+	 */
 	public respawn(): void {
 		this.#playerVehicle.respawn();
 	}
 
 	public tick(deltaMs: number): void {
 		const loopController = this.#loopController;
-		if (!loopController) return;
 
-		// PERF: the pause gate lives in the controller, not here. tick() has to
-		// keep running while paused so the frame profiler commits a sample
-		// every frame — the streaming and farTiles scene hooks are not
-		// pause-gated, so without a commit their section time accumulated
-		// without bound and the first frame after unpause reported garbage.
-		// The controller skips its body when paused, so behaviour is unchanged.
+		if (!loopController) {
+			return;
+		}
+
+		/*
+		 * The controller must continue receiving ticks while paused so frame
+		 * profiling sections outside the pause gate can still be committed.
+		 */
 		loopController.tick(deltaMs);
 
-		if (getIsPaused()) return;
-		this.#updatePlayerBody(deltaMs);
+		if (!getIsPaused()) {
+			this.#updatePlayerBody(deltaMs);
+		}
 	}
 
-	/** Start a punch/mining swing (third-person arm + avatar item). */
+	/**
+	 * Starts the third-person punch or mining animation.
+	 */
 	public triggerPunch(): void {
 		this.#punchT = 0;
 	}
 
 	#updatePlayerBody(deltaMs: number): void {
 		const body = this.#playerBodyMesh;
-		if (body === null) return;
 
-		const deltaSeconds = deltaMs * 0.001;
-
-		// Advance punch animation regardless of camera mode.
-		let punchT = this.#punchT;
-		if (punchT < 1) {
-			punchT += deltaSeconds / PUNCH_DURATION_S;
-
-			if (punchT >= 1) {
-				punchT = Number.POSITIVE_INFINITY;
-			}
-
-			this.#punchT = punchT;
+		if (body === null) {
+			return;
 		}
 
-		const visible = this.#playerCamera.isThirdPerson && this.#bodySkinBound;
+		const deltaSeconds = deltaMs * SECONDS_PER_MILLISECOND;
 
-		body.visible = visible;
+		this.#advancePunchAnimation(deltaSeconds);
 
-		if (!visible) {
+		const isVisible = this.#playerCamera.isThirdPerson && this.#bodySkinBound;
+
+		body.visible = isVisible;
+
+		if (!isVisible) {
 			this.#bodyHeldItem?.hide();
 			this.#lastBodyX = Number.NaN;
+			this.#lastBodyZ = Number.NaN;
 			return;
 		}
 
 		const vehicle = this.#playerVehicle;
 		const position = vehicle.position;
 		const velocity = vehicle.velocity;
-		const material = this.#playerBodyMat;
 
 		const x = position.x;
 		const y = position.y;
 		const z = position.z;
 
-		// Avoid Math.hypot() overhead in this per-frame path.
+		const velocityX = velocity.x;
+		const velocityZ = velocity.z;
+
 		const horizontalSpeed = Math.sqrt(
-			velocity.x * velocity.x + velocity.z * velocity.z,
+			velocityX * velocityX + velocityZ * velocityZ,
 		);
 
 		const walkPhase =
 			this.#bodyWalkPhase + horizontalSpeed * deltaSeconds * WALK_STRIDE_FACTOR;
 
-		let walkAmplitude = this.#bodyWalkAmp;
 		const targetAmplitude = Math.min(1, horizontalSpeed / WALK_REF_SPEED);
 
-		walkAmplitude +=
-			(targetAmplitude - walkAmplitude) * Math.min(1, deltaSeconds * 10);
+		const smoothing = Math.min(1, deltaSeconds * BODY_WALK_SMOOTHING_RATE);
+
+		const walkAmplitude =
+			this.#bodyWalkAmp + (targetAmplitude - this.#bodyWalkAmp) * smoothing;
 
 		this.#bodyWalkPhase = walkPhase;
 		this.#bodyWalkAmp = walkAmplitude;
+
+		const material = this.#playerBodyMat;
+		const punchT = this.#punchT;
 
 		if (material !== null) {
 			setRigWalk(material, walkPhase, walkAmplitude);
@@ -287,67 +359,101 @@ export class Player {
 
 		body.position.set(x, y, z);
 
-		// Update voxel lighting only when entering another voxel or when the
-		// standing-still day/night refresh interval expires.
+		this.#updateBodyLighting(material, x, y, z);
+		this.#updateBodyFacing(body, x, z);
+		this.#updateBodyHeldItem(body, walkPhase, walkAmplitude, punchT);
+	}
+
+	#advancePunchAnimation(deltaSeconds: number): void {
+		const punchT = this.#punchT;
+
+		if (punchT >= 1) {
+			return;
+		}
+
+		const nextPunchT = punchT + deltaSeconds / PUNCH_DURATION_S;
+
+		this.#punchT = nextPunchT >= 1 ? Number.POSITIVE_INFINITY : nextPunchT;
+	}
+
+	#updateBodyLighting(
+		material: ShaderMaterial | null,
+		x: number,
+		y: number,
+		z: number,
+	): void {
+		const sampledY = y + PLAYER_LIGHT_SAMPLE_Y_OFFSET;
+
 		const lightX = Math.floor(x);
-		const lightY = Math.floor(y + PLAYER_LIGHT_SAMPLE_Y_OFFSET);
+		const lightY = Math.floor(sampledY);
 		const lightZ = Math.floor(z);
 		const nowMs = performance.now();
 
-		if (
+		const voxelChanged =
 			lightX !== this.#bodyLightX ||
 			lightY !== this.#bodyLightY ||
-			lightZ !== this.#bodyLightZ ||
-			nowMs - this.#bodyLightSampleMs > 250
-		) {
-			this.#bodyLightX = lightX;
-			this.#bodyLightY = lightY;
-			this.#bodyLightZ = lightZ;
-			this.#bodyLightSampleMs = nowMs;
+			lightZ !== this.#bodyLightZ;
 
-			if (material !== null) {
-				const packedLight = getLightByWorldCoords(
-					x,
-					y + PLAYER_LIGHT_SAMPLE_Y_OFFSET,
-					z,
-				);
+		const refreshExpired =
+			nowMs - this.#bodyLightSampleMs > BODY_LIGHT_REFRESH_INTERVAL_MS;
 
-				setRigLightColor(material, packedLightToLightColor(packedLight));
-			}
+		if (!voxelChanged && !refreshExpired) {
+			return;
 		}
 
-		// Rotate toward movement direction through the shortest angular arc.
+		this.#bodyLightX = lightX;
+		this.#bodyLightY = lightY;
+		this.#bodyLightZ = lightZ;
+		this.#bodyLightSampleMs = nowMs;
+
+		if (material === null) {
+			return;
+		}
+
+		const packedLight = getLightByWorldCoords(x, sampledY, z);
+
+		setRigLightColor(material, packedLightToLightColor(packedLight));
+	}
+
+	#updateBodyFacing(body: Mesh, x: number, z: number): void {
 		const lastX = this.#lastBodyX;
 		const lastZ = this.#lastBodyZ;
-
-		if (!Number.isNaN(lastX)) {
-			const dx = x - lastX;
-			const dz = z - lastZ;
-			const movementSquared = dx * dx + dz * dz;
-
-			if (movementSquared > 1e-6) {
-				const targetYaw = Math.atan2(dx, dz);
-				const yawDelta = targetYaw - this.#bodyYaw;
-
-				// atan2(sin, cos) normalizes the difference to [-PI, PI].
-				const shortestDelta = Math.atan2(
-					Math.sin(yawDelta),
-					Math.cos(yawDelta),
-				);
-
-				this.#bodyYaw += shortestDelta * 0.25;
-				body.rotation.y = this.#bodyYaw;
-			}
-		}
 
 		this.#lastBodyX = x;
 		this.#lastBodyZ = z;
 
-		const hotbarSlot = this.#playerHud.selectedHotbarSlot;
-		const item = this.#playerInventory.inventory[0]?.[hotbarSlot]?.item;
+		if (Number.isNaN(lastX)) {
+			return;
+		}
+
+		const deltaX = x - lastX;
+		const deltaZ = z - lastZ;
+		const movementSquared = deltaX * deltaX + deltaZ * deltaZ;
+
+		if (movementSquared <= BODY_MOVEMENT_EPSILON_SQUARED) {
+			return;
+		}
+
+		const targetYaw = Math.atan2(deltaX, deltaZ);
+		const yawDelta = targetYaw - this.#bodyYaw;
+
+		// Normalize the angular difference to [-PI, PI].
+		const shortestDelta = Math.atan2(Math.sin(yawDelta), Math.cos(yawDelta));
+
+		this.#bodyYaw += shortestDelta * BODY_YAW_INTERPOLATION;
+		body.rotation.y = this.#bodyYaw;
+	}
+
+	#updateBodyHeldItem(
+		body: Mesh,
+		walkPhase: number,
+		walkAmplitude: number,
+		punchT: number,
+	): void {
+		const item = this.#playerInventory.getSelectedHotbarItem();
 
 		this.#bodyHeldItem?.updateAvatar(
-			item && item.stackSize > 0 ? item.itemId : 0,
+			item !== null && item.stackSize > 0 ? item.itemId : 0,
 			item?.blockState ?? 0,
 			body,
 			walkPhase,
@@ -357,7 +463,9 @@ export class Player {
 	}
 
 	#onPauseRequested(): void {
-		if (getIsPaused() || isUiOpen() || !this.#pauseMenu) return;
+		if (getIsPaused() || isUiOpen() || !this.#pauseMenu) {
+			return;
+		}
 
 		const isMultiplayer = this.networkManager !== undefined;
 
@@ -368,30 +476,32 @@ export class Player {
 
 		this.#pauseMenu.show(isMultiplayer);
 
-		if (document.pointerLockElement) {
-			document.exitPointerLock();
+		if (document.pointerLockElement !== null) {
+			void document.exitPointerLock();
 		}
 	}
 
 	#resume(): void {
-		if (!this.networkManager) {
+		if (this.networkManager === undefined) {
 			setIsPaused(false);
 			Map1.isPaused = false;
 		}
 
 		this.#pauseMenu.hide();
-		this.canvas.requestPointerLock();
+		void this.#canvas.requestPointerLock();
 	}
 
 	public onKeyEvent(key: string, isKeyDown: boolean): void {
-		this.keyboardControls?.handleKeyEvent(key, isKeyDown);
+		this.keyboardControls.handleKeyEvent(key, isKeyDown);
 	}
 
 	public get position(): Vec3 {
 		return this.#playerVehicle.position;
 	}
 
-	/** Current world-space velocity of the player body, in m/s. */
+	/**
+	 * Current world-space body velocity in metres per second.
+	 */
 	public get velocity(): Vec3 {
 		return this.#playerVehicle.velocity;
 	}
@@ -425,177 +535,191 @@ export class Player {
 	}
 
 	public get sceneRef(): SceneContext {
-		return this.scene;
+		return this.#scene;
 	}
 
-	/** KEY_USE ('e') — interact with the usable target under the crosshair. */
+	/**
+	 * KEY_USE ("e"): interacts with the usable target under the crosshair.
+	 */
 	public use(): void {
-		if (this.#pickInFlight) return;
-
-		// While riding a boat, E always dismounts (the wheel toggles drive
-		// mode, so re-pressing E on the wheel remounts on the next press).
-		if (this.#playerVehicle.isMounted && this.#playerVehicle.mount) {
-			this.#playerVehicle.mount.dismount();
+		if (this.#pickInFlight) {
 			return;
 		}
 
-		// Dropped items first (also the hold-to-vacuum path below).
-		// tryPickupItem manages #pickInFlight itself.
-		if (this.tryPickupItem()) return;
+		const vehicle = this.#playerVehicle;
+
+		// While mounted, E always dismounts.
+		if (vehicle.isMounted && vehicle.mount) {
+			vehicle.mount.dismount();
+			return;
+		}
+
+		// Dropped items take priority over block interactions.
+		if (this.tryPickupItem()) {
+			return;
+		}
 
 		this.#pickInFlight = true;
 
 		try {
 			const blockHit = pickTarget(this);
-			if (!blockHit) return;
+
+			if (!blockHit) {
+				return;
+			}
 
 			switch (blockHit.blockId) {
 				case BlockType.MasonTable:
-					if (this.#playerHud.isMasonTableOpen) {
-						this.#playerHud.hideMasonTableUI();
-					} else {
-						this.#playerHud.showMasonTableUI();
-					}
+					this.#toggleMasonTable();
 					return;
 
-				case BlockType.BoatCreator: {
-					// Wheel on a boat: mount that boat instead of creating one.
-					const dynamicContext = blockHit.dynamicContext as {
-						kind?: unknown;
-						boatChunk?: BoatChunk;
-					} | null;
-					if (
-						dynamicContext?.kind === "boatChunk" &&
-						dynamicContext.boatChunk
-					) {
-						const wheelBoat = CustomBoat.getBoatForChunk(
-							dynamicContext.boatChunk,
-						);
-						if (wheelBoat) {
-							wheelBoat.mount.mount(this);
-						}
-						return;
-					}
-
-					const x = Math.floor(blockHit.x);
-					const y = Math.floor(blockHit.y);
-					const z = Math.floor(blockHit.z);
-
-					tryCreateBoatFromMarker(this, x, y, z);
+				case BlockType.BoatCreator:
+					this.#useBoatCreator(blockHit);
 					return;
-				}
 
-				case BlockType.WoodCrate: {
-					if (this.#playerHud.isWoodCrateOpen) {
-						this.#playerHud.hideWoodCrateUI();
-						return;
-					}
-
-					const x = Math.floor(blockHit.x);
-					const y = Math.floor(blockHit.y);
-					const z = Math.floor(blockHit.z);
-
-					this.#playerHud.showWoodCrateUI(x, y, z);
+				case BlockType.WoodCrate:
+					this.#toggleWoodCrate(blockHit);
 					return;
-				}
 
-				// Kiln / Furnace / Whetstone / Crucible / Anvil / Smeltery.
-				// Listed explicitly rather than a `default` branch, so adding a
-				// station is a deliberate act rather than a silent fallthrough.
 				case BlockType.Kiln:
 				case BlockType.Furnace:
 				case BlockType.Whetstone:
 				case BlockType.Crucible:
 				case BlockType.Anvil:
-				case BlockType.Smeltery: {
-					if (this.#playerHud.isStationOpen) {
-						this.#playerHud.hideStationUI();
-						return;
+				case BlockType.Smeltery:
+					this.#toggleStation(blockHit);
+					return;
+
+				case BlockType.Tnt:
+					this.#igniteBlock(blockHit);
+					return;
+
+				case BlockType.TempleGlyph:
+					this.#useTempleGlyph(blockHit);
+					return;
+
+				default:
+					if (tntBlastRadius(blockHit.blockId) !== null) {
+						this.#igniteBlock(blockHit);
 					}
-
-					const x = Math.floor(blockHit.x);
-					const y = Math.floor(blockHit.y);
-					const z = Math.floor(blockHit.z);
-
-					this.#playerHud.showStationUI(x, y, z);
-					return;
-				}
-
-				case BlockType.Tnt: {
-					const x = Math.floor(blockHit.x);
-					const y = Math.floor(blockHit.y);
-					const z = Math.floor(blockHit.z);
-
-					igniteTnt(x, y, z);
-					return;
-				}
-
-				case BlockType.TempleGlyph: {
-					const x = Math.floor(blockHit.x);
-					const y = Math.floor(blockHit.y);
-					const z = Math.floor(blockHit.z);
-
-					const result = interactWithGlyph(
-						x,
-						y,
-						z,
-						activeWorldSeedAsInt(),
-						this.networkManager?.isConnected === true
-							? this.networkManager.onBlockPlaced
-							: undefined,
-					);
-
-					if (result.kind === "toggled") {
-						this.#playerHud.showTempleMessage(
-							result.charged ? "The seal takes the light." : "The seal dims.",
-						);
-					} else if (result.kind === "gate-locked") {
-						this.#playerHud.showTempleMessage(
-							`The gate is sealed. ${result.chargedCount} of ${result.requiredCount} seals answer.`,
-						);
-					} else if (result.kind === "gate-open") {
-						this.#playerHud.showTempleMessage(
-							"The gate grinds open. Something stirs below.",
-						);
-					}
-					return;
-				}
-
-				default: {
-					// Ignitable TNT mason variants (slab, half wall) don't
-					// match the full-block case above — same E-ignite path,
-					// with the blast radius coming from the block itself.
-					if (tntBlastRadius(blockHit.blockId) === null) {
-						return;
-					}
-
-					const x = Math.floor(blockHit.x);
-					const y = Math.floor(blockHit.y);
-					const z = Math.floor(blockHit.z);
-
-					igniteTnt(x, y, z);
-					return;
-				}
 			}
 		} finally {
 			this.#pickInFlight = false;
 		}
 	}
 
+	#toggleMasonTable(): void {
+		const hud = this.#playerHud;
+
+		if (hud.isMasonTableOpen) {
+			hud.hideMasonTableUI();
+		} else {
+			hud.showMasonTableUI();
+		}
+	}
+
+	#useBoatCreator(blockHit: {
+		x: number;
+		y: number;
+		z: number;
+		dynamicContext?: unknown;
+	}): void {
+		const dynamicContext = blockHit.dynamicContext as BoatDynamicContext | null;
+
+		if (dynamicContext?.kind === "boatChunk" && dynamicContext.boatChunk) {
+			const wheelBoat = CustomBoat.getBoatForChunk(dynamicContext.boatChunk);
+
+			wheelBoat?.mount.mount(this);
+			return;
+		}
+
+		const { x, y, z } = floorBlockPosition(blockHit);
+		tryCreateBoatFromMarker(this, x, y, z);
+	}
+
+	#toggleWoodCrate(blockHit: WorldBlockPosition): void {
+		const hud = this.#playerHud;
+
+		if (hud.isWoodCrateOpen) {
+			hud.hideWoodCrateUI();
+			return;
+		}
+
+		const { x, y, z } = floorBlockPosition(blockHit);
+		hud.showWoodCrateUI(x, y, z);
+	}
+
+	#toggleStation(blockHit: WorldBlockPosition): void {
+		const hud = this.#playerHud;
+
+		if (hud.isStationOpen) {
+			hud.hideStationUI();
+			return;
+		}
+
+		const { x, y, z } = floorBlockPosition(blockHit);
+		hud.showStationUI(x, y, z);
+	}
+
+	#igniteBlock(blockHit: WorldBlockPosition): void {
+		const { x, y, z } = floorBlockPosition(blockHit);
+		igniteTnt(x, y, z);
+	}
+
+	#useTempleGlyph(blockHit: WorldBlockPosition): void {
+		const { x, y, z } = floorBlockPosition(blockHit);
+		const networkManager = this.networkManager;
+
+		const result = interactWithGlyph(
+			x,
+			y,
+			z,
+			activeWorldSeedAsInt(),
+			networkManager?.isConnected === true
+				? networkManager.onBlockPlaced
+				: undefined,
+		);
+
+		const hud = this.#playerHud;
+
+		switch (result.kind) {
+			case "toggled":
+				hud.showTempleMessage(
+					result.charged ? "The seal takes the light." : "The seal dims.",
+				);
+				return;
+
+			case "gate-locked":
+				hud.showTempleMessage(
+					`The gate is sealed. ${result.chargedCount} of ${result.requiredCount} seals answer.`,
+				);
+				return;
+
+			case "gate-open":
+				hud.showTempleMessage("The gate grinds open. Something stirs below.");
+				return;
+		}
+	}
+
 	/**
-	 * Pick up a single nearby dropped item (crosshair target first, then
-	 * nearest). True when something was collected. Item-only on purpose:
-	 * the E-hold repeater calls this so holding E vacuums drops without
-	 * re-triggering doors, TNT, or mounts every tick.
+	 * Picks up one nearby dropped item, prioritizing the crosshair target.
+	 *
+	 * Returns true when an item was found and used.
 	 */
 	public tryPickupItem(): boolean {
-		if (this.#pickInFlight) return false;
+		if (this.#pickInFlight) {
+			return false;
+		}
 
 		this.#pickInFlight = true;
 
 		try {
 			const dropped = pickDroppedItem(this) ?? DroppedItem.nearestTo(this);
-			if (!dropped) return false;
+
+			if (!dropped) {
+				return false;
+			}
+
 			dropped.use(this);
 			return true;
 		} finally {
@@ -603,49 +727,43 @@ export class Player {
 		}
 	}
 
-	/** Track the physical E key state so holding it vacuums up drops. */
+	/**
+	 * Tracks the physical E key state for hold-to-pick-up behavior.
+	 */
 	public setUseHeld(held: boolean): void {
+		if (this.#useHeld === held) {
+			return;
+		}
+
 		this.#useHeld = held;
-		if (held) this.#lastUseRepeatMs = performance.now();
+
+		if (held) {
+			this.#lastUseRepeatMs = performance.now();
+		}
 	}
 
 	/**
-	 * Called every frame from the loop controller: while E is held, collect
-	 * one nearby drop per interval until none are left. Single presses keep
-	 * their one-shot use() behavior (including block interactions).
+	 * Collects one nearby item per repeat interval while E is held.
 	 */
 	public updateUseHeld(): void {
-		if (!this.#useHeld || isUiOpen()) return;
+		if (!this.#useHeld || isUiOpen() || this.#pickInFlight) {
+			return;
+		}
 
-		const now = performance.now();
-		if (now - this.#lastUseRepeatMs < Player.USE_REPEAT_INTERVAL_MS) return;
-		this.#lastUseRepeatMs = now;
+		const nowMs = performance.now();
 
+		if (nowMs - this.#lastUseRepeatMs < Player.USE_REPEAT_INTERVAL_MS) {
+			return;
+		}
+
+		this.#lastUseRepeatMs = nowMs;
 		this.tryPickupItem();
 	}
 
 	/**
-	 * Wire block edit callbacks for multiplayer.
-	 * Called by TestScene when multiplayer is active.
+	 * Wires multiplayer block-edit callbacks.
 	 */
-	public setDefaultBlockEditCallbacks(net: {
-		onBlockPlaced: (
-			x: number,
-			y: number,
-			z: number,
-			blockId: number,
-			blockState: number,
-		) => void;
-		onBlockBroken: (x: number, y: number, z: number, blockId: number) => void;
-		onExplosion: (x: number, y: number, z: number, radius: number) => void;
-		onTntIgnite: (
-			x: number,
-			y: number,
-			z: number,
-			fuse: number,
-			radius: number,
-		) => void;
-	}): void {
+	public setDefaultBlockEditCallbacks(net: BlockEditCallbacks): void {
 		setOnBlockPlaced(net.onBlockPlaced);
 		this.#walkingControls.setOnBlockBroken(net.onBlockBroken);
 		setOnExplosion(net.onExplosion);
