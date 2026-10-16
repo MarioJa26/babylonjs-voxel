@@ -47,8 +47,10 @@ const MIN_DEVICE_PIXEL_RATIO = 0.5;
 
 /**
  * Lite native port of the engine/bootstrap entry point.
+ *
  * Creates the WebGPU engine, scene, and follow camera, registers the scene,
- * and runs the render loop through startEngine's internal rAF.
+ * and runs the render loop through startEngine's internal requestAnimationFrame
+ * loop.
  */
 export class TestScene {
 	public readonly document: Document;
@@ -58,6 +60,8 @@ export class TestScene {
 	public engine?: EngineContext;
 
 	#frameCounter = 0;
+	#disposed = false;
+
 	#player?: Player;
 	#playerStatePersistence?: PlayerStatePersistence;
 	#disposeLightDebugTool?: () => void;
@@ -78,24 +82,35 @@ export class TestScene {
 		/*
 		 * Load persisted settings before creating the engine. Render scale and
 		 * MSAA affect surface creation and cannot be changed without rebuilding
-		 * the surface and pipelines.
+		 * the surface and its pipelines.
 		 */
 		const savedSettings = loadGameSettings();
 
 		const devicePixelRatio =
 			typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
 
+		const maxDevicePixelRatio = Math.max(
+			MIN_DEVICE_PIXEL_RATIO,
+			devicePixelRatio * savedSettings.renderScale,
+		);
+
 		const engine = await createEngine(this.canvas, {
 			msaaSamples: savedSettings.msaaEnabled ? MSAA_SAMPLE_COUNT : 1,
-			maxDevicePixelRatio: Math.max(
-				MIN_DEVICE_PIXEL_RATIO,
-				devicePixelRatio * savedSettings.renderScale,
-			),
+			maxDevicePixelRatio,
 		});
 
 		/*
+		 * dispose() may run while createEngine() is pending. Do not continue
+		 * initializing a scene the caller has already retired.
+		 */
+		if (this.#disposed) {
+			stopEngine(engine);
+			return;
+		}
+
+		/*
 		 * Keep surface dimensions cached through ResizeObserver so the render
-		 * loop does not need to read canvas layout dimensions each frame.
+		 * loop does not need to read canvas layout dimensions every frame.
 		 */
 		enableSurfaceResizeObserver(engine);
 
@@ -115,6 +130,7 @@ export class TestScene {
 		const player = new Player(engine, scene, playerCamera, this.canvas);
 
 		this.#player = player;
+
 		this.#disposeLightDebugTool = installLightDebugTool(
 			this.#getPlayerPosition,
 		);
@@ -135,18 +151,36 @@ export class TestScene {
 			);
 		}
 
+		/*
+		 * Initialization can involve world loading and network setup. Check
+		 * again before registering or starting the scene.
+		 */
+		if (this.#disposed) {
+			return;
+		}
+
 		await registerScene(scene);
+
+		if (this.#disposed) {
+			return;
+		}
+
 		await startEngine(engine);
+
+		if (this.#disposed) {
+			stopEngine(engine);
+			return;
+		}
+
 		await initBlockBreakParticles(scene);
 
-		if (ENABLE_LITE_EXPLORER) {
+		if (ENABLE_LITE_EXPLORER && !this.#disposed) {
 			await this.showLiteExplorer(engine, scene);
 		}
 	}
 
 	/**
-	 * Stable callback stored once instead of creating an inline callback when
-	 * installing the light debug tool.
+	 * Stable callback used by the light-debug tool.
 	 */
 	readonly #getPlayerPosition = () => this.#player?.position;
 
@@ -158,19 +192,28 @@ export class TestScene {
 		serverNick: string,
 	): Promise<void> {
 		const savedServer = findSavedServerByName(serverNick);
+
 		const serverUrl = savedServer?.url ?? reconstructWsUrl(serverNick);
 
 		const savedPlayerName = getPlayerName();
+
 		const playerName =
 			savedPlayerName || `Player${Math.floor(Math.random() * 1000)}`;
 
 		/*
-		 * Map initialization and skin preloading are independent. Start both before
-		 * constructing the networking systems so their asynchronous work overlaps.
+		 * Map initialization and skin preloading are independent. Start both
+		 * before constructing networking systems so their asynchronous work
+		 * overlaps.
 		 */
 		const map = new Map1(engine, scene, player);
 		const mapReady = map.initPromise;
 		const mobSkinsReady = preloadMobSkins();
+
+		/*
+		 * Build the HUD before connecting. The server's connected callback
+		 * sends the held-item selection and reads player.playerHud.
+		 */
+		player.createHud(scene);
 
 		const networkManager = new NetworkManager(player, serverUrl);
 
@@ -180,13 +223,17 @@ export class TestScene {
 		player.setDefaultBlockEditCallbacks(networkManager);
 
 		/*
-		 * Connection deliberately remains outside the scene-startup critical path.
-		 * Observe rejection explicitly so a failed join cannot become an unhandled
+		 * Connection deliberately remains outside the scene-startup critical
+		 * path. Observe rejection so a failed join cannot become an unhandled
 		 * promise rejection.
 		 */
 		void networkManager
 			.connect(playerName, MULTIPLAYER_ROOM_NAME)
 			.catch((error: unknown) => {
+				if (this.#disposed) {
+					return;
+				}
+
 				console.error("[TestScene] Multiplayer connection failed:", error);
 
 				networkManager.notifySystemMessage(
@@ -208,10 +255,14 @@ export class TestScene {
 		Arrow.ensureNetworkHandler(netClient);
 
 		/*
-		 * Both operations were started near the beginning of initialization. Wait
-		 * for them together rather than paying their latency sequentially.
+		 * Both operations are already running, so await them together rather
+		 * than paying their latency sequentially.
 		 */
 		await Promise.all([mapReady, mobSkinsReady]);
+
+		if (this.#disposed) {
+			return;
+		}
 
 		this.initSharedPlayerSystems(scene, player);
 		player.respawn();
@@ -228,28 +279,49 @@ export class TestScene {
 		this.#playerStatePersistence = persistence;
 
 		/*
-		 * Capture initialized instances once. The per-frame callback performs no
-		 * optional chaining, manager lookup, or temporary allocation.
+		 * Capture initialized instances once. The per-frame callback performs
+		 * no manager lookup, optional chaining, or temporary allocation.
 		 */
-		this.registerFrameUpdate(scene, playerCamera, (deltaMs: number): void => {
-			persistence.update();
-			networkManager.tick(deltaMs);
-			remoteMobManager.update(deltaMs);
-			remoteItemManager.update(deltaMs);
-		});
+		this.registerFrameUpdate(
+			scene,
+			player,
+			playerCamera,
+			(deltaMs: number): void => {
+				persistence.update();
+				networkManager.tick(deltaMs);
+				remoteMobManager.update(deltaMs);
+				remoteItemManager.update(deltaMs);
+			},
+		);
 	}
+
 	private async initSingleplayer(
 		engine: EngineContext,
 		scene: SceneContext,
 		player: Player,
 		playerCamera: PlayerCamera,
 	): Promise<void> {
-		setTerrainSeed(worldSeedFor(this.worldName));
+		/*
+		 * worldSeedFor may normalize or hash the world name. Calculate it once
+		 * and share the result between terrain generation and encounter seeding.
+		 */
+		const worldSeed = worldSeedFor(this.worldName);
+
+		setTerrainSeed(worldSeed);
 
 		const map = new Map1(engine, scene, player);
+
 		await map.initPromise;
 
+		if (this.#disposed) {
+			return;
+		}
+
 		await ensureDefaultInstance();
+
+		if (this.#disposed) {
+			return;
+		}
 
 		this.initSharedPlayerSystems(scene, player);
 
@@ -265,15 +337,12 @@ export class TestScene {
 		this.#playerStatePersistence = persistence;
 
 		/*
-		 * The coordinator may request the player position frequently. Reusing
-		 * this vector removes one object allocation per query.
-		 *
-		 * The returned value is borrowed and must not be retained or mutated by
-		 * the coordinator.
+		 * The mob systems may request the player position frequently. Reuse
+		 * one borrowed vector rather than allocating a new vector per query.
 		 */
 		const coordinatorPosition = vec3(0, 0, 0);
 
-		createMobCoordinator(scene, () => {
+		const getCoordinatorPosition = () => {
 			const position = player.position;
 
 			coordinatorPosition.x = position.x;
@@ -281,39 +350,49 @@ export class TestScene {
 			coordinatorPosition.z = position.z;
 
 			return coordinatorPosition;
-		});
+		};
 
-		// Maya temple dungeons are populated on the main thread from the shared
-		// layout, not by worldgen — the chunk worker has no way to create mobs.
-		// Runs singleplayer only; in multiplayer the server owns the spawns and
-		// RemoteMobManager renders them.
+		createMobCoordinator(scene, getCoordinatorPosition);
+
+		/*
+		 * Maya temple dungeons are populated on the main thread from the
+		 * shared layout. Multiplayer servers own their encounter spawns.
+		 */
 		createMayaDungeonEncounter(
 			scene,
-			() => {
-				const position = player.position;
-
-				coordinatorPosition.x = position.x;
-				coordinatorPosition.y = position.y;
-				coordinatorPosition.z = position.z;
-
-				return coordinatorPosition;
-			},
-			computeSeedAsInt(worldSeedFor(this.worldName)),
+			getCoordinatorPosition,
+			computeSeedAsInt(worldSeed),
 		);
 
-		this.registerFrameUpdate(scene, playerCamera, (): void => {
+		this.registerFrameUpdate(scene, player, playerCamera, (): void => {
 			persistence.update();
 		});
 	}
 
 	private initSharedPlayerSystems(scene: SceneContext, player: Player): void {
 		initializeBlockBreakingVisuals(scene);
-		void DroppedItem.preloadAtlas();
+
+		/*
+		 * preloadAtlas currently starts its own loading process and returns void,
+		 * so it must not be treated as a Promise.
+		 */
+		try {
+			DroppedItem.preloadAtlas();
+		} catch (error: unknown) {
+			if (!this.#disposed) {
+				console.warn(
+					"[TestScene] Failed to start dropped-item atlas preload:",
+					error,
+				);
+			}
+		}
+
 		player.createHud(scene);
 	}
 
 	private registerFrameUpdate(
 		scene: SceneContext,
+		player: Player,
 		playerCamera: PlayerCamera,
 		perModeUpdate: (deltaMs: number) => void,
 	): void {
@@ -323,31 +402,45 @@ export class TestScene {
 			null,
 		);
 
+		/*
+		 * Cache configuration lookups outside the frame loop. These settings
+		 * are treated as startup constants by the existing implementation.
+		 */
+		const uploadBudgetBytes = SETTING_PARAMS.FRAME_UPLOAD_BUDGET_BYTES;
+
+		const collisionBudgetChecks = SETTING_PARAMS.FRAME_COLLISION_BUDGET_CHECKS;
+
+		const decompressionBudget = SETTING_PARAMS.FRAME_DECOMPRESSION_BUDGET;
+
+		const meshBuildBudget = SETTING_PARAMS.FRAME_MESH_BUILD_BUDGET;
+
+		const streamingTimeBudgetMs = SETTING_PARAMS.FRAME_STREAMING_TIME_BUDGET_MS;
+
 		onBeforeRender(scene, (deltaMs: number): void => {
-			// Sample the clock and reset the frame budget BEFORE any subsystem
-			// runs. Everything downstream reads these two, so they must be set
-			// first or the first frame's consumers would see the previous
-			// frame's allowances (and, on frame one, zeros).
+			if (this.#disposed) {
+				return;
+			}
+
+			/*
+			 * Sample the clock and reset frame budgets before any subsystem
+			 * runs. Downstream systems must see the current frame's values.
+			 */
 			beginFrameClock(deltaMs);
 
 			FRAME_WORK_BUDGET.beginFrame(
-				SETTING_PARAMS.FRAME_UPLOAD_BUDGET_BYTES,
-				SETTING_PARAMS.FRAME_COLLISION_BUDGET_CHECKS,
-				SETTING_PARAMS.FRAME_DECOMPRESSION_BUDGET,
-				SETTING_PARAMS.FRAME_MESH_BUILD_BUDGET,
-				SETTING_PARAMS.FRAME_STREAMING_TIME_BUDGET_MS,
+				uploadBudgetBytes,
+				collisionBudgetChecks,
+				decompressionBudget,
+				meshBuildBudget,
+				streamingTimeBudgetMs,
 			);
 
 			const frameCounter = ++this.#frameCounter;
-			const player = this.#player;
 
 			Map1.update(deltaMs);
-
-			if (player !== undefined) {
-				player.tick(deltaMs);
-			}
-
+			player.tick(deltaMs);
 			perModeUpdate(deltaMs);
+
 			underWaterEffect.updateFromCamera();
 			updateGlobalUniforms(frameCounter);
 		});
@@ -357,11 +450,17 @@ export class TestScene {
 		engine: EngineContext,
 		scene: SceneContext,
 	): Promise<void> {
-		const explorerModulePromise = import("babylon-lite-explorer");
-		const liteModulePromise = import("@babylonjs/lite");
+		/*
+		 * The modules are independent, so load them concurrently.
+		 */
+		const [explorerModule, lite] = await Promise.all([
+			import("babylon-lite-explorer"),
+			import("@babylonjs/lite"),
+		]);
 
-		const explorerModule = await explorerModulePromise;
-		const lite = await liteModulePromise;
+		if (this.#disposed) {
+			return;
+		}
 
 		explorerModule.showLiteExplorer(
 			{
@@ -379,13 +478,38 @@ export class TestScene {
 	}
 
 	public dispose(): void {
-		this.#disposeLightDebugTool?.();
-		this.#playerStatePersistence?.dispose();
-		this.#networkManager?.disconnect();
-		this.#remoteMobManager?.dispose();
-		this.#remoteItemManager?.dispose();
+		if (this.#disposed) {
+			return;
+		}
 
-		void WorldStorage.flush();
+		this.#disposed = true;
+
+		/*
+		 * Dispose external callbacks first so they cannot continue accessing
+		 * player or scene state while teardown is underway.
+		 */
+		this.#disposeLightDebugTool?.();
+		this.#disposeLightDebugTool = undefined;
+
+		this.#playerStatePersistence?.dispose();
+		this.#playerStatePersistence = undefined;
+
+		this.#networkManager?.disconnect();
+		this.#networkManager = undefined;
+
+		this.#remoteMobManager?.dispose();
+		this.#remoteMobManager = undefined;
+
+		this.#remoteItemManager?.dispose();
+		this.#remoteItemManager = undefined;
+
+		/*
+		 * Storage flush remains asynchronous, but rejection is observed to
+		 * prevent teardown from producing an unhandled rejection.
+		 */
+		void WorldStorage.flush().catch((error: unknown) => {
+			console.error("[TestScene] Failed to flush world storage:", error);
+		});
 
 		const engine = this.engine;
 
@@ -399,17 +523,13 @@ export class TestScene {
 		this.engine = undefined;
 		this.scene = undefined;
 		this.#player = undefined;
-		this.#playerStatePersistence = undefined;
-		this.#networkManager = undefined;
-		this.#remoteMobManager = undefined;
-		this.#remoteItemManager = undefined;
-		this.#disposeLightDebugTool = undefined;
 	}
 }
 
 /**
- * Rebuild a ws:// or wss:// URL from a saved-server nickname.
- * Used when the nickname in the URL is not in the saved-server list.
+ * Rebuilds a ws:// or wss:// URL from a saved-server nickname.
+ *
+ * Used when the nickname in the URL is not present in the saved-server list.
  */
 function reconstructWsUrl(nick: string | null): string | undefined {
 	if (!nick) {
@@ -420,7 +540,10 @@ function reconstructWsUrl(nick: string | null): string | undefined {
 		return nick;
 	}
 
-	const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+	const protocol =
+		typeof window !== "undefined" && window.location.protocol === "https:"
+			? "wss:"
+			: "ws:";
 
-	return `${scheme}//${nick}`;
+	return `${protocol}//${nick}`;
 }

@@ -1,15 +1,18 @@
 import {
 	addToScene,
+	type Camera,
 	createMeshFromData,
 	createShaderMaterial,
 	createSolidTexture2D,
 	type EngineContext,
+	getProjectionMatrix,
 	type Mesh,
 	onSceneDispose,
 	removeFromScene,
 	type SceneContext,
 	type ShaderMaterial,
 	setMeshVisible,
+	setShaderMatrix,
 	setShaderTexture,
 	setShaderUniform,
 	setShaderVector3,
@@ -93,16 +96,21 @@ const PUNCH_TWIST = 0.35;
 /** Maximum number of cached viewmodel meshes. */
 const MAX_ENTRIES = 32;
 
+const MIN_FORWARD_LENGTH_SQUARED = 1e-8;
+
 type QuatTuple = [number, number, number, number];
 
 /**
  * Writes qY(yaw) * qX(pitch) into out.
  */
 function setYawOuter(out: QuatTuple, yaw: number, pitch: number): void {
-	const sy = Math.sin(yaw * 0.5);
-	const cy = Math.cos(yaw * 0.5);
-	const sx = Math.sin(pitch * 0.5);
-	const cx = Math.cos(pitch * 0.5);
+	const halfYaw = yaw * 0.5;
+	const halfPitch = pitch * 0.5;
+
+	const sy = Math.sin(halfYaw);
+	const cy = Math.cos(halfYaw);
+	const sx = Math.sin(halfPitch);
+	const cx = Math.cos(halfPitch);
 
 	out[0] = cy * sx;
 	out[1] = sy * cx;
@@ -154,15 +162,107 @@ setYawOuter(
 );
 
 /**
+ * Camera-relative view transform scratch.
+ *
+ * The viewmodel is rendered exactly like the engine's floating-origin path:
+ * meshes are positioned relative to the camera and the view matrix carries
+ * no translation, so the GPU never sees the camera's world position in a
+ * matrix.
+ */
+const _relativeViewProjection = new Float32Array(16);
+const _relativeViewRotation = new Float32Array(16);
+
+/**
+ * Writes P * V0, where V0 is the camera's view rotation with the translation
+ * column forced to zero.
+ */
+function writeCameraRelativeViewProjection(camera: Camera): Float32Array {
+	const world = camera.worldMatrix;
+	const view = _relativeViewRotation;
+
+	// V0 is the transpose of the camera's world rotation.
+	view[0] = world[0];
+	view[1] = world[4];
+	view[2] = world[8];
+	view[3] = 0;
+
+	view[4] = world[1];
+	view[5] = world[5];
+	view[6] = world[9];
+	view[7] = 0;
+
+	view[8] = world[2];
+	view[9] = world[6];
+	view[10] = world[10];
+	view[11] = 0;
+
+	view[12] = 0;
+	view[13] = 0;
+	view[14] = 0;
+	view[15] = 1;
+
+	const canvas = Map1.engine.canvas;
+	const aspect = canvas.height > 0 ? canvas.width / canvas.height : 1;
+	const projection = getProjectionMatrix(camera, aspect);
+	const output = _relativeViewProjection;
+
+	// output = projection * view, using column-major storage.
+	for (let column = 0; column < 4; column++) {
+		const offset = column * 4;
+
+		const b0 = view[offset];
+		const b1 = view[offset + 1];
+		const b2 = view[offset + 2];
+		const b3 = view[offset + 3];
+
+		output[offset] =
+			projection[0] * b0 +
+			projection[4] * b1 +
+			projection[8] * b2 +
+			projection[12] * b3;
+
+		output[offset + 1] =
+			projection[1] * b0 +
+			projection[5] * b1 +
+			projection[9] * b2 +
+			projection[13] * b3;
+
+		output[offset + 2] =
+			projection[2] * b0 +
+			projection[6] * b1 +
+			projection[10] * b2 +
+			projection[14] * b3;
+
+		output[offset + 3] =
+			projection[3] * b0 +
+			projection[7] * b1 +
+			projection[11] * b2 +
+			projection[15] * b3;
+	}
+
+	return output;
+}
+
+/**
+ * Publishes the camera-relative view-projection to one viewmodel material.
+ */
+function syncRelativeViewProjection(
+	material: ShaderMaterial,
+	camera: Camera,
+): void {
+	setShaderMatrix(
+		material,
+		"uViewProjection",
+		writeCameraRelativeViewProjection(camera),
+	);
+}
+
+/**
  * Held-item shader.
  *
  * This shader applies environment voxel lighting and directional sunlight.
- * It intentionally uses the mesh face normal. The formerly declared normal
- * texture was removed because it was never sampled and the geometry does not
- * currently provide the tangent basis required for correct tangent-space
- * normal mapping.
+ * The mesh normal is transformed into the same rotated space as the item.
  */
-
 const heldItemVertexWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
@@ -174,12 +274,20 @@ struct VSOut {
 fn mainVertex(input : VertexInput) -> VSOut {
   var out : VSOut;
 
+  let relativeWorldPosition =
+    shaderSystem.world * vec4<f32>(input.position, 1.0);
+
   out.pos =
-    shaderSystem.worldViewProjection *
-    vec4<f32>(input.position, 1.0);
+    shaderUniforms.uViewProjection *
+    relativeWorldPosition;
 
   out.vUV = input.uv;
-  out.vNormal = input.normal;
+
+  // w = 0 prevents translation from affecting the normal. This is valid for
+  // the viewmodel's uniform mesh scaling.
+  out.vNormal = normalize(
+    (shaderSystem.world * vec4<f32>(input.normal, 0.0)).xyz
+  );
 
   return out;
 }
@@ -236,12 +344,16 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   );
 
   let voxelLight = shaderUniforms.lightColor;
-  let sunIntensity =
-    shaderUniforms.sunLightIntensity;
+
+  // Time-of-day intensity multiplied by local voxel skylight. This becomes
+  // zero in fully enclosed caves and fades through partially lit entrances.
+  let localSunIntensity =
+    shaderUniforms.sunLightIntensity *
+    shaderUniforms.skyLightLevel;
 
   let lightMix = clamp(
     voxelLight +
-      diffuseIntensity * sunIntensity * 0.5,
+      diffuseIntensity * localSunIntensity * 0.5,
     vec3<f32>(0.06),
     vec3<f32>(1.0)
   );
@@ -250,8 +362,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     tex.rgb * lightMix +
     vec3<f32>(0.25) *
       specular *
-      sunIntensity *
-      voxelLight.x;
+      localSunIntensity;
 
   return vec4<f32>(color, tex.a);
 }
@@ -265,18 +376,13 @@ function createHeldItemMaterial(name: string): ShaderMaterial {
 		attributes: ["position", "normal", "uv"],
 		uniforms: [
 			"world",
-			"worldViewProjection",
+			{ name: "uViewProjection", type: "mat4x4<f32>" },
 			{ name: "uScale", type: "f32" },
 			{ name: "uOffset", type: "vec2<f32>" },
 			{ name: "lightColor", type: "vec3<f32>" },
-			{
-				name: "lightDirection",
-				type: "vec3<f32>",
-			},
-			{
-				name: "sunLightIntensity",
-				type: "f32",
-			},
+			{ name: "lightDirection", type: "vec3<f32>" },
+			{ name: "sunLightIntensity", type: "f32" },
+			{ name: "skyLightLevel", type: "f32" },
 		],
 		samplers: ["diffuseTexture"],
 		backFaceCulling: true,
@@ -303,7 +409,7 @@ function disposeItemMaterial(material: ShaderMaterial): void {
 let whiteFallback: Texture2D | null = null;
 
 function getWhiteFallback(engine: EngineContext): Texture2D {
-	if (!whiteFallback) {
+	if (whiteFallback === null) {
 		whiteFallback = createSolidTexture2D(engine, 255, 255, 255, 255);
 	}
 
@@ -326,17 +432,19 @@ type Entry = {
 	added: boolean;
 
 	/**
+	 * True after the diffuse atlas has been bound to this cube material.
+	 */
+	atlasBound: boolean;
+
+	/**
 	 * Environment-light cache belongs to the material rather than to the
-	 * view as a whole. This ensures a newly selected material receives its
-	 * light value even if the player has not crossed a voxel boundary.
+	 * view as a whole.
 	 */
 	lightX: number;
 	lightY: number;
 	lightZ: number;
 
-	/**
-	 * Version of the sunlight state last written to this material.
-	 */
+	/** Version of the sunlight state last written to this material. */
 	sunVersion: number;
 };
 
@@ -350,6 +458,7 @@ function createEntry(
 		material,
 		kind,
 		added: false,
+		atlasBound: false,
 		lightX: Number.NaN,
 		lightY: Number.NaN,
 		lightZ: Number.NaN,
@@ -375,22 +484,17 @@ export class HeldItemView {
 	/**
 	 * Active selection.
 	 *
-	 * Both values are null when nothing is visible, including third-person
-	 * mode, an empty hand, or a scene that is not ready.
+	 * Both values are null when nothing is visible.
 	 */
 	private _activeKey: EntryKey | null = null;
 	private _activeEntry: Entry | null = null;
 
-	/**
-	 * Last observed global sunlight direction.
-	 */
+	/** Last observed global sunlight direction. */
 	private _lastSunX = Number.NaN;
 	private _lastSunY = Number.NaN;
 	private _lastSunZ = Number.NaN;
 
-	/**
-	 * Incremented whenever any sunlight-direction component changes.
-	 */
+	/** Incremented whenever any sunlight-direction component changes. */
 	private _sunVersion = 0;
 
 	private _swingT = Number.POSITIVE_INFINITY;
@@ -413,12 +517,12 @@ export class HeldItemView {
 	}
 
 	update(player: Player, dt: number): void {
-		if (this._disposed) return;
+		if (this._disposed) {
+			return;
+		}
 
 		try {
 			this._updateInner(player, dt);
-
-			// Permit a later, independent problem to be logged once.
 			this._updateFailed = false;
 		} catch (error) {
 			if (!this._updateFailed) {
@@ -437,7 +541,9 @@ export class HeldItemView {
 		walkAmp: number,
 		punchT = Number.POSITIVE_INFINITY,
 	): void {
-		if (this._disposed) return;
+		if (this._disposed) {
+			return;
+		}
 
 		const item = itemId === 0 ? undefined : getRegisteredItemById(itemId);
 
@@ -447,22 +553,52 @@ export class HeldItemView {
 		}
 
 		const blockId = item.blockId ?? -1;
+		const isBlock = isRegisteredBlockId(blockId);
 		const icon = item.icon || PLACEHOLDER_ICON_URL;
-		const useSprite = !isRegisteredBlockId(blockId);
+		const useSprite = !isBlock;
 
 		this._syncSelection(useSprite, icon, blockId, blockState);
 
 		const entry = this._activeEntry;
-		if (!entry) return;
+
+		if (entry === null) {
+			return;
+		}
+
+		const camera = Map1.mainScene?.camera ?? null;
+
+		if (camera === null) {
+			this.hide();
+			return;
+		}
+
+		if (entry.kind === "cube" && !entry.atlasBound) {
+			this._bindAtlas(entry);
+		}
+
+		syncRelativeViewProjection(entry.material, camera);
+
+		const bodyPosition = body.position;
 
 		this._updateEnvironmentLight(
 			entry,
-			body.position.x,
-			body.position.y,
-			body.position.z,
+			bodyPosition.x,
+			bodyPosition.y,
+			bodyPosition.z,
 		);
 
-		setRigHeldItemTransform(entry.mesh, body, walkPhase, walkAmp, punchT);
+		const cameraMatrix = camera.worldMatrix;
+
+		setRigHeldItemTransform(
+			entry.mesh,
+			body,
+			cameraMatrix[12],
+			cameraMatrix[13],
+			cameraMatrix[14],
+			walkPhase,
+			walkAmp,
+			punchT,
+		);
 	}
 
 	hide(): void {
@@ -478,18 +614,17 @@ export class HeldItemView {
 	 */
 	private _refreshSunState(): void {
 		const direction = GLOBAL_VALUES.skyLightDirection;
+		const x = direction.x;
+		const y = direction.y;
+		const z = direction.z;
 
-		if (
-			direction.x === this._lastSunX &&
-			direction.y === this._lastSunY &&
-			direction.z === this._lastSunZ
-		) {
+		if (x === this._lastSunX && y === this._lastSunY && z === this._lastSunZ) {
 			return;
 		}
 
-		this._lastSunX = direction.x;
-		this._lastSunY = direction.y;
-		this._lastSunZ = direction.z;
+		this._lastSunX = x;
+		this._lastSunY = y;
+		this._lastSunZ = z;
 		this._sunVersion++;
 	}
 
@@ -549,56 +684,82 @@ export class HeldItemView {
 		entry.lightY = voxelY;
 		entry.lightZ = voxelZ;
 
+		const packedLight = getLightByWorldCoords(x, sampleY, z);
+		const skyLightLevel = ((packedLight >> 4) & 0xf) / 15;
+
 		setShaderVector3(
 			entry.material,
 			"lightColor",
-			packedLightToLightColor(getLightByWorldCoords(x, sampleY, z)),
+			packedLightToLightColor(packedLight),
 		);
+
+		setShaderUniform(entry.material, "skyLightLevel", skyLightLevel);
 	}
 
 	private _updateInner(player: Player, dt: number): void {
-		const item =
-			player.playerInventory.inventory[0]?.[player.playerHud.selectedHotbarSlot]
-				?.item ?? null;
+		const inventory = player.playerInventory.inventory;
+		const hotbarSlot = player.playerHud.selectedHotbarSlot;
+		const cameraController = player.playerCamera;
 
-		if (player.playerCamera.isThirdPerson || item === null) {
+		const item = inventory[0]?.[hotbarSlot]?.item ?? null;
+
+		if (cameraController.isThirdPerson || item === null) {
 			this._clearActive();
 			return;
 		}
 
 		const blockId = item.blockId ?? -1;
-		const useSprite = !isRegisteredBlockId(blockId) && item.icon !== "";
+		const isBlock = isRegisteredBlockId(blockId);
 
-		this._syncSelection(useSprite, item.icon, blockId, item.blockState ?? 0);
+		/*
+		 * A non-block item without an icon cannot be rendered safely.
+		 * Treating it as a cube could call getBlockItemGeometry(-1, state).
+		 */
+		if (!isBlock && item.icon === "") {
+			this._clearActive();
+			return;
+		}
+
+		const useSprite = !isBlock;
+		const blockState = item.blockState ?? 0;
+
+		this._syncSelection(useSprite, item.icon, blockId, blockState);
 
 		const entry = this._activeEntry;
-		if (!entry) return;
+
+		if (entry === null) {
+			return;
+		}
+
+		/*
+		 * Retry the atlas binding from the ordinary update path until the
+		 * asynchronously-created atlas becomes available.
+		 */
+		if (entry.kind === "cube" && !entry.atlasBound) {
+			this._bindAtlas(entry);
+		}
+
+		const playerPosition = player.position;
 
 		this._updateEnvironmentLight(
 			entry,
-			player.position.x,
-			player.position.y,
-			player.position.z,
+			playerPosition.x,
+			playerPosition.y,
+			playerPosition.z,
 		);
 
-		const cameraController = player.playerCamera;
 		const camera = cameraController.playerCamera;
-
 		const cameraPosition = camera.position;
 		const cameraTarget = camera.target;
 
-		const cameraX = cameraPosition.x;
-		const cameraY = cameraPosition.y;
-		const cameraZ = cameraPosition.z;
-
-		let forwardX = cameraTarget.x - cameraX;
-		let forwardY = cameraTarget.y - cameraY;
-		let forwardZ = cameraTarget.z - cameraZ;
+		let forwardX = cameraTarget.x - cameraPosition.x;
+		let forwardY = cameraTarget.y - cameraPosition.y;
+		let forwardZ = cameraTarget.z - cameraPosition.z;
 
 		const forwardLengthSquared =
 			forwardX * forwardX + forwardY * forwardY + forwardZ * forwardZ;
 
-		if (forwardLengthSquared > 1e-8) {
+		if (forwardLengthSquared > MIN_FORWARD_LENGTH_SQUARED) {
 			const inverseLength = 1 / Math.sqrt(forwardLengthSquared);
 
 			forwardX *= inverseLength;
@@ -629,26 +790,32 @@ export class HeldItemView {
 		let punch = 0;
 
 		if (this._swingT < PUNCH_DURATION_S) {
-			this._swingT = Math.min(PUNCH_DURATION_S, this._swingT + dt);
+			const nextSwingT = Math.min(
+				PUNCH_DURATION_S,
+				this._swingT + Math.max(0, dt),
+			);
 
-			punch = Math.sin((this._swingT / PUNCH_DURATION_S) * Math.PI);
+			this._swingT = nextSwingT;
+
+			punch = Math.sin((nextSwingT / PUNCH_DURATION_S) * Math.PI);
 		}
 
 		const forwardDistance = FORWARD_DIST + punch * PUNCH_PUSH;
 
 		const downDistance = DOWN_DIST - punch * PUNCH_RISE;
 
+		/**
+		 * Camera-relative world position: the engine renders this mesh with
+		 * the zero-translation view-projection written below, so the mesh
+		 * position must not include the camera's world position.
+		 */
 		entry.mesh.position.set(
-			cameraX +
-				forwardX * forwardDistance +
-				rightX * RIGHT_DIST -
-				upX * downDistance,
-			cameraY + forwardY * forwardDistance - upY * downDistance,
-			cameraZ +
-				forwardZ * forwardDistance +
-				rightZ * RIGHT_DIST -
-				upZ * downDistance,
+			forwardX * forwardDistance + rightX * RIGHT_DIST - upX * downDistance,
+			forwardY * forwardDistance - upY * downDistance,
+			forwardZ * forwardDistance + rightZ * RIGHT_DIST - upZ * downDistance,
 		);
+
+		syncRelativeViewProjection(entry.material, camera);
 
 		setYawOuter(_qCam, cameraYaw, cameraPitch);
 
@@ -658,7 +825,6 @@ export class HeldItemView {
 			setYawOuter(_qPunch, punch * PUNCH_TWIST, -punch * PUNCH_TILT);
 
 			mulQuat(_qCam, _qPunch, _qMix);
-
 			mulQuat(_qMix, base, _qMix);
 		} else {
 			mulQuat(_qCam, base, _qMix);
@@ -679,8 +845,10 @@ export class HeldItemView {
 		const key = entryKey(useSprite, icon, blockId, blockState);
 
 		if (key !== this._activeKey) {
-			if (this._activeEntry) {
-				setMeshVisible(this._activeEntry.mesh, false);
+			const previousEntry = this._activeEntry;
+
+			if (previousEntry !== null) {
+				setMeshVisible(previousEntry.mesh, false);
 			}
 
 			this._activeKey = key;
@@ -693,14 +861,26 @@ export class HeldItemView {
 	private _showActive(): void {
 		const key = this._activeKey;
 
-		if (key === null || this._activeEntry || this._disposed) {
+		if (key === null || this._activeEntry !== null || this._disposed) {
 			return;
 		}
 
 		const entry =
 			typeof key === "string" ? this._getSprite(key) : this._getCube(key);
 
-		if (!entry.added) return;
+		if (!entry.added) {
+			return;
+		}
+
+		/**
+		 * An asynchronous icon load can reveal a mesh between frames. Make
+		 * sure it never renders with a stale or never-written matrix.
+		 */
+		const camera = Map1.mainScene?.camera ?? null;
+
+		if (camera !== null) {
+			syncRelativeViewProjection(entry.material, camera);
+		}
 
 		setMeshVisible(entry.mesh, true);
 		this._activeEntry = entry;
@@ -710,10 +890,14 @@ export class HeldItemView {
 	 * Hides the current mesh and clears the active selection.
 	 */
 	private _clearActive(): void {
-		if (this._activeKey === null) return;
+		if (this._activeKey === null) {
+			return;
+		}
 
-		if (this._activeEntry) {
-			setMeshVisible(this._activeEntry.mesh, false);
+		const activeEntry = this._activeEntry;
+
+		if (activeEntry !== null) {
+			setMeshVisible(activeEntry.mesh, false);
 		}
 
 		this._activeEntry = null;
@@ -729,7 +913,6 @@ export class HeldItemView {
 		}
 
 		addToScene(Map1.mainScene, entry.mesh);
-
 		entry.added = true;
 
 		this._refreshSunState();
@@ -742,10 +925,8 @@ export class HeldItemView {
 	private _getSprite(icon: string): Entry {
 		const existing = this._entries.get(icon);
 
-		if (existing) {
-			this._entries.delete(icon);
-			this._entries.set(icon, existing);
-
+		if (existing !== undefined) {
+			this._touchEntry(icon, existing);
 			this._ensureAdded(existing);
 			return existing;
 		}
@@ -754,36 +935,21 @@ export class HeldItemView {
 
 		const quad = getBillboardQuadGeometry();
 
-		/**
-		 * Avoids an intermediate JavaScript array from:
-		 * new Uint32Array([...quad.indices, ...]).
+		/*
+		 * Use the shared quad indices directly. Creating another typed array
+		 * and appending a second six-index quad duplicated the same geometry.
 		 */
-		const sourceIndices = quad.indices;
-		const indices = new Uint32Array(sourceIndices.length + 6);
-
-		indices.set(sourceIndices);
-
-		const offset = sourceIndices.length;
-
-		indices[offset] = 0;
-		indices[offset + 1] = 1;
-		indices[offset + 2] = 2;
-		indices[offset + 3] = 0;
-		indices[offset + 4] = 2;
-		indices[offset + 5] = 3;
-
 		const mesh = createMeshFromData(
 			Map1.engine,
 			"heldItemSprite",
 			quad.positions,
 			quad.normals,
-			indices,
+			quad.indices,
 			quad.uvs,
 		);
 
 		mesh.pickable = false;
 		mesh.visible = false;
-
 		mesh.scaling.set(SPRITE_SCALE, SPRITE_SCALE, SPRITE_SCALE);
 
 		const material = createHeldItemMaterial(`heldSprite_${icon}`);
@@ -791,10 +957,9 @@ export class HeldItemView {
 		mesh.material = material;
 
 		setShaderUniform(material, "uScale", 1);
-
 		setShaderUniform(material, "uOffset", [0, 0]);
-
 		setShaderVector3(material, "lightColor", [1, 1, 1]);
+		setShaderUniform(material, "skyLightLevel", 0);
 
 		setShaderTexture(material, "diffuseTexture", getWhiteFallback(Map1.engine));
 
@@ -822,7 +987,9 @@ export class HeldItemView {
 				this._showActive();
 			})
 			.catch((error: unknown) => {
-				if (this._disposed) return;
+				if (this._disposed) {
+					return;
+				}
 
 				console.warn(`[HeldItemView] Failed to load icon "${icon}":`, error);
 			});
@@ -834,21 +1001,18 @@ export class HeldItemView {
 	 * Gets or creates a cube entry and refreshes its LRU position.
 	 */
 	private _getCube(key: number): Entry {
-		const blockId = Math.floor(key / 64);
-		const blockState = key & 63;
-
 		const existing = this._entries.get(key);
 
-		if (existing) {
-			this._entries.delete(key);
-			this._entries.set(key, existing);
-
+		if (existing !== undefined) {
+			this._touchEntry(key, existing);
 			this._bindAtlas(existing);
 			return existing;
 		}
 
 		this._evictIfNeeded();
 
+		const blockId = Math.floor(key / 64);
+		const blockState = key & 63;
 		const cube = getBlockItemGeometry(blockId, blockState);
 
 		const mesh = createMeshFromData(
@@ -862,7 +1026,6 @@ export class HeldItemView {
 
 		mesh.pickable = false;
 		mesh.visible = false;
-
 		mesh.scaling.set(CUBE_SCALE, CUBE_SCALE, CUBE_SCALE);
 
 		const material = createHeldItemMaterial(
@@ -887,6 +1050,7 @@ export class HeldItemView {
 		]);
 
 		setShaderVector3(material, "lightColor", [1, 1, 1]);
+		setShaderUniform(material, "skyLightLevel", 0);
 
 		setShaderTexture(material, "diffuseTexture", getWhiteFallback(Map1.engine));
 
@@ -899,21 +1063,39 @@ export class HeldItemView {
 	}
 
 	/**
+	 * Moves an existing entry to the most-recently-used end of the Map.
+	 */
+	private _touchEntry(key: EntryKey, entry: Entry): void {
+		this._entries.delete(key);
+		this._entries.set(key, entry);
+	}
+
+	/**
 	 * Binds the shared diffuse atlas when available.
 	 *
-	 * This operation is idempotent and can be retried while the atlas is
-	 * loading. The mesh remains renderable with its white fallback.
+	 * The operation is idempotent and is retried from the normal update path
+	 * while the atlas is unavailable.
 	 */
 	private _bindAtlas(entry: Entry): void {
-		if (this._disposed) return;
+		if (this._disposed) {
+			return;
+		}
 
 		this._ensureAdded(entry);
 
+		if (entry.atlasBound) {
+			return;
+		}
+
 		const atlas = getDiffuseTexture2D();
 
-		if (!atlas) return;
+		if (!atlas) {
+			return;
+		}
 
 		setShaderTexture(entry.material, "diffuseTexture", atlas);
+
+		entry.atlasBound = true;
 	}
 
 	/**
@@ -941,7 +1123,9 @@ export class HeldItemView {
 	private _retire(key: EntryKey): void {
 		const entry = this._entries.get(key);
 
-		if (!entry) return;
+		if (entry === undefined) {
+			return;
+		}
 
 		this._entries.delete(key);
 
@@ -957,7 +1141,9 @@ export class HeldItemView {
 	}
 
 	private _dispose(): void {
-		if (this._disposed) return;
+		if (this._disposed) {
+			return;
+		}
 
 		this._disposed = true;
 
@@ -967,7 +1153,9 @@ export class HeldItemView {
 		while (this._entries.size > 0) {
 			const next = this._entries.keys().next();
 
-			if (next.done) break;
+			if (next.done) {
+				break;
+			}
 
 			this._retire(next.value);
 		}
@@ -989,14 +1177,14 @@ let instanceScene: SceneContext | null = null;
 export function updateHeldItemView(player: Player, dt: number): void {
 	const scene = Map1.mainScene ?? null;
 
-	if (instance && instanceScene !== scene) {
+	if (instance !== null && instanceScene !== scene) {
 		instance.dispose();
 		instance = null;
 		instanceScene = null;
 	}
 
 	try {
-		if (!instance) {
+		if (instance === null) {
 			instance = new HeldItemView();
 			instanceScene = scene;
 		}

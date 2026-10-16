@@ -525,7 +525,7 @@ export class NetworkManager {
 	}
 
 	private sendHeldItemSelection(): void {
-		const slot = this.player.playerHud.selectedHotbarSlot;
+		const slot = this.player.playerHud?.selectedHotbarSlot ?? 0;
 		const item = this.player.playerInventory.inventory[0]?.[slot]?.item;
 		const itemId = item && item.stackSize > 0 ? item.itemId : 0;
 		const blockState = itemId === 0 ? 0 : (item?.blockState ?? 0);

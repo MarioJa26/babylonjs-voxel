@@ -12,11 +12,15 @@ import {
 } from "@babylonjs/lite";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 
-// Rig metrics (must precede any constants derived from them).
+// Rig metrics must precede constants derived from them.
 export const PLAYER_MODEL_HEIGHT = 1.8;
-const PX = PLAYER_MODEL_HEIGHT / 32; // meters per skin pixel (rig is 32px tall)
 
-/** Part ids stored in normal.x for the animation shader. */
+/** Meters per skin pixel. The rig is 32 pixels tall. */
+const PX = PLAYER_MODEL_HEIGHT / 32;
+const INV_SKIN_SIZE = 1 / 64;
+const HALF_PLAYER_MODEL_HEIGHT = PLAYER_MODEL_HEIGHT * 0.5;
+
+/** Part IDs stored in normal.x for the animation shader. */
 const PART_STATIC = 0;
 const PART_ARM_L = 1;
 const PART_ARM_R = 2;
@@ -24,154 +28,217 @@ const PART_LEG_L = 3;
 const PART_LEG_R = 4;
 const PART_HEAD = 5;
 
-// Model-space pivot lines (feet-origin convention; the origin offset is added
-// at build time, so baked pivots are correct for BOTH "feet" and "center").
-const SHOULDER_PIVOT_Y = 24 * PX; // arm tops / neck line
-const HIP_PIVOT_Y = 12 * PX; // leg tops
+/**
+ * Model-space pivot lines using the feet-origin convention.
+ *
+ * The origin offset is added when the geometry is built, so the baked pivots
+ * are correct for both feet-origin and center-origin rigs.
+ */
+const SHOULDER_PIVOT_Y = 24 * PX;
+const HIP_PIVOT_Y = 12 * PX;
 
-/** Max limb swing angle (radians) at amp 1. Applied CPU-side. */
+/** Maximum limb swing angle, in radians, at amplitude 1. */
 const SWING_MAX = 0.75;
 
+/** Peak right-arm raise, in radians, at the middle of a punch. */
+const PUNCH_MAX_ANGLE = 1.15;
+
+/**
+ * Positions and rotates an item so it follows the animated right hand.
+ *
+ * The mesh is positioned relative to the camera because HeldItemView renders
+ * it using a camera-relative view-projection matrix.
+ */
 export function setRigHeldItemTransform(
 	item: Mesh,
 	body: Mesh,
+	camX: number,
+	camY: number,
+	camZ: number,
 	phase: number,
 	amp: number,
 	punchT = Number.POSITIVE_INFINITY,
 ): void {
 	const swing = -Math.sin(phase) * SWING_MAX * amp;
-	// Total hand angle mirrors the rig shader's right-arm rotation exactly
-	// (walk swing plus the punch raise, negative = forward). Rotating the
-	// hand offset by this same angle about the shoulder pivot keeps the
-	// item rigidly in the grip; a linear nudge can't follow the arc and
-	// leaves the item floating behind the hand.
+
+	/*
+	 * The total hand angle mirrors the rig shader's right-arm rotation:
+	 * walk swing plus the forward punch raise.
+	 */
 	const punchCurve = punchT >= 0 && punchT < 1 ? Math.sin(punchT * Math.PI) : 0;
+
 	const theta = swing - punchCurve * PUNCH_MAX_ANGLE;
-	const s = Math.sin(theta);
-	const c = Math.cos(theta);
+	const sinTheta = Math.sin(theta);
+	const cosTheta = Math.cos(theta);
+
 	const handX = 6 * PX;
 	const handY = -12 * PX;
 	const handZ = 3 * PX;
+
 	const localY =
-		SHOULDER_PIVOT_Y - PLAYER_MODEL_HEIGHT / 2 + handY * c - handZ * s;
-	const localZ = handY * s + handZ * c;
+		SHOULDER_PIVOT_Y -
+		HALF_PLAYER_MODEL_HEIGHT +
+		handY * cosTheta -
+		handZ * sinTheta;
+
+	const localZ = handY * sinTheta + handZ * cosTheta;
+
+	const bodyPosition = body.position;
 	const yaw = body.rotation.y;
-	const sy = Math.sin(yaw);
-	const cy = Math.cos(yaw);
+	const sinYaw = Math.sin(yaw);
+	const cosYaw = Math.cos(yaw);
+
 	item.position.set(
-		body.position.x + handX * cy + localZ * sy,
-		body.position.y + localY,
-		body.position.z - handX * sy + localZ * cy,
+		bodyPosition.x + handX * cosYaw + localZ * sinYaw - camX,
+		bodyPosition.y + localY - camY,
+		bodyPosition.z - handX * sinYaw + localZ * cosYaw - camZ,
 	);
+
 	item.rotation.set(theta, yaw, 0);
 }
 
-// ─── Rig shader sources (unlit textured, brightness uniform) ────────────────
-// Mirrors the proven DroppedItem shader so no scene lights or
-// StandardMaterial state can interfere with how the model looks.
+// ─── Rig shader sources ─────────────────────────────────────────────────────
 //
-// All per-frame animation math runs on the CPU: every player-material writes
-// precomputed sin/cos pairs — no trig and no per-part select chains in the
-// vertex shader, and idle players write nothing at all (callers can hammer
-// setRigWalk/setRigHeadPitch/setRigPunch; unchanged values are dropped
-// before they reach the material).
+// The rig is unlit and textured. Brightness is supplied through a uniform.
+// Per-frame animation trigonometry runs on the CPU.
 //
-// uAnim layout: [sin(swing), sin(headPitch), cos(headPitch), cos(swing)].
-// The cos slots are only read when their sin sibling is non-zero, so an
-// all-zero (never-written) uniform buffer still renders the rest pose
-// correctly through the early-outs below.
+// uAnim:
+// [sin(walkSwing), sin(headPitch), cos(headPitch), cos(walkSwing)]
 //
-// uPunch layout: [sin(punchAngle), cos(punchAngle)] for the RIGHT arm only.
-// Rests at [0, 1]; the punch angle adds to the walk angle for that arm.
+// uPunch:
+// [sin(punchAngle), cos(punchAngle)]
 //
-// Per-vertex limb metadata rides in the normal attribute (the unlit fragment
-// shader never reads normals): x = part id, y = pivot Y (model space,
-// origin-aware), z = swing sign (+1 arm-L/leg-R, -1 arm-R/leg-L). IDs:
-// 0 static · 1 arm-left · 2 arm-right · 3 leg-left · 4 leg-right · 5 head.
+// Vertex metadata is stored in the normal attribute:
+// x = part ID
+// y = pivot Y
+// z = swing sign
+
 const RIG_VERTEX_WGSL = /* wgsl */ `
 struct VSOut {
-	@builtin(position) pos : vec4<f32>,
-	@location(0) vUV : vec2<f32>,
+    @builtin(position) pos : vec4<f32>,
+    @location(0) vUV : vec2<f32>,
 };
 
-fn animateRig(p : vec3<f32>, tag : vec3<f32>) -> vec3<f32> {
-	if (tag.x < 0.5) {
-		return p; // static (torso)
-	}
-	var s : f32;
-	var c : f32;
-	if (tag.x > 4.5) {
-		// head pitches with the camera about the neck line
-		if (shaderUniforms.uAnim.y == 0.0) {
-			return p;
-		}
-		s = shaderUniforms.uAnim.y;
-		c = shaderUniforms.uAnim.z;
-	} else if (tag.x > 1.5 && tag.x < 2.5) {
-		// right arm: walk swing plus the punch raise. Both arrive as
-		// sin/cos pairs, so the total rotation is plain angle addition.
-		if (shaderUniforms.uAnim.x == 0.0 && shaderUniforms.uPunch.x == 0.0) {
-			return p;
-		}
-		let ws = shaderUniforms.uAnim.x * tag.z;
-		let wc = shaderUniforms.uAnim.w;
-		let ps = shaderUniforms.uPunch.x;
-		let pc = shaderUniforms.uPunch.y;
-		s = ws * pc + wc * ps;
-		c = wc * pc - ws * ps;
-	} else {
-		// left arm and legs swing about their pivot, mirrored by sign
-		if (shaderUniforms.uAnim.x == 0.0) {
-			return p;
-		}
-		s = shaderUniforms.uAnim.x * tag.z;
-		c = shaderUniforms.uAnim.w;
-	}
-	let cy = p.y - tag.y;
-	return vec3<f32>(p.x, tag.y + cy * c - p.z * s, cy * s + p.z * c);
+fn animateRig(
+    p : vec3<f32>,
+    tag : vec3<f32>
+) -> vec3<f32> {
+    if (tag.x < 0.5) {
+        return p;
+    }
+
+    var s : f32;
+    var c : f32;
+
+    if (tag.x > 4.5) {
+        // Head pitches around the neck line.
+        if (shaderUniforms.uAnim.y == 0.0) {
+            return p;
+        }
+
+        s = shaderUniforms.uAnim.y;
+        c = shaderUniforms.uAnim.z;
+    } else if (tag.x > 1.5 && tag.x < 2.5) {
+        // Right arm combines the walk swing and punch rotation.
+        if (
+            shaderUniforms.uAnim.x == 0.0 &&
+            shaderUniforms.uPunch.x == 0.0
+        ) {
+            return p;
+        }
+
+        let walkSin =
+            shaderUniforms.uAnim.x * tag.z;
+
+        let walkCos =
+            shaderUniforms.uAnim.w;
+
+        let punchSin =
+            shaderUniforms.uPunch.x;
+
+        let punchCos =
+            shaderUniforms.uPunch.y;
+
+        s =
+            walkSin * punchCos +
+            walkCos * punchSin;
+
+        c =
+            walkCos * punchCos -
+            walkSin * punchSin;
+    } else {
+        // Left arm and legs swing around their baked pivots.
+        if (shaderUniforms.uAnim.x == 0.0) {
+            return p;
+        }
+
+        s = shaderUniforms.uAnim.x * tag.z;
+        c = shaderUniforms.uAnim.w;
+    }
+
+    let centeredY = p.y - tag.y;
+
+    return vec3<f32>(
+        p.x,
+        tag.y + centeredY * c - p.z * s,
+        centeredY * s + p.z * c
+    );
 }
 
 @vertex
 fn mainVertex(input : VertexInput) -> VSOut {
-	var out : VSOut;
-	let animated = animateRig(input.position, input.normal);
-	out.pos = shaderSystem.worldViewProjection * vec4<f32>(animated, 1.0);
-	out.vUV = input.uv;
-	return out;
+    var out : VSOut;
+
+    let animated =
+        animateRig(input.position, input.normal);
+
+    out.pos =
+        shaderSystem.worldViewProjection *
+        vec4<f32>(animated, 1.0);
+
+    out.vUV = input.uv;
+
+    return out;
 }
 `;
 
 const RIG_FRAGMENT_WGSL = /* wgsl */ `
 struct VSOut {
-	@builtin(position) pos : vec4<f32>,
-	@location(0) vUV : vec2<f32>,
+    @builtin(position) pos : vec4<f32>,
+    @location(0) vUV : vec2<f32>,
 };
 
 @fragment
-fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-	let tex = textureSample(diffuseTexture, diffuseTextureSampler, in.vUV);
-	return vec4<f32>(tex.rgb * shaderUniforms.uLightColor, 1.0);
+fn mainFragment(
+    in : VSOut
+) -> @location(0) vec4<f32> {
+    let tex = textureSample(
+        diffuseTexture,
+        diffuseTextureSampler,
+        in.vUV
+    );
+
+    return vec4<f32>(
+        tex.rgb * shaderUniforms.uLightColor,
+        1.0
+    );
 }
 `;
 
 /**
- * Minecraft-style player rig (head/torso/arms/legs) built from textured boxes
- * and skinned by a 64x64 Minecraft-layout texture. Shared between the
- * inventory preview and the in-world third-person player body.
+ * Minecraft-style player rig built from textured boxes and a 64×64 skin.
  */
-
 export const PLAYER_SKIN_PATH = "/texture/player/skin.png";
 
 /**
- * Vertical offset (meters) from the mid-body controller origin where rig
- * lighting samples voxel light. Chest height — below the head, so ceiling
- * contact while jumping never reads inside-block darkness.
+ * Vertical offset from the controller's mid-body origin used to sample voxel
+ * lighting. Chest height avoids sampling inside a low ceiling while jumping.
  */
 export const PLAYER_LIGHT_SAMPLE_Y_OFFSET = 0.5;
 
-// ─── Skin atlas layout (64x64 classic base layer, pixel coords) ─────────────
+// ─── Skin atlas layout ──────────────────────────────────────────────────────
 
-type UvRect = readonly [number, number, number, number];
+type UvRect = readonly [u0: number, v0: number, u1: number, v1: number];
 
 interface UvSet {
 	front: UvRect;
@@ -200,26 +267,30 @@ const BODY_UV: UvSet = {
 	back: [32, 20, 40, 32],
 };
 
-const limbUv = (ox: number, oy: number): UvSet => ({
-	top: [ox + 4, oy, ox + 8, oy + 4],
-	bottom: [ox + 8, oy, ox + 12, oy + 4],
-	right: [ox, oy + 4, ox + 4, oy + 16],
-	front: [ox + 4, oy + 4, ox + 8, oy + 16],
-	left: [ox + 8, oy + 4, ox + 12, oy + 16],
-	back: [ox + 12, oy + 4, ox + 16, oy + 16],
-});
+function createLimbUv(offsetX: number, offsetY: number): UvSet {
+	return {
+		top: [offsetX + 4, offsetY, offsetX + 8, offsetY + 4],
+		bottom: [offsetX + 8, offsetY, offsetX + 12, offsetY + 4],
+		right: [offsetX, offsetY + 4, offsetX + 4, offsetY + 16],
+		front: [offsetX + 4, offsetY + 4, offsetX + 8, offsetY + 16],
+		left: [offsetX + 8, offsetY + 4, offsetX + 12, offsetY + 16],
+		back: [offsetX + 12, offsetY + 4, offsetX + 16, offsetY + 16],
+	};
+}
 
-// Compact sheet: left limbs sit directly below their right counterparts
-// (y32-48 band) instead of Minecraft's default bottom row (y48-64).
-const ARM_L_UV = limbUv(40, 32);
-const ARM_R_UV = limbUv(40, 16);
-const LEG_L_UV = limbUv(0, 32);
-const LEG_R_UV = limbUv(0, 16);
+/*
+ * Compact sheet: left limbs are directly below their right counterparts in
+ * the y=32–48 band rather than Minecraft's default y=48–64 row.
+ */
+const ARM_L_UV = createLimbUv(40, 32);
+const ARM_R_UV = createLimbUv(40, 16);
+const LEG_L_UV = createLimbUv(0, 32);
+const LEG_R_UV = createLimbUv(0, 16);
 
-// ─── Box builder (winding matches DroppedItem.getUnitCubeGeometry) ──────────
+// ─── Box builder ────────────────────────────────────────────────────────────
 
-/** [partId, pivotY, swingSign] baked into every vertex normal of the box. */
-type PartMeta = readonly [number, number, number];
+/** [partId, pivotY, swingSign] stored in every vertex normal. */
+type PartMeta = readonly [partId: number, pivotY: number, swingSign: number];
 
 const STATIC_META: PartMeta = [PART_STATIC, 0, 0];
 
@@ -231,7 +302,6 @@ interface BoxPart {
 	h: number;
 	d: number;
 	uv?: UvSet;
-	/** Animation metadata baked into normals (see the WGSL header comment). */
 	meta?: PartMeta;
 }
 
@@ -242,24 +312,41 @@ interface MeshData {
 	uvs?: Float32Array;
 }
 
-function appendBox(
-	out: MeshBuffers,
-	p: BoxPart,
-	uvMode: "skin" | "atlas" = "skin",
-): void {
-	const x0 = p.x - p.w * 0.5;
-	const x1 = p.x + p.w * 0.5;
-	const y0 = p.y - p.h * 0.5;
-	const y1 = p.y + p.h * 0.5;
-	const z0 = p.z - p.d * 0.5;
-	const z1 = p.z + p.d * 0.5;
+interface MeshBuffers {
+	positions: number[];
+	normals: number[];
+	indices: number[];
+	uvs: number[];
+}
 
-	const meta = p.meta ?? STATIC_META;
-	const positions = out.positions;
-	const normals = out.normals;
-	const indices = out.indices;
-	const uvs = out.uvs;
-	const uv = p.uv;
+type UvMode = "skin" | "atlas";
+
+function appendBox(
+	output: MeshBuffers,
+	part: BoxPart,
+	uvMode: UvMode = "skin",
+): void {
+	const halfWidth = part.w * 0.5;
+	const halfHeight = part.h * 0.5;
+	const halfDepth = part.d * 0.5;
+
+	const x0 = part.x - halfWidth;
+	const x1 = part.x + halfWidth;
+	const y0 = part.y - halfHeight;
+	const y1 = part.y + halfHeight;
+	const z0 = part.z - halfDepth;
+	const z1 = part.z + halfDepth;
+
+	const meta = part.meta ?? STATIC_META;
+	const partId = meta[0];
+	const pivotY = meta[1];
+	const swingSign = meta[2];
+
+	const positions = output.positions;
+	const normals = output.normals;
+	const indices = output.indices;
+	const uvs = output.uvs;
+	const uv = part.uv;
 
 	let vertexBase = positions.length / 3;
 
@@ -281,28 +368,38 @@ function appendBox(
 		positions.push(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz);
 
 		normals.push(
-			meta[0],
-			meta[1],
-			meta[2],
-			meta[0],
-			meta[1],
-			meta[2],
-			meta[0],
-			meta[1],
-			meta[2],
-			meta[0],
-			meta[1],
-			meta[2],
+			partId,
+			pivotY,
+			swingSign,
+			partId,
+			pivotY,
+			swingSign,
+			partId,
+			pivotY,
+			swingSign,
+			partId,
+			pivotY,
+			swingSign,
 		);
 
-		if (rect) {
-			const u0 = uvMode === "atlas" ? rect[0] : rect[0] * (1 / 64);
-			const u1 = uvMode === "atlas" ? rect[2] : rect[2] * (1 / 64);
+		if (rect !== undefined) {
+			let u0: number;
+			let u1: number;
+			let vBottom: number;
+			let vTop: number;
 
-			const vBottom = uvMode === "atlas" ? rect[1] : 1 - rect[3] * (1 / 64);
-			const vTop = uvMode === "atlas" ? rect[3] : 1 - rect[1] * (1 / 64);
+			if (uvMode === "atlas") {
+				u0 = rect[0];
+				u1 = rect[2];
+				vBottom = rect[1];
+				vTop = rect[3];
+			} else {
+				u0 = rect[0] * INV_SKIN_SIZE;
+				u1 = rect[2] * INV_SKIN_SIZE;
+				vBottom = 1 - rect[3] * INV_SKIN_SIZE;
+				vTop = 1 - rect[1] * INV_SKIN_SIZE;
+			}
 
-			// Vertex order: bottom-left, bottom-right, top-right, top-left.
 			uvs.push(u0, vBottom, u1, vBottom, u1, vTop, u0, vTop);
 		}
 
@@ -318,168 +415,254 @@ function appendBox(
 		vertexBase += 4;
 	};
 
-	// +X face, skin "left"
+	// +X face, skin "left".
 	appendFace(uv?.left, x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1);
 
-	// -X face, skin "right"
+	// -X face, skin "right".
 	appendFace(uv?.right, x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0);
 
-	// +Y face
+	// +Y face.
 	appendFace(uv?.top, x0, y1, z1, x1, y1, z1, x1, y1, z0, x0, y1, z0);
 
-	// -Y face
+	// -Y face.
 	appendFace(uv?.bottom, x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1);
 
-	// +Z face
+	// +Z face.
 	appendFace(uv?.front, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1);
 
-	// -Z face
+	// -Z face.
 	appendFace(uv?.back, x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0);
 }
 
-interface MeshBuffers {
-	positions: number[];
-	normals: number[];
-	indices: number[];
-	uvs: number[];
-}
-
-function toData(out: MeshBuffers): MeshData {
+function toMeshData(buffers: MeshBuffers): MeshData {
 	return {
-		positions: new Float32Array(out.positions),
-		normals: new Float32Array(out.normals),
-		indices: new Uint32Array(out.indices),
-		uvs: new Float32Array(out.uvs),
+		positions: new Float32Array(buffers.positions),
+		normals: new Float32Array(buffers.normals),
+		indices: new Uint32Array(buffers.indices),
+		uvs: new Float32Array(buffers.uvs),
 	};
 }
 
 export type RigOrigin = "feet" | "center";
 
+function appendPlayerPart(
+	output: MeshBuffers,
+	x: number,
+	y: number,
+	z: number,
+	width: number,
+	height: number,
+	depth: number,
+	uv: UvSet,
+	yOffset: number,
+	meta?: PartMeta,
+): void {
+	appendBox(output, {
+		x,
+		y: y + yOffset,
+		z,
+		w: width,
+		h: height,
+		d: depth,
+		uv,
+		meta,
+	});
+}
+
 function computePlayerRigData(origin: RigOrigin): MeshData {
-	const out: MeshBuffers = { positions: [], normals: [], indices: [], uvs: [] };
+	const output: MeshBuffers = {
+		positions: [],
+		normals: [],
+		indices: [],
+		uvs: [],
+	};
 
-	// World bodies anchor at the character controller's position, which sits
-	// mid-body (the old capsule was center-origin); shift accordingly.
-	const yOffset = origin === "center" ? -PLAYER_MODEL_HEIGHT / 2 : -0.1;
+	/*
+	 * World bodies anchor at the character controller's mid-body position.
+	 * Feet-origin previews retain the original small floor alignment offset.
+	 */
+	const yOffset = origin === "center" ? -HALF_PLAYER_MODEL_HEIGHT : -0.1;
 
-	// Pivots are baked origin-aware, so feet- and center-origin rigs animate
-	// around the same anatomical lines (previously the WGSL constants only
-	// matched center-origin geometry).
 	const shoulderY = SHOULDER_PIVOT_Y + yOffset;
 	const hipY = HIP_PIVOT_Y + yOffset;
 
-	const parts: BoxPart[] = [
-		{
-			x: 0,
-			y: 28 * PX,
-			z: 0,
-			w: 8 * PX,
-			h: 8 * PX,
-			d: 8 * PX,
-			uv: HEAD_UV,
-			meta: [PART_HEAD, shoulderY, 0],
-		},
-		{
-			x: 0,
-			y: 18 * PX,
-			z: 0,
-			w: 8 * PX,
-			h: 12 * PX,
-			d: 4 * PX,
-			uv: BODY_UV,
-		},
-		{
-			x: -6 * PX,
-			y: 18 * PX,
-			z: 0,
-			w: 4 * PX,
-			h: 12 * PX,
-			d: 4 * PX,
-			uv: ARM_L_UV,
-			meta: [PART_ARM_L, shoulderY, 1],
-		},
-		{
-			x: 6 * PX,
-			y: 18 * PX,
-			z: 0,
-			w: 4 * PX,
-			h: 12 * PX,
-			d: 4 * PX,
-			uv: ARM_R_UV,
-			meta: [PART_ARM_R, shoulderY, -1],
-		},
-		{
-			x: -2 * PX,
-			y: 6 * PX,
-			z: 0,
-			w: 4 * PX,
-			h: 12 * PX,
-			d: 4 * PX,
-			uv: LEG_L_UV,
-			meta: [PART_LEG_L, hipY, -1],
-		},
-		{
-			x: 2 * PX,
-			y: 6 * PX,
-			z: 0,
-			w: 4 * PX,
-			h: 12 * PX,
-			d: 4 * PX,
-			uv: LEG_R_UV,
-			meta: [PART_LEG_R, hipY, 1],
-		},
-	];
-	for (const part of parts) appendBox(out, { ...part, y: part.y + yOffset });
+	const headMeta: PartMeta = [PART_HEAD, shoulderY, 0];
 
-	return toData(out);
+	const leftArmMeta: PartMeta = [PART_ARM_L, shoulderY, 1];
+
+	const rightArmMeta: PartMeta = [PART_ARM_R, shoulderY, -1];
+
+	const leftLegMeta: PartMeta = [PART_LEG_L, hipY, -1];
+
+	const rightLegMeta: PartMeta = [PART_LEG_R, hipY, 1];
+
+	/*
+	 * Append directly instead of allocating a temporary parts array and
+	 * cloning every part with object spread.
+	 */
+	appendPlayerPart(
+		output,
+		0,
+		28 * PX,
+		0,
+		8 * PX,
+		8 * PX,
+		8 * PX,
+		HEAD_UV,
+		yOffset,
+		headMeta,
+	);
+
+	appendPlayerPart(
+		output,
+		0,
+		18 * PX,
+		0,
+		8 * PX,
+		12 * PX,
+		4 * PX,
+		BODY_UV,
+		yOffset,
+	);
+
+	appendPlayerPart(
+		output,
+		-6 * PX,
+		18 * PX,
+		0,
+		4 * PX,
+		12 * PX,
+		4 * PX,
+		ARM_L_UV,
+		yOffset,
+		leftArmMeta,
+	);
+
+	appendPlayerPart(
+		output,
+		6 * PX,
+		18 * PX,
+		0,
+		4 * PX,
+		12 * PX,
+		4 * PX,
+		ARM_R_UV,
+		yOffset,
+		rightArmMeta,
+	);
+
+	appendPlayerPart(
+		output,
+		-2 * PX,
+		6 * PX,
+		0,
+		4 * PX,
+		12 * PX,
+		4 * PX,
+		LEG_L_UV,
+		yOffset,
+		leftLegMeta,
+	);
+
+	appendPlayerPart(
+		output,
+		2 * PX,
+		6 * PX,
+		0,
+		4 * PX,
+		12 * PX,
+		4 * PX,
+		LEG_R_UV,
+		yOffset,
+		rightLegMeta,
+	);
+
+	return toMeshData(output);
 }
 
-// Geometry is identical for every rig of a given origin — build once, share.
-// Callers MUST NOT mutate the returned arrays; pass them straight to
-// createMeshFromData (which uploads its own GPU copy).
-const rigDataCache = new Map<RigOrigin, MeshData>();
+/*
+ * Geometry is identical for every rig of a given origin. There are only two
+ * possible origins, so direct slots are faster and simpler than a Map.
+ */
+let feetRigData: MeshData | null = null;
+let centerRigData: MeshData | null = null;
 
-/** Merged rig mesh data — origin at the feet, +Z is the facing direction. */
+/**
+ * Returns merged player-rig geometry.
+ *
+ * Callers must not mutate the returned typed arrays.
+ */
 export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
-	let data = rigDataCache.get(origin);
-	if (!data) {
-		data = computePlayerRigData(origin);
-		rigDataCache.set(origin, data);
+	if (origin === "center") {
+		if (centerRigData === null) {
+			centerRigData = computePlayerRigData("center");
+		}
+
+		return centerRigData;
 	}
-	return data;
+
+	if (feetRigData === null) {
+		feetRigData = computePlayerRigData("feet");
+	}
+
+	return feetRigData;
 }
 
 /**
- * Thin reference slab used under the preview model.
+ * Builds the thin reference slab displayed below the preview model.
  *
- * `atlasRect` = FINAL normalized atlas coords [u0, vLow, u1, vHigh] (computed
- * with the same tile math as DroppedItem), so the slab samples exactly one
- * block tile — pixel-identical to how the world renders that block.
+ * atlasRect contains final normalized atlas coordinates:
+ * [u0, vLow, u1, vHigh].
  */
 export function buildFloorSlabData(
-	width = 1.0,
+	width = 1,
 	atlasRect?: readonly [number, number, number, number],
 ): MeshData {
-	const out: MeshBuffers = { positions: [], normals: [], indices: [], uvs: [] };
-	const uv: UvSet | undefined = atlasRect
-		? {
-				front: atlasRect,
-				back: atlasRect,
-				right: atlasRect,
-				left: atlasRect,
-				top: atlasRect,
-				bottom: atlasRect,
-			}
-		: undefined;
-	appendBox(
-		out,
-		{ x: 0, y: -0.6, z: 0, w: width, h: 1.0, d: width, uv },
-		atlasRect ? "atlas" : "skin",
-	);
-	return toData(out);
+	const output: MeshBuffers = {
+		positions: [],
+		normals: [],
+		indices: [],
+		uvs: [],
+	};
+
+	if (atlasRect !== undefined) {
+		const uv: UvSet = {
+			front: atlasRect,
+			back: atlasRect,
+			right: atlasRect,
+			left: atlasRect,
+			top: atlasRect,
+			bottom: atlasRect,
+		};
+
+		appendBox(
+			output,
+			{
+				x: 0,
+				y: -0.6,
+				z: 0,
+				w: width,
+				h: 1,
+				d: width,
+				uv,
+			},
+			"atlas",
+		);
+	} else {
+		appendBox(output, {
+			x: 0,
+			y: -0.6,
+			z: 0,
+			w: width,
+			h: 1,
+			d: width,
+		});
+	}
+
+	return toMeshData(output);
 }
 
-// ─── Factories ──────────────────────────────────────────────────────────────
+// ─── Factories and texture caches ──────────────────────────────────────────
 
 export function createPlayerRigMesh(
 	engine: EngineContext,
@@ -487,6 +670,7 @@ export function createPlayerRigMesh(
 	origin: RigOrigin = "feet",
 ): Mesh {
 	const data = buildPlayerRigData(origin);
+
 	return createMeshFromData(
 		engine,
 		name,
@@ -502,102 +686,165 @@ const skinCache = new WeakMap<EngineContext, Promise<Texture2D>>();
 const fallbackTextureCache = new WeakMap<EngineContext, Texture2D>();
 
 function getFallbackTexture(engine: EngineContext): Texture2D {
-	let tex = fallbackTextureCache.get(engine);
-	if (!tex) {
-		tex = createSolidTexture2D(engine, 255, 255, 255, 255);
-		fallbackTextureCache.set(engine, tex);
+	const cached = fallbackTextureCache.get(engine);
+
+	if (cached !== undefined) {
+		return cached;
 	}
-	return tex;
+
+	const texture = createSolidTexture2D(engine, 255, 255, 255, 255);
+
+	fallbackTextureCache.set(engine, texture);
+
+	return texture;
 }
 
-/** Shared opaque-white placeholder for rig materials (see applyRigSkin). */
+/** Returns the shared opaque-white fallback for one engine. */
 export function getRigFallbackTexture(engine: EngineContext): Texture2D {
 	return getFallbackTexture(engine);
 }
 
 export function loadPlayerSkin(engine: EngineContext): Promise<Texture2D> {
-	let promise = skinCache.get(engine);
-	if (!promise) {
-		promise = loadTexture2D(engine, PLAYER_SKIN_PATH, {
-			magFilter: "nearest",
-			minFilter: "nearest",
-		});
-		skinCache.set(engine, promise);
-		promise.catch(() => {}); // callers handle failures; keep console clean
+	const cached = skinCache.get(engine);
+
+	if (cached !== undefined) {
+		return cached;
 	}
+
+	const promise = loadTexture2D(engine, PLAYER_SKIN_PATH, {
+		magFilter: "nearest",
+		minFilter: "nearest",
+	});
+
+	skinCache.set(engine, promise);
+
+	/*
+	 * Attach a rejection handler so an unused cached promise does not produce
+	 * an unhandled rejection. The original promise remains rejected, allowing
+	 * applyRigSkin and external callers to handle the failure normally.
+	 */
+	void promise.catch(ignoreError);
+
 	return promise;
 }
 
+function ignoreError(): void {
+	// Intentionally empty.
+}
+
+/** uAnim rest value: [sin(swing), sin(pitch), cos(pitch), cos(swing)]. */
+const REST_ANIM: readonly number[] = [0, 0, 1, 1];
+
+/** uPunch rest value: [sin(angle), cos(angle)]. */
+const REST_PUNCH: readonly number[] = [0, 1];
+
+interface RigAnimState {
+	phase: number;
+	amp: number;
+	pitch: number;
+
+	/**
+	 * Punch curve from 0 at rest to 1 at the peak.
+	 */
+	punch: number;
+}
+
 /**
- * Bind a skin texture to a rig ShaderMaterial and initialize the light-color
- * uniform to neutral white. Mirrors DroppedItem: the mesh must stay HIDDEN
- * until the texture is bound (onBind), because drawing with an unbound sampler
- * invalidates the pass.
+ * Last-written animation state by material.
  *
- * An opaque-white placeholder is bound SYNCHRONOUSLY first: lite builds a
- * ShaderMaterial's bind group as soon as its renderable is constructed (scene
- * registration / material swap), and throws error #241 if any declared sampler
- * has no Texture2D — even when the mesh is invisible.
- *
- * `loadSkin` overrides where the skin comes from — remote players pass their
- * server-synced skin loader here instead of the default local PNG fetch.
+ * WeakMap prevents disposed materials from being retained.
+ */
+const rigAnimStates = new WeakMap<ShaderMaterial, RigAnimState>();
+
+function alwaysAlive(): boolean {
+	return true;
+}
+
+/**
+ * Binds a fallback texture synchronously, initializes rig uniforms, and then
+ * replaces the fallback with the loaded skin.
  */
 export function applyRigSkin(
 	engine: EngineContext,
-	mat: ShaderMaterial,
+	material: ShaderMaterial,
 	onBind?: () => void,
-	isAlive: () => boolean = () => true,
+	isAlive: () => boolean = alwaysAlive,
 	loadSkin: (engine: EngineContext) => Promise<Texture2D> = loadPlayerSkin,
 ): void {
-	setShaderUniform(mat, "uLightColor", [1, 1, 1]);
-	setShaderUniform(mat, "uAnim", REST_ANIM);
-	setShaderUniform(mat, "uPunch", REST_PUNCH);
-	rigAnimStates.set(mat, { phase: 0, amp: 0, pitch: 0, punch: 0 });
-	setShaderTexture(mat, "diffuseTexture", getFallbackTexture(engine));
-	loadSkin(engine)
-		.then((tex) => {
-			if (!isAlive()) return;
-			setShaderTexture(mat, "diffuseTexture", tex);
+	setShaderUniform(material, "uLightColor", WHITE_LIGHT_COLOR);
+
+	setShaderUniform(material, "uAnim", REST_ANIM);
+
+	setShaderUniform(material, "uPunch", REST_PUNCH);
+
+	rigAnimStates.set(material, {
+		phase: 0,
+		amp: 0,
+		pitch: 0,
+		punch: 0,
+	});
+
+	setShaderTexture(material, "diffuseTexture", getFallbackTexture(engine));
+
+	void loadSkin(engine)
+		.then((texture) => {
+			if (!isAlive()) {
+				return;
+			}
+
+			setShaderTexture(material, "diffuseTexture", texture);
+
 			onBind?.();
 		})
 		.catch(() => {
-			if (!isAlive()) return;
-			onBind?.();
+			if (isAlive()) {
+				onBind?.();
+			}
 		});
 }
 
-// PERF: reused result buffers — packedLightToLightColor/setRigLightColor run
-// on every voxel-light crossing retint. Callers must consume immediately.
-const _lightColorScratch: [number, number, number] = [0, 0, 0];
-const _lightColorUniformScratch = [0, 0, 0];
+// ─── Lighting ───────────────────────────────────────────────────────────────
+
+const WHITE_LIGHT_COLOR: readonly [number, number, number] = [1, 1, 1];
+
+/*
+ * Reused result buffers. Consumers must use returned values immediately and
+ * must not retain or mutate them.
+ */
+const lightColorScratch: [number, number, number] = [0, 0, 0];
+
+const lightColorUniformScratch = [0, 0, 0];
 
 /**
- * Convert packed voxel light (sky << 4 | block) into an RGB light color,
- * mirroring the terrain shaders' mix: neutral skylight scaled by the
- * sun-elevation day factor plus a warm torch tint, with an ambient floor.
+ * Converts packed voxel light, sky << 4 | block, into an RGB light color.
  */
 export function packedLightToLightColor(
 	packed: number,
 ): readonly [number, number, number] {
 	const sky = ((packed >> 4) & 0xf) / 15;
 	const block = (packed & 0xf) / 15;
+
 	const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
+
 	const sunIntensity = Math.min(1, Math.max(0, sunElevation * 4));
-	// Same mix as OpaqueShaderLite/Lod2/Lod3 fragment stages.
+
 	const skyScale = sky * 0.8 * (sunIntensity + 0.2);
-	const channel = (torch: number): number =>
-		Math.min(1, Math.max(0.2, skyScale + block * torch));
-	_lightColorScratch[0] = channel(0.9);
-	_lightColorScratch[1] = channel(0.6);
-	_lightColorScratch[2] = channel(0.2);
-	return _lightColorScratch;
+
+	/*
+	 * Calculate channels directly instead of allocating a closure for every
+	 * light update.
+	 */
+	lightColorScratch[0] = Math.min(1, Math.max(0.2, skyScale + block * 0.9));
+
+	lightColorScratch[1] = Math.min(1, Math.max(0.2, skyScale + block * 0.6));
+
+	lightColorScratch[2] = Math.min(1, Math.max(0.2, skyScale + block * 0.2));
+
+	return lightColorScratch;
 }
 
 /**
- * Unlit textured ShaderMaterial for rigs: samples the skin texture and
- * multiplies by a uLightColor RGB uniform — fully bypassing scene lights and
- * StandardMaterial state. Backface culling is on (winding matches DroppedItem)
- * and the pipeline is fully opaque.
+ * Creates the unlit textured material used by player rigs.
  */
 export function createRigShaderMaterial(name: string): ShaderMaterial {
 	return createShaderMaterial({
@@ -607,140 +854,173 @@ export function createRigShaderMaterial(name: string): ShaderMaterial {
 		attributes: ["position", "normal", "uv"],
 		uniforms: [
 			"worldViewProjection",
-			{ name: "uLightColor", type: "vec3<f32>" },
-			{ name: "uAnim", type: "vec4<f32>" },
-			{ name: "uPunch", type: "vec2<f32>" },
+			{
+				name: "uLightColor",
+				type: "vec3<f32>",
+			},
+			{
+				name: "uAnim",
+				type: "vec4<f32>",
+			},
+			{
+				name: "uPunch",
+				type: "vec2<f32>",
+			},
 		],
 		samplers: ["diffuseTexture"],
 		backFaceCulling: true,
 	});
 }
 
-export function bindRigTexture(mat: ShaderMaterial, tex: Texture2D): void {
-	setShaderTexture(mat, "diffuseTexture", tex);
+export function bindRigTexture(
+	material: ShaderMaterial,
+	texture: Texture2D,
+): void {
+	setShaderTexture(material, "diffuseTexture", texture);
 }
 
 export function setRigLightColor(
-	mat: ShaderMaterial,
+	material: ShaderMaterial,
 	color: readonly [number, number, number],
 ): void {
-	const u = _lightColorUniformScratch;
-	u[0] = color[0];
-	u[1] = color[1];
-	u[2] = color[2];
-	setShaderUniform(mat, "uLightColor", u);
+	lightColorUniformScratch[0] = color[0];
+	lightColorUniformScratch[1] = color[1];
+	lightColorUniformScratch[2] = color[2];
+
+	setShaderUniform(material, "uLightColor", lightColorUniformScratch);
 }
+
+// ─── Animation ──────────────────────────────────────────────────────────────
 
 /** Radians of walk-stride phase accumulated per meter traveled. */
 export const WALK_STRIDE_FACTOR = 1.8;
 
-/** Horizontal speed (m/s) at which the swing reaches full amplitude. */
+/** Horizontal speed at which the swing reaches full amplitude. */
 export const WALK_REF_SPEED = 3;
 
-/** Head pitch clamp (±~69°) so extreme look angles stay readable. */
+/** Head-pitch clamp in radians, approximately ±69 degrees. */
 export const HEAD_PITCH_LIMIT = 1.2;
 
-// ─── Animation state (CPU-side trig, single packed uniform per material) ────
-
-interface RigAnimState {
-	phase: number;
-	amp: number;
-	pitch: number;
-	/** Punch curve 0 (rest) to 1 (peak); drives the uPunch uniform. */
-	punch: number;
-}
-
-// Last-written animation state per material. Powers the skip-unchanged fast
-// path: idle players re-issuing the same state every frame cost zero uniform
-// writes. WeakMap so disposed materials don't leak.
-const rigAnimStates = new WeakMap<ShaderMaterial, RigAnimState>();
-
-/** uAnim = [sin(swing), sin(pitch), cos(pitch), cos(swing)] rest value. */
-const REST_ANIM: readonly number[] = [0, 0, 1, 1];
-
-/** uPunch = [sin(punchAngle), cos(punchAngle)] rest value (arm down). */
-const REST_PUNCH: readonly number[] = [0, 1];
-
-/** Full punch duration in seconds (wind-up + strike + recover). */
+/** Full punch duration in seconds. */
 export const PUNCH_DURATION_S = 0.32;
 
-/** Peak right-arm raise (radians) at the middle of a punch. */
-const PUNCH_MAX_ANGLE = 1.15;
+/*
+ * Reused uniform buffers. setShaderUniform is expected to copy their values
+ * synchronously, matching the existing lite API contract.
+ */
+const punchUniformScratch = [0, 1];
+const animUniformScratch = [0, 0, 1, 1];
 
-// PERF: scratch buffer for the per-frame punch write (setShaderUniform copies).
-const _punchUniform = [0, 1];
+function getOrCreateRigAnimState(material: ShaderMaterial): RigAnimState {
+	const existing = rigAnimStates.get(material);
 
-// PERF: scratch buffer for the per-frame write (setShaderUniform copies).
-const _animUniform = [0, 0, 1, 1];
+	if (existing !== undefined) {
+		return existing;
+	}
 
-function writeRigAnim(mat: ShaderMaterial, st: RigAnimState): void {
-	const swing = Math.sin(st.phase) * SWING_MAX * st.amp;
-	_animUniform[0] = Math.sin(swing);
-	_animUniform[1] = Math.sin(st.pitch);
-	_animUniform[2] = Math.cos(st.pitch);
-	_animUniform[3] = Math.cos(swing);
-	setShaderUniform(mat, "uAnim", _animUniform);
+	const state: RigAnimState = {
+		phase: 0,
+		amp: 0,
+		pitch: 0,
+		punch: 0,
+	};
+
+	rigAnimStates.set(material, state);
+
+	return state;
 }
 
-/** Drive the rig's walk-swing (amp 0 = rest pose, 1 = full stride). */
+function writeRigAnim(material: ShaderMaterial, state: RigAnimState): void {
+	const swing = Math.sin(state.phase) * SWING_MAX * state.amp;
+
+	animUniformScratch[0] = Math.sin(swing);
+	animUniformScratch[3] = Math.cos(swing);
+
+	/*
+	 * Preserve the shader's all-zero early-out convention at exact rest while
+	 * retaining a valid cosine for nonzero head pitch.
+	 */
+	if (state.pitch === 0) {
+		animUniformScratch[1] = 0;
+		animUniformScratch[2] = 1;
+	} else {
+		animUniformScratch[1] = Math.sin(state.pitch);
+
+		animUniformScratch[2] = Math.cos(state.pitch);
+	}
+
+	setShaderUniform(material, "uAnim", animUniformScratch);
+}
+
+/**
+ * Drives walk animation. Amplitude is clamped to [0, 1].
+ */
 export function setRigWalk(
-	mat: ShaderMaterial,
+	material: ShaderMaterial,
 	phase: number,
 	amp: number,
 ): void {
-	const clampedAmp = Math.max(0, Math.min(1, amp));
-	let st = rigAnimStates.get(mat);
-	if (st) {
-		if (st.phase === phase && st.amp === clampedAmp) return; // no-op frame
-		st.phase = phase;
-		st.amp = clampedAmp;
-	} else {
-		st = { phase, amp: clampedAmp, pitch: 0, punch: 0 };
-		rigAnimStates.set(mat, st);
+	const clampedAmp = Math.min(1, Math.max(0, amp));
+
+	const state = getOrCreateRigAnimState(material);
+
+	if (state.phase === phase && state.amp === clampedAmp) {
+		return;
 	}
-	writeRigAnim(mat, st);
+
+	state.phase = phase;
+	state.amp = clampedAmp;
+
+	writeRigAnim(material, state);
 }
 
 /**
- * Tilt the head part with the camera. Positive = looking down (the camera
- * convention: cameraPitch is positive when looking down, and +ang tips the
- * face's +Z front downward).
+ * Tilts the head with the camera.
+ *
+ * Positive pitch looks downward.
  */
-export function setRigHeadPitch(mat: ShaderMaterial, pitch: number): void {
-	const clamped = Math.max(
-		-HEAD_PITCH_LIMIT,
-		Math.min(HEAD_PITCH_LIMIT, pitch),
+export function setRigHeadPitch(material: ShaderMaterial, pitch: number): void {
+	const clampedPitch = Math.min(
+		HEAD_PITCH_LIMIT,
+		Math.max(-HEAD_PITCH_LIMIT, pitch),
 	);
-	let st = rigAnimStates.get(mat);
-	if (st) {
-		if (st.pitch === clamped) return; // no-op frame
-		st.pitch = clamped;
-	} else {
-		st = { phase: 0, amp: 0, pitch: clamped, punch: 0 };
-		rigAnimStates.set(mat, st);
+
+	const state = getOrCreateRigAnimState(material);
+
+	if (state.pitch === clampedPitch) {
+		return;
 	}
-	writeRigAnim(mat, st);
+
+	state.pitch = clampedPitch;
+
+	writeRigAnim(material, state);
 }
 
 /**
- * Raise the right arm for a punch/mining strike. punchT is the normalized
- * punch progress in [0, 1); anything outside that range is the rest pose.
- * The curve peaks mid-swing (sin) so the arm snaps up and eases back down.
+ * Raises the right arm for a punch or mining strike.
+ *
+ * punchT is normalized progress in [0, 1). Values outside that range produce
+ * the rest pose.
  */
-export function setRigPunch(mat: ShaderMaterial, punchT: number): void {
+export function setRigPunch(material: ShaderMaterial, punchT: number): void {
 	const curve = punchT >= 0 && punchT < 1 ? Math.sin(punchT * Math.PI) : 0;
-	let st = rigAnimStates.get(mat);
-	if (st) {
-		if (st.punch === curve) return; // no-op frame
-		st.punch = curve;
-	} else {
-		st = { phase: 0, amp: 0, pitch: 0, punch: curve };
-		rigAnimStates.set(mat, st);
+
+	const state = getOrCreateRigAnimState(material);
+
+	if (state.punch === curve) {
+		return;
 	}
-	// Negative angle raises the arm forward (+Z front); the shader adds it
-	// to the walk angle for the right arm only.
-	const ang = curve * PUNCH_MAX_ANGLE;
-	_punchUniform[0] = -Math.sin(ang);
-	_punchUniform[1] = Math.cos(ang);
-	setShaderUniform(mat, "uPunch", _punchUniform);
+
+	state.punch = curve;
+
+	/*
+	 * A negative angle raises the arm forward. The shader combines this
+	 * rotation with the right arm's walk rotation.
+	 */
+	const angle = curve * PUNCH_MAX_ANGLE;
+
+	punchUniformScratch[0] = -Math.sin(angle);
+	punchUniformScratch[1] = Math.cos(angle);
+
+	setShaderUniform(material, "uPunch", punchUniformScratch);
 }
