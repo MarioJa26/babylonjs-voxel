@@ -352,6 +352,150 @@ function _getShadedTile(
 	return tile;
 }
 
+// ─── Reusable face buffer ───
+type IconQuadBuffer = {
+	count: number;
+	depth: Float64Array;
+	coords: Float64Array;
+	texture: Float64Array;
+	shade: Float64Array;
+};
+
+let _iconQuadBuffer: IconQuadBuffer = {
+	count: 0,
+	depth: new Float64Array(24),
+	coords: new Float64Array(24 * 8),
+	texture: new Float64Array(24 * 2),
+	shade: new Float64Array(24),
+};
+
+function _ensureIconQuadCapacity(required: number): IconQuadBuffer {
+	if (_iconQuadBuffer.depth.length >= required) {
+		_iconQuadBuffer.count = 0;
+		return _iconQuadBuffer;
+	}
+
+	let capacity = _iconQuadBuffer.depth.length;
+	while (capacity < required) capacity <<= 1;
+
+	_iconQuadBuffer = {
+		count: 0,
+		depth: new Float64Array(capacity),
+		coords: new Float64Array(capacity * 8),
+		texture: new Float64Array(capacity * 2),
+		shade: new Float64Array(capacity),
+	};
+
+	return _iconQuadBuffer;
+}
+
+function _pushIconQuad(
+	buffer: IconQuadBuffer,
+	depth: number,
+	x0: number,
+	y0: number,
+	x1: number,
+	y1: number,
+	x2: number,
+	y2: number,
+	x3: number,
+	y3: number,
+	tx: number,
+	ty: number,
+	shade: number,
+): void {
+	const index = buffer.count++;
+	const coordOffset = index * 8;
+	const textureOffset = index * 2;
+
+	buffer.depth[index] = depth;
+
+	buffer.coords[coordOffset] = x0;
+	buffer.coords[coordOffset + 1] = y0;
+	buffer.coords[coordOffset + 2] = x1;
+	buffer.coords[coordOffset + 3] = y1;
+	buffer.coords[coordOffset + 4] = x2;
+	buffer.coords[coordOffset + 5] = y2;
+	buffer.coords[coordOffset + 6] = x3;
+	buffer.coords[coordOffset + 7] = y3;
+
+	buffer.texture[textureOffset] = tx;
+	buffer.texture[textureOffset + 1] = ty;
+	buffer.shade[index] = shade;
+}
+
+/**
+ * The icon usually has only a small number of faces. Insertion sort avoids
+ * the comparator calls and temporary object movement of Array.prototype.sort.
+ */
+function _sortIconQuadsByDepth(buffer: IconQuadBuffer): void {
+	const { count, depth, coords, texture, shade } = buffer;
+
+	for (let i = 1; i < count; i++) {
+		const currentDepth = depth[i];
+		const currentShade = shade[i];
+
+		const sourceCoordOffset = i * 8;
+		const c0 = coords[sourceCoordOffset];
+		const c1 = coords[sourceCoordOffset + 1];
+		const c2 = coords[sourceCoordOffset + 2];
+		const c3 = coords[sourceCoordOffset + 3];
+		const c4 = coords[sourceCoordOffset + 4];
+		const c5 = coords[sourceCoordOffset + 5];
+		const c6 = coords[sourceCoordOffset + 6];
+		const c7 = coords[sourceCoordOffset + 7];
+
+		const sourceTextureOffset = i * 2;
+		const tx = texture[sourceTextureOffset];
+		const ty = texture[sourceTextureOffset + 1];
+
+		let j = i - 1;
+
+		while (j >= 0 && depth[j] > currentDepth) {
+			depth[j + 1] = depth[j];
+			shade[j + 1] = shade[j];
+
+			const fromCoord = j * 8;
+			const toCoord = fromCoord + 8;
+
+			coords[toCoord] = coords[fromCoord];
+			coords[toCoord + 1] = coords[fromCoord + 1];
+			coords[toCoord + 2] = coords[fromCoord + 2];
+			coords[toCoord + 3] = coords[fromCoord + 3];
+			coords[toCoord + 4] = coords[fromCoord + 4];
+			coords[toCoord + 5] = coords[fromCoord + 5];
+			coords[toCoord + 6] = coords[fromCoord + 6];
+			coords[toCoord + 7] = coords[fromCoord + 7];
+
+			const fromTexture = j * 2;
+			const toTexture = fromTexture + 2;
+			texture[toTexture] = texture[fromTexture];
+			texture[toTexture + 1] = texture[fromTexture + 1];
+
+			j--;
+		}
+
+		const destination = j + 1;
+		const destinationCoord = destination * 8;
+		const destinationTexture = destination * 2;
+
+		depth[destination] = currentDepth;
+		shade[destination] = currentShade;
+
+		coords[destinationCoord] = c0;
+		coords[destinationCoord + 1] = c1;
+		coords[destinationCoord + 2] = c2;
+		coords[destinationCoord + 3] = c3;
+		coords[destinationCoord + 4] = c4;
+		coords[destinationCoord + 5] = c5;
+		coords[destinationCoord + 6] = c6;
+		coords[destinationCoord + 7] = c7;
+
+		texture[destinationTexture] = tx;
+		texture[destinationTexture + 1] = ty;
+	}
+}
+
 /**
  * Draws a Minecraft-style isometric icon for an arbitrary multi-box block
  * shape. Each box of the shape definition is projected with the classic
@@ -389,23 +533,28 @@ export function drawCubeIcon(
 	}
 
 	let boxes: readonly ShapeBox[];
-	let outlineBoxes: readonly ShapeBox[] | null = null;
+	let outlineBoxes: readonly ShapeBox[] | null;
 
 	if (blockId !== null && isCrossBlockId(blockId)) {
 		// Axis-aligned cross: two thin intersecting walls so the icon shows
 		// them overlapping, mirroring the world emitter's crossed quads.
 		const t = 0.0625;
 		const c = 0.5 - t * 0.5;
+
 		boxes = [
 			{ min: [0, 0, c], max: [1, 1, c + t], faceMask: FACE_ALL },
 			{ min: [c, 0, 0], max: [c + t, 1, 1], faceMask: FACE_ALL },
 		];
+
+		outlineBoxes = null;
 	} else {
 		const shape = getShapeForBlockId(blockId ?? 0);
+
 		boxes =
-			shape !== null && shape.boxes.length > 0
+			shape !== null && shape.boxes.length !== 0
 				? shape.boxes
 				: FALLBACK_CUBE.boxes;
+
 		outlineBoxes = boxes;
 	}
 
@@ -477,22 +626,7 @@ export function drawCubeIcon(
 	// Collect every visible face as an independent quad, then depth-sort so
 	// faces of intersecting boxes interleave instead of whole boxes hiding
 	// each other. Depth approximates distance to the (+X,+Y,+Z) camera.
-	type IconQuad = {
-		d: number;
-		x0: number;
-		y0: number;
-		x1: number;
-		y1: number;
-		x2: number;
-		y2: number;
-		x3: number;
-		y3: number;
-		tx: number;
-		ty: number;
-		shade: number;
-	};
-
-	const quads: IconQuad[] = [];
+	const quads = _ensureIconQuadCapacity(boxes.length * 3);
 
 	for (let i = 0; i < boxes.length; i++) {
 		const box = boxes[i];
@@ -503,6 +637,10 @@ export function drawCubeIcon(
 		const y1 = box.max[1];
 		const z1 = box.max[2];
 		const mask = box.faceMask;
+
+		const xMid = (x0 + x1) * 0.5;
+		const yMid = (y0 + y1) * 0.5;
+		const zMid = (z0 + z1) * 0.5;
 
 		// Isometric projection:
 		//   sx = (x - z) * R + offX
@@ -520,157 +658,167 @@ export function drawCubeIcon(
 		const cy = (bboxMaxY - y1) * H + (x1 + z1) * ry + offY;
 		const dx = (x0 - z1) * R + offX;
 		const dy = (bboxMaxY - y1) * H + (x0 + z1) * ry + offY;
-		const ex = (x1 - z0) * R + offX;
+		const ex = bx;
 		const ey = (bboxMaxY - y0) * H + (x1 + z0) * ry + offY;
-		const fx = (x1 - z1) * R + offX;
+		const fx = cx;
 		const fy = (bboxMaxY - y0) * H + (x1 + z1) * ry + offY;
-		const gx = (x0 - z1) * R + offX;
+		const gx = dx;
 		const gy = (bboxMaxY - y0) * H + (x0 + z1) * ry + offY;
 
 		if ((mask & FACE_PY) !== 0) {
-			quads.push({
-				d: (x0 + x1) * 0.5 + y1 + (z0 + z1) * 0.5,
-				x0: ax,
-				y0: ay,
-				x1: bx,
-				y1: by,
-				x2: cx,
-				y2: cy,
-				x3: dx,
-				y3: dy,
-				tx: topTX,
-				ty: topTY,
-				shade: topShade,
-			});
-		}
-
-		if ((mask & FACE_PZ) !== 0) {
-			quads.push({
-				d: (x0 + x1) * 0.5 + (y0 + y1) * 0.5 + z1,
-				x0: dx,
-				y0: dy,
-				x1: cx,
-				y1: cy,
-				x2: fx,
-				y2: fy,
-				x3: gx,
-				y3: gy,
-				tx: leftTX,
-				ty: leftTY,
-				shade: leftShade,
-			});
-		}
-
-		if ((mask & FACE_PX) !== 0) {
-			quads.push({
-				d: x1 + (y0 + y1) * 0.5 + (z0 + z1) * 0.5,
-				x0: cx,
-				y0: cy,
-				x1: bx,
-				y1: by,
-				x2: ex,
-				y2: ey,
-				x3: fx,
-				y3: fy,
-				tx: rightTX,
-				ty: rightTY,
-				shade: rightShade,
-			});
-		}
-	}
-
-	quads.sort((a, b) => a.d - b.d);
-
-	for (let i = 0; i < quads.length; i++) {
-		const q = quads[i];
-		_drawQuad(
-			ctx,
-			q.x0,
-			q.y0,
-			q.x1,
-			q.y1,
-			q.x2,
-			q.y2,
-			q.x3,
-			q.y3,
-			q.tx,
-			q.ty,
-			q.shade,
-		);
-	}
-
-	if (outlineBoxes !== null && outlineBoxes.length > 0) {
-		ctx.strokeStyle = "rgba(0,0,0,0.5)";
-		ctx.lineWidth = 1.5;
-
-		// Projected silhouette hexagon of each box, in stroke order:
-		// back-top, right-top, right-bottom, front-bottom, left-bottom, left-top.
-		const hexes: number[][] = [];
-		for (let i = 0; i < outlineBoxes.length; i++) {
-			hexes.push(
-				_projectHexagon(outlineBoxes[i], R, ry, H, bboxMaxY, offX, offY),
+			_pushIconQuad(
+				quads,
+				xMid + y1 + zMid,
+				ax,
+				ay,
+				bx,
+				by,
+				cx,
+				cy,
+				dx,
+				dy,
+				topTX,
+				topTY,
+				topShade,
 			);
 		}
 
-		const multiBox = hexes.length > 1;
+		if ((mask & FACE_PZ) !== 0) {
+			_pushIconQuad(
+				quads,
+				xMid + yMid + z1,
+				dx,
+				dy,
+				cx,
+				cy,
+				fx,
+				fy,
+				gx,
+				gy,
+				leftTX,
+				leftTY,
+				leftShade,
+			);
+		}
 
-		for (let i = 0; i < hexes.length; i++) {
-			const pts = hexes[i];
+		if ((mask & FACE_PX) !== 0) {
+			_pushIconQuad(
+				quads,
+				x1 + yMid + zMid,
+				cx,
+				cy,
+				bx,
+				by,
+				ex,
+				ey,
+				fx,
+				fy,
+				rightTX,
+				rightTY,
+				rightShade,
+			);
+		}
+	}
 
-			ctx.beginPath();
+	_sortIconQuadsByDepth(quads);
 
-			if (multiBox) {
-				// Compound shape: draw each hexagon edge in short runs, culling
-				// the parts buried inside another box so no internal seams show.
-				for (let e = 0; e < 6; e++) {
-					const e2 = (e + 1) % 6;
-					const ax = pts[e * 2];
-					const ay = pts[e * 2 + 1];
-					const bx = pts[e2 * 2];
-					const by = pts[e2 * 2 + 1];
-					const dx = bx - ax;
-					const dy = by - ay;
-					const edgeLen = Math.sqrt(dx * dx + dy * dy);
-					const steps = Math.min(8, Math.max(1, Math.ceil(edgeLen / 6)));
+	for (let i = 0; i < quads.count; i++) {
+		const coordOffset = i * 8;
+		const textureOffset = i * 2;
 
-					let runActive = false;
+		_drawQuad(
+			ctx,
+			quads.coords[coordOffset],
+			quads.coords[coordOffset + 1],
+			quads.coords[coordOffset + 2],
+			quads.coords[coordOffset + 3],
+			quads.coords[coordOffset + 4],
+			quads.coords[coordOffset + 5],
+			quads.coords[coordOffset + 6],
+			quads.coords[coordOffset + 7],
+			quads.texture[textureOffset],
+			quads.texture[textureOffset + 1],
+			quads.shade[i],
+		);
+	}
 
-					for (let s = 0; s < steps; s++) {
-						const t0 = s / steps;
-						const t1 = (s + 1) / steps;
-						const mx = ax + dx * (t0 + t1) * 0.5;
-						const my = ay + dy * (t0 + t1) * 0.5;
+	if (outlineBoxes === null || outlineBoxes.length === 0) return;
 
-						let hidden = false;
-						for (let h = 0; h < hexes.length; h++) {
-							if (h !== i && _pointInHexagon(mx, my, hexes[h])) {
-								hidden = true;
-								break;
-							}
-						}
+	ctx.strokeStyle = "rgba(0,0,0,0.5)";
+	ctx.lineWidth = 1.5;
 
-						if (hidden) {
-							runActive = false;
-							continue;
-						}
+	// Projected silhouette hexagon of each box, in stroke order:
+	// back-top, right-top, right-bottom, front-bottom, left-bottom, left-top.
+	const hexes = new Array<number[]>(outlineBoxes.length);
+	for (let i = 0; i < outlineBoxes.length; i++) {
+		hexes[i] = _projectHexagon(outlineBoxes[i], R, ry, H, bboxMaxY, offX, offY);
+	}
 
-						if (!runActive) {
-							ctx.moveTo(ax + dx * t0, ay + dy * t0);
-							runActive = true;
-						}
-						ctx.lineTo(ax + dx * t1, ay + dy * t1);
-					}
-				}
-			} else {
-				ctx.moveTo(pts[0], pts[1]);
-				for (let p = 2; p < 12; p += 2) {
-					ctx.lineTo(pts[p], pts[p + 1]);
-				}
-				ctx.closePath();
+	const multiBox = hexes.length > 1;
+
+	for (let i = 0; i < hexes.length; i++) {
+		const points = hexes[i];
+
+		ctx.beginPath();
+
+		if (!multiBox) {
+			ctx.moveTo(points[0], points[1]);
+
+			for (let p = 2; p < 12; p += 2) {
+				ctx.lineTo(points[p], points[p + 1]);
 			}
 
+			ctx.closePath();
 			ctx.stroke();
+			continue;
 		}
+
+		// Compound shape: draw each hexagon edge in short runs, culling
+		// the parts buried inside another box so no internal seams show.
+		for (let edge = 0; edge < 6; edge++) {
+			const nextEdge = (edge + 1) % 6;
+			const ax = points[edge * 2];
+			const ay = points[edge * 2 + 1];
+			const bx = points[nextEdge * 2];
+			const by = points[nextEdge * 2 + 1];
+			const edgeX = bx - ax;
+			const edgeY = by - ay;
+			const edgeLength = Math.sqrt(edgeX * edgeX + edgeY * edgeY);
+			const steps = Math.min(8, Math.max(1, Math.ceil(edgeLength / 6)));
+
+			let runActive = false;
+
+			for (let step = 0; step < steps; step++) {
+				const t0 = step / steps;
+				const t1 = (step + 1) / steps;
+				const midpointT = (t0 + t1) * 0.5;
+				const midpointX = ax + edgeX * midpointT;
+				const midpointY = ay + edgeY * midpointT;
+
+				let hidden = false;
+
+				for (let h = 0; h < hexes.length; h++) {
+					if (h !== i && _pointInHexagon(midpointX, midpointY, hexes[h])) {
+						hidden = true;
+						break;
+					}
+				}
+
+				if (hidden) {
+					runActive = false;
+					continue;
+				}
+
+				if (!runActive) {
+					ctx.moveTo(ax + edgeX * t0, ay + edgeY * t0);
+					runActive = true;
+				}
+
+				ctx.lineTo(ax + edgeX * t1, ay + edgeY * t1);
+			}
+		}
+
+		ctx.stroke();
 	}
 }
 
