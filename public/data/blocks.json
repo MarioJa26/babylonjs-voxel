@@ -1080,5 +1080,13 @@
 		"hardness": 4,
 		"preferredTool": "pickaxe",
 		"requiredLevel": 8
+	},
+	{
+		"id": "Cauldron",
+		"name": "cauldron",
+		"path": "/texture/stone/cauldron_1k",
+		"shape": "cauldron",
+		"hardness": 2,
+		"preferredTool": "pickaxe"
 	}
 ]

@@ -141,6 +141,7 @@ export enum BlockType {
 	//   each ascending Stone, Bronze, Iron, ReinforcedIron, ReinforcedSilver,
 	//   UnderworldIron.
 	SmithToolHammer = 120,
+	Cauldron = 162,
 }
 
 export const Hardness = {

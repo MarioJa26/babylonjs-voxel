@@ -581,5 +581,15 @@
 		"armorSlot": "chain",
 		"armorValue": 6,
 		"maxDurability": 5200
+	},
+	{
+		"id": 1132,
+		"name": "Cauldron",
+		"description": "A hollow iron pot.\nGreat for holding things later.",
+		"icon": "/texture/items/cauldron/cauldron.png",
+		"maxStack": 64,
+		"useAction": "place_block",
+		"blockId": 162,
+		"blockState": 0
 	}
 ]
