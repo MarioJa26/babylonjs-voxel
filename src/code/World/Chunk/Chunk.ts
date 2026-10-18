@@ -54,8 +54,6 @@ import {
 } from "./Worker/ChunkLightHeader";
 import { BLOCK_TYPE } from "./Worker/ChunkMesherConstants";
 
-export { getChunkFast };
-
 function makeSharedUint16(length: number): Uint16Array {
 	return new Uint16Array(
 		new SharedArrayBuffer(length * Uint16Array.BYTES_PER_ELEMENT),
@@ -1689,16 +1687,4 @@ export class Chunk {
 		runChunkDisposeHooks(this);
 		releasePooledChunk(this);
 	}
-}
-
-// Resolve a loaded/constructed chunk by chunk coordinates.  Delegates to
-// getChunkFast's 8-slot MRU cache — avoids BigInt alloc on hot hits (AABB
-// sweeps, raycasts). Single registry (chunkInstances) remains the source of
-// truth; neighborRefs is the primary hot-path bypass.
-export function getChunk(
-	cx: number,
-	cy: number,
-	cz: number,
-): Chunk | undefined {
-	return getChunkFast(cx, cy, cz);
 }
