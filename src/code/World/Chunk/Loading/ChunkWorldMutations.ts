@@ -1,5 +1,6 @@
-import { worldToBlockCoord, worldToChunkCoord } from "@/code/Lib/VoxelMath";
-import { Chunk, getChunk } from "../Chunk";
+﻿import { worldToBlockCoord, worldToChunkCoord } from "@/code/Lib/VoxelMath";
+import { Chunk } from "../Chunk";
+import { getChunkFast } from "../Runtime/ChunkRegistry";
 
 export interface WorldBlockCoordinates {
 	worldX: number;
@@ -77,10 +78,10 @@ const _ctxScratch: BlockMutationContext = {
 
 // PERF: multi-slot chunk cache.  A single _lastChunk entry misses ~50% of the
 // time for AABB sweeps that span up to 2 chunks per axis, forcing a BigInt
-// packCoords getChunk on every boundary crossing.  A small ring of recent
+// packCoords getChunkFast on every boundary crossing.  A small ring of recent
 // (cx,cy,cz)->Chunk entries keeps the miss rate near zero after warmup.  On a
 // hit we also re-validate isLoaded so a disposed (stale) entry is refreshed
-// instead of being returned — strictly safer than the old single-entry cache,
+// instead of being returned â€” strictly safer than the old single-entry cache,
 // which could return a disposed chunk until the next miss.
 const _RESOLVE_SLOTS = 8;
 const _rcx = new Int32Array(_RESOLVE_SLOTS).fill(0x7fffffff);
@@ -111,7 +112,7 @@ function resolveCoords(
 	for (let i = 0; i < _RESOLVE_SLOTS; i++) {
 		if (_rcx[i] === chunkX && _rcy[i] === chunkY && _rcz[i] === chunkZ) {
 			const c = _rchunk[i];
-			if (c && c.isLoaded) {
+			if (c?.isLoaded) {
 				// The slot is keyed by coordinate but holds an object reference,
 				// and Chunk objects are pooled: a disposed chunk is unlinked and
 				// may be re-registered at entirely different coordinates. A slot
@@ -124,11 +125,11 @@ function resolveCoords(
 				}
 				break;
 			}
-			// Stale/disposed entry — fall through and refresh this slot.
+			// Stale/disposed entry â€” fall through and refresh this slot.
 		}
 	}
 
-	const chunk = getChunk(chunkX, chunkY, chunkZ);
+	const chunk = getChunkFast(chunkX, chunkY, chunkZ);
 	_rcx[_rcursor] = chunkX;
 	_rcy[_rcursor] = chunkY;
 	_rcz[_rcursor] = chunkZ;
@@ -209,7 +210,7 @@ export class ChunkWorldMutations {
 
 	// PERF: single-resolve block+state reader.  The old
 	// getBlockAndStateByWorldCoords path resolved the chunk twice (once for
-	// the block id, once for the state), paying a BigInt packCoords getChunk
+	// the block id, once for the state), paying a BigInt packCoords getChunkFast
 	// on every chunk-boundary crossing.  This resolves once and reads both
 	// fields from the same chunk, also reporting whether the chunk is loaded
 	// (so callers can treat unloaded terrain as solid).
@@ -380,7 +381,7 @@ export function toLocalBlockCoordinates(
 	s.localX = worldToBlockCoord(worldX);
 	s.localY = worldToBlockCoord(worldY);
 	s.localZ = worldToBlockCoord(worldZ);
-	s.chunk = getChunk(chunkX, chunkY, chunkZ);
+	s.chunk = getChunkFast(chunkX, chunkY, chunkZ);
 
 	return s;
 }
@@ -400,7 +401,7 @@ export function getBlockStateByWorldCoords(
 
 // PERF: single-resolve block+state reader.  The old getBlockAndStateByWorldCoords
 // path called resolveCoords twice (once for the block id, once for the state),
-// paying a BigInt packCoords getChunk on every chunk-boundary crossing.  This
+// paying a BigInt packCoords getChunkFast on every chunk-boundary crossing.  This
 // resolves the chunk ONCE and reads both fields from the same resolved chunk.
 export type BlockAndStateLoadedOut = {
 	blockId: number;

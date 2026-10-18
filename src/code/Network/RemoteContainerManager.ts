@@ -9,6 +9,7 @@
  */
 
 import type { NetClient } from "./NetClient";
+import { ClientHandlerBinding, PendingOpenBroker } from "./PendingOpenBroker";
 import {
 	BinaryDecoder,
 	decodeContainerRejectedInto,
@@ -62,7 +63,6 @@ const OPEN_TIMEOUT_MS = 8000;
 function posKey(x: number, y: number, z: number): string {
 	return `${x},${y},${z}`;
 }
-
 export class RemoteContainerManager {
 	private readonly decoder = new BinaryDecoder(new Uint8Array(0));
 	private readonly stateScratch = {
@@ -85,24 +85,18 @@ export class RemoteContainerManager {
 		stackSize: 0,
 	};
 	private readonly rejectedScratch = { x: 0, y: 0, z: 0, reason: 0 };
-	private readonly handler: (data: Uint8Array) => void;
-	private readonly onDisconnected: () => void;
+	private readonly binding: ClientHandlerBinding;
 	private callbacks: RemoteContainerCallbacks = {};
-	private pendingOpen: {
-		key: string;
-		resolve: (state: RemoteContainerState) => void;
-		reject: (error: Error) => void;
-		timer: ReturnType<typeof setTimeout>;
-	} | null = null;
+	private readonly pendingOpen = new PendingOpenBroker<RemoteContainerState>();
 
 	constructor(private readonly client: NetClient) {
-		this.handler = (data) => this.handleBinaryMessage(data);
-		this.client.addBinaryHandler(this.handler);
-
 		// A reconnect starts fresh server state: fail any in-flight open so
 		// the HUD never hangs on a loading crate, and let viewers re-open.
-		this.onDisconnected = () => this.failPendingOpen("disconnected");
-		this.client.addDisconnectListener(this.onDisconnected);
+		this.binding = new ClientHandlerBinding(
+			client,
+			(data) => this.handleBinaryMessage(data),
+			() => this.pendingOpen.fail("container", "disconnected"),
+		);
 	}
 
 	setCallbacks(callbacks: RemoteContainerCallbacks): void {
@@ -116,18 +110,15 @@ export class RemoteContainerManager {
 	 * supersedes the previous one.
 	 */
 	open(x: number, y: number, z: number): Promise<RemoteContainerState> {
-		this.failPendingOpen("superseded");
 		if (!this.client.isConnected) {
 			return Promise.reject(new Error("not connected"));
 		}
-		return new Promise<RemoteContainerState>((resolve, reject) => {
-			const timer = setTimeout(() => {
-				if (this.pendingOpen?.timer === timer) this.pendingOpen = null;
-				reject(new Error("container open timed out"));
-			}, OPEN_TIMEOUT_MS);
-			this.pendingOpen = { key: posKey(x, y, z), resolve, reject, timer };
-			this.client.sendContainerOpen(x, y, z);
-		});
+		return this.pendingOpen.begin(
+			"container",
+			posKey(x, y, z),
+			OPEN_TIMEOUT_MS,
+			() => this.client.sendContainerOpen(x, y, z),
+		);
 	}
 
 	sendSetSlot(
@@ -144,14 +135,6 @@ export class RemoteContainerManager {
 
 	sendClose(x: number, y: number, z: number): void {
 		this.client.sendContainerClose(x, y, z);
-	}
-
-	private failPendingOpen(reason: string): void {
-		const pending = this.pendingOpen;
-		if (!pending) return;
-		this.pendingOpen = null;
-		clearTimeout(pending.timer);
-		pending.reject(new Error(`container open ${reason}`));
 	}
 
 	private handleBinaryMessage(data: Uint8Array): void {
@@ -176,12 +159,10 @@ export class RemoteContainerManager {
 						stackSize: s.stackSize,
 					})),
 				};
-				const pending = this.pendingOpen;
-				if (pending && pending.key === posKey(state.x, state.y, state.z)) {
-					this.pendingOpen = null;
-					clearTimeout(pending.timer);
-					pending.resolve(snapshot);
-				}
+				const pending = this.pendingOpen.takeIfKey(
+					posKey(state.x, state.y, state.z),
+				);
+				if (pending) pending.resolve(snapshot);
 				this.callbacks.onState?.(snapshot);
 				break;
 			}
@@ -219,10 +200,8 @@ export class RemoteContainerManager {
 					z: r.z,
 					reason: r.reason,
 				};
-				const pending = this.pendingOpen;
-				if (pending && pending.key === posKey(r.x, r.y, r.z)) {
-					this.pendingOpen = null;
-					clearTimeout(pending.timer);
+				const pending = this.pendingOpen.takeIfKey(posKey(r.x, r.y, r.z));
+				if (pending) {
 					pending.reject(new Error(`container rejected (reason ${r.reason})`));
 				}
 				this.callbacks.onRejected?.(rejection);
@@ -232,9 +211,8 @@ export class RemoteContainerManager {
 	}
 
 	dispose(): void {
-		this.client.removeBinaryHandler(this.handler);
-		this.client.removeDisconnectListener(this.onDisconnected);
-		this.failPendingOpen("disposed");
+		this.binding.dispose(this.client);
+		this.pendingOpen.fail("container", "disposed");
 		this.callbacks = {};
 	}
 }

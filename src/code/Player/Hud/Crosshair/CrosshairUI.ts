@@ -58,10 +58,6 @@ export class CrosshairUI {
 		this.#crosshair.src = crosshairTexturePath(next);
 	}
 
-	getCrosshairId(): string {
-		return this.#crosshairId;
-	}
-
 	setSize(sizePx: number): void {
 		const size = normalizeCrosshairSize(sizePx);
 		this.#crosshair.style.width = `${size}px`;
@@ -84,10 +80,6 @@ export class CrosshairUI {
 			this.#hitMarkerTimeout = undefined;
 			this.#hitMarker.style.opacity = "0";
 		}
-	}
-
-	isHitmarkerEnabled(): boolean {
-		return this.#hitmarkerEnabled;
 	}
 
 	/** Apply a full visual option set (used at boot and by settings menus). */

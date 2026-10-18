@@ -29,27 +29,8 @@ const TILE = 25;
 const TILE_SQ = TILE * TILE;
 const TILE_BYTES = TILE_SQ << 2;
 
-// ─── Normal map toggle ───
-let _normalMapEnabled = true;
-
-export function setNormalMapEnabled(enabled: boolean): void {
-	if (_normalMapEnabled === enabled) return;
-
-	_normalMapEnabled = enabled;
-	_litTileCacheVersion++;
-	_shadedTileCache.clear();
-
-	if (enabled) {
-		_ensureAtlases();
-	} else {
-		// Normal maps no longer gate the ready promise.
-		_notifyAtlasesReady();
-	}
-}
-
-export function isNormalMapEnabled(): boolean {
-	return _normalMapEnabled;
-}
+// ─── Normal map state (globally enabled; pipeline reads this constant flag) ───
+const _normalMapEnabled = true;
 
 // ─── Atlas URLs ───
 const NORMAL_ATLAS_URL = "/texture/normal_atlas.png";

@@ -11,10 +11,6 @@ type Scene = Parameters<typeof removeFromScene>[0];
  * the same frame — a non-merged LOD mesh here plus a packed arena there — and
  * two independent fences gave the two sets arbitrary completion order.
  */
-export function deferMeshDisposal(mesh: Mesh): void {
-	GPU_RETIREMENT_QUEUE.retireMesh(mesh);
-}
-
 export function deferChunkMeshes(
 	scene: Scene,
 	opaque: Mesh | null,

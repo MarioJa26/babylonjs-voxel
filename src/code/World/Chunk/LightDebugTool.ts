@@ -1,4 +1,4 @@
-// ---------------------------------------------------------------------------
+﻿// ---------------------------------------------------------------------------
 // LightDebugTool
 //
 // Temporary in-game diagnostic for sky-light propagation under terrain
@@ -13,8 +13,9 @@ import {
 	worldToBlockCoord,
 	worldToChunkCoord,
 } from "@/code/Lib/VoxelMath";
-import { Chunk, getChunk } from "./Chunk";
+import { Chunk } from "./Chunk";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
+import { getChunkFast } from "./Runtime/ChunkRegistry";
 import {
 	LIGHT_HEADER_FLAG_LOADED,
 	readHeaderFlags,
@@ -74,7 +75,7 @@ function dumpChunkTable(pcx: number, pcy: number, pcz: number): void {
 	const pool = ChunkWorkerPool.getInstance();
 	const lines: string[] = ["-- chunk state (self + neighbors) --"];
 	for (const [dx, dy, dz] of DIRS) {
-		const c = getChunk(pcx + dx, pcy + dy, pcz + dz);
+		const c = getChunkFast(pcx + dx, pcy + dy, pcz + dz);
 		if (!c) {
 			lines.push(
 				`  (${dx > 0 ? "+" : ""}${dx},${dy > 0 ? "+" : ""}${dy},${dz > 0 ? "+" : ""}${dz}) chunk(${pcx + dx}, ${pcy + dy}, ${pcz + dz}) NOT LOADED`,
@@ -148,7 +149,7 @@ function dumpColumn(worldX: number, worldZ: number, py: number): void {
 
 	for (let y = py + 40; y >= py - 40; y--) {
 		const cy = worldToChunkCoord(y);
-		const chunk = getChunk(cx, cy, cz);
+		const chunk = getChunkFast(cx, cy, cz);
 		if (!chunk?.isLoaded || !chunk.hasVoxelData) {
 			if (runStart !== -1) flushRun(y + 1);
 			continue;

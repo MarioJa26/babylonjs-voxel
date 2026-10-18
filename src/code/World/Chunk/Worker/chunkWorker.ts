@@ -1,4 +1,4 @@
-import { Chunk, getChunk } from "../Chunk";
+﻿import { Chunk } from "../Chunk";
 import {
 	type GenerateDistantTerrainRequest,
 	type GenerateFarTileRequest,
@@ -24,9 +24,10 @@ import {
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "../DataStructures/WorkerMessageType";
+import { getChunkFast } from "../Runtime/ChunkRegistry";
 
 // Offset order must match the voxel worker's NEIGHBOR_OFFSETS table
-// (slot i = mask bit i): dz outer → dx inner, center (0,0,0) omitted.
+// (slot i = mask bit i): dz outer â†’ dx inner, center (0,0,0) omitted.
 export const NEIGHBOR_OFFSETS_26: readonly {
 	readonly dx: number;
 	readonly dy: number;
@@ -91,7 +92,7 @@ export function computeBorderSkirtMasks(chunk: Chunk): number {
 	let sides = 0;
 
 	// -X
-	const negativeX = getChunk(chunkX - 1, chunkY, chunkZ);
+	const negativeX = getChunkFast(chunkX - 1, chunkY, chunkZ);
 
 	if (
 		negativeX === undefined ||
@@ -102,7 +103,7 @@ export function computeBorderSkirtMasks(chunk: Chunk): number {
 	}
 
 	// +X
-	const positiveX = getChunk(chunkX + 1, chunkY, chunkZ);
+	const positiveX = getChunkFast(chunkX + 1, chunkY, chunkZ);
 
 	if (
 		positiveX === undefined ||
@@ -113,7 +114,7 @@ export function computeBorderSkirtMasks(chunk: Chunk): number {
 	}
 
 	// -Z
-	const negativeZ = getChunk(chunkX, chunkY, chunkZ - 1);
+	const negativeZ = getChunkFast(chunkX, chunkY, chunkZ - 1);
 
 	if (
 		negativeZ === undefined ||
@@ -124,7 +125,7 @@ export function computeBorderSkirtMasks(chunk: Chunk): number {
 	}
 
 	// +Z
-	const positiveZ = getChunk(chunkX, chunkY, chunkZ + 1);
+	const positiveZ = getChunkFast(chunkX, chunkY, chunkZ + 1);
 
 	if (
 		positiveZ === undefined ||
@@ -147,7 +148,7 @@ export class ChunkWorker {
 	 *
 	 * This worker exists solely for locally-generated terrain. In multiplayer the
 	 * server is authoritative and terrain arrives over the network instead, so
-	 * TaskType.Terrain is essentially never dispatched — meaning this thread sat
+	 * TaskType.Terrain is essentially never dispatched â€” meaning this thread sat
 	 * idle for the whole session while still occupying a core's worth of
 	 * scheduler budget.
 	 *
@@ -173,7 +174,7 @@ export class ChunkWorker {
 	private distantTerrainSharedInitialized = false;
 	private lightSharedInitialized = false;
 
-	// Pre-allocated message objects for light dispatch — avoids spread allocation per call.
+	// Pre-allocated message objects for light dispatch â€” avoids spread allocation per call.
 	private readonly _lightMutateMsg: LightMutateRequest = {
 		type: WorkerTaskType.LightMutate,
 		chunkId: 0n,
@@ -214,9 +215,9 @@ export class ChunkWorker {
 	// above, applied to the voxel-mesh remesh dispatch. postMessage performs
 	// structured clone synchronously before returning, so mutating this
 	// object again on the next call (after the previous postMessage already
-	// returned) is safe — it's the same reasoning already relied on for
+	// returned) is safe â€” it's the same reasoning already relied on for
 	// _lightMutateMsg etc. Saves one object allocation per remesh dispatch.
-	// SAB-direct: the payload is metadata only — the worker reads center grid
+	// SAB-direct: the payload is metadata only â€” the worker reads center grid
 	// and neighbor borders from the registered SharedArrayBuffers.
 	private readonly _voxelMeshMsg: GenerateFullMeshRequest = {
 		type: WorkerTaskType.GenerateFullMesh,
@@ -231,7 +232,7 @@ export class ChunkWorker {
 		chunkZ: 0,
 		neighborMask: 0,
 		// PERF: declared here so postFullRemesh never adds these after
-		// construction — late-added fields force a V8 hidden-class (map)
+		// construction â€” late-added fields force a V8 hidden-class (map)
 		// transition on every worker instance's first remesh dispatch.
 		borderSkirtSides: 0,
 		borderSkirtNearInset: 0,
@@ -340,7 +341,7 @@ export class ChunkWorker {
 		this.workerIndex = workerIndex;
 		this.onTerrainMessage = onMessageTerrain;
 
-		// Voxel mesh worker – assign directly to avoid per-worker closure (was 50 kB / frame)
+		// Voxel mesh worker â€“ assign directly to avoid per-worker closure (was 50 kB / frame)
 		this.voxelWorker = new Worker(
 			new URL("./voxel.worker.ts", import.meta.url),
 			{ type: "module", name: `chunk-voxel-${this.workerIndex}` },
@@ -401,7 +402,7 @@ export class ChunkWorker {
 	/**
 	 * 26-bit presence snapshot for the voxel worker: slot i (same offset order
 	 * as the worker's NEIGHBOR_OFFSETS table) is set when the neighbor passed
-	 * the loaded + hasVoxelData gate — the exact set of borders the old
+	 * the loaded + hasVoxelData gate â€” the exact set of borders the old
 	 * transfer path would have sent. The worker reads those borders directly
 	 * from its voxel-registration map.
 	 */
@@ -417,8 +418,8 @@ export class ChunkWorker {
 			const { dx, dy, dz } = ChunkWorker._REMESH_OFFSETS[i];
 			// Number-keyed lookup instead of Chunk.chunkInstances (BigInt-keyed).
 			// Also removes a fresh packCoords() BigInt alloc for all 20 edge/corner
-			// offsets — same cost class as the neighborIds laziness fix.
-			const neighbor = getChunk(cx + dx, cy + dy, cz + dz);
+			// offsets â€” same cost class as the neighborIds laziness fix.
+			const neighbor = getChunkFast(cx + dx, cy + dy, cz + dz);
 			if (neighbor?.isLoaded && neighbor.hasVoxelData) {
 				mask |= 1 << i;
 			}
@@ -496,7 +497,7 @@ export class ChunkWorker {
 
 	// Terrain generation stays on terrainWorker
 	// PERF: prebuilt, reused descriptors (same pattern + postMessage-clones-
-	// synchronously rationale as _voxelMeshMsg above) — one object allocation
+	// synchronously rationale as _voxelMeshMsg above) â€” one object allocation
 	// per instance instead of per generated chunk / recycled result.
 	private readonly _terrainGenMsg: GenerateTerrainRequest = {
 		type: WorkerTaskType.GenerateTerrain,
@@ -598,7 +599,7 @@ export class ChunkWorker {
 	// ---------------------------------------------------------------------
 	// Light-task post helpers.  The terrain worker (chunk.worker.ts) owns
 	// the light registry and BFS, and the post helpers simply forward
-	// messages.  SharedArrayBuffers for chunk state are not transferred —
+	// messages.  SharedArrayBuffers for chunk state are not transferred â€”
 	// they live for the lifetime of the page and are referenced by all
 	// workers via the registration messages posted by the pool.
 	// ---------------------------------------------------------------------
@@ -810,7 +811,7 @@ export class ChunkWorker {
 		msg.seq = req.seq;
 		// PERF: the seed queue is exclusively owned by the caller (the pool
 		// deletes its deferredLightingSeedStates entry before posting), so it
-		// is transferred instead of structured-cloned — otherwise postMessage
+		// is transferred instead of structured-cloned â€” otherwise postMessage
 		// would copy up to 6144 Uint16s a second time.
 		this.terrain().postMessage(msg, [req.seedQueue.buffer]);
 	}
@@ -819,7 +820,7 @@ export class ChunkWorker {
 	// Voxel-registration post helpers (SAB-direct mesh borders).  The voxel
 	// worker reads center grids and neighbor borders straight from the
 	// registered SharedArrayBuffers on every mesh task, so the main thread
-	// posts registration metadata only — the SAB handles come inline
+	// posts registration metadata only â€” the SAB handles come inline
 	// (direct=true, fresh generation / layout change / restart) or through
 	// the OPFS worker-to-worker channel (direct=false).
 	// ---------------------------------------------------------------------
@@ -863,7 +864,7 @@ export class ChunkWorker {
 		msg.blockSABs = req.blockSABs;
 		msg.paletteSABs = req.paletteSABs;
 		msg.lightSABs = req.lightSABs;
-		// NOTE: intentionally NOT transferred — the pool fans these arrays
+		// NOTE: intentionally NOT transferred â€” the pool fans these arrays
 		// out to EVERY voxel worker, so the buffers must stay alive here.
 		this.voxelWorker.postMessage(msg);
 	}

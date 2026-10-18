@@ -1,4 +1,4 @@
-/**
+﻿/**
  * NetClient - connection manager for b102 multiplayer.
  *
  * Wraps the Colyseus SDK to provide:
@@ -24,15 +24,24 @@ import {
 	decodeSpawnPositionInto,
 	decodeTntIgniteInto,
 	decodeWorldConfigInto,
+	encodeArrowShoot,
 	encodeContainerClose,
 	encodeContainerOpen,
 	encodeContainerSetSlot,
+	encodeExplosion,
 	encodeHeldItemSelect,
+	encodeItemDrop,
+	encodeItemPickup,
+	encodeMobDamage,
+	encodeMobSpawnRequest,
+	encodePitchByte,
 	encodeSkinUpload,
 	encodeStationClaimResult,
 	encodeStationOpen,
 	encodeStationSetSlot,
 	encodeStationUpgrade,
+	encodeTntIgnite,
+	encodeYawByte,
 	isSequenceNewer,
 	type WorldConfigData,
 } from "./protocol/encoder";
@@ -53,8 +62,8 @@ import {
  * Sentinel `lastSequence` meaning "no state received for this player yet".
  *
  * Must not be a real sequence value. `isSequenceNewer(0, 0)` is false, so
- * initialising to 0 would cause every player's first state batch — which
- * carries sequence 0 — to be discarded as stale.
+ * initialising to 0 would cause every player's first state batch â€” which
+ * carries sequence 0 â€” to be discarded as stale.
  */
 const NO_STATE_SEQUENCE = 0xffff;
 
@@ -88,7 +97,7 @@ export interface RemotePlayer {
 	 * Wall-clock arrival time of the most recent accepted state batch, ms.
 	 *
 	 * This runs in a Colyseus message task, OUTSIDE the frame loop, so it uses
-	 * `performance.now()` directly. The shared FrameClock is not valid here —
+	 * `performance.now()` directly. The shared FrameClock is not valid here â€”
 	 * its sample belongs to the last completed frame, which for a message task
 	 * may be arbitrarily stale.
 	 */
@@ -184,7 +193,6 @@ export class NetClient {
 		eventId: 0,
 		seed: 0,
 	};
-	private droppedStateBatches = 0;
 	private readonly warnedUnknownIndices = new Set<number>();
 	private readonly playerHeldItemScratch: PlayerHeldItemData = {
 		index: 0,
@@ -261,7 +269,7 @@ export class NetClient {
 	/**
 	 * Monotonic identity of the current room/connection.
 	 *
-	 * PERF/RATIONALE: async work started against one room can outlive it — an
+	 * PERF/RATIONALE: async work started against one room can outlive it â€” an
 	 * inflate, a cache write, a skin decode, a deferred GPU replacement. All of
 	 * those must answer "which room produced this operation?" before applying
 	 * their result, or a late completion from a room you already left will
@@ -276,16 +284,11 @@ export class NetClient {
 	 *   requests for the same chunk coordinates can be live at once, so
 	 *   coordinates alone are ambiguous.
 	 *
-	 * Keep the pending-object checks too — generation alone would let a stale
+	 * Keep the pending-object checks too â€” generation alone would let a stale
 	 * response for a re-requested coordinate resolve the new request.
 	 */
 	get connectionGeneration(): number {
 		return this.roomGeneration;
-	}
-
-	/** Player-state batches rejected as stale since connect. HUD diagnostics. */
-	get droppedStateBatchCount(): number {
-		return this.droppedStateBatches;
 	}
 
 	worldName = "default";
@@ -492,7 +495,7 @@ export class NetClient {
 						break;
 
 					case MessageType.BlockEditBroadcast: {
-						// Reused scratch — safe: NetworkManager.applyRemoteBlockEdit copies fields synchronously (no retain). See NetworkManager:165.
+						// Reused scratch â€” safe: NetworkManager.applyRemoteBlockEdit copies fields synchronously (no retain). See NetworkManager:165.
 						const edit = decodeBlockEditBroadcastInto(
 							dec,
 							this.blockEditBroadcastScratch,
@@ -511,7 +514,7 @@ export class NetClient {
 					}
 
 					case MessageType.ChatMessage: {
-						// Reused scratch — safe: NetworkManager.onChatMessage copies name/message strings synchronously. Caller must not retain object.
+						// Reused scratch â€” safe: NetworkManager.onChatMessage copies name/message strings synchronously. Caller must not retain object.
 						const chat = dec.readChatMessageInto(this.chatMessageScratch);
 						callbacks.onChatMessage?.(chat);
 						break;
@@ -564,14 +567,14 @@ export class NetClient {
 						break;
 
 					case MessageType.WorldConfig: {
-						// Reused scratch — safe: NetworkManager.onWorldConfig copies seed string synchronously (NetworkManager:186). Caller must copy if retaining.
+						// Reused scratch â€” safe: NetworkManager.onWorldConfig copies seed string synchronously (NetworkManager:186). Caller must copy if retaining.
 						const cfg = decodeWorldConfigInto(dec, this.worldConfigScratch);
 						callbacks.onWorldConfig?.(cfg);
 						break;
 					}
 
 					case MessageType.SpawnPosition: {
-						// Reused scratch — safe: NetworkManager.onSpawnPosition copies via setSpawnPosition/restoreSavedPosition (no retain). See NetClient:398.
+						// Reused scratch â€” safe: NetworkManager.onSpawnPosition copies via setSpawnPosition/restoreSavedPosition (no retain). See NetClient:398.
 						const pos = decodeSpawnPositionInto(dec, this.spawnPositionScratch);
 						callbacks.onSpawnPosition?.(pos);
 						break;
@@ -650,7 +653,7 @@ export class NetClient {
 						console.warn(
 							`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,
 						);
-						// Unknown payload length — stop to avoid desync.
+						// Unknown payload length â€” stop to avoid desync.
 						return;
 				}
 			}
@@ -687,7 +690,6 @@ export class NetClient {
 		const yawScale = 360 / 255;
 
 		let acceptedCount = 0;
-		let droppedCount = 0;
 
 		for (let i = 0; i < stateCount; i++) {
 			const state = states[i];
@@ -712,7 +714,6 @@ export class NetClient {
 			}
 
 			if (!isSequenceNewer(sequence, player.lastSequence)) {
-				droppedCount++;
 				continue;
 			}
 
@@ -728,10 +729,6 @@ export class NetClient {
 			player.animation = state.animation;
 
 			acceptedCount++;
-		}
-
-		if (droppedCount !== 0) {
-			this.droppedStateBatches += droppedCount;
 		}
 
 		/*
@@ -799,7 +796,7 @@ export class NetClient {
 				targetZ: 0,
 				targetYaw: 0,
 				// "Nothing received yet", not a real sequence. The server's first
-				// batch carries sequence 0, and isSequenceNewer(0, 0) is false —
+				// batch carries sequence 0, and isSequenceNewer(0, 0) is false â€”
 				// initialising to 0 would silently drop every player's first
 				// state. 0xffff makes 0 compare as newer instead.
 				lastSequence: NO_STATE_SEQUENCE,
@@ -877,8 +874,8 @@ export class NetClient {
 			x,
 			y,
 			z,
-			NetClient.encodeYawByte(yaw),
-			NetClient.encodePitchByte(pitch),
+			encodeYawByte(yaw),
+			encodePitchByte(pitch),
 			animation,
 		);
 
@@ -984,30 +981,17 @@ export class NetClient {
 		const room = this.getConnectedRoom();
 		if (room === null) return;
 
-		const encoder = this.encoder;
-		encoder.reset();
-		encoder.writeUint8(MessageType.ItemDrop);
-		encoder.writeUint16(itemId);
-		encoder.writeUint16(stackSize);
-		encoder.writeFloat32(x);
-		encoder.writeFloat32(y);
-		encoder.writeFloat32(z);
-		encoder.writeFloat32(vx);
-		encoder.writeFloat32(vy);
-		encoder.writeFloat32(vz);
-
-		room.sendBytes("binary", encoder.getBytes());
+		room.sendBytes(
+			"binary",
+			encodeItemDrop({ itemId, stackSize, x, y, z, vx, vy, vz }),
+		);
 	}
 
 	sendItemPickup(instanceId: number): void {
 		const room = this.getConnectedRoom();
 		if (room === null) return;
 
-		this.encoder.reset();
-		this.encoder.writeUint8(MessageType.ItemPickup);
-		this.encoder.writeUint32(instanceId);
-
-		room.sendBytes("binary", this.encoder.getBytes());
+		room.sendBytes("binary", encodeItemPickup({ itemId: instanceId }));
 	}
 
 	/**
@@ -1044,7 +1028,7 @@ export class NetClient {
 		room.sendBytes("binary", encodeContainerClose({ x, y, z }));
 	}
 
-	// ─── Stations ───
+	// â”€â”€â”€ Stations â”€â”€â”€
 	// No Close message: a station is a fixed block position, so the server needs
 	// no per-client view registration the way crates need one. Reaching it again
 	// just re-opens.
@@ -1087,27 +1071,14 @@ export class NetClient {
 		const room = this.getConnectedRoom();
 		if (room === null) return;
 
-		const encoder = this.encoder;
-		encoder.reset();
-		encoder.writeUint8(MessageType.MobSpawnRequest);
-		encoder.writeUint8(typeId);
-		encoder.writeFloat32(x);
-		encoder.writeFloat32(y);
-		encoder.writeFloat32(z);
-
-		room.sendBytes("binary", encoder.getBytes());
+		room.sendBytes("binary", encodeMobSpawnRequest({ typeId, x, y, z }));
 	}
 
 	sendMobDamage(mobId: number, damage: number): void {
 		const room = this.getConnectedRoom();
 		if (room === null) return;
 
-		this.encoder.reset();
-		this.encoder.writeUint8(MessageType.MobDamage);
-		this.encoder.writeUint16(mobId);
-		this.encoder.writeFloat32(damage);
-
-		room.sendBytes("binary", this.encoder.getBytes());
+		room.sendBytes("binary", encodeMobDamage({ mobId, damage }));
 	}
 
 	sendArrowShoot(
@@ -1122,33 +1093,17 @@ export class NetClient {
 		const room = this.getConnectedRoom();
 		if (room === null) return;
 
-		const encoder = this.encoder;
-		encoder.reset();
-		encoder.writeUint8(MessageType.ArrowShoot);
-		encoder.writeFloat32(x);
-		encoder.writeFloat32(y);
-		encoder.writeFloat32(z);
-		encoder.writeFloat32(vx);
-		encoder.writeFloat32(vy);
-		encoder.writeFloat32(vz);
-		encoder.writeUint8(arrowType);
-
-		room.sendBytes("binary", encoder.getBytes());
+		room.sendBytes(
+			"binary",
+			encodeArrowShoot({ x, y, z, vx, vy, vz, arrowType }),
+		);
 	}
 
 	sendExplosion(x: number, y: number, z: number, radius: number): void {
 		const room = this.getConnectedRoom();
 		if (room === null) return;
 
-		const encoder = this.encoder;
-		encoder.reset();
-		encoder.writeUint8(MessageType.Explosion);
-		encoder.writeFloat32(x);
-		encoder.writeFloat32(y);
-		encoder.writeFloat32(z);
-		encoder.writeFloat32(radius);
-
-		room.sendBytes("binary", encoder.getBytes());
+		room.sendBytes("binary", encodeExplosion({ x, y, z, radius }));
 	}
 
 	sendTntIgnite(
@@ -1161,16 +1116,7 @@ export class NetClient {
 		const room = this.getConnectedRoom();
 		if (room === null) return;
 
-		const encoder = this.encoder;
-		encoder.reset();
-		encoder.writeUint8(MessageType.TntIgnite);
-		encoder.writeFloat32(x);
-		encoder.writeFloat32(y);
-		encoder.writeFloat32(z);
-		encoder.writeFloat32(fuse);
-		encoder.writeFloat32(radius);
-
-		room.sendBytes("binary", encoder.getBytes());
+		room.sendBytes("binary", encodeTntIgnite({ x, y, z, fuse, radius }));
 	}
 
 	uploadSkin(png: Uint8Array): void {
@@ -1218,44 +1164,10 @@ export class NetClient {
 	 * @deprecated Presentation smoothing belongs to the renderer, not to the
 	 *   transport. This now only primes `player.x/y/z/yaw` so that a caller
 	 *   which has not yet adopted `RemotePlayerInterpolationBuffer` still sees a
-	 *   moving position. New code should read render snapshots instead — see
+	 *   moving position. New code should read render snapshots instead â€” see
 	 *   Network/RemotePlayerInterpolation.ts for why the old in-place chase was
 	 *   both frame-rate dependent and jitter-prone.
 	 */
-	updateRemotePlayerInterpolation(dt: number): void {
-		if (!(dt > 0)) return;
-
-		// Clamp unusually large frame deltas. Values above this threshold already
-		// produce a factor extremely close to 1 and can cause visible snapping.
-		const lerpFactor = 1 - Math.exp(-10 * Math.min(dt, 1));
-		const players = this.activeRemotePlayers;
-
-		for (let i = 0; i < players.length; i++) {
-			const player = players[i];
-
-			player.x += (player.targetX - player.x) * lerpFactor;
-			player.y += (player.targetY - player.y) * lerpFactor;
-			player.z += (player.targetZ - player.z) * lerpFactor;
-
-			let yawDiff = player.targetYaw - player.yaw;
-
-			if (yawDiff > 180) {
-				yawDiff -= 360;
-			} else if (yawDiff < -180) {
-				yawDiff += 360;
-			}
-
-			let yaw = player.yaw + yawDiff * lerpFactor;
-
-			if (yaw >= 360) {
-				yaw -= 360;
-			} else if (yaw < 0) {
-				yaw += 360;
-			}
-
-			player.yaw = yaw;
-		}
-	}
 
 	disconnect(): void {
 		this.detachCurrentRoom();
@@ -1317,16 +1229,5 @@ export class NetClient {
 
 	private getConnectedRoom(): any | null {
 		return this.connected ? this.room : null;
-	}
-
-	static encodeYawByte(yaw: number): number {
-		const normalized = ((yaw % 360) + 360) % 360;
-		return Math.round(normalized * (255 / 360)) & 0xff;
-	}
-
-	static encodePitchByte(pitch: number): number {
-		const clamped = pitch < -90 ? -90 : pitch > 90 ? 90 : pitch;
-
-		return Math.round((clamped + 90) * (255 / 180)) & 0xff;
 	}
 }

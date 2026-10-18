@@ -19,15 +19,6 @@ export function packChunkKeyNumeric(
 	return ((cx + BIAS_XZ) * RANGE_Y + (cy + BIAS_Y)) * RANGE_XZ + (cz + BIAS_XZ);
 }
 
-export function numericKeyToChunkKey(key: number): string {
-	const biasedCz = key % RANGE_XZ;
-	const tmp = (key - biasedCz) / RANGE_XZ;
-	const biasedCy = tmp % RANGE_Y;
-	const biasedCx = (tmp - biasedCy) / RANGE_Y;
-
-	return `${biasedCx - BIAS_XZ},${biasedCy - BIAS_Y},${biasedCz - BIAS_XZ}`;
-}
-
 /**
  * Parses without substring allocations.
  *
@@ -36,7 +27,7 @@ export function numericKeyToChunkKey(key: number): string {
  * by chunkKey() are signed base-10 integers, so this fast path is equivalent
  * for valid internal chunk keys.
  */
-export function chunkKeyToNumeric(key: string): number {
+function chunkKeyToNumeric(key: string): number {
 	let index = 0;
 	const length = key.length;
 
@@ -496,17 +487,38 @@ export class LevelDbChunkStore implements ChunkStorage {
 		return data;
 	}
 
-	async readChunks(
-		coords: readonly ChunkCoord[],
-	): Promise<Map<string, Uint8Array>> {
-		const results = new Map<string, Uint8Array>();
+	/**
+	 * Shared scan engine for the four chunk-batch accessors
+	 * (readChunks/readChunksNumeric/hasChunks/hasChunksNumeric).
+	 *
+	 * Phases identical across all of them are performed here:
+	 *  1. Scan `coords`, serving cache hits via `commitHit` (which also
+	 *     touches the LRU order) and collecting pending-DW misses with
+	 *     missSeen-based dedup.
+	 *  2. Await `Promise.allSettled` over pending writes, then re-serve
+	 *     settled cache hits and compact the miss arrays in place.
+	 *
+	 * The DB fetch/merge phase deliberately stays in each caller: read mode
+	 * re-checks pendingDeletes after the fetch, while presence mode merges
+	 * the returned key/presence sets without one.
+	 */
+	private async chunkBatchFetch<TR>(args: {
+		coords: readonly ChunkCoord[];
+		results: TR;
+		commitHit: (results: TR, nk: number, sk: string, data: Uint8Array) => void;
+	}): Promise<{
+		results: TR;
+		missesNumeric: number[];
+		missesStrings: string[];
+		missCount: number;
+	}> {
+		const { coords, results, commitHit } = args;
 		const missesNumeric: number[] = [];
 		const missesStrings: string[] = [];
 
 		const pendingDeletes = this.pendingDeletes;
 		const pendingWrites = this.pendingWrites;
 		const cache = this.cache;
-		const touched = this.touched;
 
 		let missSeen: Set<number> | null = null;
 
@@ -518,8 +530,9 @@ export class LevelDbChunkStore implements ChunkStorage {
 
 			const cached = cache.get(nk);
 			if (cached !== undefined) {
-				touched.add(nk);
-				results.set(
+				commitHit(
+					results,
+					nk,
 					coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz),
 					cached,
 				);
@@ -542,14 +555,16 @@ export class LevelDbChunkStore implements ChunkStorage {
 			missesStrings.push(coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz));
 		}
 
-		let missCount = missesNumeric.length;
-		if (missCount === 0 || !this.db) return results;
+		const out = {
+			results,
+			missesNumeric,
+			missesStrings,
+			missCount: missesNumeric.length,
+		};
 
-		/*
-		 * Reuse the numeric-miss array temporarily to collect no extra
-		 * bookkeeping objects. Promise.all still needs an array of promises,
-		 * but no per-promise catch closure is allocated.
-		 */
+		if (out.missCount === 0 || !this.db) return out;
+		const missCount = out.missCount;
+
 		let waits: Promise<void>[] | null = null;
 
 		for (let i = 0; i < missCount; i++) {
@@ -573,8 +588,7 @@ export class LevelDbChunkStore implements ChunkStorage {
 
 				const cached = cache.get(nk);
 				if (cached !== undefined) {
-					touched.add(nk);
-					results.set(sk, cached);
+					commitHit(results, nk, sk, cached);
 					continue;
 				}
 
@@ -583,12 +597,30 @@ export class LevelDbChunkStore implements ChunkStorage {
 				writeIndex++;
 			}
 
-			missCount = writeIndex;
 			missesNumeric.length = writeIndex;
 			missesStrings.length = writeIndex;
-
-			if (writeIndex === 0) return results;
+			out.missCount = writeIndex;
 		}
+
+		return out;
+	}
+
+	async readChunks(
+		coords: readonly ChunkCoord[],
+	): Promise<Map<string, Uint8Array>> {
+		const results = new Map<string, Uint8Array>();
+
+		const { missesNumeric, missesStrings, missCount } =
+			await this.chunkBatchFetch({
+				coords,
+				results,
+				commitHit: (r, _nk, sk, data) => {
+					this.touched.add(_nk);
+					r.set(sk, data);
+				},
+			});
+
+		if (missCount === 0 || !this.db) return results;
 
 		const found = await this._getMany(missesStrings);
 
@@ -601,7 +633,7 @@ export class LevelDbChunkStore implements ChunkStorage {
 		 */
 		for (let i = 0; i < missCount; i++) {
 			const nk = missesNumeric[i];
-			if (pendingDeletes.has(nk)) continue;
+			if (this.pendingDeletes.has(nk)) continue;
 
 			const sk = missesStrings[i];
 			const data = found.get(sk);
@@ -618,92 +650,24 @@ export class LevelDbChunkStore implements ChunkStorage {
 		coords: readonly ChunkCoord[],
 	): Promise<Map<number, Uint8Array>> {
 		const results = new Map<number, Uint8Array>();
-		const missesNumeric: number[] = [];
-		const missesStrings: string[] = [];
 
-		const pendingDeletes = this.pendingDeletes;
-		const pendingWrites = this.pendingWrites;
-		const cache = this.cache;
-		const touched = this.touched;
+		const { missesNumeric, missesStrings, missCount } =
+			await this.chunkBatchFetch({
+				coords,
+				results,
+				commitHit: (r, nk, _sk, data) => {
+					this.touched.add(nk);
+					r.set(nk, data);
+				},
+			});
 
-		let missSeen: Set<number> | null = null;
-
-		for (let i = 0, length = coords.length; i < length; i++) {
-			const coord = coords[i];
-			const nk = packChunkKeyNumeric(coord.cx, coord.cy, coord.cz);
-
-			if (pendingDeletes.has(nk)) continue;
-
-			const cached = cache.get(nk);
-			if (cached !== undefined) {
-				touched.add(nk);
-				results.set(nk, cached);
-				continue;
-			}
-
-			if (missesNumeric.length !== 0) {
-				if (missSeen === null) {
-					missSeen = new Set<number>();
-					for (let j = 0; j < missesNumeric.length; j++) {
-						missSeen.add(missesNumeric[j]);
-					}
-				}
-
-				if (missSeen.has(nk)) continue;
-				missSeen.add(nk);
-			}
-
-			missesNumeric.push(nk);
-			missesStrings.push(coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz));
-		}
-
-		let missCount = missesNumeric.length;
 		if (missCount === 0 || !this.db) return results;
-
-		let waits: Promise<void>[] | null = null;
-
-		for (let i = 0; i < missCount; i++) {
-			const pending = pendingWrites.get(missesNumeric[i]);
-			if (pending !== undefined) {
-				if (waits === null) waits = [];
-				waits.push(pending);
-			}
-		}
-
-		if (waits !== null) {
-			await Promise.allSettled(waits);
-
-			let writeIndex = 0;
-
-			for (let i = 0; i < missCount; i++) {
-				const nk = missesNumeric[i];
-
-				if (pendingDeletes.has(nk)) continue;
-
-				const cached = cache.get(nk);
-				if (cached !== undefined) {
-					touched.add(nk);
-					results.set(nk, cached);
-					continue;
-				}
-
-				missesNumeric[writeIndex] = nk;
-				missesStrings[writeIndex] = missesStrings[i];
-				writeIndex++;
-			}
-
-			missCount = writeIndex;
-			missesNumeric.length = writeIndex;
-			missesStrings.length = writeIndex;
-
-			if (writeIndex === 0) return results;
-		}
 
 		const found = await this._getMany(missesStrings);
 
 		for (let i = 0; i < missCount; i++) {
 			const nk = missesNumeric[i];
-			if (pendingDeletes.has(nk)) continue;
+			if (this.pendingDeletes.has(nk)) continue;
 
 			const data = found.get(missesStrings[i]);
 			if (data === undefined) continue;
@@ -756,85 +720,17 @@ export class LevelDbChunkStore implements ChunkStorage {
 
 	async hasChunks(coords: readonly ChunkCoord[]): Promise<Set<string>> {
 		const result = new Set<string>();
-		const missesNumeric: number[] = [];
-		const missesStrings: string[] = [];
 
-		const pendingDeletes = this.pendingDeletes;
-		const pendingWrites = this.pendingWrites;
-		const cache = this.cache;
-		const touched = this.touched;
+		const { missesStrings, missCount } = await this.chunkBatchFetch({
+			coords,
+			results: result,
+			commitHit: (r, nk, sk) => {
+				this.touched.add(nk);
+				r.add(sk);
+			},
+		});
 
-		let missSeen: Set<number> | null = null;
-
-		for (let i = 0, length = coords.length; i < length; i++) {
-			const coord = coords[i];
-			const nk = packChunkKeyNumeric(coord.cx, coord.cy, coord.cz);
-
-			if (pendingDeletes.has(nk)) continue;
-
-			if (cache.get(nk) !== undefined) {
-				touched.add(nk);
-				result.add(coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz));
-				continue;
-			}
-
-			if (missesNumeric.length !== 0) {
-				if (missSeen === null) {
-					missSeen = new Set<number>();
-					for (let j = 0; j < missesNumeric.length; j++) {
-						missSeen.add(missesNumeric[j]);
-					}
-				}
-
-				if (missSeen.has(nk)) continue;
-				missSeen.add(nk);
-			}
-
-			missesNumeric.push(nk);
-			missesStrings.push(coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz));
-		}
-
-		let missCount = missesNumeric.length;
 		if (missCount === 0 || !this.db) return result;
-
-		let waits: Promise<void>[] | null = null;
-
-		for (let i = 0; i < missCount; i++) {
-			const pending = pendingWrites.get(missesNumeric[i]);
-			if (pending !== undefined) {
-				if (waits === null) waits = [];
-				waits.push(pending);
-			}
-		}
-
-		if (waits !== null) {
-			await Promise.allSettled(waits);
-
-			let writeIndex = 0;
-
-			for (let i = 0; i < missCount; i++) {
-				const nk = missesNumeric[i];
-				const sk = missesStrings[i];
-
-				if (pendingDeletes.has(nk)) continue;
-
-				if (cache.get(nk) !== undefined) {
-					touched.add(nk);
-					result.add(sk);
-					continue;
-				}
-
-				missesNumeric[writeIndex] = nk;
-				missesStrings[writeIndex] = sk;
-				writeIndex++;
-			}
-
-			missCount = writeIndex;
-			missesNumeric.length = writeIndex;
-			missesStrings.length = writeIndex;
-
-			if (writeIndex === 0) return result;
-		}
 
 		const found = await this._hasMany(missesStrings);
 		for (const key of found) result.add(key);
@@ -844,84 +740,18 @@ export class LevelDbChunkStore implements ChunkStorage {
 
 	async hasChunksNumeric(coords: readonly ChunkCoord[]): Promise<Set<number>> {
 		const result = new Set<number>();
-		const missesNumeric: number[] = [];
-		const missesStrings: string[] = [];
 
-		const pendingDeletes = this.pendingDeletes;
-		const pendingWrites = this.pendingWrites;
-		const cache = this.cache;
-		const touched = this.touched;
+		const { missesNumeric, missesStrings, missCount } =
+			await this.chunkBatchFetch({
+				coords,
+				results: result,
+				commitHit: (r, nk) => {
+					this.touched.add(nk);
+					r.add(nk);
+				},
+			});
 
-		let missSeen: Set<number> | null = null;
-
-		for (let i = 0, length = coords.length; i < length; i++) {
-			const coord = coords[i];
-			const nk = packChunkKeyNumeric(coord.cx, coord.cy, coord.cz);
-
-			if (pendingDeletes.has(nk)) continue;
-
-			if (cache.get(nk) !== undefined) {
-				touched.add(nk);
-				result.add(nk);
-				continue;
-			}
-
-			if (missesNumeric.length !== 0) {
-				if (missSeen === null) {
-					missSeen = new Set<number>();
-					for (let j = 0; j < missesNumeric.length; j++) {
-						missSeen.add(missesNumeric[j]);
-					}
-				}
-
-				if (missSeen.has(nk)) continue;
-				missSeen.add(nk);
-			}
-
-			missesNumeric.push(nk);
-			missesStrings.push(coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz));
-		}
-
-		let missCount = missesNumeric.length;
 		if (missCount === 0 || !this.db) return result;
-
-		let waits: Promise<void>[] | null = null;
-
-		for (let i = 0; i < missCount; i++) {
-			const pending = pendingWrites.get(missesNumeric[i]);
-			if (pending !== undefined) {
-				if (waits === null) waits = [];
-				waits.push(pending);
-			}
-		}
-
-		if (waits !== null) {
-			await Promise.allSettled(waits);
-
-			let writeIndex = 0;
-
-			for (let i = 0; i < missCount; i++) {
-				const nk = missesNumeric[i];
-
-				if (pendingDeletes.has(nk)) continue;
-
-				if (cache.get(nk) !== undefined) {
-					touched.add(nk);
-					result.add(nk);
-					continue;
-				}
-
-				missesNumeric[writeIndex] = nk;
-				missesStrings[writeIndex] = missesStrings[i];
-				writeIndex++;
-			}
-
-			missCount = writeIndex;
-			missesNumeric.length = writeIndex;
-			missesStrings.length = writeIndex;
-
-			if (writeIndex === 0) return result;
-		}
 
 		const found = await this._hasMany(missesStrings);
 
@@ -1901,10 +1731,6 @@ export class LevelDbChunkStore implements ChunkStorage {
 		this.orderIndex.delete(key);
 
 		if (this.hand >= order.length) this.hand = 0;
-	}
-
-	get cachedEntryCount(): number {
-		return this.cache.size;
 	}
 
 	get isReady(): boolean {

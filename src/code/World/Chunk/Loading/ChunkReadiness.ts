@@ -1,4 +1,5 @@
-import { type Chunk, getChunk } from "../Chunk";
+﻿import type { Chunk } from "../Chunk";
+import { getChunkFast } from "../Runtime/ChunkRegistry";
 
 function areAllChunksAround(
 	chunkX: number,
@@ -11,7 +12,7 @@ function areAllChunksAround(
 	for (let dy = -verticalRadius; dy <= verticalRadius; dy++) {
 		for (let dz = -horizontalRadius; dz <= horizontalRadius; dz++) {
 			for (let dx = -horizontalRadius; dx <= horizontalRadius; dx++) {
-				const chunk = getChunk(chunkX + dx, chunkY + dy, chunkZ + dz);
+				const chunk = getChunkFast(chunkX + dx, chunkY + dy, chunkZ + dz);
 				if (!chunk || !isReady(chunk)) return false;
 			}
 		}

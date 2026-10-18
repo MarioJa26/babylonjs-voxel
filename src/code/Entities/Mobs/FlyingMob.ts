@@ -1,10 +1,11 @@
-import type { SceneContext, Vec3 } from "@babylonjs/lite";
+﻿import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
-import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
+import { Chunk } from "@/code/World/Chunk/Chunk";
 import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { getChunkFast } from "@/code/World/Chunk/Runtime/ChunkRegistry";
 import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { BlockType } from "@/code/World/Texture/BlockType";
@@ -28,9 +29,9 @@ const BLOCKED_REPICK_TICKS = 3;
 /** Fraction of intended per-axis travel that counts as "moved". */
 const BLOCKED_MOVE_FRACTION = 0.3;
 
-/** Radians of flap phase accumulated per meter flown (shader ×3). */
+/** Radians of flap phase accumulated per meter flown (shader Ã—3). */
 const FLAP_STRIDE_FACTOR = 2.0;
-/** Phase decay rate (per second) when still — wings ease back to rest. */
+/** Phase decay rate (per second) when still â€” wings ease back to rest. */
 const FLAP_PHASE_DECAY = 6.0;
 
 /** True when the world clock is in its night phase (mirrors SpawnCoordinator). */
@@ -123,7 +124,7 @@ export abstract class FlyingMob extends BaseMob {
 		const dt = deltaMs * 0.001;
 		if (dt <= 0 || isUiOpen()) return;
 
-		// PERF: night flag hoisted out of the per-bird tick — was
+		// PERF: night flag hoisted out of the per-bird tick â€” was
 		// Map1.environment + division per bird per frame.
 		const night = isNightNow();
 
@@ -132,7 +133,7 @@ export abstract class FlyingMob extends BaseMob {
 		frameProfiler.begin("birds");
 		for (const mob of FlyingMob.ticks) {
 			const pos = mob.bodyPosition;
-			const chunk = getChunk(
+			const chunk = getChunkFast(
 				Math.floor(pos.x / Chunk.SIZE),
 				Math.floor(pos.y / Chunk.SIZE),
 				Math.floor(pos.z / Chunk.SIZE),
@@ -246,7 +247,7 @@ export abstract class FlyingMob extends BaseMob {
 			velocity.y *= perchDamp;
 			velocity.z *= perchDamp;
 		} else {
-			// Route following: arrive → notify → idle → repick.
+			// Route following: arrive â†’ notify â†’ idle â†’ repick.
 			if (this.#hasWaypoint) {
 				const dx = this.#waypoint.x - pos.x;
 				const dy = this.#waypoint.y - pos.y;
@@ -312,7 +313,7 @@ export abstract class FlyingMob extends BaseMob {
 		// Move per axis through the voxel collider so terrain slides
 		// instead of tunneling. Track blocked horizontal axes to climb or
 		// abandon the route.
-		// PERF: unrolled axes — the old `for (const axis of [X,Y,Z])`
+		// PERF: unrolled axes â€” the old `for (const axis of [X,Y,Z])`
 		// allocated a 3-element array per bird per tick.
 		let blockedAxes = 0;
 		{

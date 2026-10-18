@@ -1,15 +1,16 @@
-import type { SceneContext, Vec3 } from "@babylonjs/lite";
+﻿import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
 import { playLandingDust } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
-import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
+import { Chunk } from "@/code/World/Chunk/Chunk";
 import {
 	getBlockByWorldCoords,
 	type ResolvedBlock,
 	resolveBlockAtWorldCoordsInto,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { getChunkFast } from "@/code/World/Chunk/Runtime/ChunkRegistry";
 import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { FALL_DAMAGE_PER_BLOCK, FALL_DAMAGE_THRESHOLD } from "../MobConfig";
@@ -36,7 +37,7 @@ const CHUNK_SHIFT = 5;
 const CHUNK_MASK = Chunk.SIZE - 1;
 
 // PERF: distinct scratches for the target cell and the cell above it. These
-// must not share an object — the check rejects a mob whose head cell is solid,
+// must not share an object â€” the check rejects a mob whose head cell is solid,
 // which is only meaningful if the two results came from different voxels.
 const _waterTarget: ResolvedBlock = {
 	blockId: 0,
@@ -162,13 +163,13 @@ export abstract class AquaticMob extends BaseMob {
 				 * chunk coordinate as floor division, including for
 				 * negative coordinates.
 				 */
-				const chunk = getChunk(
+				const chunk = getChunkFast(
 					Math.floor(pos.x) >> CHUNK_SHIFT,
 					Math.floor(pos.y) >> CHUNK_SHIFT,
 					Math.floor(pos.z) >> CHUNK_SHIFT,
 				);
 
-				if (!chunk || !chunk.isLoaded || chunk.lodLevel > 1) {
+				if (!chunk?.isLoaded || chunk.lodLevel > 1) {
 					continue;
 				}
 
@@ -236,7 +237,7 @@ export abstract class AquaticMob extends BaseMob {
 			 * The common case requires one chunk lookup and three direct
 			 * local-coordinate reads.
 			 */
-			const chunk = getChunk(chunkX, feetChunkY, chunkZ);
+			const chunk = getChunkFast(chunkX, feetChunkY, chunkZ);
 
 			if (!chunk?.isLoaded || chunk.lodLevel > 1) {
 				return WaterSampleResult.NotReady;
@@ -260,7 +261,7 @@ export abstract class AquaticMob extends BaseMob {
 			 * required chunk reference so duplicate Y chunks are not fetched
 			 * repeatedly.
 			 */
-			const feetChunk = getChunk(chunkX, feetChunkY, chunkZ);
+			const feetChunk = getChunkFast(chunkX, feetChunkY, chunkZ);
 
 			if (!feetChunk?.isLoaded || feetChunk.lodLevel > 1) {
 				return WaterSampleResult.NotReady;
@@ -269,7 +270,7 @@ export abstract class AquaticMob extends BaseMob {
 			const centerChunk =
 				centerChunkY === feetChunkY
 					? feetChunk
-					: getChunk(chunkX, centerChunkY, chunkZ);
+					: getChunkFast(chunkX, centerChunkY, chunkZ);
 
 			if (!centerChunk || !centerChunk.isLoaded || centerChunk.lodLevel > 1) {
 				return WaterSampleResult.NotReady;
@@ -282,7 +283,7 @@ export abstract class AquaticMob extends BaseMob {
 			} else if (headChunkY === feetChunkY) {
 				headChunk = feetChunk;
 			} else {
-				headChunk = getChunk(chunkX, headChunkY, chunkZ);
+				headChunk = getChunkFast(chunkX, headChunkY, chunkZ);
 			}
 
 			if (!headChunk || !headChunk.isLoaded || headChunk.lodLevel > 1) {
@@ -343,7 +344,7 @@ export abstract class AquaticMob extends BaseMob {
 		const waterState = this.#sampleWaterState(pos);
 
 		const velocity = this.bodyVelocity;
-		// Don't freeze on NotReady — treat as dry so mobs keep falling
+		// Don't freeze on NotReady â€” treat as dry so mobs keep falling
 		// when the block under them is mined and the chunk below is still
 		// streaming. Otherwise they hover 1 block above the hole.
 		const inWater = waterState === WaterSampleResult.InWater;
@@ -392,7 +393,7 @@ export abstract class AquaticMob extends BaseMob {
 				const cx = Math.floor(pos.x);
 				const cy = Math.floor(pos.y - this.halfHeight - 0.05);
 				const cz = Math.floor(pos.z);
-				// PERF: single voxel fetch — reuse result for both checks.
+				// PERF: single voxel fetch â€” reuse result for both checks.
 				const belowCollidable = isCollidableBlock(
 					getBlockByWorldCoords(cx, cy, cz),
 				);
@@ -426,7 +427,7 @@ export abstract class AquaticMob extends BaseMob {
 				this.fallStartY = startY;
 			}
 		} else {
-			// Water breaks the fall — reset tracking
+			// Water breaks the fall â€” reset tracking
 			this.fallStartY = Number.NaN;
 		}
 
@@ -513,7 +514,7 @@ export abstract class AquaticMob extends BaseMob {
 
 			const targetY = baseY + targetOffsetY;
 
-			const chunk = getChunk(
+			const chunk = getChunkFast(
 				targetX >> CHUNK_SHIFT,
 				targetY >> CHUNK_SHIFT,
 				targetZ >> CHUNK_SHIFT,

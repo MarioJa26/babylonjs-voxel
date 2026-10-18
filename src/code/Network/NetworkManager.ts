@@ -65,6 +65,7 @@ import { RemoteChunkProvider } from "./chunk/RemoteChunkProvider";
 import { MultiplayerHUD } from "./MultiplayerHUD";
 import { NetClient, type RemotePlayer } from "./NetClient";
 import type { BlockEditBatchView } from "./protocol/encoder";
+import { encodePitchByte, encodeYawByte } from "./protocol/encoder";
 import {
 	BlockActionType,
 	BlockEditRejectReason,
@@ -547,8 +548,8 @@ export class NetworkManager {
 		const yaw = playerCamera.cameraYaw * (180 / Math.PI);
 		const pitch = -playerCamera.cameraPitch * (180 / Math.PI);
 
-		const yawByte = NetClient.encodeYawByte(yaw);
-		const pitchByte = NetClient.encodePitchByte(pitch);
+		const yawByte = encodeYawByte(yaw);
+		const pitchByte = encodePitchByte(pitch);
 
 		if (
 			this.hasLastSentState &&

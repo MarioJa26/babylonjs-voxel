@@ -207,10 +207,6 @@ export class RemoteChunkProvider {
 		notePipelineWork({ inflatePaced: count });
 	}
 
-	/** Inflates that ran under reduced concurrency since connect. */
-	get budgetPacedInflateCount(): number {
-		return this.budgetPacedInflates;
-	}
 	/*
 	 * STALLFIX — heartbeat sweep, not a scheduled one-shot.
 	 *
@@ -1674,15 +1670,6 @@ export class RemoteChunkProvider {
 		}
 
 		return results;
-	}
-
-	/**
-	 * Reject the pending request for `key` (e.g. a corrupt or undecompressible
-	 * payload). Terminal like a timeout — the caller will retry on demand.
-	 */
-	private rejectPendingRequest(key: bigint, error: Error): void {
-		const entry = this.removePending(key);
-		if (entry) entry.reject(error);
 	}
 
 	/**

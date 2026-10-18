@@ -1,4 +1,4 @@
-import { frameProfiler } from "@/code/Lib/FrameProfiler";
+﻿import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { worldToBlockCoord, worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import {
@@ -6,12 +6,11 @@ import {
 	type SavedChunkEntityData,
 	WorldStorage,
 } from "../WorldStorage";
-import { addChunkDisposeHook, Chunk, getChunk, getChunkFast } from "./Chunk";
+import { addChunkDisposeHook, Chunk } from "./Chunk";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { packCoords } from "./DataStructures/ChunkCoords";
 import { ChunkEntityRegistry } from "./Loading/ChunkEntityRegistry";
 import { ChunkHydration } from "./Loading/ChunkHydration";
-import { ChunkLoadingDebug } from "./Loading/ChunkLoadingDebug";
 import { ChunkPersistenceCoordinator } from "./Loading/ChunkPersistenceCoordinator";
 import { ChunkProcessScheduler } from "./Loading/ChunkProcessScheduler";
 import {
@@ -33,6 +32,7 @@ import {
 	surveyChunkStates,
 	surveyWorkerPool,
 } from "./Loading/StreamingWatchdog";
+import { getChunkFast } from "./Runtime/ChunkRegistry";
 import {
 	checkNewInfiniteSource,
 	scheduleBlockBreakWaterUpdates,
@@ -72,12 +72,10 @@ export type DynamicBlockQueryOptions = {
 
 const loadQueue: QueuedChunkRequest[] = [];
 const unloadQueueSet: Set<Chunk> = new Set();
-// PERF: plain array, not a Map — sampled on every voxel query (collision,
+// PERF: plain array, not a Map â€” sampled on every voxel query (collision,
 // raycast, light), and providers are few (one per boat). Index iteration
 // skips Map iterator setup and symbol-key hashing in the hot path.
 const dynamicBlockProviders: DynamicBlockProviderEntry[] = [];
-
-const debug = new ChunkLoadingDebug();
 
 const _queuedIdSet: Set<bigint> = new Set();
 
@@ -112,14 +110,6 @@ const debugStats: ChunkLoadingDebugStats = {
 	totalHydrated: 0,
 	totalUnloaded: 0,
 	totalSaved: 0,
-	lastUpdateAroundMs: 0,
-	lastReconcileMs: 0,
-	lastShellMs: 0,
-	lastUndergroundMs: 0,
-	lastRefreshMs: 0,
-	lastSortMs: 0,
-	lastUnloadScanMs: 0,
-	totalUpdateAroundMs: 0,
 };
 
 const chunkEntityRegistry = new ChunkEntityRegistry<ChunkBoundEntity>({
@@ -277,7 +267,7 @@ processScheduler.onContinuationSlice = () => {
 
 /**
  * Observer that reports the exact internal state when streaming stops making
- * progress despite having work queued. See StreamingWatchdog — every form of
+ * progress despite having work queued. See StreamingWatchdog â€” every form of
  * this bug looks identical from the outside, so the only reliable way to tell
  * them apart is to capture the pipeline's own counters at the moment it stalls.
  */
@@ -347,7 +337,7 @@ function getEntityChunkId(entity: ChunkBoundEntity): bigint | null {
 	const chunkZ = worldToChunkCoord(worldPos.z);
 
 	// PERF: prefer the existing chunk's id over a fresh BigInt packCoords.
-	const chunk = getChunk(chunkX, chunkY, chunkZ);
+	const chunk = getChunkFast(chunkX, chunkY, chunkZ);
 	return chunk ? chunk.id : packCoords(chunkX, chunkY, chunkZ);
 }
 
@@ -388,13 +378,6 @@ function getProcessFrameBudgetMs(): number {
 }
 
 function refreshQueueDebugSnapshot(): void {
-	debug.refreshQueueSnapshot({
-		loadQueueLength: loadQueue.length,
-		unloadQueueLength: unloadQueueSet.size,
-		pendingChunkEntityReloadCount: chunkEntityRegistry.getPendingReloadCount(),
-		registeredChunkEntityCount: chunkEntityRegistry.getRegisteredEntityCount(),
-	});
-
 	debugStats.loadQueueLength = loadQueue.length;
 	debugStats.unloadQueueLength = unloadQueueSet.size;
 	debugStats.loadBatchLimit = getLoadBatchSize();
@@ -588,7 +571,7 @@ function pumpRemoteGenerationDeferred(): void {
 
 	setTimeout(() => {
 		remoteGenerationPumpScheduled = false;
-		// setTimeout macrotask — off-frame work against the same budget.
+		// setTimeout macrotask â€” off-frame work against the same budget.
 		frameProfiler.measureOffFrame("remotePump", () => {
 			ChunkWorkerPool.getInstance().pumpRemoteGeneration();
 		});
@@ -790,28 +773,9 @@ export async function updateChunksAround(
 		playerWorldZ,
 	);
 
-	syncStreamingTimings();
-
 	if (!processScheduler.processing) {
 		void processScheduler.processQueues();
 	}
-}
-
-function syncStreamingTimings(): void {
-	const t = streamingController.getLastTimings();
-	debugStats.lastUpdateAroundMs = t.updateAroundMs;
-	debugStats.lastReconcileMs = t.reconcileMs;
-	debugStats.lastShellMs = t.shellMs;
-	debugStats.lastUndergroundMs = t.undergroundMs;
-	debugStats.lastRefreshMs = t.refreshMs;
-	debugStats.lastSortMs = t.sortMs;
-	debugStats.lastUnloadScanMs = t.unloadMs;
-	debugStats.totalUpdateAroundMs += t.updateAroundMs;
-	refreshQueueDebugSnapshot();
-}
-
-export function getStreamingTimings() {
-	return streamingController.getLastTimings();
 }
 
 function updateSliceDebugStats(state: InFlightProcessState): void {
@@ -884,12 +848,12 @@ function applyLoadedChunkFromSavedData(
 	const targetLod = request.desiredLod;
 
 	// Multiplayer: a local save is at best a copy of an older server
-	// snapshot — another player may have edited this chunk since it was
+	// snapshot â€” another player may have edited this chunk since it was
 	// saved (even while it was unloaded). Never apply stored voxel data
 	// without the server's confirmation. This covers BOTH loading stages:
 	// near chunks (which would skip generation entirely once loaded) and
 	// far chunks (which would otherwise feed stale voxel data through the
-	// hydration stage — ApplyHydration applies the saved data without any
+	// hydration stage â€” ApplyHydration applies the saved data without any
 	// server request). Route to generation instead, which in remote mode
 	// sends the chunk's version to the server so it can confirm the local
 	// copy (ChunkUnchanged) or return the authoritative data.
@@ -988,7 +952,7 @@ export function getBlockAndStateByWorldCoordsInto(
 		return out;
 	}
 	// PERF: single resolveCoords for both fields (was two: one for the block
-	// id, one for the state), avoiding a redundant BigInt packCoords getChunk
+	// id, one for the state), avoiding a redundant BigInt packCoords getChunkFast
 	// on every chunk-boundary crossing.
 	worldMutations.getBlockAndStateAtWorldCoordsInto(worldX, worldY, worldZ, out);
 	return out;
@@ -1003,7 +967,7 @@ export type ResolvedBlock = {
 
 // PERF: single-resolve collidable-block lookup for the collision samplers.
 // Resolves the chunk once (cached) and reports whether it is unloaded so the
-// caller can treat it as solid terrain — replacing the old
+// caller can treat it as solid terrain â€” replacing the old
 // isChunkLoadedAtWorldCoords() + getBlockAndStateByWorldCoords() pair, which
 // resolved the chunk twice per voxel.
 //
@@ -1040,7 +1004,7 @@ export function resolveBlockAtWorldCoordsInto(
  * Returns a fresh object per call, so holding several results across
  * intervening lookups is safe. Hot paths (collision sweeps, raycast steps,
  * column scans) should call {@link resolveBlockAtWorldCoordsInto} with their
- * own scratch instead — this allocates one small object per voxel.
+ * own scratch instead â€” this allocates one small object per voxel.
  */
 export function resolveBlockAtWorldCoords(
 	worldX: number,
@@ -1058,7 +1022,7 @@ export function resolveBlockAtWorldCoords(
 }
 
 /**
- * Allocating convenience wrapper — see {@link resolveBlockAtWorldCoords}.
+ * Allocating convenience wrapper â€” see {@link resolveBlockAtWorldCoords}.
  * Per-voxel callers should use {@link getBlockAndStateByWorldCoordsInto}.
  */
 export function getBlockAndStateByWorldCoords(
@@ -1090,7 +1054,7 @@ export function getLightByWorldCoords(
 	const chunkX = worldToChunkCoord(worldX);
 	const chunkY = worldToChunkCoord(worldY);
 	const chunkZ = worldToChunkCoord(worldZ);
-	// PERF: cached chunk lookup avoids the BigInt packCoords getChunk on the
+	// PERF: cached chunk lookup avoids the BigInt packCoords getChunkFast on the
 	// common (same/recent chunk) case.
 	const chunk = getChunkFast(chunkX, chunkY, chunkZ);
 
@@ -1100,7 +1064,7 @@ export function getLightByWorldCoords(
 
 	// PERF: read straight from the chunk resolved above.  Delegating to
 	// worldMutations.getLightByWorldCoords threw this resolution away and
-	// repeated it — three more worldToChunkCoord/worldToBlockCoord pairs plus a
+	// repeated it â€” three more worldToChunkCoord/worldToBlockCoord pairs plus a
 	// second ring-cache probe, for every light sample.  Particles, HUD, mob
 	// lighting and arrow trails all sample light per entity per frame, so the
 	// duplicate work is not amortised by anything.

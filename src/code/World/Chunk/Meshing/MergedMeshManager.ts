@@ -819,23 +819,6 @@ export function setRequestFlush(cb: () => void): void {
 	_requestFlush = cb;
 }
 
-// ---------------------------------------------------------------------------
-// Public: group lookup
-// ---------------------------------------------------------------------------
-
-export function getGroupKeyForChunk(chunk: Chunk): number {
-	return makeGroupKey(
-		chunk.chunkX >> 2, // Fast Math.floor(x / 4)
-		chunk.chunkY >> 2,
-		chunk.chunkZ >> 2,
-		getLodRenderBucket(chunk.lodLevel ?? 0),
-	);
-}
-
-export function getGroup(groupKey: number): MergedMeshGroup | undefined {
-	return groups.get(groupKey);
-}
-
 export function getAllGroups(): MergedMeshGroup[] {
 	_allGroupsReuse.length = 0;
 	for (const group of groups.values()) {

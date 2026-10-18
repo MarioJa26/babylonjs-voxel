@@ -231,14 +231,6 @@ export function nextResidencyState(
 	}
 }
 
-/** Whether `transition` is legal from `from`. */
-export function canResidencyTransition(
-	from: ResidencyState,
-	transition: ResidencyTransition,
-): boolean {
-	return nextResidencyState(from, transition) !== null;
-}
-
 /** Legal mesh-currency transitions. @returns target state or `null`. */
 export function nextMeshState(
 	from: MeshState,
@@ -277,14 +269,6 @@ export function nextMeshState(
 		default:
 			return null;
 	}
-}
-
-/** Whether `transition` is legal from `from` in the mesh sub-machine. */
-export function canMeshTransition(
-	from: MeshState,
-	transition: MeshTransition,
-): boolean {
-	return nextMeshState(from, transition) !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -463,17 +447,6 @@ let strict = false;
 export function setChunkLifecycleHost(host: ChunkLifecycleHost | null): void {
 	activeHost = host;
 	activeQueries = host;
-}
-
-/**
- * Publish read-only queries WITHOUT the write host. Lets the invariant checker
- * (`surveyResidencyInvariants` / `findResidencyInvariantViolation`) run against
- * live chunk data before the load/unload writers are migrated.
- */
-export function setChunkLifecycleQueries(
-	queries: ChunkLifecycleQueries | null,
-): void {
-	activeQueries = queries;
 }
 
 /** The currently published read-only queries, or null if none are wired. */

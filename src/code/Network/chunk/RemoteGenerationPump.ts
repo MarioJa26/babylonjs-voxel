@@ -1,6 +1,7 @@
+﻿import { getChunkFast } from "@/code/World/Chunk/Runtime/ChunkRegistry";
 import { frameProfiler } from "../../Lib/FrameProfiler";
 import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
-import { Chunk, getChunk } from "../../World/Chunk/Chunk";
+import { Chunk } from "../../World/Chunk/Chunk";
 import {
 	packCoords,
 	unpackChunkCoords,
@@ -373,7 +374,7 @@ export class RemoteGenerationPump {
 		return (
 			chunk !== undefined &&
 			!chunk.isBoatChunk &&
-			getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ) === chunk
+			getChunkFast(chunk.chunkX, chunk.chunkY, chunk.chunkZ) === chunk
 		);
 	}
 

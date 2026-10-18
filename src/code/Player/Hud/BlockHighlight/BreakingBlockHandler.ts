@@ -30,8 +30,11 @@ import { getToolKind } from "../../Inventory/ProceduralTools";
 import type { Player } from "../../Player";
 import { Gamemodes } from "../../PlayerStats";
 import { updateCrackingState } from "./BlockBreakingVisuals";
-import type { BlockRaycastHit } from "./BlockRaycaster";
-import { pickTarget } from "./BlockRaycaster";
+import { type BlockRaycastHit, pickTarget } from "./BlockRaycaster";
+import {
+	type BoatBlockHitContext,
+	resolveBoatBlockContext,
+} from "./BoatBlockContext";
 
 const _scratchLightPos = vec3Zero();
 const _scratchParticlePos = vec3Zero();
@@ -96,24 +99,6 @@ export function setOnTntIgnite(
 ): void {
 	globalOnTntIgnite = callback;
 }
-
-export type BoatBlockHitContext = {
-	kind: "boatChunk";
-	boatChunk: {
-		visualRoot: Mesh;
-		center: Vec3;
-		setBlockLocal(
-			x: number,
-			y: number,
-			z: number,
-			blockId: number,
-			blockState?: number,
-		): void;
-	};
-	localX: number;
-	localY: number;
-	localZ: number;
-};
 
 type CrackBlockPosition = { x: number; y: number; z: number };
 
@@ -180,31 +165,10 @@ export function computeDeterministicDropVelocity(
 }
 
 function isBoatBlockContext(context: unknown): context is BoatBlockHitContext {
-	if (!context || typeof context !== "object") {
-		return false;
-	}
-
-	const value = context as Partial<BoatBlockHitContext>;
-
-	if (value.kind !== "boatChunk") {
-		return false;
-	}
-
-	if (
-		typeof value.localX !== "number" ||
-		typeof value.localY !== "number" ||
-		typeof value.localZ !== "number"
-	) {
-		return false;
-	}
-
-	const boatChunk = value.boatChunk;
-
 	return (
-		!!boatChunk &&
-		!!boatChunk.visualRoot &&
-		!!boatChunk.center &&
-		typeof boatChunk.setBlockLocal === "function"
+		resolveBoatBlockContext(context) !== null &&
+		typeof (context as Partial<BoatBlockHitContext>).boatChunk
+			?.setBlockLocal === "function"
 	);
 }
 

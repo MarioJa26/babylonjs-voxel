@@ -1,4 +1,4 @@
-import type { SceneContext, Vec3 } from "@babylonjs/lite";
+﻿import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
 import {
@@ -8,13 +8,14 @@ import {
 } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import { Gamemodes } from "@/code/Player/PlayerStats";
-import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
+import { Chunk } from "@/code/World/Chunk/Chunk";
 import {
 	getBlockByWorldCoords,
 	getLightByWorldCoords,
 	type ResolvedBlock,
 	resolveBlockAtWorldCoordsInto,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { getChunkFast } from "@/code/World/Chunk/Runtime/ChunkRegistry";
 import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import {
@@ -172,7 +173,7 @@ export abstract class HostileMob extends BaseMob {
 		frameProfiler.begin("hostileMobs");
 		for (const mob of HostileMob.ticks) {
 			const pos = mob.bodyPosition;
-			const chunk = getChunk(
+			const chunk = getChunkFast(
 				Math.floor(pos.x / Chunk.SIZE),
 				Math.floor(pos.y / Chunk.SIZE),
 				Math.floor(pos.z / Chunk.SIZE),
@@ -368,7 +369,7 @@ export abstract class HostileMob extends BaseMob {
 			}
 		}
 
-		// Vertical: undead wade — float toward the surface, never drown.
+		// Vertical: undead wade â€” float toward the surface, never drown.
 		if (inWater) {
 			velocity.y += WATER_GRAVITY * dt;
 			const targetCenterY =
@@ -403,7 +404,7 @@ export abstract class HostileMob extends BaseMob {
 		let moveZ = velocity.z * dt;
 
 		// Cliff guard: never walk into drops deeper than MAX_SAFE_LEDGE_DROP,
-		// chasing or wandering alike — the mob stops and turns instead.
+		// chasing or wandering alike â€” the mob stops and turns instead.
 		if (
 			!inWater &&
 			wasGrounded &&
@@ -582,11 +583,11 @@ export abstract class HostileMob extends BaseMob {
 		const cz = Math.floor(pz / Chunk.SIZE);
 		const cyA = Math.floor(feetY / Chunk.SIZE);
 		const cyB = Math.floor((feetY - LEDGE_WATER_SCAN_DEPTH) / Chunk.SIZE);
-		const chA = getChunk(cx, cyA, cz);
+		const chA = getChunkFast(cx, cyA, cz);
 		const revA = chA?.isLoaded && chA.hasVoxelData ? chA.blockRevision : -1;
 		let revB = revA;
 		if (cyB !== cyA) {
-			const chB = getChunk(cx, cyB, cz);
+			const chB = getChunkFast(cx, cyB, cz);
 			revB = chB?.isLoaded && chB.hasVoxelData ? chB.blockRevision : -1;
 		}
 

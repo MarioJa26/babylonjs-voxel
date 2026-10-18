@@ -135,33 +135,15 @@ class WorldStorageImpl {
 			if (chunk.isBoatChunk) continue;
 			if (!chunk.isModified && !chunk.isLightDirty) continue;
 
-			const blob = packChunkBlob(chunk);
-			if (blob === null) continue;
-
-			writes.push({
-				cx: chunk.chunkX,
-				cy: chunk.chunkY,
-				cz: chunk.chunkZ,
-				blob,
-			});
-			savedChunks.push(chunk);
+			this.queueChunkWrite(chunk, writes, savedChunks);
 		}
 
-		if (writes.length === 0) return;
-
-		try {
-			await store.writeChunks(writes);
-			await store.flush();
-
-			for (let i = 0, n = savedChunks.length; i < n; i++) {
-				const chunk = savedChunks[i];
-				chunk.isModified = false;
-				chunk.isLightDirty = false;
-			}
-		} catch (error) {
-			if (isCacheResetError(error)) return;
-			console.warn("[WorldStorage] chunk batch save failed:", error);
-		}
+		await this.writeSavedChunks(
+			store,
+			writes,
+			savedChunks,
+			"chunk batch save failed",
+		);
 	}
 
 	async saveAllModifiedChunks(): Promise<void> {
@@ -177,18 +159,40 @@ class WorldStorageImpl {
 			if (!chunk.needsPersistence()) continue;
 			if (chunk.isBoatChunk) continue;
 
-			const blob = packChunkBlob(chunk);
-			if (blob === null) continue;
-
-			writes.push({
-				cx: chunk.chunkX,
-				cy: chunk.chunkY,
-				cz: chunk.chunkZ,
-				blob,
-			});
-			savedChunks.push(chunk);
+			this.queueChunkWrite(chunk, writes, savedChunks);
 		}
 
+		await this.writeSavedChunks(
+			store,
+			writes,
+			savedChunks,
+			"save all modified chunks failed",
+		);
+	}
+
+	private queueChunkWrite(
+		chunk: Chunk,
+		writes: ChunkWrite[],
+		savedChunks: Chunk[],
+	): void {
+		const blob = packChunkBlob(chunk);
+		if (blob === null) return;
+
+		writes.push({
+			cx: chunk.chunkX,
+			cy: chunk.chunkY,
+			cz: chunk.chunkZ,
+			blob,
+		});
+		savedChunks.push(chunk);
+	}
+
+	private async writeSavedChunks(
+		store: LevelDbChunkStore,
+		writes: ChunkWrite[],
+		savedChunks: Chunk[],
+		warnDetail: string,
+	): Promise<void> {
 		if (writes.length === 0) return;
 
 		try {
@@ -202,7 +206,7 @@ class WorldStorageImpl {
 			}
 		} catch (error) {
 			if (isCacheResetError(error)) return;
-			console.warn("[WorldStorage] save all modified chunks failed:", error);
+			console.warn(`[WorldStorage] ${warnDetail}:`, error);
 		}
 	}
 

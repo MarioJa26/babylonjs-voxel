@@ -22,6 +22,7 @@ import type { Crosshair } from "./Crosshair/Crosshair";
 import {
 	CROSSHAIR_MAX_SIZE,
 	CROSSHAIR_MIN_SIZE,
+	createCrosshairCollapsible,
 	createCrosshairGrid,
 	createCrosshairPreview,
 	createCrosshairSwatches,
@@ -509,32 +510,7 @@ export class PauseMenu {
 
 		const crosshair = (): Crosshair => this.player.playerHud.crossHair;
 
-		const section = document.createElement("div");
-		section.className = "crosshair-collapsible";
-
-		const header = document.createElement("button");
-		header.type = "button";
-		header.className = "crosshair-collapsible-header";
-		header.setAttribute("aria-expanded", "false");
-
-		const headerText = document.createElement("span");
-		headerText.textContent = "Crosshair";
-
-		const arrow = document.createElement("span");
-		arrow.textContent = "▸";
-		arrow.setAttribute("aria-hidden", "true");
-		header.append(headerText, arrow);
-
-		const body = document.createElement("div");
-		body.className = "crosshair-collapsible-body";
-		body.style.display = "none";
-
-		header.addEventListener("click", () => {
-			const open = body.style.display === "none";
-			body.style.display = open ? "flex" : "none";
-			arrow.textContent = open ? "▾" : "▸";
-			header.setAttribute("aria-expanded", String(open));
-		});
+		const { section, body } = createCrosshairCollapsible();
 
 		const preview = createCrosshairPreview({ id, size, color, visible });
 		const refreshPreview = (): void => {
@@ -594,7 +570,6 @@ export class PauseMenu {
 		});
 		body.appendChild(grid.element);
 
-		section.append(header, body);
 		return section;
 	}
 

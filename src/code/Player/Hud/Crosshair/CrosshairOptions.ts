@@ -353,6 +353,47 @@ export interface CrosshairGrid {
 }
 
 /**
+ * Build the collapsible section shell (header + arrow + hidden body) used
+ * by the pause menu and main menu crosshair option panels.
+ */
+export function createCrosshairCollapsible(): {
+	section: HTMLDivElement;
+	body: HTMLDivElement;
+} {
+	const section = document.createElement("div");
+	section.className = "crosshair-collapsible";
+
+	const header = document.createElement("button");
+	header.type = "button";
+	header.className = "crosshair-collapsible-header";
+	header.setAttribute("aria-expanded", "false");
+
+	const headerText = document.createElement("span");
+	headerText.textContent = "Crosshair";
+
+	const arrow = document.createElement("span");
+	arrow.textContent = "▸";
+	arrow.setAttribute("aria-hidden", "true");
+	header.append(headerText, arrow);
+
+	const body = document.createElement("div");
+	body.className = "crosshair-collapsible-body";
+	body.style.display = "none";
+
+	header.addEventListener("click", () => {
+		const open = body.style.display === "none";
+		body.style.display = open ? "flex" : "none";
+		arrow.textContent = open ? "▾" : "▸";
+		header.setAttribute("aria-expanded", String(open));
+	});
+
+	section.appendChild(header);
+	section.appendChild(body);
+
+	return { section, body };
+}
+
+/**
  * Build the scrollable 200-thumbnail picker grid. Images lazy-load so
  * opening the section stays cheap.
  */

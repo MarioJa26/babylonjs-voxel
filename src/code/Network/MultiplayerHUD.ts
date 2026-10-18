@@ -92,10 +92,6 @@ export class MultiplayerHUD {
 		}
 	}
 
-	setPlayerCount(count: number): void {
-		this.playerCountEl.textContent = `👤 ${count}`;
-	}
-
 	setPlayerNames(names: string[]): void {
 		// names = remote players only; total = self + remotes
 		const total = names.length + 1;
@@ -109,20 +105,6 @@ export class MultiplayerHUD {
 		} else {
 			this.playerCountEl.textContent = `👤 ${total}: ${names.join(", ")}`;
 		}
-	}
-
-	setPlayerList(players: { name: string; sessionId: string }[]): void {
-		this.playerListEl.innerHTML = "";
-		for (const p of players) {
-			const row = document.createElement("div");
-			row.className = "mp-player-row";
-			row.textContent = p.name;
-			this.playerListEl.appendChild(row);
-		}
-	}
-
-	showPlayerList(show: boolean): void {
-		this.playerListEl.classList.toggle("hidden", !show);
 	}
 
 	addChatMessage(name: string, message: string): void {

@@ -72,6 +72,7 @@ import { Map1 } from "@/code/Maps/Map1";
 import { Gamemodes } from "@/code/Player/PlayerStats";
 import { isHostileTypeId, MobTypeId } from "../Entities/MobConfig";
 import type { NetClient } from "./NetClient";
+import { ClientHandlerBinding } from "./PendingOpenBroker";
 import {
 	BinaryDecoder,
 	decodeMobDamageInto,
@@ -165,8 +166,7 @@ export class RemoteMobManager {
 	/** mobId → performance.now() of the last MobDamage hit (kill linkage). */
 	private readonly recentDamage = new Map<number, number>();
 
-	private readonly handler: (data: Uint8Array) => void;
-	private readonly onDisconnected: () => void;
+	private readonly binding: ClientHandlerBinding;
 
 	private readonly decoder = new BinaryDecoder(new Uint8Array(0));
 	private readonly mobSpawnScratch = {
@@ -191,20 +191,15 @@ export class RemoteMobManager {
 		 * These closures are allocated once per manager, rather than once per
 		 * packet or frame.
 		 */
-		this.handler = (data) => {
-			this.handleBinaryMessage(data);
-		};
-
-		this.onDisconnected = () => {
-			this.clearAll();
-		};
-
-		client.addBinaryHandler(this.handler);
-		client.addDisconnectListener(this.onDisconnected);
-	}
-
-	get size(): number {
-		return this.mobs.size;
+		this.binding = new ClientHandlerBinding(
+			client,
+			(data) => {
+				this.handleBinaryMessage(data);
+			},
+			() => {
+				this.clearAll();
+			},
+		);
 	}
 
 	/**
@@ -654,25 +649,6 @@ export class RemoteMobManager {
 		}
 	}
 
-	private updateMob(
-		id: number,
-		x: number,
-		y: number,
-		z: number,
-		yaw: number,
-	): void {
-		const mob = this.mobs.get(id);
-
-		if (mob === undefined) {
-			return;
-		}
-
-		mob.targetX = x;
-		mob.targetY = y;
-		mob.targetZ = z;
-		mob.targetYawRad = yaw * YAW_BYTE_TO_RAD;
-	}
-
 	/**
 	 * Move a remote zombie's lane between the normal and attack-pose pools.
 	 * Same pattern as the singleplayer Zombie: light registration follows
@@ -915,8 +891,7 @@ export class RemoteMobManager {
 	}
 
 	dispose(): void {
-		this.client.removeBinaryHandler(this.handler);
-		this.client.removeDisconnectListener(this.onDisconnected);
+		this.binding.dispose(this.client);
 		this.clearAll();
 	}
 }

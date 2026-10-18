@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Advanced Cave Culling: graph-based BFS occlusion culler.
  *
  * BFS state is stored directly on Chunk objects. Fixed-capacity ring buffers
@@ -15,7 +15,7 @@ import { isOceanFloorBandChunk } from "@/code/Generation/TerrainHeightMap";
 import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { Map1 } from "@/code/Maps/Map1";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
-import { Chunk, getChunk } from "../Chunk/Chunk";
+import { Chunk } from "../Chunk/Chunk";
 import { facePairIndex } from "../Chunk/Meshing/ChunkFaceMasks";
 import {
 	consumeGroupsMutated,
@@ -23,6 +23,7 @@ import {
 	type MergedMeshGroup,
 } from "../Chunk/Meshing/MergedMeshManager";
 import { pendingConnectivity } from "../Chunk/Runtime/ChunkConnectivityQueue";
+import { getChunkFast } from "../Chunk/Runtime/ChunkRegistry";
 import { setMeshCulled } from "../MeshVisibility";
 import {
 	FrustumHint,
@@ -343,7 +344,7 @@ function nextBfsStepCost(
 function isLiveChunk(chunk: Chunk): boolean {
 	return (
 		chunk.isLoaded &&
-		getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ) === chunk
+		getChunkFast(chunk.chunkX, chunk.chunkY, chunk.chunkZ) === chunk
 	);
 }
 
@@ -1020,7 +1021,7 @@ export class OcclusionCuller {
 			return true;
 		};
 
-		const origin = getChunk(camCX, camCY, camCZ) ?? null;
+		const origin = getChunkFast(camCX, camCY, camCZ) ?? null;
 
 		if (origin !== null && isLiveChunk(origin)) {
 			if (origin.connectivityDirty) {

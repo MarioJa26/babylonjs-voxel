@@ -57,12 +57,8 @@ import {
 const _textEncoder = new TextEncoder();
 const _textDecoder = new TextDecoder();
 
-const PLAYER_STATE_BATCH_ENTRY_BYTES = 16; // index:u8 + x/y/z:f32 + yaw/pitch/anim:u8
-const PLAYER_STATE_BATCH_HEADER_BYTES = 4; // type:u8 + count:u8 + sequence:u16
 const BLOCK_EDIT_ENTRY_BYTES = 16; // x/y/z:i32 + blockId:u16 + blockState:u8 + action:u8
-const CHUNK_REQUEST_ENTRY_BYTES = 17; // cx/cy/cz:i32 + lod:u8 + cachedVersion:u32
 const EXPLOSION_BROADCAST_BYTES = 1 + 4 + 4 + 4 * 4;
-const MOB_UPDATE_ENTRY_BYTES = 15; // mobId:u16 + x/y/z:f32 + yaw:u8
 const CHUNK_VOLUME = 32 * 32 * 32; // Chunk.SIZE^3 — light arrays are this size
 
 export class BinaryEncoder {
@@ -148,18 +144,6 @@ export class BinaryEncoder {
 	/**
 	 * C→S: no sessionId — the server uses the connection identity.
 	 * yaw: 0-255 maps the full 360° circle; pitch: 0-255 maps -90°..+90°.
-	 */
-	writePlayerState(data: PlayerStateData): void {
-		this.writeUint8(MessageType.PlayerState);
-		this.writeFloat32(data.x);
-		this.writeFloat32(data.y);
-		this.writeFloat32(data.z);
-		this.writeUint8(data.yaw);
-		this.writeUint8(data.pitch);
-		this.writeUint8(data.animation);
-	}
-
-	/**
 	 * C→S: write player state from raw values without allocating an
 	 * intermediate PlayerStateData object (20 Hz hot path).
 	 */
@@ -439,41 +423,11 @@ export class BinaryDecoder {
 		target.cachedVersion = this.readUint32();
 		return target;
 	}
-
-	/**
-	 * Decode chunk request batch into a reusable pre-allocated array.
-	 * Avoids per-entry object allocation on the server hot path.
-	 */
-	readChunkRequestBatchInto(
-		target: Array<{
-			cx: number;
-			cy: number;
-			cz: number;
-			lod: number;
-			cachedVersion: number;
-		}>,
-	): number {
-		const count = this.readUint16();
-		for (let i = 0; i < count; i++) {
-			let entry = target[i];
-			if (!entry) {
-				entry = { cx: 0, cy: 0, cz: 0, lod: 0, cachedVersion: 0 };
-				target[i] = entry;
-			}
-			entry.cx = this.readInt32();
-			entry.cy = this.readInt32();
-			entry.cz = this.readInt32();
-			entry.lod = this.readUint8();
-			entry.cachedVersion = this.readUint32();
-		}
-		target.length = count;
-		return count;
-	}
 }
 
 /**
  * Batch encoding for server → client broadcasts.
- * Per player: [index:u8][x:f32][y:f32][z:f32][yaw:u8][pitch:u8][anim:u8] — 13
+ * Per player: [index:u8][x:f32][y:f32][z:f32][yaw:u8][pitch:u8][anim:u8] — 16
  * bytes instead of a sessionId string (~16-24 bytes) plus 12+3.
  *
  * writePlayerStateBatch writes into a caller-owned (reused) encoder so the
@@ -502,33 +456,6 @@ export function writePlayerStateBatch(
 	}
 }
 
-export function encodePlayerStateBatch(
-	states: PlayerStateBatchEntry[],
-	sequence: number,
-): Uint8Array {
-	const count = Math.min(states.length, 255);
-	const enc = new BinaryEncoder(
-		PLAYER_STATE_BATCH_HEADER_BYTES + count * PLAYER_STATE_BATCH_ENTRY_BYTES,
-	);
-	writePlayerStateBatch(enc, states, sequence);
-	return enc.getBytes();
-}
-
-/**
- * Decode a player state batch into a reusable pre-allocated array.
- * Avoids per-tick object + array allocation on the hot path.
- * Returns the number of entries written.
- */
-export function decodePlayerStateBatchInto(
-	buffer: Uint8Array,
-	target: PlayerStateBatchEntry[],
-): number {
-	return decodePlayerStateBatchEntriesInto(
-		new BinaryDecoder(buffer, 1),
-		target,
-	);
-}
-
 /**
  * True when `incoming` is strictly newer than `previous`, treating both as
  * wrapping counters.
@@ -547,9 +474,9 @@ export function isSequenceNewer(incoming: number, previous: number): boolean {
 }
 
 /**
- * Decoder-based variant of decodePlayerStateBatchInto — reads from an
- * already-positioned decoder (type byte already consumed) instead of
- * deriving a fresh one from the raw buffer.
+ * Decoder-based batch-entry reader — reads from an already-positioned decoder
+ * (type byte already consumed) instead of deriving a fresh one from the raw
+ * buffer.
  *
  * @param out Receives the batch sequence when provided.
  */
@@ -604,26 +531,6 @@ export function encodeBlockEditBatch(edits: BlockEditData[]): Uint8Array {
 	}
 
 	return enc.getBytes();
-}
-
-export function decodeBlockEditBatch(buffer: Uint8Array): BlockEditData[] {
-	const dec = new BinaryDecoder(buffer, 1);
-	const count = dec.readUint16();
-	const edits = new Array<BlockEditData>(count);
-
-	for (let i = 0; i < count; i++) {
-		edits[i] = {
-			sessionId: "", // filled in by caller
-			x: dec.readInt32(),
-			y: dec.readInt32(),
-			z: dec.readInt32(),
-			blockId: dec.readUint16(),
-			blockState: dec.readUint8(),
-			action: dec.readUint8(),
-		};
-	}
-
-	return edits;
 }
 
 /**
@@ -745,10 +652,6 @@ export function encodePlayerLeave(data: PlayerLeaveData): Uint8Array {
 	return enc.getBytes();
 }
 
-export function decodePlayerLeave(buffer: Uint8Array): number {
-	return buffer[1];
-}
-
 export function encodeHeldItemSelect(data: HeldItemSelectionData): Uint8Array {
 	const enc = new BinaryEncoder(4);
 	enc.writeUint8(MessageType.HeldItemSelect);
@@ -808,16 +711,6 @@ export function encodePlayerSkin(data: PlayerSkinData): Uint8Array {
 	enc.writeUint16(data.png.byteLength);
 	enc.writeBytes(data.png);
 	return enc.getBytes();
-}
-
-export function decodePlayerSkinInto(
-	dec: BinaryDecoder,
-	target: PlayerSkinData,
-): typeof target {
-	target.index = dec.readUint8();
-	const len = dec.readUint16();
-	target.png = dec.readBytes(len);
-	return target;
 }
 
 /**
@@ -894,13 +787,6 @@ export function encodeChatMessage(data: ChatMessageData): Uint8Array {
 	return enc.getBytes();
 }
 
-export function decodeChatMessageInto(
-	dec: BinaryDecoder,
-	target: ChatMessageData,
-): typeof target {
-	return dec.readChatMessageInto(target);
-}
-
 /**
  * World time sync — server → client.
  * timeOfDay: 0..1 fraction of day cycle (0=midnight, 0.5=noon).
@@ -911,11 +797,6 @@ export function encodeWorldTime(timeOfDay: number): Uint8Array {
 	enc.writeUint8(MessageType.WorldTime);
 	enc.writeFloat32(timeOfDay);
 	return enc.getBytes();
-}
-
-export function decodeWorldTime(buffer: Uint8Array): number {
-	const dec = new BinaryDecoder(buffer, 1);
-	return dec.readFloat32();
 }
 
 /**
@@ -1158,33 +1039,6 @@ export function decodeChunkUnchangedBatchInto(
 // Format: [type:1][count:u16][cx:i32][cy:i32][cz:i32][lod:u8][cachedVersion:u32] × count
 // ---------------------------------------------------------------------------
 
-export function encodeChunkRequestBatch(
-	requests: Array<{
-		cx: number;
-		cy: number;
-		cz: number;
-		lod: number;
-		cachedVersion: number;
-	}>,
-): Uint8Array {
-	const count = Math.min(requests.length, 65535);
-	const enc = new BinaryEncoder(3 + count * CHUNK_REQUEST_ENTRY_BYTES);
-
-	enc.writeUint8(MessageType.ChunkRequestBatch);
-	enc.writeUint16(count);
-
-	for (let i = 0; i < count; i++) {
-		const r = requests[i];
-		enc.writeInt32(r.cx);
-		enc.writeInt32(r.cy);
-		enc.writeInt32(r.cz);
-		enc.writeUint8(r.lod);
-		enc.writeUint32(r.cachedVersion);
-	}
-
-	return enc.getBytes();
-}
-
 // ---------------------------------------------------------------------------
 // Chunk data batch — server → client, multiple chunks in one message
 // Format: [type:1][count:u16][(chunk entry)] × count
@@ -1358,11 +1212,6 @@ export function encodeChunkDataDeflatedPayload(
 	return enc.getBytes();
 }
 
-export function decodeChunkDataDeflated(buffer: Uint8Array): DeflatedChunk {
-	const dec = new BinaryDecoder(buffer, 1);
-	return decodeChunkDataDeflatedFrom(dec);
-}
-
 export function decodeChunkDataDeflatedFrom(dec: BinaryDecoder): DeflatedChunk {
 	const chunkX = dec.readInt32();
 	const chunkY = dec.readInt32();
@@ -1378,20 +1227,6 @@ export function decodeChunkDataDeflatedFrom(dec: BinaryDecoder): DeflatedChunk {
 		origLen,
 		deflated: dec.readBytes(len),
 	};
-}
-
-export function decodeChunkDataDeflatedInto(
-	dec: BinaryDecoder,
-	target: DeflatedChunk,
-): DeflatedChunk {
-	target.chunkX = dec.readInt32();
-	target.chunkY = dec.readInt32();
-	target.chunkZ = dec.readInt32();
-	target.version = dec.readUint32();
-	const len = dec.readUint32();
-	target.origLen = dec.readUint32();
-	target.deflated = dec.readBytes(len);
-	return target;
 }
 
 function decodeDeflatedChunkEntry(dec: BinaryDecoder): DeflatedChunk {
@@ -1412,34 +1247,7 @@ function decodeDeflatedChunkEntry(dec: BinaryDecoder): DeflatedChunk {
 	};
 }
 
-export function decodeDeflatedChunkEntryFrom(
-	dec: BinaryDecoder,
-): DeflatedChunk {
-	return decodeDeflatedChunkEntry(dec);
-}
-
-export function decodeDeflatedChunkEntryInto(
-	dec: BinaryDecoder,
-	target: DeflatedChunk,
-): DeflatedChunk {
-	target.chunkX = dec.readInt32();
-	target.chunkY = dec.readInt32();
-	target.chunkZ = dec.readInt32();
-	target.version = dec.readUint32();
-	const len = dec.readUint32();
-	target.origLen = dec.readUint32();
-	target.deflated = dec.readBytes(len);
-	return target;
-}
-
 /** Decode a batch of deflated chunks. */
-export function decodeChunkDataDeflatedBatch(
-	buffer: Uint8Array,
-): DeflatedChunk[] {
-	const dec = new BinaryDecoder(buffer, 1);
-	return decodeChunkDataDeflatedBatchFrom(dec);
-}
-
 export function decodeChunkDataDeflatedBatchFrom(
 	dec: BinaryDecoder,
 ): DeflatedChunk[] {
@@ -1451,34 +1259,6 @@ export function decodeChunkDataDeflatedBatchFrom(
 	}
 
 	return chunks;
-}
-
-/**
- * Decode a deflated chunk batch into a reusable pre-allocated array.
- * Reuses entry objects to avoid per-chunk allocation on the hot path.
- */
-export function decodeChunkDataDeflatedBatchInto(
-	dec: BinaryDecoder,
-	target: DeflatedChunk[],
-): number {
-	const count = dec.readUint16();
-	for (let i = 0; i < count; i++) {
-		let entry = target[i];
-		if (!entry) {
-			entry = {
-				chunkX: 0,
-				chunkY: 0,
-				chunkZ: 0,
-				version: 0,
-				origLen: 0,
-				deflated: new Uint8Array(0),
-			};
-			target[i] = entry;
-		}
-		decodeDeflatedChunkEntryInto(dec, entry);
-	}
-	target.length = count;
-	return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -1527,33 +1307,6 @@ export function encodeSpawnPosition(
 	return enc.getBytes();
 }
 
-export function decodeSpawnPosition(buffer: Uint8Array): {
-	x: number;
-	y: number;
-	z: number;
-	yaw: number;
-	pitch: number;
-} {
-	const dec = new BinaryDecoder(buffer, 1);
-	return decodeSpawnPositionFrom(dec);
-}
-
-export function decodeSpawnPositionFrom(dec: BinaryDecoder): {
-	x: number;
-	y: number;
-	z: number;
-	yaw: number;
-	pitch: number;
-} {
-	return {
-		x: dec.readFloat32(),
-		y: dec.readFloat32(),
-		z: dec.readFloat32(),
-		yaw: dec.readFloat32(),
-		pitch: dec.readFloat32(),
-	};
-}
-
 export function decodeSpawnPositionInto(
 	dec: BinaryDecoder,
 	target: { x: number; y: number; z: number; yaw: number; pitch: number },
@@ -1593,36 +1346,6 @@ export function encodeMobSpawn(
 	enc.writeUint8(yaw);
 
 	return enc.getBytes();
-}
-
-export function decodeMobSpawn(buffer: Uint8Array): {
-	mobId: number;
-	mobType: number;
-	x: number;
-	y: number;
-	z: number;
-	yaw: number;
-} {
-	const dec = new BinaryDecoder(buffer, 1);
-	return decodeMobSpawnFrom(dec);
-}
-
-export function decodeMobSpawnFrom(dec: BinaryDecoder): {
-	mobId: number;
-	mobType: number;
-	x: number;
-	y: number;
-	z: number;
-	yaw: number;
-} {
-	return {
-		mobId: dec.readUint16(),
-		mobType: dec.readUint8(),
-		x: dec.readFloat32(),
-		y: dec.readFloat32(),
-		z: dec.readFloat32(),
-		yaw: dec.readUint8(),
-	};
 }
 
 export function decodeMobSpawnInto(

@@ -140,25 +140,14 @@ export class PlayerHud {
 	#heldItemNameDivCachedWidth = 0;
 	// PERF: Cache raw stat inputs so per-frame percentage math and DOM
 	// writes are skipped entirely when nothing changed.
-	#prevHealthValue = Number.NaN;
-	#prevMaxHealthValue = Number.NaN;
-	#prevHealthPct = -1;
-
-	#prevHungerValue = Number.NaN;
-	#prevMaxHungerValue = Number.NaN;
-	#prevHungerPct = -1;
-
-	#prevStaminaValue = Number.NaN;
-	#prevMaxStaminaValue = Number.NaN;
-	#prevStaminaPct = -1;
-
-	#prevManaValue = Number.NaN;
-	#prevMaxManaValue = Number.NaN;
-	#prevManaPct = -1;
-
-	#prevXpValue = Number.NaN;
-	#prevXpNeed = Number.NaN;
-	#prevXpPct = -1;
+	// Order matches the [health, hunger, stamina, mana] bars.
+	#statBarStates = [
+		{ value: Number.NaN, max: Number.NaN, pct: -1 },
+		{ value: Number.NaN, max: Number.NaN, pct: -1 },
+		{ value: Number.NaN, max: Number.NaN, pct: -1 },
+		{ value: Number.NaN, max: Number.NaN, pct: -1 },
+	];
+	#xpState = { value: Number.NaN, need: Number.NaN, pct: -1 };
 	#prevXpLevel = -1;
 
 	#overlayDiv: HTMLDivElement;
@@ -181,10 +170,7 @@ export class PlayerHud {
 	private static infoRows: {
 		[key: string]: {
 			container: HTMLDivElement;
-			valueNode: Text;
 			valueSpan?: HTMLSpanElement;
-			keySpan?: HTMLSpanElement;
-			group: string;
 		};
 	} = {};
 	private static groupContainers: {
@@ -348,18 +334,36 @@ export class PlayerHud {
 		return overlayDiv;
 	}
 
+	/** Build the reversed main-inventory rows (all rows except hotbar row 0). */
+	private appendInventoryRows(target: HTMLElement | DocumentFragment): void {
+		const inventory = PlayerHud.#inventory.inventory;
+
+		for (let row = inventory.length - 1; row >= 1; row--) {
+			const rowDiv = document.createElement("div");
+			rowDiv.classList.add("inventory-row");
+
+			const invRow = inventory[row];
+			for (let col = 0, len = invRow.length; col < len; col++) {
+				rowDiv.appendChild(invRow[col].divItemSlot);
+			}
+
+			target.appendChild(rowDiv);
+		}
+	}
+
 	private createInventoryUI(): HTMLDivElement {
 		const inventoryContainer = document.createElement("div");
 		inventoryContainer.classList.add("inventory-container");
 		this.#mainInventoryContainer = inventoryContainer;
 
 		const inventory = PlayerHud.#inventory.inventory;
-		const fragment = document.createDocumentFragment();
 
+		this.appendInventoryRows(inventoryContainer);
+
+		// Dblclick pushes items into the crafting search slots. Attached once
+		// here; the same slot DOM elements are reused across panel rebuilds,
+		// so the listener survives moving them into the wood-crate grid.
 		for (let row = inventory.length - 1; row >= 1; row--) {
-			const rowContainer = document.createElement("div");
-			rowContainer.classList.add("inventory-row");
-
 			const invRow = inventory[row];
 
 			for (let col = 0, len = invRow.length; col < len; col++) {
@@ -372,14 +376,8 @@ export class PlayerHud {
 						this.#craftMenu.addItemToFirstFreeSearchSlot(item.itemId);
 					}
 				});
-
-				rowContainer.appendChild(slot);
 			}
-
-			fragment.appendChild(rowContainer);
 		}
-
-		inventoryContainer.appendChild(fragment);
 
 		// Minecraft-style creative palette below the storage rows: scrollable,
 		// lists every registered item, copies on take / destroys on drop.
@@ -1380,16 +1378,7 @@ export class PlayerHud {
 		playerGrid.classList.add("woodcrate-grid");
 		playerGrid.id = "woodcrate-player-grid";
 		this.#woodCratePlayerGrid = playerGrid;
-		const inventory = PlayerHud.#inventory.inventory;
-		for (let row = inventory.length - 1; row >= 1; row--) {
-			const rowDiv = document.createElement("div");
-			rowDiv.classList.add("inventory-row");
-			for (let col = 0; col < inventory[row].length; col++) {
-				const slot = inventory[row][col];
-				rowDiv.appendChild(slot.divItemSlot);
-			}
-			playerGrid.appendChild(rowDiv);
-		}
+		this.appendInventoryRows(playerGrid);
 		playerPanel.appendChild(playerGrid);
 		content.appendChild(playerPanel);
 
@@ -1455,21 +1444,8 @@ export class PlayerHud {
 		const playerGrid = this.#woodCratePlayerGrid;
 		if (!playerGrid) return;
 
-		const inventory = PlayerHud.#inventory.inventory;
 		const playerFragment = document.createDocumentFragment();
-
-		for (let row = inventory.length - 1; row >= 1; row--) {
-			const rowDiv = document.createElement("div");
-			rowDiv.classList.add("inventory-row");
-
-			const invRow = inventory[row];
-			for (let col = 0, len = invRow.length; col < len; col++) {
-				rowDiv.appendChild(invRow[col].divItemSlot);
-			}
-
-			playerFragment.appendChild(rowDiv);
-		}
-
+		this.appendInventoryRows(playerFragment);
 		playerGrid.replaceChildren(playerFragment);
 	}
 
@@ -1778,106 +1754,86 @@ export class PlayerHud {
 		document.body.appendChild(div);
 		PlayerHud.debugPanelDiv = div;
 
-		// Add time of day slider
-		const timeLabel = document.createElement("div");
-		timeLabel.innerText = "Time of Day";
-		timeLabel.className = "debug-slider-label";
-		div.appendChild(timeLabel);
-		const timeSlider = document.createElement("input");
-		timeSlider.id = "timeSlider";
-		timeSlider.type = "range";
-		timeSlider.min = "0";
-		timeSlider.max = "1000";
-		timeSlider.style.width = "100%";
+		const sliders: Array<{
+			label: string;
+			id?: string;
+			min: number;
+			max: number;
+			value?: string;
+			divider?: number;
+			onValue: (value: number) => void;
+		}> = [
+			{
+				label: "Time of Day",
+				id: "timeSlider",
+				min: 0,
+				max: 1000,
+				divider: 1000,
+				onValue: (value) => Map1.setTime(value),
+			},
+			{
+				label: "Time Scale",
+				min: 0,
+				max: 300, // 0.0 to 20.0
+				value: "10", // Default to 1.0 (10 / 10)
+				divider: 10,
+				onValue: (value) => (Map1.timeScale = value),
+			},
+			{
+				label: "Fog Start",
+				min: 0,
+				max: 3000,
+				value: MapFog.getFogStart(false).toString(),
+				onValue: (value) => MapFog.setFogStartOverride(value),
+			},
+			{
+				label: "Fog End",
+				min: 0,
+				max: 3000,
+				value: MapFog.getFogEnd(false).toString(),
+				onValue: (value) => MapFog.setFogEndOverride(value),
+			},
+			{
+				label: "Wetness",
+				min: 0,
+				max: 100,
+				value: ((WorldEnvironment.instance?.wetness || 0) * 100).toString(),
+				divider: 100,
+				onValue: (value) => {
+					if (WorldEnvironment.instance) {
+						WorldEnvironment.instance.wetness = value;
+					}
+				},
+			},
+		];
 
-		timeSlider.oninput = () => {
-			const timeValue = parseFloat(timeSlider.value) / 1000;
-			Map1.setTime(timeValue);
-		};
-		div.appendChild(timeSlider);
+		for (let i = 0; i < sliders.length; i++) {
+			const spec = sliders[i];
 
-		// Add time scale slider
-		const timeScaleLabel = document.createElement("div");
-		timeScaleLabel.innerText = "Time Scale";
-		timeScaleLabel.className = "debug-slider-label";
-		timeScaleLabel.style.marginTop = "10px";
-		div.appendChild(timeScaleLabel);
-		const timeScaleSlider = document.createElement("input");
-		timeScaleSlider.type = "range";
-		timeScaleSlider.min = "0";
-		timeScaleSlider.max = "300"; // 0.0 to 20.0
-		timeScaleSlider.value = "10"; // Default to 1.0 (10 / 10)
-		timeScaleSlider.style.width = "100%";
-		timeScaleSlider.oninput = () => {
-			Map1.timeScale = parseFloat(timeScaleSlider.value) / 10;
-		};
-		div.appendChild(timeScaleSlider);
+			const label = document.createElement("div");
+			label.innerText = spec.label;
+			label.className = "debug-slider-label";
+			if (i > 0) label.style.marginTop = "10px";
+			div.appendChild(label);
 
-		// Add Fog Start slider
-		const fogStartLabel = document.createElement("div");
-		fogStartLabel.innerText = "Fog Start";
-		fogStartLabel.className = "debug-slider-label";
-		fogStartLabel.style.marginTop = "10px";
-		div.appendChild(fogStartLabel);
-		const fogStartSlider = document.createElement("input");
-		fogStartSlider.type = "range";
-		fogStartSlider.min = "0";
-		fogStartSlider.max = "3000";
-		fogStartSlider.value = MapFog.getFogStart(false).toString();
-		fogStartSlider.style.width = "100%";
-		fogStartSlider.oninput = () => {
-			MapFog.setFogStartOverride(parseFloat(fogStartSlider.value));
-		};
-		div.appendChild(fogStartSlider);
-
-		// Add Fog End slider
-		const fogEndLabel = document.createElement("div");
-		fogEndLabel.innerText = "Fog End";
-		fogEndLabel.className = "debug-slider-label";
-		fogEndLabel.style.marginTop = "10px";
-		div.appendChild(fogEndLabel);
-		const fogEndSlider = document.createElement("input");
-		fogEndSlider.type = "range";
-		fogEndSlider.min = "0";
-		fogEndSlider.max = "3000";
-		fogEndSlider.value = MapFog.getFogEnd(false).toString();
-		fogEndSlider.style.width = "100%";
-		fogEndSlider.oninput = () => {
-			MapFog.setFogEndOverride(parseFloat(fogEndSlider.value));
-		};
-		div.appendChild(fogEndSlider);
-
-		// Add Wetness slider
-		const wetnessLabel = document.createElement("div");
-		wetnessLabel.innerText = "Wetness";
-		wetnessLabel.className = "debug-slider-label";
-		wetnessLabel.style.marginTop = "10px";
-		div.appendChild(wetnessLabel);
-		const wetnessSlider = document.createElement("input");
-		wetnessSlider.type = "range";
-		wetnessSlider.min = "0";
-		wetnessSlider.max = "100";
-		wetnessSlider.value = (
-			(WorldEnvironment.instance?.wetness || 0) * 100
-		).toString();
-		wetnessSlider.style.width = "100%";
-		wetnessSlider.oninput = () => {
-			if (WorldEnvironment.instance) {
-				WorldEnvironment.instance.wetness =
-					parseFloat(wetnessSlider.value) / 100;
-			}
-		};
-		div.appendChild(wetnessSlider);
+			const slider = document.createElement("input");
+			slider.type = "range";
+			slider.min = String(spec.min);
+			slider.max = String(spec.max);
+			if (spec.id) slider.id = spec.id;
+			if (spec.value !== undefined) slider.value = spec.value;
+			slider.style.width = "100%";
+			slider.oninput = () => {
+				spec.onValue(parseFloat(slider.value) / (spec.divider ?? 1));
+			};
+			div.appendChild(slider);
+		}
 	}
 
 	/** Toggle visibility of all persistent HUD elements via the `hud-hidden` body class. */
 	public static toggleHud(): void {
 		PlayerHud.#hudHidden = !PlayerHud.#hudHidden;
 		document.body.classList.toggle("hud-hidden", PlayerHud.#hudHidden);
-	}
-
-	public static get isHudHidden(): boolean {
-		return PlayerHud.#hudHidden;
 	}
 
 	public static toggleDebugInfo(): void {
@@ -2008,10 +1964,7 @@ export class PlayerHud {
 
 		PlayerHud.infoRows[key] = {
 			container,
-			valueNode: valueSpan.firstChild as Text,
 			valueSpan,
-			keySpan,
-			group,
 		};
 	}
 
@@ -2142,85 +2095,36 @@ export class PlayerHud {
 		const stats = this.#player.stats;
 		if (!stats) return;
 
-		const health = stats.health;
-		const maxHealth = stats.maxHealth;
+		const bars: Array<[HTMLDivElement, number, number]> = [
+			[this.#healthBarFill, stats.health, stats.maxHealth],
+			[this.#hungerBarFill, stats.hunger, stats.maxHunger],
+			[this.#staminaBarFill, stats.stamina, stats.maxStamina],
+			[this.#manaBarFill, stats.mana, stats.maxMana],
+		];
 
-		if (
-			health !== this.#prevHealthValue ||
-			maxHealth !== this.#prevMaxHealthValue
-		) {
-			this.#prevHealthValue = health;
-			this.#prevMaxHealthValue = maxHealth;
-			this.#prevHealthPct = setBar(
-				this.#healthBarFill,
-				this.#prevHealthPct,
-				statPct(health, maxHealth),
-			);
-		}
+		for (let i = 0; i < bars.length; i++) {
+			const [fill, value, max] = bars[i];
+			const state = this.#statBarStates[i];
 
-		const hunger = stats.hunger;
-		const maxHunger = stats.maxHunger;
+			if (value === state.value && max === state.max) continue;
 
-		if (
-			hunger !== this.#prevHungerValue ||
-			maxHunger !== this.#prevMaxHungerValue
-		) {
-			this.#prevHungerValue = hunger;
-			this.#prevMaxHungerValue = maxHunger;
-			this.#prevHungerPct = setBar(
-				this.#hungerBarFill,
-				this.#prevHungerPct,
-				statPct(hunger, maxHunger),
-			);
-		}
-
-		const stamina = stats.stamina;
-		const maxStamina = stats.maxStamina;
-
-		if (
-			stamina !== this.#prevStaminaValue ||
-			maxStamina !== this.#prevMaxStaminaValue
-		) {
-			this.#prevStaminaValue = stamina;
-			this.#prevMaxStaminaValue = maxStamina;
-			this.#prevStaminaPct = setBar(
-				this.#staminaBarFill,
-				this.#prevStaminaPct,
-				statPct(stamina, maxStamina),
-			);
-		}
-
-		const mana = stats.mana;
-		const maxMana = stats.maxMana;
-
-		if (mana !== this.#prevManaValue || maxMana !== this.#prevMaxManaValue) {
-			this.#prevManaValue = mana;
-			this.#prevMaxManaValue = maxMana;
-			this.#prevManaPct = setBar(
-				this.#manaBarFill,
-				this.#prevManaPct,
-				statPct(mana, maxMana),
-			);
+			state.value = value;
+			state.max = max;
+			state.pct = setBar(fill, state.pct, statPct(value, max));
 		}
 
 		const xp = stats.xp;
 		const xpLevel = stats.xpLevel;
+		const state = this.#xpState;
 
 		/*
 		 * xpForNextLevel() only needs to run when XP or level changes. Level is
 		 * included because the requirement commonly depends on the current level.
 		 */
-		if (xp !== this.#prevXpValue || xpLevel !== this.#prevXpLevel) {
-			const xpNeed = stats.xpForNextLevel();
-
-			this.#prevXpValue = xp;
-			this.#prevXpNeed = xpNeed;
-
-			this.#prevXpPct = setBar(
-				this.#xpBarFill,
-				this.#prevXpPct,
-				statPct(xp, xpNeed),
-			);
+		if (xp !== state.value || xpLevel !== this.#prevXpLevel) {
+			state.need = stats.xpForNextLevel();
+			state.value = xp;
+			state.pct = setBar(this.#xpBarFill, state.pct, statPct(xp, state.need));
 		}
 
 		if (xpLevel !== this.#prevXpLevel) {

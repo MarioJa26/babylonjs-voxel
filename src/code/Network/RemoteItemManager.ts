@@ -19,6 +19,7 @@ import {
 	decodeItemSpawnInto,
 } from "./protocol/encoder";
 import { ItemPickupRejectReason, MessageType } from "./protocol/messages";
+import { ClientHandlerBinding } from "./PendingOpenBroker";
 
 /** Time since last server update before we stop extrapolating (seconds). */
 const EXTRAPOLATION_WINDOW = 0.04;
@@ -54,22 +55,17 @@ export class RemoteItemManager {
 		vz: 0,
 	};
 	private readonly itemPickupRejectedScratch = { id: 0, reason: 0 };
-	private readonly handler: (data: Uint8Array) => void;
-	private readonly onDisconnected: () => void;
+	private readonly binding: ClientHandlerBinding;
 
 	constructor(private readonly client: NetClient) {
-		this.handler = (data) => this.handleBinaryMessage(data);
-		this.client.addBinaryHandler(this.handler);
-
 		// Drop every ghost mesh when the connection dies. The server restarts
 		// its item ids per room instance, so stale entries from a previous
 		// session would otherwise collide with recycled ids after reconnect.
-		this.onDisconnected = () => this.clearAll();
-		this.client.addDisconnectListener(this.onDisconnected);
-	}
-
-	get size(): number {
-		return this.items.size;
+		this.binding = new ClientHandlerBinding(
+			client,
+			(data) => this.handleBinaryMessage(data),
+			() => this.clearAll(),
+		);
 	}
 
 	private handleBinaryMessage(data: Uint8Array): void {
@@ -281,8 +277,7 @@ export class RemoteItemManager {
 	}
 
 	dispose(): void {
-		this.client.removeBinaryHandler(this.handler);
-		this.client.removeDisconnectListener(this.onDisconnected);
+		this.binding.dispose(this.client);
 		this.clearAll();
 	}
 }

@@ -98,7 +98,7 @@ function loadMobSkin(path: string): Promise<void> {
 	})
 		.then((texture) => {
 			mobSkins.set(path, texture);
-			console.debug("[mobs] mob skin bound:", path);
+			//console.debug("[mobs] mob skin bound:", path);
 		})
 		.catch((error: unknown) => {
 			console.error(`[mobs] failed to load ${path}`, error);

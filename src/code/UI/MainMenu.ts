@@ -13,6 +13,7 @@ import {
 	type CrosshairGrid,
 	type CrosshairPreview,
 	type CrosshairSwatches,
+	createCrosshairCollapsible,
 	createCrosshairGrid,
 	createCrosshairPreview,
 	createCrosshairSwatches,
@@ -584,32 +585,7 @@ export class MainMenu {
 		this.crosshairId = normalizeCrosshairId(initialId);
 		this.crosshairColor = normalizeCrosshairColor(initial.color);
 
-		const section = document.createElement("div");
-		section.className = "crosshair-collapsible";
-
-		const header = document.createElement("button");
-		header.type = "button";
-		header.className = "crosshair-collapsible-header";
-		header.setAttribute("aria-expanded", "false");
-
-		const headerText = document.createElement("span");
-		headerText.innerText = "Crosshair";
-
-		const arrow = document.createElement("span");
-		arrow.innerText = "▸";
-		arrow.setAttribute("aria-hidden", "true");
-		header.append(headerText, arrow);
-
-		const body = document.createElement("div");
-		body.className = "crosshair-collapsible-body";
-		body.style.display = "none";
-
-		header.onclick = () => {
-			const open = body.style.display === "none";
-			body.style.display = open ? "flex" : "none";
-			arrow.innerText = open ? "▾" : "▸";
-			header.setAttribute("aria-expanded", String(open));
-		};
+		const { section, body } = createCrosshairCollapsible();
 
 		this.crosshairPreview = createCrosshairPreview({
 			id: this.crosshairId,
@@ -671,7 +647,6 @@ export class MainMenu {
 				?.addEventListener("click", () => this.updateCrosshairPreview());
 		}
 
-		section.append(header, body);
 		return section;
 	}
 

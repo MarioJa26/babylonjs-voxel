@@ -1,4 +1,4 @@
-// ---------------------------------------------------------------------------
+﻿// ---------------------------------------------------------------------------
 // ChunkEmptiness: mesh-skippability predicates.
 //
 // Uniform air produces no mesh. A uniformly opaque full-cube chunk can also
@@ -14,7 +14,8 @@ import {
 	getCachedFlagsAndId,
 	getFlagsFromCombined,
 } from "../../MeshPipeline/core/BlockInfoCache";
-import { type Chunk, getChunk } from "../Chunk";
+import type { Chunk } from "../Chunk";
+import { getChunkFast } from "../Runtime/ChunkRegistry";
 
 const REQUIRED_OPAQUE_CUBE_FLAGS = FLAG_SOLID | FLAG_GREEDY;
 const DISALLOWED_OPAQUE_CUBE_FLAGS = FLAG_TRANSPARENT | FLAG_PARTIAL;
@@ -45,7 +46,7 @@ export function isUniformOpaqueCubeNeighbor(
 	cy: number,
 	cz: number,
 ): boolean {
-	const neighbor = getChunk(cx, cy, cz);
+	const neighbor = getChunkFast(cx, cy, cz);
 
 	if (
 		neighbor === undefined ||

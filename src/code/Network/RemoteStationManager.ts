@@ -13,6 +13,7 @@
  */
 
 import type { NetClient } from "./NetClient";
+import { ClientHandlerBinding, PendingOpenBroker } from "./PendingOpenBroker";
 import {
 	BinaryDecoder,
 	decodeStationRejectedInto,
@@ -128,32 +129,27 @@ export class RemoteStationManager {
 		stackSize: 0,
 	};
 
-	private readonly handler: (data: Uint8Array) => void;
-	private readonly onDisconnected: () => void;
+	private readonly binding: ClientHandlerBinding;
 	private callbacks: RemoteStationCallbacks = {};
 
-	private pendingOpen: {
-		key: string;
-		resolve: (state: RemoteStationState) => void;
-		reject: (error: Error) => void;
-		timer: ReturnType<typeof setTimeout>;
-	} | null = null;
+	private readonly pendingOpen = new PendingOpenBroker<RemoteStationState>();
 
 	/** Highest version seen per station, so stale deltas can be dropped. */
 	private readonly latestVersion = new Map<string, number>();
 
 	constructor(private readonly client: NetClient) {
-		this.handler = (data) => this.handleBinaryMessage(data);
-		this.client.addBinaryHandler(this.handler);
-
-		// A reconnect starts fresh server state: fail any in-flight open so the
-		// panel never hangs on a station that no longer exists, and drop the
-		// version cache so the first snapshot after reconnect is accepted.
-		this.onDisconnected = () => {
-			this.failPendingOpen("disconnected");
-			this.latestVersion.clear();
-		};
-		this.client.addDisconnectListener(this.onDisconnected);
+		this.binding = new ClientHandlerBinding(
+			client,
+			(data) => this.handleBinaryMessage(data),
+			// A reconnect starts fresh server state: fail any in-flight open so
+			// the panel never hangs on a station that no longer exists, and
+			// drop the version cache so the first snapshot after reconnect is
+			// accepted.
+			() => {
+				this.pendingOpen.fail("station", "disconnected");
+				this.latestVersion.clear();
+			},
+		);
 	}
 
 	setCallbacks(callbacks: RemoteStationCallbacks): void {
@@ -165,19 +161,16 @@ export class RemoteStationManager {
 	 * snapshot, or rejects on StationRejected / timeout / disconnect.
 	 */
 	open(x: number, y: number, z: number): Promise<RemoteStationState> {
-		this.failPendingOpen("superseded");
 		if (!this.client.isConnected) {
 			return Promise.reject(new Error("not connected"));
 		}
 
-		return new Promise<RemoteStationState>((resolve, reject) => {
-			const timer = setTimeout(() => {
-				if (this.pendingOpen?.timer === timer) this.pendingOpen = null;
-				reject(new Error("station open timed out"));
-			}, OPEN_TIMEOUT_MS);
-			this.pendingOpen = { key: posKey(x, y, z), resolve, reject, timer };
-			this.client.sendStationOpen(x, y, z);
-		});
+		return this.pendingOpen.begin(
+			"station",
+			posKey(x, y, z),
+			OPEN_TIMEOUT_MS,
+			() => this.client.sendStationOpen(x, y, z),
+		);
 	}
 
 	/** Write input(0) or fuel(1). The server refuses slot 2 outright. */
@@ -207,14 +200,6 @@ export class RemoteStationManager {
 		this.client.sendStationClaimResult(x, y, z);
 	}
 
-	private failPendingOpen(reason: string): void {
-		const pending = this.pendingOpen;
-		if (pending === null) return;
-		this.pendingOpen = null;
-		clearTimeout(pending.timer);
-		pending.reject(new Error(`station open ${reason}`));
-	}
-
 	private handleBinaryMessage(data: Uint8Array): void {
 		if (data.byteLength < 1) return;
 
@@ -241,12 +226,8 @@ export class RemoteStationManager {
 
 				this.latestVersion.set(posKey(s.x, s.y, s.z), s.version);
 
-				const pending = this.pendingOpen;
-				if (pending !== null && pending.key === posKey(s.x, s.y, s.z)) {
-					this.pendingOpen = null;
-					clearTimeout(pending.timer);
-					pending.resolve(snapshot);
-				}
+				const pending = this.pendingOpen.takeIfKey(posKey(s.x, s.y, s.z));
+				if (pending) pending.resolve(snapshot);
 				this.callbacks.onState?.(snapshot);
 				break;
 			}
@@ -311,10 +292,8 @@ export class RemoteStationManager {
 					reason: r.reason,
 				};
 
-				const pending = this.pendingOpen;
-				if (pending !== null && pending.key === posKey(r.x, r.y, r.z)) {
-					this.pendingOpen = null;
-					clearTimeout(pending.timer);
+				const pending = this.pendingOpen.takeIfKey(posKey(r.x, r.y, r.z));
+				if (pending) {
 					pending.reject(new Error(`station rejected (reason ${r.reason})`));
 				}
 				this.callbacks.onRejected?.(rejection);
@@ -324,9 +303,8 @@ export class RemoteStationManager {
 	}
 
 	dispose(): void {
-		this.client.removeBinaryHandler(this.handler);
-		this.client.removeDisconnectListener(this.onDisconnected);
-		this.failPendingOpen("disposed");
+		this.binding.dispose(this.client);
+		this.pendingOpen.fail("station", "disposed");
 		this.callbacks = {};
 		this.latestVersion.clear();
 	}
