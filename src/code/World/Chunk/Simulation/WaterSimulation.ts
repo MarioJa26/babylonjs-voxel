@@ -4,6 +4,7 @@ import {
 	isLiquidBlockId,
 	isLiquidSourceBlock,
 	type LiquidDefinition,
+	type LiquidReaction,
 } from "../../Liquid/LiquidRegistry";
 import { BlockType } from "../../Texture/BlockType";
 
@@ -595,6 +596,117 @@ export class WaterSimulation {
 		return null;
 	}
 
+	/** True when any of the 6 neighbours is the given liquid. */
+	private hasNeighborLiquid(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+		target: LiquidDefinition,
+	): boolean {
+		for (let i = 0; i < NEIGHBOR_COUNT; i++) {
+			const neighborId = this.blocks.getBlock(
+				worldX + NEIGHBOR_DX[i],
+				worldY + NEIGHBOR_DY[i],
+				worldZ + NEIGHBOR_DZ[i],
+			);
+
+			if (getLiquidDefinitionByBlockId(neighborId) === target) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Replaces a liquid block with its reaction result: a source becomes
+	 * `sourceResult`, a flowing block becomes `flowingResult`.
+	 */
+	private solidifyLiquid(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+		blockId: number,
+		blockState: number,
+		reaction: LiquidReaction,
+	): void {
+		const resultBlockId = isLiquidSourceBlock(blockId, blockState)
+			? reaction.sourceResult
+			: reaction.flowingResult;
+
+		this.blocks.setBlock(worldX, worldY, worldZ, resultBlockId, 0);
+		this.scheduleNeighborUpdates(worldX, worldY, worldZ, DEFAULT_FLOW_DELAY);
+	}
+
+	/**
+	 * Registry-driven liquid solidification (water + lava -> obsidian /
+	 * cobblestone). Returns true when the processed cell itself solidified,
+	 * in which case its flow update must stop.
+	 *
+	 * A cell also solidifies reactive neighbours, so water arriving next to
+	 * static lava converts it immediately instead of waiting for the lava's
+	 * own (possibly never scheduled) tick.
+	 */
+	private applyLiquidReactions(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+		blockId: number,
+		blockState: number,
+		liquid: LiquidDefinition,
+	): boolean {
+		const reaction = liquid.reaction;
+
+		if (
+			reaction !== undefined &&
+			this.hasNeighborLiquid(worldX, worldY, worldZ, reaction.with)
+		) {
+			this.solidifyLiquid(
+				worldX,
+				worldY,
+				worldZ,
+				blockId,
+				blockState,
+				reaction,
+			);
+
+			return true;
+		}
+
+		for (let i = 0; i < NEIGHBOR_COUNT; i++) {
+			const neighborX = worldX + NEIGHBOR_DX[i];
+			const neighborY = worldY + NEIGHBOR_DY[i];
+			const neighborZ = worldZ + NEIGHBOR_DZ[i];
+
+			const neighborId = this.blocks.getBlock(neighborX, neighborY, neighborZ);
+
+			if (!isLiquidBlockId(neighborId)) {
+				continue;
+			}
+
+			const neighborLiquid = getLiquidDefinitionByBlockId(neighborId);
+
+			if (
+				neighborLiquid === null ||
+				neighborLiquid.reaction === undefined ||
+				neighborLiquid.reaction.with !== liquid
+			) {
+				continue;
+			}
+
+			this.solidifyLiquid(
+				neighborX,
+				neighborY,
+				neighborZ,
+				neighborId,
+				this.blocks.getBlockState(neighborX, neighborY, neighborZ),
+				neighborLiquid.reaction,
+			);
+		}
+
+		return false;
+	}
+
 	processWaterUpdate(worldX: number, worldY: number, worldZ: number): void {
 		this.blocks.getBlockAndStateInto(
 			worldX,
@@ -607,6 +719,19 @@ export class WaterSimulation {
 		const liquid = getLiquidDefinitionByBlockId(blockId);
 
 		if (liquid === null) {
+			return;
+		}
+
+		if (
+			this.applyLiquidReactions(
+				worldX,
+				worldY,
+				worldZ,
+				blockId,
+				this.blockAndState.blockState,
+				liquid,
+			)
+		) {
 			return;
 		}
 

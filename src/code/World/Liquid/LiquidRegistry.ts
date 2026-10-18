@@ -22,6 +22,20 @@ export type LiquidRenderBucket =
 	/** Rendered by the alpha-tested cutout material (opaque pass). */
 	| "cutout";
 
+/**
+ * Solidification rule applied when this liquid touches another liquid:
+ * a source block becomes `sourceResult`, a flowing block `flowingResult`
+ * (the Minecraft water + lava -> obsidian / cobblestone rule).
+ */
+export interface LiquidReaction {
+	/** The other liquid whose contact solidifies this one. */
+	readonly with: LiquidDefinition;
+	/** Block a source of this liquid turns into on contact. */
+	readonly sourceResult: number;
+	/** Block a flowing block of this liquid turns into on contact. */
+	readonly flowingResult: number;
+}
+
 export interface LiquidDefinition {
 	/** Stable string key (also used by save data / debugging). */
 	readonly key: string;
@@ -51,6 +65,11 @@ export interface LiquidDefinition {
 	readonly fogStart: number;
 	/** Linear fog end distance inside this liquid. */
 	readonly fogEnd: number;
+	/**
+	 * Optional solidification reaction. A reactive liquid with a partner in
+	 * reach solidifies (see LiquidReaction); liquids without one are inert.
+	 */
+	readonly reaction?: LiquidReaction;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,8 +77,9 @@ export interface LiquidDefinition {
 // ---------------------------------------------------------------------------
 
 /**
- * Water: the original liquid. Flows fast, creates infinite sources from two
- * adjacent sources, renders in the animated water bucket.
+ * Water: the original liquid. Flows fast (one step every 5 ticks = 0.25 s
+ * at 20 TPS), creates infinite sources from two adjacent sources, renders
+ * in the animated water bucket.
  */
 export const WATER_LIQUID: LiquidDefinition = {
 	key: "water",
@@ -91,6 +111,8 @@ export const WATER_LIQUID: LiquidDefinition = {
 /**
  * Lava: slow, glowing, hurts on contact and never forms infinite sources.
  * Routed to the cutout bucket because the water material animates waves.
+ * Touching water solidifies it: sources become obsidian, flowing lava
+ * becomes cobblestone.
  */
 export const LAVA_LIQUID: LiquidDefinition = {
 	key: "lava",
@@ -117,6 +139,11 @@ export const LAVA_LIQUID: LiquidDefinition = {
 	fogColor: [0.55, 0.14, 0.04],
 	fogStart: 0.5,
 	fogEnd: 32,
+	reaction: {
+		with: WATER_LIQUID,
+		sourceResult: BlockType.Obsidian,
+		flowingResult: BlockType.Cobble,
+	},
 };
 
 /**
@@ -162,82 +189,139 @@ export const LIQUIDS: readonly LiquidDefinition[] = [
 
 const MAX_SOURCE_ID = 1024;
 const VIRTUAL_BLOCK_ID_START = 500;
-const VIRTUAL_SHAPE_COUNT = 5; // must stay in sync with BlockMaterial.ts
+const VIRTUAL_SHAPE_COUNT = 5; // Must stay in sync with BlockMaterial.ts
+const VIRTUAL_BLOCK_ID_END = VIRTUAL_BLOCK_ID_START + 100 * VIRTUAL_SHAPE_COUNT;
 
-/** Source block id -> index into LIQUIDS, or -1. Hot-path LUT. */
-const SOURCE_TO_LIQUID = new Int8Array(MAX_SOURCE_ID).fill(-1);
+/*
+ * Uint8Array avoids signed-value handling. Zero means “not a liquid”;
+ * registered liquid indexes are stored as index + 1.
+ *
+ * This supports up to 255 registered liquids. The cauldron state currently
+ * imposes a stricter limit of three liquids.
+ */
+const SOURCE_TO_LIQUID = new Uint8Array(MAX_SOURCE_ID);
 
 for (let index = 0; index < LIQUIDS.length; index++) {
-	SOURCE_TO_LIQUID[LIQUIDS[index]!.blockId] = index;
+	const blockId = LIQUIDS[index]!.blockId;
+
+	if (!Number.isInteger(blockId) || blockId < 0 || blockId >= MAX_SOURCE_ID) {
+		throw new RangeError(
+			`Liquid "${LIQUIDS[index]!.key}" has invalid block id ${blockId}`,
+		);
+	}
+
+	if (SOURCE_TO_LIQUID[blockId] !== 0) {
+		throw new Error(`Duplicate liquid block id ${blockId}`);
+	}
+
+	SOURCE_TO_LIQUID[blockId] = index + 1;
 }
 
 /**
- * Resolves a virtual mason variant id (500-999) back to its source block id.
+ * Resolves a virtual mason variant id back to its source block id.
  * Out-of-range ids are returned unchanged.
  */
 function resolveSourceId(blockId: number): number {
-	if (
-		blockId >= VIRTUAL_BLOCK_ID_START &&
-		blockId < VIRTUAL_BLOCK_ID_START + 100 * VIRTUAL_SHAPE_COUNT
-	) {
-		return (
-			Math.floor((blockId - VIRTUAL_BLOCK_ID_START) / VIRTUAL_SHAPE_COUNT) + 1
-		);
+	if (blockId >= VIRTUAL_BLOCK_ID_START && blockId < VIRTUAL_BLOCK_ID_END) {
+		return (((blockId - VIRTUAL_BLOCK_ID_START) / VIRTUAL_SHAPE_COUNT) | 0) + 1;
 	}
 
 	return blockId;
 }
 
-/** True for liquid source block ids (no virtual resolution). */
+/** True for registered liquid source block IDs, without virtual resolution. */
 export function isLiquidSourceId(sourceId: number): boolean {
 	return (
 		Number.isInteger(sourceId) &&
 		sourceId >= 0 &&
 		sourceId < MAX_SOURCE_ID &&
-		SOURCE_TO_LIQUID[sourceId] !== -1
+		SOURCE_TO_LIQUID[sourceId]! !== 0
 	);
 }
 
-/** True for liquid blocks, including virtual shape variants of water. */
+/** True for liquid blocks, including virtual mason variants. */
 export function isLiquidBlockId(blockId: number): boolean {
+	if (!Number.isInteger(blockId)) {
+		return false;
+	}
+
+	const sourceId = resolveSourceId(blockId);
+
 	return (
-		Number.isInteger(blockId) && isLiquidSourceId(resolveSourceId(blockId))
+		sourceId >= 0 &&
+		sourceId < MAX_SOURCE_ID &&
+		SOURCE_TO_LIQUID[sourceId]! !== 0
 	);
 }
 
-/** Liquid definition for a source block id, or null. */
+/** Liquid definition for a source block ID, or null. */
 export function getLiquidDefinitionBySourceId(
 	sourceId: number,
 ): LiquidDefinition | null {
-	if (!isLiquidSourceId(sourceId)) {
+	if (
+		!Number.isInteger(sourceId) ||
+		sourceId < 0 ||
+		sourceId >= MAX_SOURCE_ID
+	) {
 		return null;
 	}
 
-	return LIQUIDS[SOURCE_TO_LIQUID[sourceId]] ?? null;
+	const encodedIndex = SOURCE_TO_LIQUID[sourceId]!;
+
+	return encodedIndex === 0 ? null : (LIQUIDS[encodedIndex - 1] ?? null);
 }
 
-/** Liquid definition for a block id (virtual-safe), or null. */
+/** Liquid definition for a block ID, including virtual variants, or null. */
 export function getLiquidDefinitionByBlockId(
 	blockId: number,
 ): LiquidDefinition | null {
-	return Number.isInteger(blockId)
-		? getLiquidDefinitionBySourceId(resolveSourceId(blockId))
-		: null;
+	if (!Number.isInteger(blockId)) {
+		return null;
+	}
+
+	const sourceId = resolveSourceId(blockId);
+
+	if (sourceId < 0 || sourceId >= MAX_SOURCE_ID) {
+		return null;
+	}
+
+	const encodedIndex = SOURCE_TO_LIQUID[sourceId]!;
+
+	return encodedIndex === 0 ? null : (LIQUIDS[encodedIndex - 1] ?? null);
 }
 
 /**
- * Liquid level for a liquid block: blockState bits 0-3.
- * Non-liquid blocks report 0 (always check the block id first).
+ * Returns the liquid level stored in block-state bits 0–3.
+ * Non-liquid blocks return zero.
  */
 export function getLiquidLevel(blockId: number, state: number): number {
-	return isLiquidBlockId(blockId) ? state & 0xf : 0;
+	if (!Number.isInteger(blockId)) {
+		return 0;
+	}
+
+	const sourceId = resolveSourceId(blockId);
+
+	return sourceId >= 0 &&
+		sourceId < MAX_SOURCE_ID &&
+		SOURCE_TO_LIQUID[sourceId]! !== 0
+		? state & 0xf
+		: 0;
 }
 
-/** True when the block is a liquid at source level (state nibble 0). */
+/** True when the block is a liquid whose level nibble is zero. */
 export function isLiquidSourceBlock(blockId: number, state: number): boolean {
-	return isLiquidBlockId(blockId) && (state & 0xf) === 0;
-}
+	if (!Number.isInteger(blockId) || (state & 0xf) !== 0) {
+		return false;
+	}
 
+	const sourceId = resolveSourceId(blockId);
+
+	return (
+		sourceId >= 0 &&
+		sourceId < MAX_SOURCE_ID &&
+		SOURCE_TO_LIQUID[sourceId]! !== 0
+	);
+}
 // ---------------------------------------------------------------------------
 // Cauldron liquid storage (BlockType.Cauldron blockState bits)
 //

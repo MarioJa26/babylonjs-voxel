@@ -7,9 +7,9 @@ const KEY_X_BITS = 21;
 const KEY_Y_BITS = 11;
 const KEY_Z_BITS = 21;
 
-const KEY_X_OFFSET = 1 << (KEY_X_BITS - 1);
-const KEY_Y_OFFSET = 1 << (KEY_Y_BITS - 1);
-const KEY_Z_OFFSET = 1 << (KEY_Z_BITS - 1);
+const KEY_X_OFFSET = 2 ** (KEY_X_BITS - 1);
+const KEY_Y_OFFSET = 2 ** (KEY_Y_BITS - 1);
+const KEY_Z_OFFSET = 2 ** (KEY_Z_BITS - 1);
 
 const KEY_Y_MUL = 2 ** KEY_Z_BITS;
 const KEY_X_MUL = 2 ** (KEY_Y_BITS + KEY_Z_BITS);
@@ -27,7 +27,8 @@ function unpackKeyX(key: number): number {
 }
 
 function unpackKeyY(key: number): number {
-	return Math.floor((key % KEY_X_MUL) / KEY_Y_MUL) - KEY_Y_OFFSET;
+	const remainder = key % KEY_X_MUL;
+	return Math.floor(remainder / KEY_Y_MUL) - KEY_Y_OFFSET;
 }
 
 function unpackKeyZ(key: number): number {
@@ -40,22 +41,18 @@ export class BlockTickScheduler {
 	/**
 	 * Authoritative target tick for each scheduled coordinate.
 	 */
-	#pending = new Map<number, number>();
+	readonly #pending = new Map<number, number>();
 
 	/**
 	 * Interleaved [key, targetTick, key, targetTick, ...] entries.
-	 *
-	 * Recording targetTick alongside the key is necessary because a stale
-	 * bucket entry could otherwise match a newly scheduled operation for the
-	 * same coordinate and cause it to execute too early.
 	 */
-	#buckets: number[][] = Array.from({ length: RING_SIZE }, () => []);
+	readonly #buckets: number[][] = Array.from({ length: RING_SIZE }, () => []);
 
 	/**
-	 * Interleaved [key, targetTick, ...] entries carried over after hitting
-	 * the safety ceiling.
+	 * Interleaved overdue entries retained after the processing budget is
+	 * exhausted.
 	 */
-	#overflow: number[] = [];
+	readonly #overflow: number[] = [];
 
 	currentTick = 0;
 	safetyCeiling = DEFAULT_SAFETY_CEILING;
@@ -65,7 +62,8 @@ export class BlockTickScheduler {
 		| null = null;
 
 	static getInstance(): BlockTickScheduler {
-		return (_instance ??= new BlockTickScheduler());
+		_instance ??= new BlockTickScheduler();
+		return _instance;
 	}
 
 	setProcessCallback(
@@ -75,7 +73,7 @@ export class BlockTickScheduler {
 	}
 
 	setBudget(budget: number): void {
-		this.safetyCeiling = Math.max(1, budget | 0);
+		this.safetyCeiling = Math.max(1, Math.trunc(budget));
 	}
 
 	schedule(
@@ -86,22 +84,29 @@ export class BlockTickScheduler {
 	): void {
 		const key = packKey(worldX, worldY, worldZ);
 
-		// A zero-delay update must run on the next scheduler tick. Putting it
-		// in the current tick's bucket would delay it by a complete ring lap.
-		const clampedDelay = Math.min(RING_MASK, Math.max(1, delay | 0));
+		/*
+		 * Zero and negative delays execute on the next scheduler tick.
+		 * The ring can represent delays from 1 through 63 without aliasing
+		 * the currently processed slot.
+		 */
+		const integerDelay = Number.isFinite(delay) ? Math.trunc(delay) : 1;
+		const clampedDelay =
+			integerDelay < 1
+				? 1
+				: integerDelay > RING_MASK
+					? RING_MASK
+					: integerDelay;
 
 		const targetTick = this.currentTick + clampedDelay;
 		const existingTargetTick = this.#pending.get(key);
 
-		// Retain the earliest request for this coordinate.
+		// Retain only the earliest pending request for this coordinate.
 		if (existingTargetTick !== undefined && targetTick >= existingTargetTick) {
 			return;
 		}
 
 		this.#pending.set(key, targetTick);
-
-		const bucket = this.#buckets[targetTick & RING_MASK];
-		bucket.push(key, targetTick);
+		this.#buckets[targetTick & RING_MASK].push(key, targetTick);
 	}
 
 	removeAt(worldX: number, worldY: number, worldZ: number): void {
@@ -112,76 +117,92 @@ export class BlockTickScheduler {
 		this.currentTick++;
 
 		const callback = this.#processCallback;
-		if (!callback) return;
 
-		const bucketIndex = this.currentTick & RING_MASK;
-		const freshDue = this.#buckets[bucketIndex];
-
-		// Detach the bucket before invoking callbacks. Any callback that
-		// schedules into this ring slot writes to a different array.
-		this.#buckets[bucketIndex] = [];
-
-		// Detach overflow as well, so callback-driven scheduling cannot
-		// mutate the collection currently being drained.
-		const previousOverflow = this.#overflow;
-		this.#overflow = [];
-
-		let inspectedCount = 0;
-		const ceiling = this.safetyCeiling;
-
-		// Preserve ordering: overdue entries are inspected before fresh ones.
-		let index = 0;
-
-		for (; index < previousOverflow.length; index += 2) {
-			if (inspectedCount >= ceiling) break;
-			inspectedCount++;
-
-			const key = previousOverflow[index];
-			const targetTick = previousOverflow[index + 1];
-
-			// Match both key and generation/target tick. A key-only check can
-			// accidentally execute a newer schedule through an old tombstone.
-			if (this.#pending.get(key) !== targetTick) continue;
-
-			this.#pending.delete(key);
-			callback(unpackKeyX(key), unpackKeyY(key), unpackKeyZ(key));
-		}
-
-		if (index < previousOverflow.length) {
-			for (; index < previousOverflow.length; index += 2) {
-				this.#overflow.push(
-					previousOverflow[index],
-					previousOverflow[index + 1],
-				);
-			}
-
-			// The ceiling has already been reached, so all fresh entries
-			// must be carried over too.
-			for (let i = 0; i < freshDue.length; i += 2) {
-				this.#overflow.push(freshDue[i], freshDue[i + 1]);
-			}
-
+		if (callback === null) {
 			return;
 		}
 
-		index = 0;
+		const ceiling = this.safetyCeiling;
+		let inspectedCount = 0;
 
-		for (; index < freshDue.length; index += 2) {
-			if (inspectedCount >= ceiling) break;
+		/*
+		 * Drain existing overflow first. Process entries in place, then move
+		 * any uninspected suffix to the front of the same array.
+		 *
+		 * Callback-created schedules always enter a future ring bucket, so
+		 * they cannot mutate #overflow while this loop is running.
+		 */
+		const overflow = this.#overflow;
+		const overflowLength = overflow.length;
+		let overflowRead = 0;
+
+		while (overflowRead < overflowLength && inspectedCount < ceiling) {
+			const key = overflow[overflowRead]!;
+			const targetTick = overflow[overflowRead + 1]!;
+
+			overflowRead += 2;
 			inspectedCount++;
 
-			const key = freshDue[index];
-			const targetTick = freshDue[index + 1];
-
-			if (this.#pending.get(key) !== targetTick) continue;
+			if (this.#pending.get(key) !== targetTick) {
+				continue;
+			}
 
 			this.#pending.delete(key);
+
 			callback(unpackKeyX(key), unpackKeyY(key), unpackKeyZ(key));
 		}
 
-		for (; index < freshDue.length; index += 2) {
-			this.#overflow.push(freshDue[index], freshDue[index + 1]);
+		if (overflowRead < overflowLength) {
+			let write = 0;
+
+			for (let read = overflowRead; read < overflowLength; read += 2) {
+				overflow[write] = overflow[read]!;
+				overflow[write + 1] = overflow[read + 1]!;
+				write += 2;
+			}
+
+			overflow.length = write;
+			return;
 		}
+
+		overflow.length = 0;
+
+		const bucketIndex = this.currentTick & RING_MASK;
+		const bucket = this.#buckets[bucketIndex];
+		const bucketLength = bucket.length;
+		let bucketRead = 0;
+
+		/*
+		 * A callback cannot schedule into this bucket because every delay is
+		 * at least one tick. Therefore, the current bucket can safely be
+		 * processed and cleared in place instead of replacing it with [].
+		 */
+		while (bucketRead < bucketLength && inspectedCount < ceiling) {
+			const key = bucket[bucketRead]!;
+			const targetTick = bucket[bucketRead + 1]!;
+
+			bucketRead += 2;
+			inspectedCount++;
+
+			if (this.#pending.get(key) !== targetTick) {
+				continue;
+			}
+
+			this.#pending.delete(key);
+
+			callback(unpackKeyX(key), unpackKeyY(key), unpackKeyZ(key));
+		}
+
+		/*
+		 * Carry the uninspected suffix forward. Use a manual copy rather than
+		 * slice/spread to avoid creating a temporary array or risking an
+		 * argument-count limit.
+		 */
+		for (let read = bucketRead; read < bucketLength; read += 2) {
+			overflow.push(bucket[read]!, bucket[read + 1]!);
+		}
+
+		bucket.length = 0;
 	}
 
 	get pendingCount(): number {
@@ -202,7 +223,7 @@ export class BlockTickScheduler {
 		this.#pending.clear();
 
 		for (let i = 0; i < RING_SIZE; i++) {
-			this.#buckets[i].length = 0;
+			this.#buckets[i]!.length = 0;
 		}
 
 		this.#overflow.length = 0;
