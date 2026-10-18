@@ -1,7 +1,17 @@
 // World/MeshPipeline/core/CustomShapeEmitter.ts
 
-import { unpackBlockId } from "../../Chunk/DataStructures/BlockEncoding";
-import { WATER_BLOCK_ID } from "../../Chunk/Worker/ChunkMesherConstants";
+import {
+	unpackBlockId,
+	unpackBlockState,
+} from "../../Chunk/DataStructures/BlockEncoding";
+import {
+	CAULDRON_MAX_AMOUNT,
+	CAULDRON_SURFACE_EIGHTHS,
+	getCauldronAmount,
+	getCauldronLiquid,
+	getLiquidDefinitionBySourceId,
+	isLiquidSourceId,
+} from "../../Liquid/LiquidRegistry";
 import {
 	FACE_NX,
 	FACE_NY,
@@ -15,6 +25,7 @@ import {
 	getFenceDynamicShape,
 } from "../../Shape/FenceConnect";
 import { getSourceBlockId } from "../../Texture/BlockMaterial";
+import { BlockType } from "../../Texture/BlockType";
 import { FaceName, getFaceName } from "../../Texture/FaceName";
 import { type BlockShapeInfo, MaterialType } from "../types/MeshTypes";
 
@@ -120,10 +131,14 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 
 				if ((flags & FLAG_WATER_GLASS) === 0) {
 					out = opaqueOut;
-				} else if (sourceBlockId === WATER_BLOCK_ID) {
-					out = waterOut;
 				} else {
-					out = cutoutOut;
+					const liquidDef = getLiquidDefinitionBySourceId(sourceBlockId);
+
+					if (liquidDef !== null && liquidDef.renderBucket === "water") {
+						out = waterOut;
+					} else {
+						out = cutoutOut;
+					}
 				}
 
 				if ((flags & FLAG_CUSTOM_CROSS) !== 0) {
@@ -204,6 +219,20 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 					size,
 					out,
 				);
+
+				// A cauldron holding liquid gets a flat surface quad inside
+				// its opening (same idea as the top face of a liquid column).
+				if (blockId === BlockType.Cauldron) {
+					emitCauldronLiquidSurface(
+						x,
+						y,
+						z,
+						packed,
+						baseLight,
+						waterOut,
+						cutoutOut,
+					);
+				}
 			}
 		}
 	}
@@ -684,8 +713,9 @@ function emitBoxFace(
 					preserveTransparentInterface = true;
 				} else {
 					// Same-source glass has no visible internal face.
-					// Different-height water columns still need the interface.
-					if (sourceBlockId !== WATER_BLOCK_ID) {
+					// Different-height liquid columns still need the
+					// interface.
+					if (!isLiquidSourceId(sourceBlockId)) {
 						return;
 					}
 
@@ -758,6 +788,71 @@ function emitBoxFace(
 		ao,
 		getFaceName(axis, back !== 0),
 		materialType,
+		0,
+		0,
+		0,
+	);
+}
+
+/**
+ * Emits the flat liquid surface inside a cauldron opening.
+ *
+ * The surface height comes from the fill amount (eighths of a block, all
+ * representable at POS_SCALE = 8) and the span is the interior footprint
+ * (3/16 .. 13/16, matching the pot walls). The quad borrows the liquid's
+ * own block id for tile lookup, so it samples the liquid's atlas tile with
+ * the liquid's tint/shader bucket — water into the water bucket, lava/oil
+ * into the cutout bucket.
+ */
+function emitCauldronLiquidSurface(
+	voxelX: number,
+	voxelY: number,
+	voxelZ: number,
+	packedBlock: number,
+	baseLight: number,
+	waterOut: QuadBuffer,
+	cutoutOut: QuadBuffer,
+): void {
+	const state = unpackBlockState(packedBlock);
+	const amount = getCauldronAmount(state);
+
+	if (amount <= 0) {
+		return;
+	}
+
+	const liquid = getCauldronLiquid(state);
+
+	if (liquid === null) {
+		return;
+	}
+
+	const clampedAmount =
+		amount > CAULDRON_MAX_AMOUNT ? CAULDRON_MAX_AMOUNT : amount;
+	const eighths = CAULDRON_SURFACE_EIGHTHS[clampedAmount] ?? 0;
+
+	if (eighths <= 0) {
+		return;
+	}
+
+	const out = liquid.renderBucket === "water" ? waterOut : cutoutOut;
+
+	// Interior footprint: walls sit at 3/16, so the liquid spans 10/16.
+	const INTERIOR_MIN = 3 / 16;
+	const INTERIOR_SPAN = 10 / 16;
+
+	out.emitQuad(
+		voxelX + INTERIOR_MIN,
+		voxelY + eighths / 8,
+		voxelZ + INTERIOR_MIN,
+		1,
+		INTERIOR_SPAN,
+		INTERIOR_SPAN,
+		liquid.blockId,
+		0,
+		baseLight,
+		0,
+		FaceName.Top,
+		MaterialType.Cutout,
 		0,
 		0,
 		0,

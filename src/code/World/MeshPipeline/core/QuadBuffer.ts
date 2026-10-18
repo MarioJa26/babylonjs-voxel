@@ -366,6 +366,7 @@ export class QuadBuffer {
 		faceName: FaceName,
 		materialType: number,
 		packedBlock: number,
+		isWaterBody: boolean,
 	): void {
 		const sx = (x * POS_SCALE + 0.5) | 0;
 		let sy = (y * POS_SCALE + 0.5) | 0;
@@ -437,8 +438,14 @@ export class QuadBuffer {
 		}
 
 		const tileIndex = blockId * FaceName.Count + faceName;
+		// META_WATER overlaps the high bit of the 2-bit materialType field,
+		// which shaders decode as the boundary sentinel. Only true water
+		// bodies may carry it; other liquids (lava/oil) render through the
+		// cutout bucket, which keeps the sentinel enabled.
 		const meta =
-			((materialType & 0x3) << 1) | META_WATER | (rawDim ? META_RAW_DIM : 0);
+			((materialType & 0x3) << 1) |
+			(isWaterBody ? META_WATER : 0) |
+			(rawDim ? META_RAW_DIM : 0);
 
 		this.emitRaw(
 			sx,

@@ -18,7 +18,7 @@ import {
 import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
 import MapFog from "@/code/Maps/MapFog";
-import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
+import { getEyeLiquid } from "@/code/Maps/UnderWaterEffect";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
@@ -27,6 +27,10 @@ import {
 	createDistantWaterMaterial,
 } from "@/code/World/Light/DistantTerrainShaderLite";
 import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer";
+import {
+	type LiquidDefinition,
+	WATER_LIQUID,
+} from "@/code/World/Liquid/LiquidRegistry";
 import { setMeshBaseVisible } from "@/code/World/MeshVisibility";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import {
@@ -391,18 +395,25 @@ function updateUniforms() {
 
 	const camera = scene ? scene.camera : null;
 	const camPos = camera ? getCameraPosition(camera) : null;
-	const isUnderWater = camPos
-		? isEyeUnderwater(camPos.x, camPos.y, camPos.z)
-		: false;
+	const liquid = camPos ? getEyeLiquid(camPos.x, camPos.y, camPos.z) : null;
+	const isUnderWater = liquid !== null;
 
 	if (isUnderWater !== distantUnderwater) {
 		distantUnderwater = isUnderWater;
 		applyDistantTerrainVisibility();
 	}
 
-	const start = MapFog.getFogStart(isUnderWater);
-	const end = MapFog.getFogEnd(isUnderWater);
-	const fogColor = MapFog.getFogColor(isUnderWater);
+	// Water keeps the MapFog values (including dev overrides); lava and oil
+	// use their registry fog so distant geometry matches the dense overlay.
+	const liquidFog: LiquidDefinition | null =
+		liquid !== null && liquid !== WATER_LIQUID ? liquid : null;
+	const start = liquidFog
+		? liquidFog.fogStart
+		: MapFog.getFogStart(isUnderWater);
+	const end = liquidFog ? liquidFog.fogEnd : MapFog.getFogEnd(isUnderWater);
+	const fogColor = liquidFog
+		? liquidFog.fogColor
+		: MapFog.getFogColor(isUnderWater);
 	const fogInvRange = 1.0 / Math.max(end - start, 1e-4);
 
 	const staticChanged =

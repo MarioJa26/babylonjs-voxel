@@ -1,5 +1,5 @@
 import { unpackBlockId } from "../../Chunk/DataStructures/BlockEncoding";
-import { WATER_BLOCK_ID } from "../../Chunk/Worker/ChunkMesherConstants";
+import { isLiquidSourceId } from "../../Liquid/LiquidRegistry";
 import { getSourceBlockId } from "../../Texture/BlockMaterial";
 import { type FaceName, getFaceName } from "../../Texture/FaceName";
 import { FLAG_SOLID, getCachedFlagsAndId } from "./BlockInfoCache";
@@ -156,8 +156,8 @@ function invalidateBorderCache(
 	grids.borderTopY!.fill(TOP_UNKNOWN);
 }
 
-function isWaterPacked(packed: number): boolean {
-	return getSourceBlockId(unpackBlockId(packed & 0xffff)) === WATER_BLOCK_ID;
+function isLiquidPacked(packed: number): boolean {
+	return isLiquidSourceId(getSourceBlockId(unpackBlockId(packed & 0xffff)));
 }
 
 function emitSkirt(
@@ -372,16 +372,16 @@ function emitBorderColumn(
 		}
 
 		/*
-		 * Decode once per solid voxel. The decoded ID is reused for water
+		 * Decode once per solid voxel. The decoded ID is reused for liquid
 		 * classification, run comparison, and final emission.
 		 */
 		const blockId = unpackBlockId(packed);
 		const sourceBlockId = getSourceBlockId(blockId);
 
-		if (sourceBlockId === WATER_BLOCK_ID) {
+		if (isLiquidSourceId(sourceBlockId)) {
 			/*
-			 * A water surface at the top suppresses the complete opaque skirt
-			 * for this column. Water below an opaque top only splits the run.
+			 * A liquid surface at the top suppresses the complete opaque skirt
+			 * for this column. Liquid below an opaque top only splits the run.
 			 */
 			if (firstY < 0) {
 				break;

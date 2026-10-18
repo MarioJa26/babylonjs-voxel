@@ -1,3 +1,4 @@
+import { isLiquidSourceId } from "../../Liquid/LiquidRegistry";
 import {
 	FACE_ALL,
 	FACE_NX,
@@ -17,7 +18,6 @@ import {
 	unpackBlockId,
 	unpackBlockState,
 } from "../DataStructures/BlockEncoding";
-import { WATER_BLOCK_ID } from "../Worker/ChunkMesherConstants";
 
 const MAX_RECTS = 64;
 const RECT_STRIDE = 4;
@@ -70,7 +70,7 @@ function getFaceBit(axis: number, dir: number): number {
 function isAlwaysTransparentBlock(blockId: number): boolean {
 	if (
 		blockId === 0 ||
-		blockId === WATER_BLOCK_ID ||
+		isLiquidSourceId(blockId) ||
 		blockId === GLASS_01_BLOCK_ID ||
 		blockId === GLASS_02_BLOCK_ID
 	) {
@@ -80,7 +80,7 @@ function isAlwaysTransparentBlock(blockId: number): boolean {
 	const sourceBlockId = getSourceBlockId(blockId);
 
 	return (
-		sourceBlockId === WATER_BLOCK_ID ||
+		isLiquidSourceId(sourceBlockId) ||
 		sourceBlockId === GLASS_01_BLOCK_ID ||
 		sourceBlockId === GLASS_02_BLOCK_ID
 	);

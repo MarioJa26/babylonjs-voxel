@@ -7,6 +7,7 @@ import {
 	getLightByWorldCoords,
 	setBlock,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { isLiquidBlockId } from "@/code/World/Liquid/LiquidRegistry";
 import {
 	getShapeForBlockId,
 	isRegisteredBlockId,
@@ -264,7 +265,9 @@ export class Item implements IUsable {
 		if (item === null || item === undefined) return;
 
 		const blockId = item.blockId ?? item.itemId;
-		let blockState = blockId === BlockType.Water ? 0 : (item.blockState ?? 0);
+		// Liquids always place as full source blocks; flowing levels are
+		// simulation-only states.
+		let blockState = isLiquidBlockId(blockId) ? 0 : (item.blockState ?? 0);
 
 		const shape = getShapeForBlockId(blockId);
 		const yaw = player.playerCamera.cameraYaw;

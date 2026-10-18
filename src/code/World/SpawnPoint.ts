@@ -6,7 +6,7 @@ import {
 	setBlock,
 } from "./Chunk/ChunkLoadingSystem";
 import { areChunksLoadedAround } from "./Chunk/Loading/ChunkReadiness";
-import { WATER_BLOCK_ID } from "./Chunk/Worker/ChunkMesherConstants";
+import { isLiquidBlockId } from "./Liquid/LiquidRegistry";
 
 export interface SpawnPosition {
 	x: number;
@@ -54,7 +54,7 @@ let spawnPreparedListeners: (() => void)[] = [];
 const noop = (): void => {};
 
 const isSolidGround = (blockId: number): boolean =>
-	blockId !== AIR_BLOCK_ID && blockId !== WATER_BLOCK_ID;
+	blockId !== AIR_BLOCK_ID && !isLiquidBlockId(blockId);
 
 const getSkyLight = (x: number, y: number, z: number): number =>
 	(getLightByWorldCoords(x, y, z) >> SKY_LIGHT_SHIFT) & LIGHT_NIBBLE_MASK;

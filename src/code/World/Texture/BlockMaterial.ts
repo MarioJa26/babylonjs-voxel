@@ -19,6 +19,11 @@
 //
 // Material lookups must resolve virtual IDs through getSourceBlockId() so
 // transparent materials such as glass and water retain their behavior.
+//
+// Liquids (water, lava, oil) are classified by LiquidRegistry; this module
+// only delegates so every worker import path sees one behavior.
+
+import { isLiquidSourceId } from "../Liquid/LiquidRegistry";
 
 export const VIRTUAL_BLOCK_ID_START = 500;
 export const VIRTUAL_SHAPE_COUNT = 5;
@@ -125,7 +130,6 @@ export function isWaterSourceId(sourceId: number): boolean {
  */
 export function isTransparentSourceId(sourceId: number): boolean {
 	switch (sourceId) {
-		case WATER_SOURCE_BLOCK_ID:
 		case GLASS_01_BLOCK_ID:
 		case GLASS_02_BLOCK_ID:
 		case 64:
@@ -133,7 +137,7 @@ export function isTransparentSourceId(sourceId: number): boolean {
 			return true;
 
 		default:
-			return false;
+			return isLiquidSourceId(sourceId);
 	}
 }
 

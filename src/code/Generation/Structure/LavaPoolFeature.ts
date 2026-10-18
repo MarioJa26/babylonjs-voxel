@@ -1,3 +1,4 @@
+import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
@@ -160,7 +161,7 @@ export class LavaPoolFeature implements IWorldFeature {
 		const rimHeight = 3;
 		const lavaTop = poolCenterY - rimHeight;
 		const radiusSq = poolRadius * poolRadius;
-		const lavaBlockId = 24;
+		const lavaBlockId = BlockType.Lava;
 		const shoreBlockId = 25;
 
 		const shellRadius = poolRadius + 1;

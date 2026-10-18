@@ -1088,5 +1088,17 @@
 		"shape": "cauldron",
 		"hardness": 2,
 		"preferredTool": "pickaxe"
+	},
+	{
+		"id": "Lava",
+		"name": "lava",
+		"path": "/texture/lava/lava_1k",
+		"hardness": 1
+	},
+	{
+		"id": "Oil",
+		"name": "oil",
+		"path": "/texture/oil/oil_1k",
+		"hardness": 1
 	}
 ]

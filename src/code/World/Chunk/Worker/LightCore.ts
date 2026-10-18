@@ -34,7 +34,12 @@ import {
 	MAX_HEADER_SLOTS,
 	readHeaderMeta,
 } from "./ChunkLightHeader";
-import { filtersFullSunlight, WATER_BLOCK_ID } from "./ChunkMesherConstants";
+import {
+	filtersFullSunlight,
+	LAVA_BLOCK_ID,
+	OIL_BLOCK_ID,
+	WATER_BLOCK_ID,
+} from "./ChunkMesherConstants";
 
 // ---------------------------------------------------------------------------
 // DirtySlotSet — stamp-epoch bitmap backed by a touched list.  Replaces the
@@ -253,6 +258,7 @@ const _lightEmissionLUT = (() => {
 	lut[11] = 15;
 	lut[24] = 15;
 	lut[94] = 15;
+	lut[LAVA_BLOCK_ID] = 15;
 	return lut;
 })();
 
@@ -288,6 +294,8 @@ const CLOSED_FACE_MASK_CACHE = (() => {
 const QUICK_CLOSED_MASK = new Uint8Array(256).fill(FACE_ALL);
 QUICK_CLOSED_MASK[0] = 0; // Air
 QUICK_CLOSED_MASK[WATER_BLOCK_ID] = 0;
+QUICK_CLOSED_MASK[LAVA_BLOCK_ID] = 0;
+QUICK_CLOSED_MASK[OIL_BLOCK_ID] = 0;
 QUICK_CLOSED_MASK[GLASS_01_BLOCK_ID] = 0;
 QUICK_CLOSED_MASK[GLASS_02_BLOCK_ID] = 0;
 QUICK_CLOSED_MASK[64] = 0; // GrassCross
@@ -319,10 +327,16 @@ function getClosedFaceMaskForPacked(packed: number): number {
 	if (cached !== -1) return cached;
 
 	const blockId = unpackBlockId(packed);
-	// Virtual glass/water variants inherit full transparency like the cube.
+	// Virtual glass/water/liquid variants inherit full transparency like the cube.
 	if (blockId >= 500) {
 		const source = Math.floor((blockId - 500) / 5) + 1;
-		if (source === WATER_BLOCK_ID || source === 60 || source === 61) {
+		if (
+			source === WATER_BLOCK_ID ||
+			source === LAVA_BLOCK_ID ||
+			source === OIL_BLOCK_ID ||
+			source === 60 ||
+			source === 61
+		) {
 			CLOSED_FACE_MASK_CACHE[cacheIndex] = 0;
 			return 0;
 		}

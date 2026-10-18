@@ -17,6 +17,11 @@ export type ItemDefinition = {
 	blockId?: number;
 	blockState?: number;
 	shape?: string;
+	/**
+	 * Liquids: the source block id this container item holds. Used by the
+	 * fill_bucket / empty_bucket actions (see World/Liquid/LiquidRegistry.ts).
+	 */
+	fluidBlockId?: number;
 	/** Spawn eggs: the mobType (MobSpawnConfig key) to spawn on use. */
 	spawnMobType?: string;
 	/** Food: hunger points restored when eaten via the use_food action. */

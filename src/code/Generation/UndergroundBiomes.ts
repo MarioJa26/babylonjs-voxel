@@ -1,3 +1,4 @@
+import { BlockType } from "../World/Texture/BlockType";
 import { getPRNGBySeed } from "./NoiseAndParameters/Squirrel13";
 
 export type UndergroundBiome = {
@@ -56,9 +57,9 @@ export const UNDERGROUND_BIOMES: UndergroundBiome[] = [
 		name: "Magma_Chamber",
 		stoneBlock: 81,
 		decorations: {
-			floorBlock: 24,
+			floorBlock: BlockType.Lava,
 			ceilingBlock: 81,
-			wallDecoration: [{ blockId: 24, chance: 0.05 }],
+			wallDecoration: [{ blockId: BlockType.Lava, chance: 0.05 }],
 		},
 	},
 	{

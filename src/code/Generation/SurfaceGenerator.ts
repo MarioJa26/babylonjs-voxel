@@ -1072,7 +1072,9 @@ export class SurfaceGenerator {
 		const riversEnabled = this.riverGenerator.isEnabled;
 
 		const volcanicLiquidId =
-			currentBiome.id === BIOME_ID.VOLCANIC_WASTELAND ? 24 : 30;
+			currentBiome.id === BIOME_ID.VOLCANIC_WASTELAND
+				? BlockType.Lava
+				: BlockType.Water;
 
 		// Fast-path: if entire chunk is well below any possible surface, skip expensive prepass
 		// Minimum surface Y: SEA_LEVEL + continentalnessSpline(-1.0) - INFLUENCE ≈ -90

@@ -1,5 +1,5 @@
 import { BlockType } from "@/code/World/Texture/BlockType";
-import { WATER_BLOCK_ID } from "../World/Chunk/Worker/ChunkMesherConstants";
+import { isLiquidBlockId } from "../World/Liquid/LiquidRegistry";
 import { LightGenerator, type LightSeedState } from "./LightGenerator";
 import {
 	createFastNoise,
@@ -135,7 +135,7 @@ export class WorldGenerator {
 		const existing = blocks[index];
 
 		if (blockId === 0) {
-			if (existing !== WATER_BLOCK_ID && (existing === 0 || overwrite)) {
+			if (!isLiquidBlockId(existing) && (existing === 0 || overwrite)) {
 				blocks[index] = 0;
 			}
 			return;
@@ -160,7 +160,7 @@ export class WorldGenerator {
 		const existing = blocks[index];
 
 		if (blockId === 0) {
-			if (existing !== WATER_BLOCK_ID && (existing === 0 || overwrite)) {
+			if (!isLiquidBlockId(existing) && (existing === 0 || overwrite)) {
 				blocks[index] = 0;
 			}
 			return;
@@ -187,7 +187,7 @@ export class WorldGenerator {
 		const existing = blocks[index];
 
 		if (blockId === 0) {
-			if (existing !== WATER_BLOCK_ID && (existing === 0 || overwrite)) {
+			if (!isLiquidBlockId(existing) && (existing === 0 || overwrite)) {
 				blocks[index] = 0;
 			}
 			return;

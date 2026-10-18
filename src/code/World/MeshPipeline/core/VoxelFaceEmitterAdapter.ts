@@ -1,7 +1,10 @@
 // World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts
 
 import { unpackBlockId } from "../../Chunk/DataStructures/BlockEncoding";
-import { WATER_BLOCK_ID } from "../../Chunk/Worker/ChunkMesherConstants";
+import {
+	getLiquidDefinitionByBlockId,
+	isLiquidBlockId,
+} from "../../Liquid/LiquidRegistry";
 import {
 	FACE_NX,
 	FACE_NY,
@@ -68,25 +71,12 @@ function getFaceBitByIndex(index: number): number {
 	}
 }
 
-function isWaterBlock(blockId: number): boolean {
-	if (blockId === WATER_BLOCK_ID) {
-		return true;
-	}
-
-	if (blockId < 500) {
-		return false;
-	}
-
-	const virtualBaseBlockId = (((blockId - 500) / 5) | 0) + 1;
-	return virtualBaseBlockId === WATER_BLOCK_ID;
-}
-
 function needsRawDim(blockId: number, width: number, height: number): boolean {
 	if (width > 31 || height > 31) {
 		return true;
 	}
 
-	return !isWaterBlock(blockId);
+	return !isLiquidBlockId(blockId);
 }
 
 type SplitTransparentSession = MeshBuildSession & {
@@ -128,13 +118,16 @@ export class VoxelFaceEmitterAdapter {
 		const materialType = getMaterialType(blockId);
 		const isTransparent = materialType === MaterialType.WaterOrGlass;
 
-		const isWater = isTransparent && isWaterBlock(blockId);
+		// Liquids flow and sink by level, so they reuse the water face path
+		// (geometry + level packing). The render bucket decides the material.
+		const liquid = isTransparent ? getLiquidDefinitionByBlockId(blockId) : null;
+		const isWaterBody = liquid !== null && liquid.renderBucket === "water";
 
 		const session = this._session;
 		const step = session.lodStep;
 
-		// Reduced-LOD water side faces create distant shoreline artifacts.
-		if (step > 1 && isWater && axis !== 1) {
+		// Reduced-LOD liquid side faces create distant shoreline artifacts.
+		if (step > 1 && liquid !== null && axis !== 1) {
 			return;
 		}
 
@@ -142,7 +135,7 @@ export class VoxelFaceEmitterAdapter {
 
 		if (!isTransparent) {
 			out = session.quadOpaque;
-		} else if (isWater) {
+		} else if (liquid !== null && liquid.renderBucket === "water") {
 			out = session.quadWater ?? session.quadTransparent;
 		} else {
 			out = session.quadCutout ?? session.quadTransparent;
@@ -165,7 +158,7 @@ export class VoxelFaceEmitterAdapter {
 		const isCube = (rawMask & NON_CUBE_MASK) === 0;
 
 		if (isCube) {
-			if (isWater) {
+			if (liquid !== null) {
 				this.emitWaterFace(
 					out,
 					axis,
@@ -176,6 +169,7 @@ export class VoxelFaceEmitterAdapter {
 					light,
 					ao,
 					faceName,
+					isWaterBody,
 				);
 			} else {
 				this.emitCubeFace(out, axis, desc, blockId, back, light, ao, faceName);
@@ -186,7 +180,7 @@ export class VoxelFaceEmitterAdapter {
 
 		const faceBit = getFaceBitByIndex(faceIndex);
 
-		if (isWater) {
+		if (liquid !== null) {
 			this.emitWaterCustomShapeFace(
 				out,
 				axis,
@@ -198,6 +192,7 @@ export class VoxelFaceEmitterAdapter {
 				ao,
 				faceName,
 				faceBit,
+				isWaterBody,
 			);
 		} else {
 			this.emitCustomShapeFace(
@@ -371,6 +366,7 @@ export class VoxelFaceEmitterAdapter {
 		light: number,
 		ao: number,
 		faceName: FaceName,
+		isWaterBody: boolean,
 	): void {
 		const step = this._session.lodStep;
 
@@ -404,6 +400,7 @@ export class VoxelFaceEmitterAdapter {
 			faceName,
 			MaterialType.WaterOrGlass,
 			packedBlock,
+			isWaterBody,
 		);
 	}
 
@@ -493,6 +490,7 @@ export class VoxelFaceEmitterAdapter {
 		ao: number,
 		faceName: FaceName,
 		faceBit: number,
+		isWaterBody: boolean,
 	): void {
 		// The shape cache uses only the packed ID/state region. Water flags
 		// must still be forwarded unchanged to emitWaterQuad().
@@ -547,6 +545,7 @@ export class VoxelFaceEmitterAdapter {
 				faceName,
 				MaterialType.WaterOrGlass,
 				packedBlock,
+				isWaterBody,
 			);
 		}
 	}

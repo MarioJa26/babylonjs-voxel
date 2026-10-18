@@ -1,8 +1,11 @@
 import {
-	BlockType,
-	getWaterLevel,
-	isWaterSource,
-} from "../../Texture/BlockType";
+	getLiquidDefinitionByBlockId,
+	getLiquidLevel,
+	isLiquidBlockId,
+	isLiquidSourceBlock,
+	type LiquidDefinition,
+} from "../../Liquid/LiquidRegistry";
+import { BlockType } from "../../Texture/BlockType";
 
 export interface WaterBlockAccess {
 	getBlock(x: number, y: number, z: number): number;
@@ -48,7 +51,9 @@ const FLOW_GRID_CELLS = FLOW_GRID_DIM * FLOW_GRID_DIM;
 
 const FLOW_NOT_FOUND = 255;
 const FLOW_CACHE_UNKNOWN = -1;
-const WATER_SOURCE_STATE = 0;
+const LIQUID_SOURCE_STATE = 0;
+/** Fallback tick delay for non-liquid cells that may become liquid-fed. */
+const DEFAULT_FLOW_DELAY = 5;
 
 function packBlockAndState(blockId: number, blockState: number): number {
 	return (blockId & 0xffff) | ((blockState & 0xffff) << 16);
@@ -104,7 +109,7 @@ export class WaterSimulation {
 	private isSolidBlock(blockId: number): boolean {
 		return (
 			blockId !== BlockType.Air &&
-			blockId !== BlockType.Water &&
+			!isLiquidBlockId(blockId) &&
 			blockId !== BlockType.GrassCross &&
 			blockId !== BlockType.SavannahGrassCross &&
 			blockId !== BlockType.Grass006Cross &&
@@ -116,6 +121,7 @@ export class WaterSimulation {
 		worldX: number,
 		worldY: number,
 		worldZ: number,
+		delay: number,
 		excludeDx = 0,
 		excludeDy = 0,
 		excludeDz = 0,
@@ -129,7 +135,7 @@ export class WaterSimulation {
 				continue;
 			}
 
-			this.scheduler.schedule(worldX + dx, worldY + dy, worldZ + dz, 5);
+			this.scheduler.schedule(worldX + dx, worldY + dy, worldZ + dz, delay);
 		}
 	}
 
@@ -293,6 +299,7 @@ export class WaterSimulation {
 		worldX: number,
 		worldY: number,
 		worldZ: number,
+		liquid: LiquidDefinition,
 	): number {
 		this.flowGridPacked.fill(FLOW_CACHE_UNKNOWN);
 		this.flowHoleGridPacked.fill(FLOW_CACHE_UNKNOWN);
@@ -316,14 +323,18 @@ export class WaterSimulation {
 			this.flowDirectionTargetPacked[i] = targetPacked;
 
 			const targetId = unpackBlockId(targetPacked);
+			const targetLiquid = getLiquidDefinitionByBlockId(targetId);
 			let canFlow = this.isReplaceableBlock(targetId);
 
-			if (targetId === BlockType.Water) {
+			if (targetLiquid !== null) {
 				const targetState = unpackBlockState(targetPacked);
 
+				// Only a flowing cell of the same liquid can be overwritten;
+				// other liquids and sources are barriers for this flow.
 				canFlow =
-					!isWaterSource(targetId, targetState) &&
-					getWaterLevel(targetId, targetState) > 0;
+					targetLiquid === liquid &&
+					!isLiquidSourceBlock(targetId, targetState) &&
+					getLiquidLevel(targetId, targetState) > 0;
 			}
 
 			if (!canFlow) {
@@ -386,30 +397,32 @@ export class WaterSimulation {
 		return bestMask;
 	}
 
-	private placeWaterSource(
+	private placeLiquidSource(
 		worldX: number,
 		worldY: number,
 		worldZ: number,
+		liquid: LiquidDefinition,
 	): void {
 		this.blocks.setBlock(
 			worldX,
 			worldY,
 			worldZ,
-			BlockType.Water,
-			WATER_SOURCE_STATE,
+			liquid.blockId,
+			LIQUID_SOURCE_STATE,
 		);
 	}
 
-	private placeWaterFlowing(
+	private placeLiquidFlowing(
 		worldX: number,
 		worldY: number,
 		worldZ: number,
+		liquid: LiquidDefinition,
 		level: number,
 	): void {
-		this.blocks.setBlock(worldX, worldY, worldZ, BlockType.Water, level & 0xf);
+		this.blocks.setBlock(worldX, worldY, worldZ, liquid.blockId, level & 0xf);
 	}
 
-	private removeWater(worldX: number, worldY: number, worldZ: number): void {
+	private removeLiquid(worldX: number, worldY: number, worldZ: number): void {
 		this.blocks.setBlock(worldX, worldY, worldZ, BlockType.Air, 0);
 	}
 
@@ -421,6 +434,7 @@ export class WaterSimulation {
 		worldX: number,
 		worldY: number,
 		worldZ: number,
+		liquid: LiquidDefinition,
 		newLevel: number,
 		excludeDx: number,
 		excludeDy: number,
@@ -445,26 +459,33 @@ export class WaterSimulation {
 			targetState = this.blockAndState.blockState;
 		}
 
-		if (targetId === BlockType.Water) {
-			if (isWaterSource(targetId, targetState)) {
+		const targetLiquid = getLiquidDefinitionByBlockId(targetId);
+
+		if (targetLiquid !== null) {
+			if (targetLiquid !== liquid) {
 				return false;
 			}
 
-			if (getWaterLevel(targetId, targetState) <= newLevel) {
+			if (isLiquidSourceBlock(targetId, targetState)) {
+				return false;
+			}
+
+			if (getLiquidLevel(targetId, targetState) <= newLevel) {
 				return false;
 			}
 		} else if (!this.isReplaceableBlock(targetId)) {
 			return false;
 		}
 
-		this.placeWaterFlowing(worldX, worldY, worldZ, newLevel);
+		this.placeLiquidFlowing(worldX, worldY, worldZ, liquid, newLevel);
 
-		this.scheduler.schedule(worldX, worldY, worldZ, 5);
+		this.scheduler.schedule(worldX, worldY, worldZ, liquid.flowDelay);
 
 		this.scheduleNeighborUpdates(
 			worldX,
 			worldY,
 			worldZ,
+			liquid.flowDelay,
 			excludeDx,
 			excludeDy,
 			excludeDz,
@@ -477,10 +498,11 @@ export class WaterSimulation {
 		worldX: number,
 		worldY: number,
 		worldZ: number,
+		liquid: LiquidDefinition,
 		level: number,
-		aboveId: number,
+		aboveLiquid: LiquidDefinition | null,
 	): boolean {
-		if (aboveId === BlockType.Water) {
+		if (aboveLiquid === liquid) {
 			return false;
 		}
 
@@ -494,32 +516,40 @@ export class WaterSimulation {
 
 			const neighborId = this.blockAndState.blockId;
 
-			if (neighborId !== BlockType.Water) {
+			if (getLiquidDefinitionByBlockId(neighborId) !== liquid) {
 				continue;
 			}
 
 			const neighborState = this.blockAndState.blockState;
 
 			if (
-				isWaterSource(neighborId, neighborState) ||
-				getWaterLevel(neighborId, neighborState) < level
+				isLiquidSourceBlock(neighborId, neighborState) ||
+				getLiquidLevel(neighborId, neighborState) < level
 			) {
 				return false;
 			}
 		}
 
-		this.removeWater(worldX, worldY, worldZ);
-		this.scheduleNeighborUpdates(worldX, worldY, worldZ);
+		this.removeLiquid(worldX, worldY, worldZ);
+		this.scheduleNeighborUpdates(worldX, worldY, worldZ, liquid.flowDelay);
 
 		return true;
 	}
 
-	private checkInfiniteSource(
+	/**
+	 * Finds a liquid with at least two horizontally adjacent sources around
+	 * the given cell, or null. At most two distinct liquids can reach a count
+	 * of two within four neighbours, so two tracking slots suffice.
+	 */
+	private findInfiniteSourceLiquid(
 		worldX: number,
 		worldY: number,
 		worldZ: number,
-	): boolean {
-		let sourceCount = 0;
+	): LiquidDefinition | null {
+		let firstLiquid: LiquidDefinition | null = null;
+		let firstCount = 0;
+		let secondLiquid: LiquidDefinition | null = null;
+		let secondCount = 0;
 
 		for (let i = 0; i < HORIZONTAL_DIR_COUNT; i++) {
 			this.blocks.getBlockAndStateInto(
@@ -531,19 +561,38 @@ export class WaterSimulation {
 
 			const neighborId = this.blockAndState.blockId;
 
-			if (
-				neighborId === BlockType.Water &&
-				isWaterSource(neighborId, this.blockAndState.blockState)
-			) {
-				sourceCount++;
+			if (!isLiquidSourceBlock(neighborId, this.blockAndState.blockState)) {
+				continue;
+			}
 
-				if (sourceCount >= 2) {
-					return true;
-				}
+			const neighborLiquid = getLiquidDefinitionByBlockId(neighborId);
+
+			if (neighborLiquid === null) {
+				continue;
+			}
+
+			if (neighborLiquid === firstLiquid) {
+				firstCount++;
+			} else if (neighborLiquid === secondLiquid) {
+				secondCount++;
+			} else if (firstLiquid === null) {
+				firstLiquid = neighborLiquid;
+				firstCount = 1;
+			} else if (secondLiquid === null) {
+				secondLiquid = neighborLiquid;
+				secondCount = 1;
 			}
 		}
 
-		return false;
+		if (firstCount >= 2) {
+			return firstLiquid;
+		}
+
+		if (secondCount >= 2) {
+			return secondLiquid;
+		}
+
+		return null;
 	}
 
 	processWaterUpdate(worldX: number, worldY: number, worldZ: number): void {
@@ -555,12 +604,13 @@ export class WaterSimulation {
 		);
 
 		const blockId = this.blockAndState.blockId;
+		const liquid = getLiquidDefinitionByBlockId(blockId);
 
-		if (blockId !== BlockType.Water) {
+		if (liquid === null) {
 			return;
 		}
 
-		const level = getWaterLevel(blockId, this.blockAndState.blockState);
+		const level = getLiquidLevel(blockId, this.blockAndState.blockState);
 
 		this.blocks.getBlockAndStateInto(
 			worldX,
@@ -569,19 +619,27 @@ export class WaterSimulation {
 			this.blockAndState,
 		);
 
-		const aboveId = this.blockAndState.blockId;
-		const isFedFromAbove = aboveId === BlockType.Water;
+		const aboveLiquid = getLiquidDefinitionByBlockId(
+			this.blockAndState.blockId,
+		);
+		const isFedFromAbove = aboveLiquid === liquid;
 
 		if (level > 0) {
-			if (!isFedFromAbove && this.checkInfiniteSource(worldX, worldY, worldZ)) {
-				this.placeWaterSource(worldX, worldY, worldZ);
+			if (
+				!isFedFromAbove &&
+				liquid.infiniteSourceFromTwo &&
+				this.findInfiniteSourceLiquid(worldX, worldY, worldZ) === liquid
+			) {
+				this.placeLiquidSource(worldX, worldY, worldZ, liquid);
 
-				this.scheduleNeighborUpdates(worldX, worldY, worldZ);
+				this.scheduleNeighborUpdates(worldX, worldY, worldZ, liquid.flowDelay);
 
 				return;
 			}
 
-			if (this.checkRetract(worldX, worldY, worldZ, level, aboveId)) {
+			if (
+				this.checkRetract(worldX, worldY, worldZ, liquid, level, aboveLiquid)
+			) {
 				return;
 			}
 		}
@@ -604,6 +662,7 @@ export class WaterSimulation {
 			worldX,
 			worldY - 1,
 			worldZ,
+			liquid,
 			1,
 			0,
 			1,
@@ -617,7 +676,12 @@ export class WaterSimulation {
 		) {
 			const spreadLevel = Math.min(level + 1, 7);
 
-			const directionMask = this.getFlowDirectionMask(worldX, worldY, worldZ);
+			const directionMask = this.getFlowDirectionMask(
+				worldX,
+				worldY,
+				worldZ,
+				liquid,
+			);
 
 			for (let i = 0; i < HORIZONTAL_DIR_COUNT; i++) {
 				if ((directionMask & (1 << i)) === 0) {
@@ -631,6 +695,7 @@ export class WaterSimulation {
 					worldX + dx,
 					worldY,
 					worldZ + dz,
+					liquid,
 					spreadLevel,
 					-dx,
 					0,
@@ -651,11 +716,17 @@ export class WaterSimulation {
 			const neighborY = worldY + NEIGHBOR_DY[i];
 			const neighborZ = worldZ + NEIGHBOR_DZ[i];
 
-			if (
-				this.blocks.getBlock(neighborX, neighborY, neighborZ) ===
-				BlockType.Water
-			) {
-				this.scheduler.schedule(neighborX, neighborY, neighborZ, 5);
+			const neighborLiquid = getLiquidDefinitionByBlockId(
+				this.blocks.getBlock(neighborX, neighborY, neighborZ),
+			);
+
+			if (neighborLiquid !== null) {
+				this.scheduler.schedule(
+					neighborX,
+					neighborY,
+					neighborZ,
+					neighborLiquid.flowDelay,
+				);
 			}
 		}
 	}
@@ -667,7 +738,16 @@ export class WaterSimulation {
 	): void {
 		this.scheduleWaterNeighbors(worldX, worldY, worldZ);
 
-		this.scheduler.schedule(worldX, worldY, worldZ, 5);
+		const liquid = getLiquidDefinitionByBlockId(
+			this.blocks.getBlock(worldX, worldY, worldZ),
+		);
+
+		this.scheduler.schedule(
+			worldX,
+			worldY,
+			worldZ,
+			liquid !== null ? liquid.flowDelay : DEFAULT_FLOW_DELAY,
+		);
 	}
 
 	scheduleBlockBreakWaterUpdates(
@@ -684,11 +764,18 @@ export class WaterSimulation {
 		worldZ: number,
 		blockId: number,
 	): void {
-		if (blockId !== BlockType.Water) {
+		if (!isLiquidBlockId(blockId)) {
 			this.scheduleWaterNeighbors(worldX, worldY, worldZ);
 		}
 
-		this.scheduler.schedule(worldX, worldY, worldZ, 5);
+		const liquid = getLiquidDefinitionByBlockId(blockId);
+
+		this.scheduler.schedule(
+			worldX,
+			worldY,
+			worldZ,
+			liquid !== null ? liquid.flowDelay : DEFAULT_FLOW_DELAY,
+		);
 	}
 
 	checkNewInfiniteSource(worldX: number, worldY: number, worldZ: number): void {
@@ -696,13 +783,15 @@ export class WaterSimulation {
 			return;
 		}
 
-		if (!this.checkInfiniteSource(worldX, worldY, worldZ)) {
+		const liquid = this.findInfiniteSourceLiquid(worldX, worldY, worldZ);
+
+		if (liquid === null || !liquid.infiniteSourceFromTwo) {
 			return;
 		}
 
-		this.placeWaterSource(worldX, worldY, worldZ);
+		this.placeLiquidSource(worldX, worldY, worldZ, liquid);
 
-		this.scheduleNeighborUpdates(worldX, worldY, worldZ);
+		this.scheduleNeighborUpdates(worldX, worldY, worldZ, liquid.flowDelay);
 	}
 }
 

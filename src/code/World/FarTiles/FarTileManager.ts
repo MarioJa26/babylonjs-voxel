@@ -18,8 +18,12 @@ import {
 	updateStorageBuffer,
 } from "@babylonjs/lite";
 import MapFog from "@/code/Maps/MapFog";
-import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
+import { getEyeLiquid } from "@/code/Maps/UnderWaterEffect";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
+import {
+	type LiquidDefinition,
+	WATER_LIQUID,
+} from "@/code/World/Liquid/LiquidRegistry";
 import { frameProfiler } from "../../Lib/FrameProfiler";
 import { ChunkWorkerPool } from "../Chunk/ChunkWorkerPool";
 import type { FarTileGeneratedMessage } from "../Chunk/DataStructures/WorkerMessageType";
@@ -2115,18 +2119,27 @@ class FarTileManagerImpl {
 			}
 		}
 
-		const underWater = cameraPosition
-			? isEyeUnderwater(cameraPosition.x, cameraPosition.y, cameraPosition.z)
-			: false;
+		const liquid = cameraPosition
+			? getEyeLiquid(cameraPosition.x, cameraPosition.y, cameraPosition.z)
+			: null;
+		const underWater = liquid !== null;
 
 		if (underWater !== this.farTilesUnderwater) {
 			this.farTilesUnderwater = underWater;
 			this.applyFarTilesVisibility();
 		}
 
-		const fogStart = MapFog.getFogStart(underWater);
-		const fogEnd = MapFog.getFogEnd(underWater);
-		const fogColor = MapFog.getFogColor(underWater);
+		// Water keeps the MapFog values (including dev overrides); lava and oil
+		// use their registry fog so far tiles match the dense overlay.
+		const liquidFog: LiquidDefinition | null =
+			liquid !== null && liquid !== WATER_LIQUID ? liquid : null;
+		const fogStart = liquidFog
+			? liquidFog.fogStart
+			: MapFog.getFogStart(underWater);
+		const fogEnd = liquidFog ? liquidFog.fogEnd : MapFog.getFogEnd(underWater);
+		const fogColor = liquidFog
+			? liquidFog.fogColor
+			: MapFog.getFogColor(underWater);
 		const fogInverseRange = 1 / Math.max(fogEnd - fogStart, 1e-4);
 
 		const lightingChanged =

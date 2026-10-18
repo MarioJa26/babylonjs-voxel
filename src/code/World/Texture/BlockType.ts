@@ -142,6 +142,14 @@ export enum BlockType {
 	//   UnderworldIron.
 	SmithToolHammer = 120,
 	Cauldron = 162,
+
+	// ─── Liquids (see World/Liquid/LiquidRegistry.ts) ───
+	// Flowing liquids: level lives in blockState bits 0-3 (0 = source).
+	// Registered in LiquidRegistry as LAVA_LIQUID / OIL_LIQUID.
+	/** Glowing, damaging liquid. Atlas tile = id - 1 = 162. */
+	Lava = 163,
+	/** Dark, harmless liquid. Atlas tile = id - 1 = 163. */
+	Oil = 164,
 }
 
 export const Hardness = {
@@ -162,6 +170,8 @@ export function isPassThroughBlock(blockId: number): boolean {
 	return (
 		blockId === BlockType.Air ||
 		blockId === BlockType.Water ||
+		blockId === BlockType.Lava ||
+		blockId === BlockType.Oil ||
 		blockId === BlockType.GrassCross ||
 		blockId === BlockType.SavannahGrassCross ||
 		blockId === BlockType.Grass006Cross ||
@@ -175,6 +185,8 @@ export function isCollidableBlock(blockId: number): boolean {
 
 export function getMovementCost(blockId: number): number {
 	if (blockId === BlockType.Water) return 15;
+	if (blockId === BlockType.Lava) return 30;
+	if (blockId === BlockType.Oil) return 20;
 	if (isCollidableBlock(blockId)) return 1;
 	return Infinity;
 }

@@ -15,8 +15,12 @@ import {
 export const BLOCK_TYPE = new Uint8Array(65536);
 export const BLOCK_TYPE_TRANSPARENT = 1;
 export const WATER_BLOCK_ID = 30;
+export const LAVA_BLOCK_ID = 163;
+export const OIL_BLOCK_ID = 164;
+/** All liquid source ids (see World/Liquid/LiquidRegistry.ts). */
+export const LIQUID_BLOCK_IDS = [WATER_BLOCK_ID, LAVA_BLOCK_ID, OIL_BLOCK_ID];
 // 0 = opaque / air
-for (const id of [WATER_BLOCK_ID, 60, 61, 64, 66]) {
+for (const id of [...LIQUID_BLOCK_IDS, 60, 61, 64, 66]) {
 	BLOCK_TYPE[id] = BLOCK_TYPE_TRANSPARENT;
 }
 
@@ -24,7 +28,7 @@ for (const id of [WATER_BLOCK_ID, 60, 61, 64, 66]) {
 // material: mark every virtual ID derived from a transparent base as
 // transparent as well. Must stay in sync with BlockMaterial.ts.
 {
-	const TRANSPARENT_SOURCES = [WATER_BLOCK_ID, 60, 61, 64, 66];
+	const TRANSPARENT_SOURCES = [...LIQUID_BLOCK_IDS, 60, 61, 64, 66];
 	const VIRTUAL_START = 500;
 	const VIRTUAL_SHAPE_COUNT = 5;
 	for (const source of TRANSPARENT_SOURCES) {

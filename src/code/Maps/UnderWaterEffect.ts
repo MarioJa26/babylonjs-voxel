@@ -3,7 +3,12 @@ import {
 	getBlockByWorldCoords,
 	getBlockStateByWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
-import { BlockType, getWaterLevel } from "../World/Texture/BlockType";
+import {
+	getLiquidDefinitionByBlockId,
+	getLiquidLevel,
+	type LiquidDefinition,
+	WATER_LIQUID,
+} from "../World/Liquid/LiquidRegistry";
 
 export interface EyeCamera {
 	position: Vec3;
@@ -17,6 +22,23 @@ const UNDERWATER_STYLE_ID = "underwater-overlay-style";
 const UNDERWATER_ANIMATION_NAME = "underwaterCaustics";
 
 let underwaterStyleReferenceCount = 0;
+
+/** Builds the three-lobe shimmer layer from a liquid's registry colors. */
+function buildShimmerBackgroundImage(
+	colors: readonly [string, string, string],
+): string {
+	return (
+		"radial-gradient(" +
+		`circle at 20% 30%, ${colors[0]} 0%, transparent 18%` +
+		")," +
+		"radial-gradient(" +
+		`circle at 70% 60%, ${colors[1]} 0%, transparent 20%` +
+		")," +
+		"radial-gradient(" +
+		`circle at 45% 80%, ${colors[2]} 0%, transparent 16%` +
+		")"
+	);
+}
 
 function acquireUnderwaterStyle(): void {
 	underwaterStyleReferenceCount++;
@@ -65,9 +87,10 @@ export class UnderWaterEffect {
 	private readonly scene: SceneContext;
 	private readonly camera: EyeCamera;
 
-	private isUnderwater = false;
-	private wasUnderwater = false;
+	private liquid: LiquidDefinition | null = null;
+	private wasLiquid: LiquidDefinition | null = null;
 	private overlay: HTMLDivElement | null = null;
+	private shimmer: HTMLDivElement | null = null;
 	private hideTimer: number | null = null;
 	private styleAcquired = false;
 	private disposed = false;
@@ -99,33 +122,14 @@ export class UnderWaterEffect {
 		overlay.style.display = "none";
 		overlay.style.opacity = "0";
 		overlay.style.transition = `opacity ${OVERLAY_TRANSITION_MS}ms ease`;
-		overlay.style.background =
-			"radial-gradient(" +
-			"ellipse at center, " +
-			"rgba(20,90,140,0.18) 0%, " +
-			"rgba(10,50,90,0.42) 70%, " +
-			"rgba(5,30,60,0.6) 100%" +
-			")";
+		overlay.style.background = WATER_LIQUID.overlayCss;
 
 		const shimmer = document.createElement("div");
 		shimmer.style.position = "absolute";
 		shimmer.style.inset = "0";
-		shimmer.style.backgroundImage =
-			"radial-gradient(" +
-			"circle at 20% 30%, " +
-			"rgba(180,230,255,0.12) 0%, " +
-			"transparent 18%" +
-			")," +
-			"radial-gradient(" +
-			"circle at 70% 60%, " +
-			"rgba(180,230,255,0.10) 0%, " +
-			"transparent 20%" +
-			")," +
-			"radial-gradient(" +
-			"circle at 45% 80%, " +
-			"rgba(200,240,255,0.08) 0%, " +
-			"transparent 16%" +
-			")";
+		shimmer.style.backgroundImage = buildShimmerBackgroundImage(
+			WATER_LIQUID.shimmerCss,
+		);
 		shimmer.style.backgroundSize = "60% 60%, 50% 50%, 70% 70%";
 		shimmer.style.animation = `${UNDERWATER_ANIMATION_NAME} 6s linear infinite`;
 
@@ -133,6 +137,7 @@ export class UnderWaterEffect {
 		document.body.appendChild(overlay);
 
 		this.overlay = overlay;
+		this.shimmer = shimmer;
 
 		const disposableScene = this.scene as unknown as {
 			onDisposeObservable?: {
@@ -147,12 +152,13 @@ export class UnderWaterEffect {
 
 	/** True when the player's eyes are currently below the water surface. */
 	public get isUnderwaterState(): boolean {
-		return this.isUnderwater;
+		return this.liquid === WATER_LIQUID;
 	}
 
 	/**
-	 * Re-evaluates underwater state from the camera eye position.
-	 * Returns the current state for consumers such as fog handling.
+	 * Re-evaluates the eye's liquid state from the camera eye position.
+	 * Returns true while the eye is inside any liquid, for consumers such as
+	 * fog handling.
 	 */
 	public updateFromCamera(): boolean {
 		if (this.disposed) {
@@ -160,16 +166,16 @@ export class UnderWaterEffect {
 		}
 
 		const { x, y, z } = this.camera.position;
-		const nextState = isEyeUnderwater(x, y, z);
+		const nextLiquid = getEyeLiquid(x, y, z);
 
-		this.isUnderwater = nextState;
+		this.liquid = nextLiquid;
 
-		if (nextState !== this.wasUnderwater) {
-			this.wasUnderwater = nextState;
+		if (nextLiquid !== this.wasLiquid) {
+			this.wasLiquid = nextLiquid;
 			this.#applyOverlay();
 		}
 
-		return nextState;
+		return nextLiquid !== null;
 	}
 
 	#applyOverlay(): void {
@@ -183,7 +189,17 @@ export class UnderWaterEffect {
 			this.hideTimer = null;
 		}
 
-		if (this.isUnderwater) {
+		const liquid = this.liquid;
+
+		if (liquid !== null) {
+			overlay.style.background = liquid.overlayCss;
+
+			if (this.shimmer) {
+				this.shimmer.style.backgroundImage = buildShimmerBackgroundImage(
+					liquid.shimmerCss,
+				);
+			}
+
 			overlay.style.display = "block";
 
 			// Reading offsetWidth makes the browser commit display:block before
@@ -198,7 +214,7 @@ export class UnderWaterEffect {
 		this.hideTimer = window.setTimeout(() => {
 			this.hideTimer = null;
 
-			if (!this.disposed && !this.isUnderwater && this.overlay) {
+			if (!this.disposed && this.liquid === null && this.overlay) {
 				this.overlay.style.display = "none";
 			}
 		}, OVERLAY_HIDE_DELAY_MS);
@@ -212,8 +228,8 @@ export class UnderWaterEffect {
 		this.disposed = true;
 		this.material = null;
 		this.postProcess = null;
-		this.isUnderwater = false;
-		this.wasUnderwater = false;
+		this.liquid = null;
+		this.wasLiquid = null;
 
 		if (this.hideTimer !== null) {
 			window.clearTimeout(this.hideTimer);
@@ -222,6 +238,7 @@ export class UnderWaterEffect {
 
 		this.overlay?.remove();
 		this.overlay = null;
+		this.shimmer = null;
 
 		if (this.styleAcquired) {
 			this.styleAcquired = false;
@@ -230,24 +247,25 @@ export class UnderWaterEffect {
 	}
 }
 
-// The cache primarily eliminates the duplicate call made by the overlay and
+// The cache primarily eliminates the duplicate calls made by the overlay and
 // fog systems for the same eye position. Exact coordinates are deliberately
-// used because crossing a partial-water surface can happen within one voxel.
+// used because crossing a partial-liquid surface can happen within one voxel.
 let underwaterCacheEyeX = NaN;
 let underwaterCacheEyeY = NaN;
 let underwaterCacheEyeZ = NaN;
-let underwaterCacheResult = false;
+let underwaterCacheLiquid: LiquidDefinition | null = null;
 let underwaterCacheTimestamp = 0;
 
 /**
- * Returns true when the supplied eye position is below the local water
- * surface, including partially filled flowing-water blocks.
+ * Liquid definition the supplied eye position is inside (below the local
+ * surface, including partially filled flowing blocks), or null when the eye
+ * is in air.
  */
-export function isEyeUnderwater(
+export function getEyeLiquid(
 	eyeX: number,
 	eyeY: number,
 	eyeZ: number,
-): boolean {
+): LiquidDefinition | null {
 	// Compare coordinates first. This avoids calling performance.now() for the
 	// common case where the camera has moved since the previous invocation.
 	if (
@@ -258,7 +276,7 @@ export function isEyeUnderwater(
 		const now = performance.now();
 
 		if (now - underwaterCacheTimestamp < UNDERWATER_CACHE_VALID_MS) {
-			return underwaterCacheResult;
+			return underwaterCacheLiquid;
 		}
 	}
 
@@ -267,29 +285,44 @@ export function isEyeUnderwater(
 	const blockZ = Math.floor(eyeZ);
 
 	const blockId = getBlockByWorldCoords(blockX, blockY, blockZ);
-	let result = false;
+	const definition = getLiquidDefinitionByBlockId(blockId);
+	let result: LiquidDefinition | null = null;
 
-	if (blockId === BlockType.Water) {
+	if (definition !== null) {
 		const aboveId = getBlockByWorldCoords(blockX, blockY + 1, blockZ);
 
 		let surfaceY = blockY + 1;
 
-		// Only retrieve and decode the block state when the water voxel is not
-		// covered by another water voxel. Covered water always fills the voxel.
-		if (aboveId !== BlockType.Water) {
+		// The surface only dips below the voxel top when the same liquid is not
+		// stacked above; covered liquid always fills the whole voxel.
+		if (getLiquidDefinitionByBlockId(aboveId) !== definition) {
 			const state = getBlockStateByWorldCoords(blockX, blockY, blockZ);
-			const level = getWaterLevel(blockId, state);
+			const level = getLiquidLevel(blockId, state);
 			surfaceY -= level / 8;
 		}
 
-		result = eyeY < surfaceY;
+		if (eyeY < surfaceY) {
+			result = definition;
+		}
 	}
 
 	underwaterCacheEyeX = eyeX;
 	underwaterCacheEyeY = eyeY;
 	underwaterCacheEyeZ = eyeZ;
-	underwaterCacheResult = result;
+	underwaterCacheLiquid = result;
 	underwaterCacheTimestamp = performance.now();
 
 	return result;
+}
+
+/**
+ * Returns true when the supplied eye position is below the local water
+ * surface, including partially filled flowing-water blocks.
+ */
+export function isEyeUnderwater(
+	eyeX: number,
+	eyeY: number,
+	eyeZ: number,
+): boolean {
+	return getEyeLiquid(eyeX, eyeY, eyeZ) === WATER_LIQUID;
 }

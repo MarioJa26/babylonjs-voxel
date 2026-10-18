@@ -1,4 +1,5 @@
-import { WATER_BLOCK_ID } from "../World/Chunk/Worker/ChunkMesherConstants";
+import { isLiquidBlockId } from "../World/Liquid/LiquidRegistry";
+import { BlockType } from "../World/Texture/BlockType";
 import {
 	CAVE_FLAG_CARVED,
 	CAVE_FLAG_TUNNEL_CORE,
@@ -131,14 +132,14 @@ export class UndergroundGenerator {
 
 		/*
 		 * Avoid constructing the cave-noise grid for chunks containing only
-		 * air and water.
+		 * fluids (air, water, lava, oil).
 		 */
 		let hasSolidBlock = false;
 
 		for (let index = 0; index < chunkVolume; index++) {
 			const blockId = blocks[index];
 
-			if (blockId !== 0 && blockId !== WATER_BLOCK_ID) {
+			if (blockId !== 0 && !isLiquidBlockId(blockId)) {
 				hasSolidBlock = true;
 				break;
 			}
@@ -386,7 +387,7 @@ export class UndergroundGenerator {
 			const localY = _carvedY[i];
 			const localZ = _carvedZ[i];
 
-			const blockId = chunkWorldY + localY < lavaLevel ? 24 : 0;
+			const blockId = chunkWorldY + localY < lavaLevel ? BlockType.Lava : 0;
 
 			placeBlockLocal(localX, localY, localZ, blockId, true);
 		}

@@ -156,9 +156,10 @@
 	{
 		"id": 1018,
 		"name": "Bucket",
-		"description": "Holds water or lava.",
+		"description": "Holds water, lava or oil.\nRight-click a liquid source to fill it.",
 		"icon": "/texture/items/item/bucket/bucket.png",
-		"maxStack": 16
+		"maxStack": 16,
+		"useAction": "fill_bucket"
 	},
 	{
 		"id": 1019,
@@ -591,5 +592,32 @@
 		"useAction": "place_block",
 		"blockId": 162,
 		"blockState": 0
+	},
+	{
+		"id": 1052,
+		"name": "Water Bucket",
+		"description": "A bucket of water.\nRight-click a cauldron to pour it in.",
+		"icon": "/texture/items/item/bucket/water_bucket.png",
+		"maxStack": 16,
+		"useAction": "empty_bucket",
+		"fluidBlockId": 30
+	},
+	{
+		"id": 1053,
+		"name": "Lava Bucket",
+		"description": "A bucket of lava.\nHandle with care.",
+		"icon": "/texture/items/item/bucket/lava_bucket.png",
+		"maxStack": 16,
+		"useAction": "empty_bucket",
+		"fluidBlockId": 163
+	},
+	{
+		"id": 1054,
+		"name": "Oil Bucket",
+		"description": "A bucket of crude oil.\nDark, thick and cold.",
+		"icon": "/texture/items/item/bucket/oil_bucket.png",
+		"maxStack": 16,
+		"useAction": "empty_bucket",
+		"fluidBlockId": 164
 	}
 ]

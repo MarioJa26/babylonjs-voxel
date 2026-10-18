@@ -1,3 +1,4 @@
+import { isLiquidSourceId } from "@/code/World/Liquid/LiquidRegistry";
 import { BlockType } from "@/code/World/Texture/BlockType";
 import { TextureDefinitionMap } from "@/code/World/Texture/TextureDefinitions";
 import { getAudioOutput, makeNoiseBuffer } from "./AudioManager";
@@ -38,7 +39,7 @@ export function surfaceKindForDef(
 	blockId: number,
 	def: SurfaceBlockInfo | undefined,
 ): SurfaceKind {
-	if (blockId === BlockType.Water) {
+	if (isLiquidSourceId(blockId)) {
 		return "water";
 	}
 

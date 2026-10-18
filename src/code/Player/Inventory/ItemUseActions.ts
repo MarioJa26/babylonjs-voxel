@@ -8,9 +8,27 @@ import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { MobTypeId } from "@/code/Entities/MobConfig";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "@/code/Maps/Map1";
-import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import {
+	deleteBlock,
+	getBlockByWorldCoords,
+	setBlock,
+} from "@/code/World/Chunk/ChunkLoadingSystem";
+import {
+	CAULDRON_BUCKET_AMOUNT,
+	CAULDRON_MAX_AMOUNT,
+	getCauldronAmount,
+	getCauldronLiquid,
+	getCauldronLiquidType,
+	getCauldronLiquidTypeFor,
+	getLiquidDefinitionByBlockId,
+	isLiquidSourceBlock,
+	makeCauldronState,
+} from "@/code/World/Liquid/LiquidRegistry";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import {
+	type BlockRaycastHit,
+	getPlacementHit,
+	pickLiquidTarget,
 	pickTarget,
 	pickWaterTarget,
 } from "../Hud/BlockHighlight/BlockRaycaster";
@@ -445,6 +463,203 @@ function useFood(player: Player): void {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Buckets
+// ---------------------------------------------------------------------------
+
+/** Item ID of the empty bucket given back after any pour. */
+const EMPTY_BUCKET_ITEM_ID = 1018;
+
+/**
+ * `pickLiquidTarget` / `pickTarget` / `getPlacementHit` all return module-shared
+ * scratch objects. Capturing the primitive fields right after a pick keeps two
+ * consecutive picks from aliasing the same struct.
+ */
+type RayHitSnapshot = {
+	x: number;
+	y: number;
+	z: number;
+	t: number;
+	blockId: number;
+	blockState: number;
+};
+
+function snapshotRayHit(hit: BlockRaycastHit | null): RayHitSnapshot | null {
+	if (hit === null) return null;
+	return {
+		x: hit.x,
+		y: hit.y,
+		z: hit.z,
+		t: hit.t,
+		blockId: hit.blockId,
+		blockState: hit.blockState,
+	};
+}
+
+/** Blocks an emptied bucket may pour into: air and decorative cross plants. */
+function isBucketReplaceableBlock(blockId: number): boolean {
+	return (
+		blockId === BlockType.Air ||
+		blockId === BlockType.GrassCross ||
+		blockId === BlockType.SavannahGrassCross ||
+		blockId === BlockType.Grass006Cross
+	);
+}
+
+/**
+ * Swap one held selected stack item for `newItemId` (empty <-> filled bucket).
+ * Transforms happen in every gamemode, matching "the bucket changes hands"
+ * semantics; the world edit itself is what differs in creative.
+ */
+function replaceHeldBucket(player: Player, newItemId: number): void {
+	const inventory = player.playerInventory;
+	const hotbar = inventory.inventory[0];
+	const item = hotbar?.[player.playerHud.selectedHotbarSlot]?.item;
+	if (item == null) return;
+
+	inventory.removeItems(item.itemId, 1);
+	inventory.createAndAddItem(newItemId, 1);
+}
+
+function notifyBlockBroken(
+	player: Player,
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+): void {
+	const networkManager = player.networkManager;
+	if (networkManager?.isConnected === true) {
+		networkManager.onBlockBroken(x, y, z, blockId);
+	}
+}
+
+function notifyBlockPlaced(
+	player: Player,
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+	blockState: number,
+): void {
+	const networkManager = player.networkManager;
+	if (networkManager?.isConnected === true) {
+		networkManager.onBlockPlaced(x, y, z, blockId, blockState);
+	}
+}
+
+/**
+ * Fill the held empty bucket. Priority: a full cauldron the player is
+ * looking at, otherwise a liquid source block (flowing levels refuse).
+ */
+function fillBucket(player: Player): void {
+	const liquidHit = snapshotRayHit(pickLiquidTarget(player));
+	const blockHit = snapshotRayHit(pickTarget(player));
+
+	const liquidIsCloser =
+		liquidHit !== null && (blockHit === null || liquidHit.t <= blockHit.t);
+
+	if (liquidIsCloser) {
+		if (!isLiquidSourceBlock(liquidHit.blockId, liquidHit.blockState)) return;
+		const liquid = getLiquidDefinitionByBlockId(liquidHit.blockId);
+		if (liquid === null) return;
+
+		deleteBlock(liquidHit.x, liquidHit.y, liquidHit.z);
+		notifyBlockBroken(
+			player,
+			liquidHit.x,
+			liquidHit.y,
+			liquidHit.z,
+			liquidHit.blockId,
+		);
+		replaceHeldBucket(player, liquid.bucketItemId);
+		return;
+	}
+
+	if (blockHit === null || blockHit.blockId !== BlockType.Cauldron) return;
+	if (getCauldronAmount(blockHit.blockState) !== CAULDRON_MAX_AMOUNT) return;
+
+	const liquid = getCauldronLiquid(blockHit.blockState);
+	if (liquid === null) return;
+
+	setBlock(blockHit.x, blockHit.y, blockHit.z, BlockType.Cauldron, 0);
+	notifyBlockPlaced(
+		player,
+		blockHit.x,
+		blockHit.y,
+		blockHit.z,
+		BlockType.Cauldron,
+		0,
+	);
+	replaceHeldBucket(player, liquid.bucketItemId);
+}
+
+/**
+ * Empty the held filled bucket. Priority: a non-full cauldron the player is
+ * looking at (empty or holding the same liquid), otherwise pour a source
+ * block into the air cell adjacent to the targeted block face.
+ */
+function emptyBucket(player: Player): void {
+	const inventory = player.playerInventory;
+	const hotbar = inventory.inventory[0];
+	const item = hotbar?.[player.playerHud.selectedHotbarSlot]?.item;
+	if (item == null) return;
+
+	const definition = getRegisteredItemById(item.itemId);
+	const fluidBlockId = definition?.fluidBlockId;
+	if (fluidBlockId === undefined) return;
+
+	const liquid = getLiquidDefinitionByBlockId(fluidBlockId);
+	if (liquid === null) return;
+
+	const liquidHit = snapshotRayHit(pickLiquidTarget(player));
+	const blockHit = snapshotRayHit(pickTarget(player));
+
+	const cauldronIsCloser =
+		blockHit !== null &&
+		blockHit.blockId === BlockType.Cauldron &&
+		(liquidHit === null || blockHit.t <= liquidHit.t);
+
+	if (cauldronIsCloser) {
+		const amount = getCauldronAmount(blockHit.blockState);
+		if (amount >= CAULDRON_MAX_AMOUNT) return;
+
+		const liquidType = getCauldronLiquidTypeFor(liquid);
+		const existingType = getCauldronLiquidType(blockHit.blockState);
+		if (existingType !== 0 && existingType !== liquidType) return;
+
+		const newAmount = amount + CAULDRON_BUCKET_AMOUNT;
+		const newState = makeCauldronState(
+			liquidType,
+			newAmount > CAULDRON_MAX_AMOUNT ? CAULDRON_MAX_AMOUNT : newAmount,
+		);
+
+		setBlock(blockHit.x, blockHit.y, blockHit.z, BlockType.Cauldron, newState);
+		notifyBlockPlaced(
+			player,
+			blockHit.x,
+			blockHit.y,
+			blockHit.z,
+			BlockType.Cauldron,
+			newState,
+		);
+		replaceHeldBucket(player, EMPTY_BUCKET_ITEM_ID);
+		return;
+	}
+
+	const hit = getPlacementHit(player);
+	if (hit === null) return;
+
+	const x = hit.pos.x;
+	const y = hit.pos.y;
+	const z = hit.pos.z;
+	if (!isBucketReplaceableBlock(getBlockByWorldCoords(x, y, z))) return;
+
+	setBlock(x, y, z, fluidBlockId, 0);
+	notifyBlockPlaced(player, x, y, z, fluidBlockId, 0);
+	replaceHeldBucket(player, EMPTY_BUCKET_ITEM_ID);
+}
+
 export const ItemUseActions: Readonly<Record<string, ItemUseAction>> = {
 	use_tool: useTool,
 	open_crafting: openCrafting,
@@ -452,4 +667,6 @@ export const ItemUseActions: Readonly<Record<string, ItemUseAction>> = {
 	use_spawn_egg: useSpawnEgg,
 	place_boat: placeBoat,
 	use_food: useFood,
+	fill_bucket: fillBucket,
+	empty_bucket: emptyBucket,
 };

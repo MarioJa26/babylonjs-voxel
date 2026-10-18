@@ -69,10 +69,14 @@ import {
 	publishGpuPressure,
 	resetGpuPressure,
 } from "../World/Light/liteGpuBuffer";
+import {
+	getLiquidDefinitionBySourceId,
+	isLiquidBlockId,
+} from "../World/Liquid/LiquidRegistry";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import { onSpawnPrepared } from "../World/SpawnPoint";
-import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
+import { isCollidableBlock } from "../World/Texture/BlockType";
 import {
 	type BlockRaycastHit,
 	pickTarget,
@@ -510,6 +514,15 @@ export class PlayerLoopController {
 			}
 		}
 
+		// Liquid contact: any body voxel inside lava burns at the registry's
+		// damage-per-second (Creative immune, like starvation).
+		if (stats.gamemode !== Gamemodes.Creative) {
+			const liquidDps = this.#liquidContactDamagePerSecond(frame);
+			if (liquidDps > 0) {
+				stats.takeDamage(liquidDps * frame.dtSec);
+			}
+		}
+
 		stats.update(
 			frame.dtSec,
 			vehicle.isSprinting,
@@ -889,7 +902,7 @@ export class PlayerLoopController {
 		for (let d = 0; d <= 2; d++) {
 			const blockId = getBlockByWorldCoords(blockX, feetBlockY - d, blockZ);
 
-			if (blockId === BlockType.Water) {
+			if (isLiquidBlockId(blockId)) {
 				if (playFootstep(blockId, intensity)) this.#strideDistance = 0;
 				return;
 			}
@@ -902,6 +915,30 @@ export class PlayerLoopController {
 
 		// No ground found (world edge): drop the pending step.
 		this.#strideDistance = 0;
+	}
+
+	/**
+	 * Highest contact damage-per-second among the liquid voxels the body
+	 * overlaps (water and oil are 0; lava is lethal). Mirrors the vehicle's
+	 * three-voxel liquid probe so contact and swimming agree.
+	 */
+	#liquidContactDamagePerSecond(frame: PlayerFrameState): number {
+		const x = Math.floor(frame.playerX);
+		const z = Math.floor(frame.playerZ);
+		const baseY = Math.floor(frame.playerY);
+		let dps = 0;
+
+		for (let dy = -1; dy <= 1; dy++) {
+			const definition = getLiquidDefinitionBySourceId(
+				getBlockByWorldCoords(x, baseY + dy, z),
+			);
+
+			if (definition !== null && definition.damagePerSecond > dps) {
+				dps = definition.damagePerSecond;
+			}
+		}
+
+		return dps;
 	}
 
 	updateCaveState(playerY: number): boolean {

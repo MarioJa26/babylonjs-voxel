@@ -10,7 +10,7 @@ import {
 	type RegionConfig,
 } from "./RegionFeature";
 
-const LAVA = 24;
+const LAVA = BlockType.Lava;
 const BASALT = BlockType.BasaltBlock;
 
 /**

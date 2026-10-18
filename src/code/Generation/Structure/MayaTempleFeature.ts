@@ -915,7 +915,7 @@ export class MayaTempleFeature implements IWorldFeature {
 							x === r.x1 - 1 ||
 							z === r.z0 + 1 ||
 							z === r.z1 - 1;
-						if (edge) b.set(x, room.floorY, z, BlockType.MetalGrateRusty);
+						if (edge) b.set(x, room.floorY, z, BlockType.Lava);
 					}
 				}
 				b.disc(mid, room.floorY - 1, midZ, 3, BlockType.Obsidian);
@@ -939,8 +939,8 @@ export class MayaTempleFeature implements IWorldFeature {
 	}
 
 	/**
-	 * Molten pools at the bottom of the shaft. MetalGrateRusty is this game's
-	 * lava surrogate and is also a light source, so it doubles as the deepest
+	 * Molten pools at the bottom of the shaft. Lava is both the hazard and a
+	 * light source (registry emission 15), so it doubles as the deepest
 	 * level's ambient light.
 	 */
 	private emitDeeperHazards(
@@ -964,7 +964,7 @@ export class MayaTempleFeature implements IWorldFeature {
 			for (let x = r.x0 + 2; x <= r.x1 - 2; x += 5) {
 				for (let z = r.z0 + 2; z <= r.z1 - 2; z += 5) {
 					if ((x + z) % 3 !== 0) continue;
-					b.disc(x, room.floorY, z, 1, BlockType.MetalGrateRusty);
+					b.disc(x, room.floorY, z, 1, BlockType.Lava);
 				}
 			}
 		}

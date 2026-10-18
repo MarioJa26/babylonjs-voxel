@@ -1,5 +1,7 @@
 ﻿import {
 	filtersFullSunlight,
+	LAVA_BLOCK_ID,
+	OIL_BLOCK_ID,
 	WATER_BLOCK_ID,
 } from "../World/Chunk/Worker/ChunkMesherConstants";
 import {
@@ -44,6 +46,8 @@ export class LightGenerator {
 		const lut = new Uint8Array(1024);
 		lut[0] = 1;
 		lut[WATER_BLOCK_ID] = 1;
+		lut[LAVA_BLOCK_ID] = 1;
+		lut[OIL_BLOCK_ID] = 1;
 		lut[60] = 1;
 		lut[61] = 1;
 		lut[64] = 1;
@@ -51,7 +55,16 @@ export class LightGenerator {
 		lut[91] = 1;
 		// Virtual shape variants inherit source transparency (glass stairs
 		// read as glass, not opaque).
-		for (const source of [WATER_BLOCK_ID, 60, 61, 64, 66, 91]) {
+		for (const source of [
+			WATER_BLOCK_ID,
+			LAVA_BLOCK_ID,
+			OIL_BLOCK_ID,
+			60,
+			61,
+			64,
+			66,
+			91,
+		]) {
 			const base = 500 + (source - 1) * 5;
 			for (let i = 0; i < 5; i++) {
 				const virtualId = base + i;
@@ -77,6 +90,7 @@ export class LightGenerator {
 		lut[11] = 15;
 		lut[24] = 15;
 		lut[94] = 15;
+		lut[LAVA_BLOCK_ID] = 15;
 		return lut;
 	})();
 
@@ -759,6 +773,8 @@ export class LightGenerator {
 			return (
 				source === 0 ||
 				source === WATER_BLOCK_ID ||
+				source === LAVA_BLOCK_ID ||
+				source === OIL_BLOCK_ID ||
 				source === 60 ||
 				source === 61 ||
 				source === 64 ||

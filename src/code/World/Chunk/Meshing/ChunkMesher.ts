@@ -10,7 +10,11 @@ import { vec3Zero } from "@/code/Lib/Math";
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
 import MapFog from "@/code/Maps/MapFog";
-import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
+import { getEyeLiquid } from "@/code/Maps/UnderWaterEffect";
+import {
+	type LiquidDefinition,
+	WATER_LIQUID,
+} from "@/code/World/Liquid/LiquidRegistry";
 import { GLOBAL_VALUES } from "../../GLOBAL_VALUES";
 import {
 	createLod2CutoutMaterial,
@@ -327,18 +331,23 @@ function materialUsesFog(material: ShaderMaterial): boolean {
 function pushFogUniforms(): void {
 	populateMaterialList();
 
-	let underwater = false;
+	let liquid: LiquidDefinition | null = null;
 	const scene = sceneRef;
 
 	if (scene?.camera) {
 		const position = getCameraPosition(scene.camera);
 
-		underwater = isEyeUnderwater(position.x, position.y, position.z);
+		liquid = getEyeLiquid(position.x, position.y, position.z);
 	}
 
-	const start = MapFog.getFogStart(underwater);
-	const end = MapFog.getFogEnd(underwater);
-	const color = MapFog.getFogColor(underwater);
+	// Water keeps the MapFog values (including dev overrides); lava and oil
+	// use their registry fog so the sky matches the dense overlay.
+	const underwater = liquid !== null;
+	const liquidFog = underwater && liquid !== WATER_LIQUID ? liquid : null;
+
+	const start = liquidFog ? liquidFog.fogStart : MapFog.getFogStart(underwater);
+	const end = liquidFog ? liquidFog.fogEnd : MapFog.getFogEnd(underwater);
+	const color = liquidFog ? liquidFog.fogColor : MapFog.getFogColor(underwater);
 
 	const r = color[0];
 	const g = color[1];

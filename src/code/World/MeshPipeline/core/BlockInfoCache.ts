@@ -25,6 +25,8 @@ import {
 } from "../../Chunk/DataStructures/BlockEncoding";
 import {
 	BLOCK_TYPE,
+	LAVA_BLOCK_ID,
+	OIL_BLOCK_ID,
 	WATER_BLOCK_ID,
 } from "../../Chunk/Worker/ChunkMesherConstants";
 import {
@@ -195,7 +197,8 @@ export function getBlockTint(blockId: number): number {
 
 const MATERIAL_TYPE_LUT_SIZE = 2048;
 const MATERIAL_TYPE_LUT: Uint8Array = new Uint8Array(MATERIAL_TYPE_LUT_SIZE);
-for (const id of [WATER_BLOCK_ID, 60, 61]) {
+// Every liquid renders through the transparent (water/cutout) pipeline.
+for (const id of [WATER_BLOCK_ID, LAVA_BLOCK_ID, OIL_BLOCK_ID, 60, 61]) {
 	MATERIAL_TYPE_LUT[id] = MaterialType.WaterOrGlass;
 	for (const virtualId of getVirtualBlockIdsForSource(id)) {
 		if (virtualId >= 0 && virtualId < MATERIAL_TYPE_LUT_SIZE) {
@@ -220,7 +223,13 @@ export function getMaterialType(blockId: number): MaterialType {
 		// LUT range missed it — fall through to the source check below.
 	}
 	const source = getSourceBlockId(id);
-	if (source === WATER_BLOCK_ID || source === 60 || source === 61) {
+	if (
+		source === WATER_BLOCK_ID ||
+		source === LAVA_BLOCK_ID ||
+		source === OIL_BLOCK_ID ||
+		source === 60 ||
+		source === 61
+	) {
 		return MaterialType.WaterOrGlass;
 	}
 	return MaterialType.Default;

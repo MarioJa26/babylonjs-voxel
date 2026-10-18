@@ -1,6 +1,6 @@
 // MeshPipeline/core/VoxelMaskExtractor.ts
 
-import { WATER_BLOCK_ID } from "../../Chunk/Worker/ChunkMesherConstants";
+import { isLiquidSourceId } from "../../Liquid/LiquidRegistry";
 import {
 	FACE_NX,
 	FACE_NY,
@@ -532,17 +532,20 @@ function processCell(
 	let currSourceId = -1;
 	let nbrSourceId = -1;
 
-	let waterCurrLevel = -1;
-	let waterNbrLevel = -1;
+	let liquidCurrLevel = -1;
+	let liquidNbrLevel = -1;
 
-	// IDs are only needed for water/glass interface and water-level behavior.
-	// Virtual variants resolve to their source for comparison so glass_01
-	// cube vs glass_01 stairs (same source) cull like the same block.
+	// IDs are only needed for liquid/glass interface and liquid-level
+	// behavior. Virtual variants resolve to their source for comparison so
+	// glass_01 cube vs glass_01 stairs (same source) cull like the same
+	// block, and any two columns of the SAME liquid compare by level.
 	const bothWaterGlass =
 		currSolid !== 0 &&
 		nbrSolid !== 0 &&
 		currWaterGlass !== 0 &&
 		nbrWaterGlass !== 0;
+
+	let bothSameLiquid = false;
 
 	if (bothWaterGlass) {
 		currId = getIdFromCombined(currCombined);
@@ -551,26 +554,26 @@ function processCell(
 		currSourceId = getSourceBlockId(currId);
 		nbrSourceId = getSourceBlockId(nbrId);
 
-		const bothWater =
-			currSourceId === WATER_BLOCK_ID && nbrSourceId === WATER_BLOCK_ID;
+		bothSameLiquid =
+			currSourceId === nbrSourceId && isLiquidSourceId(currSourceId);
 
-		if (bothWater) {
-			waterCurrLevel =
+		if (bothSameLiquid) {
+			liquidCurrLevel =
 				(currentPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
-			waterNbrLevel =
+			liquidNbrLevel =
 				(neighborPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
 		}
 
 		if (currSourceId === nbrSourceId) {
 			// Same-source glass (e.g. glass cube vs glass stairs) never shows
 			// an internal face, at any level.
-			if (!bothWater) {
+			if (!bothSameLiquid) {
 				return;
 			}
 
-			// Equal-level water columns are hidden. Differing-level columns
+			// Equal-level liquid columns are hidden. Differing-level columns
 			// fall through to the sliver path below.
-			if (waterCurrLevel === waterNbrLevel) {
+			if (liquidCurrLevel === liquidNbrLevel) {
 				return;
 			}
 		}
@@ -647,14 +650,22 @@ function processCell(
 			return;
 		}
 
-		if (
-			preferCurrent
-				? currSourceId === WATER_BLOCK_ID
-				: nbrSourceId === WATER_BLOCK_ID
-		) {
+		const emitSourceId = preferCurrent ? currSourceId : nbrSourceId;
+
+		if (isLiquidSourceId(emitSourceId)) {
 			packedMask &= ~(WATER_LEVEL_MASK_3 << WATER_SHALLOWER_SHIFT);
 
-			if (isWaterAt(blockArr, session.ps, session.ps2, bx, by + 1, bz)) {
+			if (
+				isSameLiquidAt(
+					blockArr,
+					session.ps,
+					session.ps2,
+					bx,
+					by + 1,
+					bz,
+					emitSourceId,
+				)
+			) {
 				packedMask |= WATER_ABOVE_MASK;
 			}
 		}
@@ -702,10 +713,11 @@ function processCell(
 			(currTransparent !== 0 && nbrTransparent === 0) ||
 			currClosesFace === 0);
 
-	// Special case: adjacent water columns of different levels need a sliver.
+	// Special case: adjacent columns of the SAME liquid at different levels
+	// need a sliver face on the shallower side of the step.
 	if (!emitCurrent && !emitNeighbor) {
-		if (waterCurrLevel >= 0 && waterCurrLevel !== waterNbrLevel) {
-			if (waterCurrLevel > waterNbrLevel) {
+		if (liquidCurrLevel >= 0 && liquidCurrLevel !== liquidNbrLevel) {
+			if (liquidCurrLevel > liquidNbrLevel) {
 				emitCurrent = true;
 			} else {
 				emitNeighbor = true;
@@ -737,20 +749,23 @@ function processCell(
 		return;
 	}
 
-	// Water state bits are only ever packed when the emitting block's source
-	// is water. When the opposite side is not water/glass its source ID was
-	// never resolved, so fall back to a packed-value resolve for the emitter.
-	const emittingIsWater = emitCurrent
-		? currWaterGlass !== 0 &&
-			(currSourceId !== -1
-				? currSourceId === WATER_BLOCK_ID
-				: getSourceBlockId(getIdFromCombined(currCombined)) === WATER_BLOCK_ID)
-		: nbrWaterGlass !== 0 &&
-			(nbrSourceId !== -1
-				? nbrSourceId === WATER_BLOCK_ID
-				: getSourceBlockId(getIdFromCombined(nbrCombined)) === WATER_BLOCK_ID);
+	// Liquid state bits are only ever packed when the emitting block's source
+	// is a liquid. When the opposite side is not water/glass its source ID
+	// was never resolved, so fall back to a packed-value resolve for the
+	// emitter.
+	const emittingSourceId = emitCurrent
+		? currSourceId !== -1
+			? currSourceId
+			: getSourceBlockId(getIdFromCombined(currCombined))
+		: nbrSourceId !== -1
+			? nbrSourceId
+			: getSourceBlockId(getIdFromCombined(nbrCombined));
 
-	if (emittingIsWater) {
+	const emittingIsLiquid =
+		(emitCurrent ? currWaterGlass !== 0 : nbrWaterGlass !== 0) &&
+		isLiquidSourceId(emittingSourceId);
+
+	if (emittingIsLiquid) {
 		packedMask &= ~(WATER_LEVEL_MASK_3 << WATER_SHALLOWER_SHIFT);
 
 		// waterAbove must reflect the block whose top defines the face.
@@ -760,7 +775,7 @@ function processCell(
 		let aboveY = by;
 		let aboveZ = bz;
 
-		if (waterCurrLevel >= 0 && waterCurrLevel > waterNbrLevel) {
+		if (liquidCurrLevel >= 0 && liquidCurrLevel > liquidNbrLevel) {
 			aboveX = nx;
 			aboveY = ny;
 			aboveZ = nz;
@@ -771,22 +786,30 @@ function processCell(
 		}
 
 		if (
-			isWaterAt(blockArr, session.ps, session.ps2, aboveX, aboveY + 1, aboveZ)
+			isSameLiquidAt(
+				blockArr,
+				session.ps,
+				session.ps2,
+				aboveX,
+				aboveY + 1,
+				aboveZ,
+				emittingSourceId,
+			)
 		) {
 			packedMask |= WATER_ABOVE_MASK;
 		}
 	}
 
-	if (waterCurrLevel >= 0 && waterCurrLevel !== waterNbrLevel) {
+	if (liquidCurrLevel >= 0 && liquidCurrLevel !== liquidNbrLevel) {
 		let tallerLevel: number;
 		let shallowerLevel: number;
 
-		if (waterCurrLevel > waterNbrLevel) {
-			tallerLevel = waterCurrLevel;
-			shallowerLevel = waterNbrLevel;
+		if (liquidCurrLevel > liquidNbrLevel) {
+			tallerLevel = liquidCurrLevel;
+			shallowerLevel = liquidNbrLevel;
 		} else {
-			tallerLevel = waterNbrLevel;
-			shallowerLevel = waterCurrLevel;
+			tallerLevel = liquidNbrLevel;
+			shallowerLevel = liquidCurrLevel;
 		}
 
 		// Bit layout, must match FaceEmitter.decode:
@@ -808,17 +831,18 @@ function processCell(
 	lightMask[outIndex] = (packedAO & 0xff) | ((packedLightOnly & 0xff) << 8);
 }
 
-function isWaterAt(
+function isSameLiquidAt(
 	blockArr: Uint16Array,
 	ps: number,
 	ps2: number,
 	x: number,
 	y: number,
 	z: number,
+	sourceId: number,
 ): boolean {
 	return (
 		getSourceBlockId(
 			blockArr[x + 1 + (y + 1) * ps + (z + 1) * ps2] & BLOCK_ID_MASK,
-		) === WATER_BLOCK_ID
+		) === sourceId
 	);
 }

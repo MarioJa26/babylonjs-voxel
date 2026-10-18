@@ -15,6 +15,7 @@ import {
 	getTerrainBlockByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getBlockStateByWorldCoords } from "@/code/World/Chunk/Loading/ChunkWorldMutations";
+import { isLiquidBlockId } from "@/code/World/Liquid/LiquidRegistry";
 import {
 	FACE_ALL,
 	getCubeShapeIndex,
@@ -1128,6 +1129,16 @@ export function pickDroppedItem(player: Player): DroppedItem | null {
 
 export function pickWaterTarget(player: Player): BlockRaycastHit | null {
 	return raycastFirstBlock(player, (_x, _y, _z, id) => id === BlockType.Water);
+}
+
+/**
+ * First liquid block (any liquid, any level) along the look ray, or null.
+ * Like `pickWaterTarget`, this ignores non-liquid blocks in front — callers
+ * that must respect intervening terrain should compare `t` against
+ * `pickTarget`'s result (as the bucket actions do).
+ */
+export function pickLiquidTarget(player: Player): BlockRaycastHit | null {
+	return raycastFirstBlock(player, (_x, _y, _z, id) => isLiquidBlockId(id));
 }
 
 export function pickBlock(player: Player): number | null {

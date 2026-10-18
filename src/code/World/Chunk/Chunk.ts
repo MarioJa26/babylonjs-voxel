@@ -2,6 +2,7 @@ import type { Mesh } from "@babylonjs/lite";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { LIGHT_NIBBLE_MASK, SKY_LIGHT_SHIFT } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
+import { isLiquidBlockId } from "../Liquid/LiquidRegistry";
 import {
 	packBlockValue,
 	unpackBlockId,
@@ -51,7 +52,7 @@ import {
 	wrapLightHeader,
 	writeHeaderRow,
 } from "./Worker/ChunkLightHeader";
-import { BLOCK_TYPE, WATER_BLOCK_ID } from "./Worker/ChunkMesherConstants";
+import { BLOCK_TYPE } from "./Worker/ChunkMesherConstants";
 
 export { getChunkFast };
 
@@ -1556,14 +1557,15 @@ export class Chunk {
 
 	public computeFaceConnectivity(): number {
 		if (!this._hasVoxelData || this._isUniform) {
-			// Water is transparent: BFS must flood through open water exactly
-			// like air. (Mixed water already traverses via the flood-fill
-			// below; this just removes the uniform-vs-mixed inconsistency
-			// that collapsed reachability — and hid the ocean floor — as soon
-			// as the camera sat inside a uniform-water chunk while diving.)
+			// Liquids are transparent: BFS must flood through open water (and
+			// any other liquid) exactly like air. (Mixed liquid already
+			// traverses via the flood-fill below; this just removes the
+			// uniform-vs-mixed inconsistency that collapsed reachability —
+			// and hid the ocean floor — as soon as the camera sat inside a
+			// uniform-water chunk while diving.)
 			const mask =
 				this._isUniform &&
-				(this._uniformBlockId === 0 || this._uniformBlockId === WATER_BLOCK_ID)
+				(this._uniformBlockId === 0 || isLiquidBlockId(this._uniformBlockId))
 					? connectFacesMask(0x3f)
 					: 0;
 
