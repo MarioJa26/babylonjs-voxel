@@ -362,6 +362,7 @@ const TRANSPARENT_VERTEX_OPTIONS: VertexShaderOptions = {
 	vertexDiffuse: false,
 	rawUnits: false,
 	boundarySentinel: false,
+	boundaryFlag: true,
 	ao: true,
 	bakeShade: false,
 };
@@ -380,6 +381,7 @@ const CUTOUT_VERTEX_OPTIONS: VertexShaderOptions = {
 
 	rawUnits: false,
 	boundarySentinel: true,
+	boundaryFlag: true,
 	ao: true,
 	bakeShade: false,
 };

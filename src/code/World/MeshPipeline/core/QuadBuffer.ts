@@ -17,6 +17,9 @@ const META_DIAG = 1 << 4;
 const META_DIAG_VARIANT = 1 << 5;
 const META_RAW_DIM = 1 << 6;
 const META_POS_OFF_Z = 1 << 7;
+// Liquid quads never use diagonal metadata, so reuse that otherwise-unused
+// bit as an explicit positive chunk-boundary marker.
+const META_BOUNDARY = META_DIAG_VARIANT;
 
 const BYTES_PER_FACE = 12;
 const WORDS_PER_FACE = 3;
@@ -368,17 +371,17 @@ export class QuadBuffer {
 		packedBlock: number,
 		isWaterBody: boolean,
 	): void {
-		const sx = (x * POS_SCALE + 0.5) | 0;
+		let sx = (x * POS_SCALE + 0.5) | 0;
 		let sy = (y * POS_SCALE + 0.5) | 0;
-		const sz = (z * POS_SCALE + 0.5) | 0;
+		let sz = (z * POS_SCALE + 0.5) | 0;
 
 		if (
 			sx < 0 ||
 			sy < 0 ||
 			sz < 0 ||
-			sx >= BYTE_COORD_LIMIT ||
-			sy >= BYTE_COORD_LIMIT ||
-			sz >= BYTE_COORD_LIMIT
+			sx > BYTE_COORD_LIMIT ||
+			sy > BYTE_COORD_LIMIT ||
+			sz > BYTE_COORD_LIMIT
 		) {
 			return;
 		}
@@ -411,7 +414,11 @@ export class QuadBuffer {
 		} else {
 			let topScale: number;
 
-			if (!hasLevelPair && (packedBlock & WATER_ABOVE_MASK) !== 0) {
+			// A fed-from-above column renders full height (falling stream).
+			// For a level pair the step band must then extend to the block
+			// top as well — keeping the nominal level surface would leave a
+			// 1/8 hole in the stream wall where it meets a shallower body.
+			if ((packedBlock & WATER_ABOVE_MASK) !== 0) {
 				topScale = POS_SCALE;
 			} else {
 				// Equivalent to WATER_FRAC_SCALE[ownLevel].
@@ -437,14 +444,31 @@ export class QuadBuffer {
 			}
 		}
 
+		if (sy < 0 || sy > BYTE_COORD_LIMIT) {
+			return;
+		}
+
+		// A partial top surface intentionally moves down by ownLevel pixels, so
+		// only a full-height top remains on the exact positive boundary plane.
+		const boundaryPlane =
+			(axis === 0 && sx === BYTE_COORD_LIMIT) ||
+			(axis === 1 && sy === BYTE_COORD_LIMIT) ||
+			(axis === 2 && sz === BYTE_COORD_LIMIT);
+
+		// Packed positions are one byte wide. Keep the exact positive boundary
+		// at the last representable byte; the liquid boundary flag above tells
+		// the shader to restore the true plane.
+		if (sx === BYTE_COORD_LIMIT) sx = BYTE_COORD_LIMIT - 1;
+		if (sy === BYTE_COORD_LIMIT) sy = BYTE_COORD_LIMIT - 1;
+		if (sz === BYTE_COORD_LIMIT) sz = BYTE_COORD_LIMIT - 1;
+
 		const tileIndex = blockId * FaceName.Count + faceName;
-		// META_WATER overlaps the high bit of the 2-bit materialType field,
-		// which shaders decode as the boundary sentinel. Only true water
-		// bodies may carry it; other liquids (lava/oil) render through the
-		// cutout bucket, which keeps the sentinel enabled.
+		// META_WATER identifies animated water; META_BOUNDARY independently
+		// identifies the exact positive chunk plane for every liquid bucket.
 		const meta =
 			((materialType & 0x3) << 1) |
 			(isWaterBody ? META_WATER : 0) |
+			(boundaryPlane ? META_BOUNDARY : 0) |
 			(rawDim ? META_RAW_DIM : 0);
 
 		this.emitRaw(

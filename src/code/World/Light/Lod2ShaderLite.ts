@@ -245,6 +245,7 @@ interface PackedVertexOptions {
 	ao: boolean;
 	bakeShade: boolean;
 	boundarySentinel?: boolean;
+	boundaryFlag?: boolean;
 }
 
 /**
@@ -348,6 +349,7 @@ const TRANSPARENT_VERTEX_OPTIONS: PackedVertexOptions = {
 	ao: false,
 	bakeShade: true,
 	boundarySentinel: false,
+	boundaryFlag: true,
 };
 
 export function createLod2OpaqueMaterial(

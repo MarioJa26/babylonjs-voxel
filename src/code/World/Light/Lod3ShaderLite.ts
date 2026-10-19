@@ -210,6 +210,7 @@ interface Lod3VertexOptions {
 	ao: boolean;
 	bakeShade: boolean;
 	boundarySentinel?: boolean;
+	boundaryFlag?: boolean;
 }
 
 const LOD3_OPAQUE_VERTEX_OPTIONS: Lod3VertexOptions = {
@@ -246,6 +247,7 @@ const LOD3_TRANSPARENT_VERTEX_OPTIONS: Lod3VertexOptions = {
 	ao: false,
 	bakeShade: true,
 	boundarySentinel: false,
+	boundaryFlag: true,
 };
 
 interface Lod3MaterialRenderOptions {

@@ -38,6 +38,13 @@ export interface VertexShaderOptions {
 	 */
 	boundarySentinel?: boolean;
 	/**
+	 * Restore liquid quads whose packed coordinate is the exact positive
+	 * chunk boundary. This is separate from boundarySentinel because water
+	 * uses META_WATER, which makes the material sentinel decode as 3 for every
+	 * water face.
+	 */
+	boundaryFlag?: boolean;
+	/**
 	 * Emit the ambient-occlusion varying. Downsampled builds (lodStep > 1)
 	 * run with session.disableAO=true, which zeroes every face's packed AO
 	 * word — pass false there to drop the byte decode, the per-corner
@@ -502,6 +509,7 @@ export function buildPackedVertexWGSL(
 		vertexDiffuse: !bakeShade && (opts.vertexDiffuse ?? false),
 		rawUnits,
 		boundarySentinel: !rawUnits && (opts.boundarySentinel ?? true),
+		boundaryFlag: !rawUnits && (opts.boundaryFlag ?? false),
 		ao: opts.ao ?? true,
 		bakeShade,
 	};
@@ -544,9 +552,9 @@ ${Array.from(
 default: { return vec3<u32>(faceData0[i3], faceData0[i3 + 1u], faceData0[i3 + 2u]); }
 }`;
 
-	const boundaryRestoreBlock = o.boundarySentinel
+	const boundaryRestoreBlock = o.boundarySentinel || o.boundaryFlag
 		? `
-if (((metaByte >> 1u) & 3u) == 3u) {
+if (${o.boundarySentinel ? "(((metaByte >> 1u) & 3u) == 3u)" : "false"} || ${o.boundaryFlag ? "(((metaByte >> 5u) & 1u) != 0u)" : "false"}) {
 if (axis == 0u) {
 baseX += INV_POS;
 } else if (axis == 1u) {

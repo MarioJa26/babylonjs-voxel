@@ -67,9 +67,10 @@ type WritableNumberArray = number[] | Int32Array | Uint16Array | Uint32Array;
 // PERF: banks are typed to the exact arrays produced by
 // session.ensureMaskBank/ensureLightBank so every access site stays monomorphic.
 //
-// Slice -1 compares the padded border layer against the first interior layer
-// and is only computed when the neighbor chunk exists; slice size-1 never
-// emits (no chunk beyond the +axis boundary). Both stay zero via pre-fill.
+// Boundary slices are owned by the positive-side chunk when both chunks are
+// present. If a negative-side neighbor is absent, the current chunk emits a
+// fallback -axis slice against its cleared air padding; the positive-side
+// fallback is emitted by the current chunk at the far boundary.
 // ---------------------------------------------------------------------------
 
 export function extractAllSliceMasksX(
@@ -90,11 +91,13 @@ export function extractAllSliceMasksX(
 	occ.fill(0, 0, gridSize + 1);
 
 	const hasPosNeighbor = session.hasNeighborChunk(1, 0, 0);
+	const hasNegNeighbor = session.hasNeighborChunk(-1, 0, 0);
 	// Downsampled builds: when this chunk owns the +X border skirt, the
 	// skirt is the sole wall on that plane. Emitting the greedy far slice
 	// too would place a second quad at x=size with different tessellation
 	// (bit-exact coplanar → z-fighting on vertical chunk borders).
 	const skirtOwnsPosX = step > 1 && (session.borderSkirtSides & 2) !== 0;
+	const skirtOwnsNegX = step > 1 && (session.borderSkirtSides & 1) !== 0;
 
 	const blockArr = session.block;
 	const lightArr = session.light;
@@ -102,6 +105,56 @@ export function extractAllSliceMasksX(
 	const disableAO = session.disableAO;
 	const ps = session.ps;
 	const ps2 = session.ps2;
+
+	// East (-X) is normally emitted by the chunk on the other side of the
+	// border. When that chunk is absent, keep the face on this chunk instead.
+	// Only full builds may use the cleared padding as a known-air neighbor;
+	// light-only builds must not infer topology from a stale border cache.
+	if (
+		session.blocksChangedThisBuild &&
+		!hasNegNeighbor &&
+		!skirtOwnsNegX
+	) {
+		for (let cz = 0; cz < gridSize; cz++) {
+			const vz = cz * step;
+			const zBase = (vz + 1) * ps2;
+			const outCell = cz * gridSize;
+
+			for (let cy = 0; cy < gridSize; cy++) {
+				const vy = cy * step;
+				const rowIdx = (vy + 1) * ps + zBase;
+				const curIdx = 1 + rowIdx;
+				const nbrIdx = curIdx - 1;
+				const outIndex = outCell + cy;
+
+				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
+					processCell(
+						session,
+						blockArr,
+						lightArr,
+						disableAO,
+						-1,
+						vy,
+						vz,
+						0,
+						vy,
+						vz,
+						nbrIdx,
+						curIdx,
+						1,
+						2,
+						FACE_PX,
+						FACE_NX,
+						outIndex,
+						maskBank,
+						lightBank,
+					);
+
+					if (maskBank[outIndex] !== 0) occ[0] = 1;
+				}
+			}
+		}
+	}
 
 	// Downsampled mode: one mask cell per lodStep^3 voxel region. Interior
 	// pairs sample the representative (region-origin) voxels of adjacent
@@ -157,7 +210,14 @@ export function extractAllSliceMasksX(
 				}
 			}
 
-			if (hasPosNeighbor && !skirtOwnsPosX) {
+			// A full build clears missing block borders to air, so the +X
+			// boundary can be evaluated even when the positive-X chunk is not loaded.
+			// Light-only builds must keep the neighbor-presence guard because
+			// their cached block padding is not revalidated here.
+			if (
+				(session.blocksChangedThisBuild || hasPosNeighbor) &&
+				!skirtOwnsPosX
+			) {
 				const bx = (gridSize - 1) * step;
 				const curIdx = bx + 1 + rowIdx;
 				const nbrIdx = curIdx + step; // padding layer at voxel size
@@ -280,56 +340,61 @@ export function extractAllSliceMasksY(
 		occupancy[cs + 1] = sliceOccupied !== 0 ? 1 : 0;
 	}
 
-	if (!session.hasNeighborChunk(0, 1, 0)) {
-		return;
-	}
+	//
+	// The +Y boundary plane must emit even without an above-neighbor:
+	// begin() clears the padded grid whenever a block neighbor is absent, so
+	// the far slice pairs against guaranteed air and every top-layer block
+	// (liquid surfaces especially) keeps its surface face. Light-only
+	// relights reuse an unverified padded grid, so they keep needing the
+	// neighbor-presence guarantee below.
+	if (session.blocksChangedThisBuild || session.hasNeighborChunk(0, 1, 0)) {
+		const by = (gridSize - 1) * step;
+		const currentRowBase = (by + 1) * ps;
+		const outputSliceBase = gridSize * area;
 
-	const by = (gridSize - 1) * step;
-	const currentRowBase = (by + 1) * ps;
-	const outputSliceBase = gridSize * area;
+		let sliceOccupied = 0;
 
-	let sliceOccupied = 0;
+		for (let cvz = 0; cvz < gridSize; cvz++) {
+			const vz = cvz * step;
+			const inputBase = currentRowBase + (vz + 1) * ps2 + 1;
+			let outputIndex = outputSliceBase + cvz;
 
-	for (let cvz = 0; cvz < gridSize; cvz++) {
-		const vz = cvz * step;
-		const inputBase = currentRowBase + (vz + 1) * ps2 + 1;
-		let outputIndex = outputSliceBase + cvz;
+			for (let cvx = 0, vx = 0; cvx < gridSize; cvx++, vx += step) {
+				const currentIndex = inputBase + vx;
+				const neighborIndex = currentIndex + yStep;
 
-		for (let cvx = 0, vx = 0; cvx < gridSize; cvx++, vx += step) {
-			const currentIndex = inputBase + vx;
-			const neighborIndex = currentIndex + yStep;
+				if ((opaqueArr[currentIndex] & opaqueArr[neighborIndex]) === 0) {
+					processCell(
+						session,
+						blockArr,
+						lightArr,
+						disableAO,
+						vx,
+						by,
+						vz,
+						vx,
+						size,
+						vz,
+						currentIndex,
+						neighborIndex,
+						2,
+						0,
+						FACE_PY,
+						FACE_NY,
+						outputIndex,
+						maskBank,
+						lightBank,
+					);
 
-			if ((opaqueArr[currentIndex] & opaqueArr[neighborIndex]) === 0) {
-				processCell(
-					session,
-					blockArr,
-					lightArr,
-					disableAO,
-					vx,
-					by,
-					vz,
-					vx,
-					size,
-					vz,
-					currentIndex,
-					neighborIndex,
-					2,
-					0,
-					FACE_PY,
-					FACE_NY,
-					outputIndex,
-					maskBank,
-					lightBank,
-				);
+					sliceOccupied |= maskBank[outputIndex];
+				}
 
-				sliceOccupied |= maskBank[outputIndex];
+				outputIndex += gridSize;
 			}
-
-			outputIndex += gridSize;
 		}
-	}
 
-	occupancy[gridSize] = sliceOccupied !== 0 ? 1 : 0;
+		occupancy[gridSize] = sliceOccupied !== 0 ? 1 : 0;
+	}
 }
 
 export function extractAllSliceMasksZ(
@@ -349,10 +414,12 @@ export function extractAllSliceMasksZ(
 	occ.fill(0, 0, gridSize + 1);
 
 	const hasPosNeighbor = session.hasNeighborChunk(0, 0, 1);
+	const hasNegNeighbor = session.hasNeighborChunk(0, 0, -1);
 	// Same far-side ownership rule as the X sweep: the +Z skirt replaces
 	// the greedy far slice on downsampled builds so the border plane
 	// z=size is never walled twice.
 	const skirtOwnsPosZ = step > 1 && (session.borderSkirtSides & 8) !== 0;
+	const skirtOwnsNegZ = step > 1 && (session.borderSkirtSides & 4) !== 0;
 
 	const blockArr = session.block;
 	const lightArr = session.light;
@@ -364,6 +431,53 @@ export function extractAllSliceMasksZ(
 	// Axis Z uses u = X and v = Y (mask index = y * gridSize + x). Border
 	// ownership mirrors the X/Y sweeps: one +Z boundary slice.
 	const zStep = ps2 * step;
+
+	// North (-Z) is normally emitted by the chunk on the other side of the
+	// border. When that chunk is absent, emit this chunk's boundary against
+	// the cleared air padding. The +Z path below remains the positive owner.
+	if (
+		session.blocksChangedThisBuild &&
+		!hasNegNeighbor &&
+		!skirtOwnsNegZ
+	) {
+		for (let cvy = 0; cvy < gridSize; cvy++) {
+			const vy = cvy * step;
+			const yBase = (vy + 1) * ps;
+
+			for (let cvx = 0; cvx < gridSize; cvx++) {
+				const vx = cvx * step;
+				const curIdx = vx + 1 + yBase + ps2;
+				const nbrIdx = curIdx - ps2;
+				const outIndex = cvy * gridSize + cvx;
+
+				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
+					processCell(
+						session,
+						blockArr,
+						lightArr,
+						disableAO,
+						vx,
+						vy,
+						-1,
+						vx,
+						vy,
+						0,
+						nbrIdx,
+						curIdx,
+						0,
+						1,
+						FACE_PZ,
+						FACE_NZ,
+						outIndex,
+						maskBank,
+						lightBank,
+					);
+
+					if (maskBank[outIndex] !== 0) occ[0] = 1;
+				}
+			}
+		}
+	}
 
 	for (let cvy = 0; cvy < gridSize; cvy++) {
 		const vy = cvy * step;
@@ -409,7 +523,13 @@ export function extractAllSliceMasksZ(
 			}
 		}
 
-		if (hasPosNeighbor && !skirtOwnsPosZ) {
+		// A full build clears missing block borders to air, so the +Z
+		// boundary can be evaluated even when the positive-Z chunk is absent.
+		// Light-only builds still require the neighbor-presence guard.
+		if (
+			(session.blocksChangedThisBuild || hasPosNeighbor) &&
+			!skirtOwnsPosZ
+		) {
 			const bz = (gridSize - 1) * step;
 			const curZBase = (bz + 1) * ps2;
 			const outSliceBase = gridSize * area;
@@ -769,16 +889,20 @@ function processCell(
 		packedMask &= ~(WATER_LEVEL_MASK_3 << WATER_SHALLOWER_SHIFT);
 
 		// waterAbove must reflect the block whose top defines the face.
-		// For a level-pair face that is the shallower column.
-		// Otherwise it is the emitting block.
+		// For a level pair the face top is the surface of the taller column
+		// (smaller level number), so its above-cell decides the extension.
 		let aboveX = bx;
 		let aboveY = by;
 		let aboveZ = bz;
 
-		if (liquidCurrLevel >= 0 && liquidCurrLevel > liquidNbrLevel) {
-			aboveX = nx;
-			aboveY = ny;
-			aboveZ = nz;
+		if (liquidCurrLevel >= 0 && liquidCurrLevel !== liquidNbrLevel) {
+			if (liquidCurrLevel > liquidNbrLevel) {
+				// Neighbor is the taller column.
+				aboveX = nx;
+				aboveY = ny;
+				aboveZ = nz;
+			}
+			// else: current block is taller; keep probing (bx, by, bz).
 		} else if (emitNeighbor) {
 			aboveX = nx;
 			aboveY = ny;
