@@ -57,6 +57,8 @@ import {
 const _textEncoder = new TextEncoder();
 const _textDecoder = new TextDecoder();
 
+const MAX_UINT16 = 0xffff;
+
 const BLOCK_EDIT_ENTRY_BYTES = 16; // x/y/z:i32 + blockId:u16 + blockState:u8 + action:u8
 const EXPLOSION_BROADCAST_BYTES = 1 + 4 + 4 + 4 * 4;
 const CHUNK_VOLUME = 32 * 32 * 32; // Chunk.SIZE^3 — light arrays are this size
@@ -67,9 +69,61 @@ export class BinaryEncoder {
 	private offset: number;
 
 	constructor(initialCapacity = 1024) {
-		this.buffer = new Uint8Array(initialCapacity);
-		this.view = new DataView(this.buffer.buffer);
+		this.buffer = new Uint8Array(Math.max(1, initialCapacity));
+		this.view = new DataView(
+			this.buffer.buffer,
+			this.buffer.byteOffset,
+			this.buffer.byteLength,
+		);
 		this.offset = 0;
+	}
+
+	/**
+	 * Guarantees at least `additionalBytes` more bytes fit before `offset`,
+	 * growing the backing buffer when needed. Call once per fixed-layout
+	 * message so the inner writes skip their individual capacity checks.
+	 */
+	reserve(additionalBytes: number): void {
+		if (
+			!Number.isSafeInteger(additionalBytes) ||
+			additionalBytes < 0
+		) {
+			throw new RangeError(`Invalid reserve size: ${additionalBytes}`);
+		}
+
+		const required = this.offset + additionalBytes;
+		if (required <= this.buffer.byteLength) return;
+
+		let newCapacity = this.buffer.byteLength;
+
+		// Geometric growth for ordinary messages. For very large messages, jump
+		// straight to the required size to avoid repeated doubling (and the
+		// temporary memory each doubling allocates).
+		if (newCapacity < 1024 * 1024) {
+			do {
+				newCapacity *= 2;
+			} while (newCapacity < required);
+		} else {
+			newCapacity = required;
+		}
+
+		const newBuffer = new Uint8Array(newCapacity);
+		newBuffer.set(this.buffer.subarray(0, this.offset));
+		this.buffer = newBuffer;
+		this.view = new DataView(
+			newBuffer.buffer,
+			newBuffer.byteOffset,
+			newBuffer.byteLength,
+		);
+	}
+
+	/**
+	 * Unchecked primitive write. Only valid when a prior `reserve()` call has
+	 * guaranteed at least `1` free byte. Hot batch paths use this to skip the
+	 * per-write bounds check.
+	 */
+	writeUint8Unchecked(value: number): void {
+		this.buffer[this.offset++] = value;
 	}
 
 	private ensure(needed: number): void {
@@ -119,12 +173,26 @@ export class BinaryEncoder {
 		this.offset += 4;
 	}
 
+	/**
+	 * Writes a uint16 length prefix then the UTF-8 bytes. Throws instead of
+	 * truncating when the payload exceeds the 16-bit length field — the old
+	 * behaviour emitted a truncated length followed by the full payload,
+	 * silently corrupting the stream.
+	 */
 	writeString(str: string): void {
 		const encoded = _textEncoder.encode(str);
-		this.writeUint16(encoded.byteLength);
-		this.ensure(encoded.byteLength);
-		this.buffer.set(encoded, this.offset);
-		this.offset += encoded.byteLength;
+		const length = encoded.byteLength;
+
+		if (length > MAX_UINT16) {
+			throw new RangeError(
+				`UTF-8 string is ${length} bytes; protocol maximum is ${MAX_UINT16}`,
+			);
+		}
+
+		this.ensure(2 + length);
+		this.view.setUint16(this.offset, length, true);
+		this.buffer.set(encoded, this.offset + 2);
+		this.offset += 2 + length;
 	}
 
 	writeBytes(bytes: Uint8Array): void {
@@ -133,12 +201,28 @@ export class BinaryEncoder {
 		this.offset += bytes.byteLength;
 	}
 
+	/**
+	 * Copies any typed-array or DataView region without constructing an
+	 * intermediate Uint8Array at the call site (e.g. for a dense Uint16Array
+	 * block payload).
+	 */
+	writeArrayBufferView(value: ArrayBufferView): void {
+		const bytes = new Uint8Array(
+			value.buffer,
+			value.byteOffset,
+			value.byteLength,
+		);
+		this.writeBytes(bytes);
+	}
+
 	// Engine perf: container/chunk coords are always x/y/z i32 triples.
 	// Single call site keeps encode fns small; V8 inlines (same 3 DataView ops).
 	writeCoords(x: number, y: number, z: number): void {
-		this.writeInt32(x);
-		this.writeInt32(y);
-		this.writeInt32(z);
+		this.ensure(12);
+		this.view.setInt32(this.offset, x, true);
+		this.view.setInt32(this.offset + 4, y, true);
+		this.view.setInt32(this.offset + 8, z, true);
+		this.offset += 12;
 	}
 
 	/**
@@ -155,24 +239,29 @@ export class BinaryEncoder {
 		pitch: number,
 		animation: number,
 	): void {
+		this.reserve(1 + 12 + 3);
 		this.writeUint8(MessageType.PlayerState);
-		this.writeFloat32(x);
-		this.writeFloat32(y);
-		this.writeFloat32(z);
-		this.writeUint8(yaw);
-		this.writeUint8(pitch);
-		this.writeUint8(animation);
+		this.view.setFloat32(this.offset, x, true);
+		this.view.setFloat32(this.offset + 4, y, true);
+		this.view.setFloat32(this.offset + 8, z, true);
+		this.offset += 12;
+		this.writeUint8Unchecked(yaw);
+		this.writeUint8Unchecked(pitch);
+		this.writeUint8Unchecked(animation);
 	}
 
 	/** C→S: no sessionId — the server uses the connection identity. */
 	writeBlockEdit(data: BlockEditData): void {
+		this.reserve(1 + 12 + 4);
 		this.writeUint8(MessageType.BlockEdit);
-		this.writeInt32(data.x);
-		this.writeInt32(data.y);
-		this.writeInt32(data.z);
-		this.writeUint16(data.blockId);
-		this.writeUint8(data.blockState);
-		this.writeUint8(data.action);
+		this.view.setInt32(this.offset, data.x, true);
+		this.view.setInt32(this.offset + 4, data.y, true);
+		this.view.setInt32(this.offset + 8, data.z, true);
+		this.offset += 12;
+		this.view.setUint16(this.offset, data.blockId, true);
+		this.buffer[this.offset + 2] = data.blockState;
+		this.buffer[this.offset + 3] = data.action;
+		this.offset += 4;
 	}
 
 	/** C→S and S→C share the ChatMessage layout (sessionId, name, message). */
@@ -190,16 +279,19 @@ export class BinaryEncoder {
 		lod: number,
 		cachedVersion = 0,
 	): void {
+		this.reserve(1 + 12 + 1 + 4);
 		this.writeUint8(MessageType.ChunkRequest);
-		this.writeInt32(cx);
-		this.writeInt32(cy);
-		this.writeInt32(cz);
-		this.writeUint8(lod);
-		this.writeUint32(cachedVersion);
+		this.view.setInt32(this.offset, cx, true);
+		this.view.setInt32(this.offset + 4, cy, true);
+		this.view.setInt32(this.offset + 8, cz, true);
+		this.offset += 12;
+		this.writeUint8Unchecked(lod);
+		this.view.setUint32(this.offset, cachedVersion, true);
+		this.offset += 4;
 	}
 
 	writeChunkRequestBatch(
-		requests: Array<{
+		requests: ReadonlyArray<{
 			cx: number;
 			cy: number;
 			cz: number;
@@ -207,22 +299,51 @@ export class BinaryEncoder {
 			cachedVersion: number;
 		}>,
 	): void {
-		const count = Math.min(requests.length, 65535);
+		const count = Math.min(requests.length, MAX_UINT16);
+		const entryBytes = 4 + 4 + 4 + 1 + 4; // 17
+
+		this.reserve(1 + 2 + count * entryBytes);
 		this.writeUint8(MessageType.ChunkRequestBatch);
-		this.writeUint16(count);
+		this.view.setUint16(this.offset, count, true);
+		this.offset += 2;
 
 		for (let i = 0; i < count; i++) {
-			const r = requests[i];
-			this.writeInt32(r.cx);
-			this.writeInt32(r.cy);
-			this.writeInt32(r.cz);
-			this.writeUint8(r.lod);
-			this.writeUint32(r.cachedVersion);
+			const request = requests[i];
+			this.view.setInt32(this.offset, request.cx, true);
+			this.view.setInt32(this.offset + 4, request.cy, true);
+			this.view.setInt32(this.offset + 8, request.cz, true);
+			this.buffer[this.offset + 12] = request.lod;
+			this.view.setUint32(this.offset + 13, request.cachedVersion, true);
+			this.offset += entryBytes;
 		}
 	}
 
-	getBytes(): Uint8Array {
+	/**
+	 * Returns a live view backed by this encoder's current buffer.
+	 *
+	 * Only safe when the consumer synchronously copies or fully consumes the
+	 * bytes before this encoder is reset or written to again. Pooled encoders
+	 * whose results may be retained must use `finish()` instead.
+	 */
+	getBytesView(): Uint8Array {
 		return this.buffer.subarray(0, this.offset);
+	}
+
+	/**
+	 * Returns an independently owned packet (one copy). Use this from pooled
+	 * encoders when the transport may retain the supplied data after send
+	 * returns, so a later reset/encode cannot mutate a prior packet.
+	 */
+	finish(): Uint8Array {
+		return this.buffer.slice(0, this.offset);
+	}
+
+	/**
+	 * Compatibility alias for `getBytesView()` (keeps the historical zero-copy
+	 * behavior for one-shot, exact-sized encoders).
+	 */
+	getBytes(): Uint8Array {
+		return this.getBytesView();
 	}
 
 	reset(): void {
@@ -231,19 +352,30 @@ export class BinaryEncoder {
 }
 
 // PERF: reused scratch encoder for the small single-event encode helpers below
-// (player join/leave, mob spawn/despawn, item spawn/despawn). Each helper resets
-// and writes into it, then returns getBytes() (a subarray view) which the caller
-// consumes synchronously via broadcastBytes/sendBytes — so the buffer is never
-// aliased across live messages. This avoids one BinaryEncoder + backing Uint8Array
-// allocation per spawn/despawn/join/leave event (the benchmark's GC pressure).
+// (player join/leave, mob spawn/despawn, item spawn/despawn, container/station
+// updates). Each helper resets and writes into it, then returns finish() — an
+// OWNED copy — because callers may retain the packet past the next encode:
+// the join fan-out path pushes several encoded frames into a parts[] array and
+// merges them after the loop, so a live subarray view would alias the shared
+// buffer (and every retained view would collapse onto the last-encoded bytes
+// whenever the payloads fit in one allocation). The one copy per event is the
+// price of not aliasing pooled storage across live messages.
 const _singleEventEncoder = new BinaryEncoder(64);
 
 export class BinaryDecoder {
+	private buffer: Uint8Array;
 	private view: DataView;
 	private offset: number;
-	private buffer: Uint8Array;
 
 	constructor(buffer: Uint8Array, startOffset = 0) {
+		if (
+			!Number.isSafeInteger(startOffset) ||
+			startOffset < 0 ||
+			startOffset > buffer.byteLength
+		) {
+			throw new RangeError(`Invalid decoder offset: ${startOffset}`);
+		}
+
 		this.buffer = buffer;
 		this.view = new DataView(
 			buffer.buffer,
@@ -254,59 +386,108 @@ export class BinaryDecoder {
 	}
 
 	/**
-	 * Rebind this decoder to a new buffer (resets the read offset). Lets
-	 * message handlers reuse one decoder instance across many packets instead
-	 * of allocating a fresh decoder + DataView per message.
+	 * Rebind this decoder to a new buffer. Lets message handlers reuse one
+	 * decoder instance across many packets instead of allocating a fresh
+	 * decoder + DataView per message.
 	 */
-	setBuffer(buffer: Uint8Array): void {
+	setBuffer(buffer: Uint8Array, startOffset = 0): void {
+		if (
+			!Number.isSafeInteger(startOffset) ||
+			startOffset < 0 ||
+			startOffset > buffer.byteLength
+		) {
+			throw new RangeError(`Invalid decoder offset: ${startOffset}`);
+		}
+
 		this.buffer = buffer;
 		this.view = new DataView(
 			buffer.buffer,
 			buffer.byteOffset,
 			buffer.byteLength,
 		);
-		this.offset = 0;
+		this.offset = startOffset;
 	}
 
 	get remaining(): number {
 		return this.buffer.byteLength - this.offset;
 	}
 
+	get position(): number {
+		return this.offset;
+	}
+
+	/**
+	 * Throws (without advancing) when fewer than byteLength bytes remain.
+	 * Public so batch decoders can validate the whole batch body once —
+	 * bounding an untrusted count before per-entry reads — instead of
+	 * paying one check per read.
+	 */
+	require(byteLength: number): void {
+		if (
+			!Number.isSafeInteger(byteLength) ||
+			byteLength < 0 ||
+			byteLength > this.buffer.byteLength - this.offset
+		) {
+			throw new RangeError(
+				`Packet underflow at ${this.offset}: requested ${byteLength}, ` +
+					`${this.buffer.byteLength - this.offset} remaining`,
+			);
+		}
+	}
+
+	/**
+	 * Advances `offset` by byteLength without reading. Bounds-checked: a
+	 * malformed length can no longer push the decoder past the end of the
+	 * packet (the old behaviour did that silently and desynchronised every
+	 * subsequent read).
+	 */
+	skip(byteLength: number): void {
+		this.require(byteLength);
+		this.offset += byteLength;
+	}
+
 	peekUint8(): number {
-		return this.view.getUint8(this.offset);
+		this.require(1);
+		return this.buffer[this.offset];
 	}
 
 	readUint8(): number {
-		const v = this.view.getUint8(this.offset);
+		this.require(1);
+		const v = this.buffer[this.offset];
 		this.offset += 1;
 		return v;
 	}
 
 	readInt16(): number {
+		this.require(2);
 		const v = this.view.getInt16(this.offset, true);
 		this.offset += 2;
 		return v;
 	}
 
 	readInt32(): number {
+		this.require(4);
 		const v = this.view.getInt32(this.offset, true);
 		this.offset += 4;
 		return v;
 	}
 
 	readFloat32(): number {
+		this.require(4);
 		const v = this.view.getFloat32(this.offset, true);
 		this.offset += 4;
 		return v;
 	}
 
 	readUint16(): number {
+		this.require(2);
 		const v = this.view.getUint16(this.offset, true);
 		this.offset += 2;
 		return v;
 	}
 
 	readUint32(): number {
+		this.require(4);
 		const v = this.view.getUint32(this.offset, true);
 		this.offset += 4;
 		return v;
@@ -318,6 +499,8 @@ export class BinaryDecoder {
 	 * of bytes per chunk.
 	 */
 	readBytes(len: number): Uint8Array {
+		this.require(len);
+
 		const start = this.offset;
 		this.offset += len;
 		return this.buffer.slice(start, this.offset);
@@ -331,6 +514,8 @@ export class BinaryDecoder {
 	 * (which copies into SAB), this is safe.
 	 */
 	readBytesView(len: number): Uint8Array {
+		this.require(len);
+
 		const start = this.offset;
 		this.offset += len;
 		return this.buffer.subarray(start, this.offset);
@@ -347,19 +532,24 @@ export class BinaryDecoder {
 	 * advancing the decoder offset by the real wire length.
 	 */
 	readBytesViewSAB(len: number, capacity = len): Uint8Array {
-		const start = this.offset;
-		const end = start + len;
-		if (end > this.buffer.byteLength) {
-			throw new RangeError("readBytesViewSAB: out of bounds");
+		this.require(len);
+
+		if (!Number.isSafeInteger(capacity) || capacity < len) {
+			throw new RangeError(
+				`SAB capacity ${capacity} is smaller than payload ${len}`,
+			);
 		}
-		const sab = new SharedArrayBuffer(capacity);
-		new Uint8Array(sab).set(this.buffer.subarray(start, end));
-		this.offset = end;
-		return new Uint8Array(sab);
+
+		const target = new Uint8Array(new SharedArrayBuffer(capacity));
+		target.set(this.buffer.subarray(this.offset, this.offset + len));
+		this.offset += len;
+		return target;
 	}
 
 	readString(): string {
 		const len = this.readUint16();
+		this.require(len);
+
 		const start = this.offset;
 		this.offset += len;
 		return _textDecoder.decode(this.buffer.subarray(start, this.offset));
@@ -367,9 +557,12 @@ export class BinaryDecoder {
 
 	// Engine perf: mirrors writeCoords; fills caller-owned {x,y,z}, no alloc.
 	readCoordsInto<T extends { x: number; y: number; z: number }>(target: T): T {
-		target.x = this.readInt32();
-		target.y = this.readInt32();
-		target.z = this.readInt32();
+		this.require(12);
+
+		target.x = this.view.getInt32(this.offset, true);
+		target.y = this.view.getInt32(this.offset + 4, true);
+		target.z = this.view.getInt32(this.offset + 8, true);
+		this.offset += 12;
 		return target;
 	}
 
@@ -379,12 +572,15 @@ export class BinaryDecoder {
 	 * are overwritten in place.
 	 */
 	readPlayerStateInto(target: PlayerStateData): PlayerStateData {
-		target.x = this.readFloat32();
-		target.y = this.readFloat32();
-		target.z = this.readFloat32();
-		target.yaw = this.readUint8();
-		target.pitch = this.readUint8();
-		target.animation = this.readUint8();
+		this.require(15);
+
+		target.x = this.view.getFloat32(this.offset, true);
+		target.y = this.view.getFloat32(this.offset + 4, true);
+		target.z = this.view.getFloat32(this.offset + 8, true);
+		target.yaw = this.buffer[this.offset + 12];
+		target.pitch = this.buffer[this.offset + 13];
+		target.animation = this.buffer[this.offset + 14];
+		this.offset += 15;
 		return target;
 	}
 
@@ -393,12 +589,15 @@ export class BinaryDecoder {
 	 * one per message. Returns the target for chaining.
 	 */
 	readBlockEditInto(target: BlockEditData): BlockEditData {
-		target.x = this.readInt32();
-		target.y = this.readInt32();
-		target.z = this.readInt32();
-		target.blockId = this.readUint16();
-		target.blockState = this.readUint8();
-		target.action = this.readUint8();
+		this.require(16);
+
+		target.x = this.view.getInt32(this.offset, true);
+		target.y = this.view.getInt32(this.offset + 4, true);
+		target.z = this.view.getInt32(this.offset + 8, true);
+		target.blockId = this.view.getUint16(this.offset + 12, true);
+		target.blockState = this.buffer[this.offset + 14];
+		target.action = this.buffer[this.offset + 15];
+		this.offset += 16;
 		return target;
 	}
 
@@ -416,11 +615,15 @@ export class BinaryDecoder {
 		lod: number;
 		cachedVersion: number;
 	}): typeof target {
-		target.cx = this.readInt32();
-		target.cy = this.readInt32();
-		target.cz = this.readInt32();
-		target.lod = this.readUint8();
-		target.cachedVersion = this.readUint32();
+		const entryBytes = 4 + 4 + 4 + 1 + 4; // 17
+		this.require(entryBytes);
+
+		target.cx = this.view.getInt32(this.offset, true);
+		target.cy = this.view.getInt32(this.offset + 4, true);
+		target.cz = this.view.getInt32(this.offset + 8, true);
+		target.lod = this.buffer[this.offset + 12];
+		target.cachedVersion = this.view.getUint32(this.offset + 13, true);
+		this.offset += entryBytes;
 		return target;
 	}
 }
@@ -439,6 +642,9 @@ export function writePlayerStateBatch(
 	sequence: number,
 ): void {
 	const count = Math.min(states.length, 255);
+	// Reserve the whole batch once; the per-entry writes below then hit an
+	// already-satisfied capacity (each ensure() is a no-op comparison).
+	enc.reserve(1 + 1 + 2 + count * 16);
 
 	enc.writeUint8(MessageType.PlayerStateBatch);
 	enc.writeUint8(count);
@@ -486,6 +692,7 @@ export function decodePlayerStateBatchEntriesInto(
 	out?: { sequence: number },
 ): number {
 	const count = dec.readUint8();
+	dec.require(2 + count * 16);
 	const sequence = dec.readUint16();
 
 	if (out !== undefined) out.sequence = sequence;
@@ -519,6 +726,7 @@ export function encodeBlockEditBatch(edits: BlockEditData[]): Uint8Array {
 
 	enc.writeUint8(MessageType.BlockEditBatch);
 	enc.writeUint16(count);
+	enc.reserve(count * BLOCK_EDIT_ENTRY_BYTES);
 
 	for (let i = 0; i < count; i++) {
 		const e = edits[i];
@@ -590,6 +798,10 @@ export function decodeBlockEditBatchInto(
 	view: BlockEditBatchView,
 ): number {
 	const wireCount = dec.readUint16();
+	// Validate the whole batch up front: the decoder consumes every entry to
+	// keep the stream aligned, so an untrusted count must be checked once,
+	// not discovered mid-loop.
+	dec.require(wireCount * BLOCK_EDIT_ENTRY_BYTES);
 	const accepted = Math.min(wireCount, MAX_BLOCK_EDIT_BATCH);
 
 	for (let i = 0; i < wireCount; i++) {
@@ -627,7 +839,7 @@ export function encodePlayerJoin(data: PlayerJoinData): Uint8Array {
 	enc.writeUint8(data.index);
 	enc.writeString(data.sessionId);
 	enc.writeString(data.name);
-	return enc.getBytes();
+	return enc.finish();
 }
 
 export function decodePlayerJoinInto(
@@ -649,7 +861,7 @@ export function encodePlayerLeave(data: PlayerLeaveData): Uint8Array {
 	enc.reset();
 	enc.writeUint8(MessageType.PlayerLeave);
 	enc.writeUint8(data.index);
-	return enc.getBytes();
+	return enc.finish();
 }
 
 export function encodeHeldItemSelect(data: HeldItemSelectionData): Uint8Array {
@@ -693,6 +905,11 @@ export function decodePlayerHeldItemInto(
  * Sent once after joining; the server validates and relays it to others.
  */
 export function encodeSkinUpload(png: Uint8Array): Uint8Array {
+	if (png.byteLength > MAX_UINT16) {
+		throw new RangeError(
+			`Skin payload is ${png.byteLength} bytes; the wire length field is uint16 (max ${MAX_UINT16})`,
+		);
+	}
 	const enc = new BinaryEncoder(3 + png.byteLength);
 	enc.writeUint8(MessageType.SkinUpload);
 	enc.writeUint16(png.byteLength);
@@ -705,6 +922,11 @@ export function encodeSkinUpload(png: Uint8Array): Uint8Array {
  * [type:1][index:u8][len:u16][png bytes]
  */
 export function encodePlayerSkin(data: PlayerSkinData): Uint8Array {
+	if (data.png.byteLength > MAX_UINT16) {
+		throw new RangeError(
+			`Skin payload is ${data.png.byteLength} bytes; the wire length field is uint16 (max ${MAX_UINT16})`,
+		);
+	}
 	const enc = new BinaryEncoder(4 + data.png.byteLength);
 	enc.writeUint8(MessageType.PlayerSkin);
 	enc.writeUint8(data.index);
@@ -835,84 +1057,198 @@ export function decodeWorldConfigInto(
 	return target;
 }
 
-/**
- * Chunk data — server → client (response to chunk request).
- * Contains compressed voxel data for meshing on the client.
- * Format: [type:1][chunkX:i32][chunkY:i32][chunkZ:i32][version:u32][flags:u8][blockData...][lightData...]
- * flags: bit0=isUniform, bit1=hasPalette, bit2=denseBlocksAreU16
- * If isUniform: next 2 bytes = uniformBlockId, no block data
- * If hasPalette: next 2 bytes = paletteLength, then paletteLength*2 bytes palette, then packed data
- * Light data always follows block data (lightLength:u32 then bytes)
- */
-export function encodeChunkData(data: {
+// ---------------------------------------------------------------------------
+// Chunk data wire format — server → client (response to chunk request).
+//
+// Entry (shared by single and batch packets):
+//   [cx:i32][cy:i32][cz:i32][version:u32][flags:u8][blockData...][lightData...]
+//
+// flags: bit0=isUniform, bit1=hasPalette, bit2=denseBlocksAreU16
+//   isUniform:      next 2 bytes = uniformBlockId, no block data
+//   hasPalette:     next 2 bytes = paletteLength (1..16, four-bit indices),
+//                   then paletteLength*2 palette bytes, then
+//                   CHUNK_PACKED_NIBBLE_BYTES of packed block indices
+//   dense u16:      CHUNK_VOLUME*2 bytes of little-endian uint16 block values
+//   dense u8:       CHUNK_VOLUME bytes
+// lightData always follows blockData: [lightLength:u32][light bytes]
+//
+// Single: [type:1] + entry
+// Batch:  [type:1][count:u16] + entry × count
+// ---------------------------------------------------------------------------
+
+const CHUNK_FLAG_UNIFORM = 1 << 0;
+const CHUNK_FLAG_PALETTE = 1 << 1;
+const CHUNK_FLAG_DENSE_U16 = 1 << 2;
+/** Every bit the wire format defines; unknown bits are rejected on decode. */
+const CHUNK_KNOWN_FLAGS =
+	CHUNK_FLAG_UNIFORM | CHUNK_FLAG_PALETTE | CHUNK_FLAG_DENSE_U16;
+
+/** Four-bit nibble packing caps a palette at 16 entries. */
+const MAX_CHUNK_PALETTE_ENTRIES = 16;
+/** Fixed light payload size for a 32^3 chunk. */
+const MAX_CHUNK_LIGHT_BYTES = CHUNK_VOLUME;
+
+/** Nibble-packed block payload size: two four-bit indices per byte. */
+const CHUNK_PACKED_NIBBLE_BYTES = (CHUNK_VOLUME + 1) >>> 1;
+
+export interface ChunkWireData {
 	chunkX: number;
 	chunkY: number;
 	chunkZ: number;
 	blocks: Uint8Array | Uint16Array;
 	light: Uint8Array;
-	palette?: number[];
+	palette?: readonly number[];
 	isUniform: boolean;
 	uniformBlockId: number;
 	version: number;
-}): Uint8Array {
-	const lightBytes = data.light.length;
-	const headerSize = 1 + 12 + 4 + 1; // type + chunk coords + version + flags
-	const uniformSize = data.isUniform ? 2 : 0;
-	const paletteSize = data.palette ? 2 + data.palette.length * 2 : 0;
-	const denseU16 =
-		!data.isUniform && !data.palette && data.blocks instanceof Uint16Array;
-	const totalSize =
-		headerSize +
-		uniformSize +
-		paletteSize +
-		data.blocks.byteLength +
-		4 +
-		lightBytes;
+}
 
-	const enc = new BinaryEncoder(totalSize);
-	enc.writeUint8(MessageType.ChunkData);
-	enc.writeInt32(data.chunkX);
-	enc.writeInt32(data.chunkY);
-	enc.writeInt32(data.chunkZ);
-	enc.writeUint32(data.version);
-
-	// Flags
-	let flags = 0;
-	if (data.isUniform) flags |= 1;
-	if (data.palette) flags |= 2;
-	if (denseU16) flags |= 4;
-	enc.writeUint8(flags);
-
-	if (data.isUniform) {
-		enc.writeUint16(data.uniformBlockId);
-	} else if (data.palette) {
-		enc.writeUint16(data.palette.length);
-		for (let i = 0; i < data.palette.length; i++) {
-			enc.writeUint16(data.palette[i]);
-		}
-		enc.writeBytes(data.blocks as Uint8Array);
-	} else {
-		const b = data.blocks;
-		enc.writeBytes(
-			b instanceof Uint16Array
-				? new Uint8Array(b.buffer, b.byteOffset, b.byteLength)
-				: b,
+/**
+ * Validates a chunk against the fixed wire sizes BEFORE any allocation or
+ * offset advancement, so a corrupt or hostile chunk cannot drive a
+ * mismatched payload through the encoder. Stored chunks always satisfy these
+ * (dense 32^3, 16384-byte nibble payloads, palettes of at most 16, light of
+ * at most 32768 bytes) — this only rejects malformed input.
+ */
+function validateChunkForEncoding(chunk: ChunkWireData): void {
+	if (chunk.light.byteLength > MAX_CHUNK_LIGHT_BYTES) {
+		throw new RangeError(
+			`Chunk light payload exceeds ${MAX_CHUNK_LIGHT_BYTES} bytes`,
 		);
 	}
 
-	// Light data
-	enc.writeUint32(lightBytes);
-	enc.writeBytes(data.light);
+	if (chunk.isUniform) return;
 
-	return enc.getBytes();
+	if (chunk.palette !== undefined) {
+		const palette = chunk.palette;
+		if (palette.length < 1 || palette.length > MAX_CHUNK_PALETTE_ENTRIES) {
+			throw new RangeError(
+				`Chunk palette must hold 1..${MAX_CHUNK_PALETTE_ENTRIES} entries, got ${palette.length}`,
+			);
+		}
+
+		if (!(chunk.blocks instanceof Uint8Array)) {
+			throw new TypeError(
+				"Palette-compressed chunk blocks must be a Uint8Array",
+			);
+		}
+
+		if (chunk.blocks.byteLength !== CHUNK_PACKED_NIBBLE_BYTES) {
+			throw new RangeError(
+				`Palette block payload must be ${CHUNK_PACKED_NIBBLE_BYTES} bytes`,
+			);
+		}
+
+		return;
+	}
+
+	if (chunk.blocks.length !== CHUNK_VOLUME) {
+		throw new RangeError(
+			`Dense chunk block array must contain ${CHUNK_VOLUME} entries`,
+		);
+	}
 }
 
-export function decodeChunkData(
-	buffer: Uint8Array,
-	allocSAB = false,
-): RemoteChunkData {
-	return decodeChunkDataEntry(new BinaryDecoder(buffer, 1), allocSAB);
+/** Exact on-wire size of one chunk entry (no type byte). */
+function measureChunkEntry(chunk: ChunkWireData): number {
+	validateChunkForEncoding(chunk);
+
+	let size = 12 + 4 + 1; // coords + version + flags
+
+	if (chunk.isUniform) {
+		size += 2;
+	} else if (chunk.palette !== undefined) {
+		size += 2;
+		size += chunk.palette.length * 2;
+		size += chunk.blocks.byteLength;
+	} else {
+		size += chunk.blocks.byteLength;
+	}
+
+	size += 4 + chunk.light.byteLength; // lightLength + light
+
+	return size;
 }
+
+function writeChunkEntry(encoder: BinaryEncoder, chunk: ChunkWireData): void {
+	let flags = 0;
+
+	if (chunk.isUniform) {
+		flags |= CHUNK_FLAG_UNIFORM;
+	} else if (chunk.palette !== undefined) {
+		flags |= CHUNK_FLAG_PALETTE;
+	} else if (chunk.blocks instanceof Uint16Array) {
+		flags |= CHUNK_FLAG_DENSE_U16;
+	}
+
+	encoder.writeCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+	encoder.writeUint32(chunk.version);
+	encoder.writeUint8(flags);
+
+	if (chunk.isUniform) {
+		encoder.writeUint16(chunk.uniformBlockId);
+	} else if (chunk.palette !== undefined) {
+		const palette = chunk.palette;
+		encoder.writeUint16(palette.length);
+
+		for (let i = 0; i < palette.length; i++) {
+			encoder.writeUint16(palette[i]);
+		}
+
+		encoder.writeBytes(chunk.blocks as Uint8Array);
+	} else {
+		encoder.writeArrayBufferView(chunk.blocks);
+	}
+
+	encoder.writeUint32(chunk.light.byteLength);
+	encoder.writeBytes(chunk.light);
+}
+
+/**
+ * Chunk data — server → client (response to chunk request).
+ * Contains compressed voxel data for meshing on the client.
+ */
+export function encodeChunkData(chunk: ChunkWireData): Uint8Array {
+	const size = 1 + measureChunkEntry(chunk);
+	const encoder = new BinaryEncoder(size);
+
+	encoder.writeUint8(MessageType.ChunkData);
+	writeChunkEntry(encoder, chunk);
+
+	return encoder.getBytes();
+}
+
+/**
+ * Chunk data batch — server → client, multiple chunks in one message.
+ * Supports the same block encodings as encodeChunkData, including dense
+ * Uint16Array payloads (the previous batch encoder silently dropped the
+ * denseBlocksAreU16 flag, corrupting u16 batches on the wire).
+ */
+export function encodeChunkDataBatch(
+	chunks: readonly ChunkWireData[],
+): Uint8Array {
+	const count = Math.min(chunks.length, MAX_UINT16);
+
+	let totalSize = 1 + 2;
+	for (let i = 0; i < count; i++) {
+		totalSize += measureChunkEntry(chunks[i]);
+
+		if (!Number.isSafeInteger(totalSize)) {
+			throw new RangeError("Chunk batch size exceeds safe integer range");
+		}
+	}
+
+	const encoder = new BinaryEncoder(totalSize);
+	encoder.writeUint8(MessageType.ChunkDataBatch);
+	encoder.writeUint16(count);
+
+	for (let i = 0; i < count; i++) {
+		writeChunkEntry(encoder, chunks[i]);
+	}
+
+	return encoder.getBytes();
+}
+
 function decodeChunkDataEntry(
 	dec: BinaryDecoder,
 	allocSAB: boolean,
@@ -922,9 +1258,20 @@ function decodeChunkDataEntry(
 	const chunkZ = dec.readInt32();
 	const version = dec.readUint32();
 	const flags = dec.readUint8();
-	const isUniform = (flags & 1) !== 0;
-	const hasPalette = (flags & 2) !== 0;
-	const denseU16 = (flags & 4) !== 0;
+	const isUniform = (flags & CHUNK_FLAG_UNIFORM) !== 0;
+	const hasPalette = (flags & CHUNK_FLAG_PALETTE) !== 0;
+	const denseU16 = (flags & CHUNK_FLAG_DENSE_U16) !== 0;
+
+	if ((flags & ~CHUNK_KNOWN_FLAGS) !== 0) {
+		throw new RangeError(`Unknown chunk flags: 0x${flags.toString(16)}`);
+	}
+
+	if (isUniform && (hasPalette || denseU16)) {
+		throw new RangeError("Invalid uniform chunk flags");
+	}
+	if (hasPalette && denseU16) {
+		throw new RangeError("Chunk cannot be palette and dense-u16 encoded");
+	}
 
 	let uniformBlockId = 0;
 	let palette: Uint16Array | undefined;
@@ -935,6 +1282,12 @@ function decodeChunkDataEntry(
 		blocks = new Uint8Array(0);
 	} else if (hasPalette) {
 		const paletteLen = dec.readUint16();
+
+		// Four-bit indices cannot address more than 16 palette entries.
+		if (paletteLen < 1 || paletteLen > MAX_CHUNK_PALETTE_ENTRIES) {
+			throw new RangeError(`Invalid nibble palette length: ${paletteLen}`);
+		}
+
 		const paletteBytes = allocSAB
 			? dec.readBytesViewSAB(paletteLen * 2)
 			: dec.readBytes(paletteLen * 2);
@@ -945,16 +1298,30 @@ function decodeChunkDataEntry(
 			paletteLen,
 		);
 
-		const packedSize = Math.ceil(CHUNK_VOLUME / 2);
 		blocks = allocSAB
-			? dec.readBytesViewSAB(packedSize)
-			: dec.readBytesView(packedSize);
+			? dec.readBytesViewSAB(CHUNK_PACKED_NIBBLE_BYTES)
+			: dec.readBytesView(CHUNK_PACKED_NIBBLE_BYTES);
 	} else if (denseU16) {
 		const byteLen = CHUNK_VOLUME * 2;
 		const raw = allocSAB
 			? dec.readBytesViewSAB(byteLen)
 			: dec.readBytesView(byteLen);
-		blocks = new Uint16Array(raw.buffer, raw.byteOffset, raw.byteLength >>> 1);
+
+		if ((raw.byteOffset & 1) !== 0) {
+			// Uint16Array requires two-byte alignment. The SAB path and any
+			// packet whose view is already even-aligned skip this copy.
+			const aligned = allocSAB
+				? new Uint8Array(new SharedArrayBuffer(byteLen))
+				: new Uint8Array(byteLen);
+			aligned.set(raw);
+			blocks = new Uint16Array(
+				aligned.buffer,
+				aligned.byteOffset,
+				CHUNK_VOLUME,
+			);
+		} else {
+			blocks = new Uint16Array(raw.buffer, raw.byteOffset, CHUNK_VOLUME);
+		}
 	} else {
 		blocks = allocSAB
 			? dec.readBytesViewSAB(CHUNK_VOLUME)
@@ -962,8 +1329,13 @@ function decodeChunkDataEntry(
 	}
 
 	const lightLen = dec.readUint32();
+
+	if (lightLen > MAX_CHUNK_LIGHT_BYTES) {
+		throw new RangeError(`Invalid chunk light length: ${lightLen}`);
+	}
+
 	const light = allocSAB
-		? dec.readBytesViewSAB(lightLen, CHUNK_VOLUME)
+		? dec.readBytesViewSAB(lightLen, MAX_CHUNK_LIGHT_BYTES)
 		: dec.readBytesView(lightLen);
 
 	return {
@@ -978,6 +1350,49 @@ function decodeChunkDataEntry(
 		uniformBlockId,
 		version,
 	};
+}
+
+export function decodeChunkData(
+	buffer: Uint8Array,
+	allocSAB = false,
+): RemoteChunkData {
+	if (buffer.byteLength === 0 || buffer[0] !== MessageType.ChunkData) {
+		throw new Error("Expected ChunkData packet");
+	}
+
+	const dec = new BinaryDecoder(buffer, 1);
+	const result = decodeChunkDataEntry(dec, allocSAB);
+
+	if (dec.remaining !== 0) {
+		throw new Error(`ChunkData packet has ${dec.remaining} trailing bytes`);
+	}
+
+	return result;
+}
+
+export function decodeChunkDataBatch(
+	buffer: Uint8Array,
+	allocSAB = false,
+): Array<RemoteChunkData> {
+	if (buffer.byteLength === 0 || buffer[0] !== MessageType.ChunkDataBatch) {
+		throw new Error("Expected ChunkDataBatch packet");
+	}
+
+	const dec = new BinaryDecoder(buffer, 1);
+	const count = dec.readUint16();
+	const chunks = new Array<RemoteChunkData>(count);
+
+	for (let i = 0; i < count; i++) {
+		chunks[i] = decodeChunkDataEntry(dec, allocSAB);
+	}
+
+	if (dec.remaining !== 0) {
+		throw new Error(
+			`ChunkDataBatch packet has ${dec.remaining} trailing bytes`,
+		);
+	}
+
+	return chunks;
 }
 
 /**
@@ -1003,6 +1418,7 @@ export function decodeChunkUnchangedInto(
 	dec: BinaryDecoder,
 	target: { cx: number; cy: number; cz: number; version: number },
 ): typeof target {
+	dec.require(16);
 	target.cx = dec.readInt32();
 	target.cy = dec.readInt32();
 	target.cz = dec.readInt32();
@@ -1019,6 +1435,7 @@ export function decodeChunkUnchangedBatchInto(
 	target: Array<{ cx: number; cy: number; cz: number; version: number }>,
 ): number {
 	const count = dec.readUint16();
+	dec.require(count * 16);
 	for (let i = 0; i < count; i++) {
 		let entry = target[i];
 		if (!entry) {
@@ -1038,117 +1455,6 @@ export function decodeChunkUnchangedBatchInto(
 // Chunk request batch — client → server, multiple coords in one message
 // Format: [type:1][count:u16][cx:i32][cy:i32][cz:i32][lod:u8][cachedVersion:u32] × count
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Chunk data batch — server → client, multiple chunks in one message
-// Format: [type:1][count:u16][(chunk entry)] × count
-// Each entry: [cx:i32][cy:i32][cz:i32][version:u32][flags:u8][blockData...][lightData...]
-// (same inner format as encodeChunkData minus the type byte)
-// ---------------------------------------------------------------------------
-
-export function encodeChunkDataBatch(
-	chunks: Array<{
-		chunkX: number;
-		chunkY: number;
-		chunkZ: number;
-		blocks: Uint8Array;
-		light: Uint8Array;
-		palette?: number[];
-		isUniform: boolean;
-		uniformBlockId: number;
-		version: number;
-	}>,
-): Uint8Array {
-	const count = Math.min(chunks.length, 65535);
-	const buf = new Uint8Array(encodeChunkDataBatchMeasure(chunks, count));
-	let offset = 0;
-	const view = new DataView(buf.buffer);
-
-	buf[offset++] = MessageType.ChunkDataBatch;
-	view.setUint16(offset, count, true);
-	offset += 2;
-
-	for (let i = 0; i < count; i++) {
-		const c = chunks[i];
-		view.setInt32(offset, c.chunkX, true);
-		offset += 4;
-		view.setInt32(offset, c.chunkY, true);
-		offset += 4;
-		view.setInt32(offset, c.chunkZ, true);
-		offset += 4;
-		view.setUint32(offset, c.version, true);
-		offset += 4;
-
-		let flags = 0;
-		if (c.isUniform) flags |= 1;
-		if (c.palette) flags |= 2;
-		buf[offset++] = flags;
-
-		if (c.isUniform) {
-			view.setUint16(offset, c.uniformBlockId, true);
-			offset += 2;
-		} else if (c.palette) {
-			view.setUint16(offset, c.palette.length, true);
-			offset += 2;
-			for (let j = 0; j < c.palette.length; j++) {
-				view.setUint16(offset, c.palette[j], true);
-				offset += 2;
-			}
-			buf.set(c.blocks, offset);
-			offset += c.blocks.length;
-		} else {
-			buf.set(c.blocks, offset);
-			offset += c.blocks.length;
-		}
-
-		view.setUint32(offset, c.light.length, true);
-		offset += 4;
-		buf.set(c.light, offset);
-		offset += c.light.length;
-	}
-
-	return buf;
-}
-
-function encodeChunkDataBatchMeasure(
-	chunks: Array<{
-		blocks: Uint8Array;
-		light: Uint8Array;
-		palette?: number[];
-		isUniform: boolean;
-	}>,
-	count: number,
-): number {
-	let totalSize = 3;
-	for (let i = 0; i < count; i++) {
-		const c = chunks[i];
-		totalSize += 17; // 12 (coords) + 4 (version) + 1 (flags)
-		if (c.isUniform) {
-			totalSize += 2;
-		} else if (c.palette) {
-			totalSize += 2 + c.palette.length * 2 + c.blocks.byteLength;
-		} else {
-			totalSize += c.blocks.byteLength;
-		}
-		totalSize += 4 + c.light.length;
-	}
-	return totalSize;
-}
-
-export function decodeChunkDataBatch(
-	buffer: Uint8Array,
-	allocSAB = false,
-): Array<RemoteChunkData> {
-	const dec = new BinaryDecoder(buffer, 1);
-	const count = dec.readUint16();
-	const chunks = new Array<RemoteChunkData>(count);
-
-	for (let i = 0; i < count; i++) {
-		chunks[i] = decodeChunkDataEntry(dec, allocSAB);
-	}
-
-	return chunks;
-}
 
 // ---------------------------------------------------------------------------
 // Deflated chunk blobs — server → client.
@@ -1173,6 +1479,15 @@ export interface DeflatedChunk {
 	/** Zlib-deflate of the serialized storage blob. */
 	deflated: Uint8Array;
 }
+
+/**
+ * Largest serialized storage blob a 32^3 chunk can produce: header (7) +
+ * dense-u16 blocks (4 + 65536) + full palette (4 + 32) + full light
+ * (4 + 32768) ≈ 98 KB. `origLen` is an untrusted uint32 on the wire, so cap
+ * it well above the real maximum to stop a corrupt/hostile length from
+ * driving a multi-gigabyte inflate allocation.
+ */
+const MAX_DEFLATED_CHUNK_ORIG_LEN = 1024 * 1024;
 
 /** Encode one deflated chunk message (async: deflation streams off-thread). */
 export async function encodeChunkDataDeflated(data: {
@@ -1213,12 +1528,16 @@ export function encodeChunkDataDeflatedPayload(
 }
 
 export function decodeChunkDataDeflatedFrom(dec: BinaryDecoder): DeflatedChunk {
+	dec.require(12 + 4 + 4 + 4);
 	const chunkX = dec.readInt32();
 	const chunkY = dec.readInt32();
 	const chunkZ = dec.readInt32();
 	const version = dec.readUint32();
 	const len = dec.readUint32();
 	const origLen = dec.readUint32();
+	if (origLen > MAX_DEFLATED_CHUNK_ORIG_LEN) {
+		throw new RangeError(`deflated chunk origLen exceeds cap: ${origLen}`);
+	}
 	return {
 		chunkX,
 		chunkY,
@@ -1229,21 +1548,35 @@ export function decodeChunkDataDeflatedFrom(dec: BinaryDecoder): DeflatedChunk {
 	};
 }
 
-function decodeDeflatedChunkEntry(dec: BinaryDecoder): DeflatedChunk {
+/**
+ * Zero-copy variant for deflated chunk decoding.
+ *
+ * `deflated` is a view into the packet buffer. Each transport message arrives
+ * in its own ArrayBuffer and the view pins it, so the data stays valid for
+ * the lifetime of the view even after the shared decoder is rebound to the
+ * next packet. Use this when the payload is consumed (inflated) and never
+ * retained; the normal decoder copies the payload for safe retention.
+ */
+export function decodeChunkDataDeflatedViewFrom(
+	dec: BinaryDecoder,
+): DeflatedChunk {
+	dec.require(12 + 4 + 4 + 4);
 	const chunkX = dec.readInt32();
 	const chunkY = dec.readInt32();
 	const chunkZ = dec.readInt32();
 	const version = dec.readUint32();
 	const len = dec.readUint32();
 	const origLen = dec.readUint32();
-
+	if (origLen > MAX_DEFLATED_CHUNK_ORIG_LEN) {
+		throw new RangeError(`deflated chunk origLen exceeds cap: ${origLen}`);
+	}
 	return {
 		chunkX,
 		chunkY,
 		chunkZ,
 		version,
 		origLen,
-		deflated: dec.readBytes(len),
+		deflated: dec.readBytesView(len),
 	};
 }
 
@@ -1255,10 +1588,53 @@ export function decodeChunkDataDeflatedBatchFrom(
 	const chunks = new Array<DeflatedChunk>(count);
 
 	for (let i = 0; i < count; i++) {
-		chunks[i] = decodeDeflatedChunkEntry(dec);
+		chunks[i] = decodeChunkDataDeflatedFrom(dec);
 	}
 
 	return chunks;
+}
+
+/**
+ * Iterator-style batch decode for immediate inflate-and-consume processing.
+ *
+ * Avoids the intermediate DeflatedChunk object graph entirely: each payload
+ * is handed straight to `consume` as a zero-copy view. As with
+ * decodeChunkDataDeflatedViewFrom, the view pins the packet's ArrayBuffer, so
+ * the callback may defer consumption across awaits — but the packet must not
+ * be mutated by the transport.
+ *
+ * @returns The number of entries consumed.
+ */
+export function decodeChunkDataDeflatedBatchEach(
+	dec: BinaryDecoder,
+	consume: (
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		version: number,
+		origLen: number,
+		deflated: Uint8Array,
+	) => void,
+): number {
+	const count = dec.readUint16();
+
+	for (let i = 0; i < count; i++) {
+		dec.require(12 + 4 + 4 + 4);
+		const chunkX = dec.readInt32();
+		const chunkY = dec.readInt32();
+		const chunkZ = dec.readInt32();
+		const version = dec.readUint32();
+		const len = dec.readUint32();
+		const origLen = dec.readUint32();
+		if (origLen > MAX_DEFLATED_CHUNK_ORIG_LEN) {
+			throw new RangeError(`deflated chunk origLen exceeds cap: ${origLen}`);
+		}
+		const deflated = dec.readBytesView(len);
+
+		consume(chunkX, chunkY, chunkZ, version, origLen, deflated);
+	}
+
+	return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -1345,7 +1721,7 @@ export function encodeMobSpawn(
 	enc.writeFloat32(z);
 	enc.writeUint8(yaw);
 
-	return enc.getBytes();
+	return enc.finish();
 }
 
 export function decodeMobSpawnInto(
@@ -1379,6 +1755,8 @@ export function writeMobUpdateBatch(
 	entries: MobUpdateBatchEntry[],
 ): void {
 	const count = Math.min(entries.length, 255);
+	// 1 + 1 + count × (2 + 4×3 + 1)
+	enc.reserve(1 + 1 + count * 14);
 
 	enc.writeUint8(MessageType.MobUpdateBatch);
 	enc.writeUint8(count);
@@ -1398,7 +1776,7 @@ export function encodeMobDespawn(mobId: number): Uint8Array {
 	enc.reset();
 	enc.writeUint8(MessageType.MobDespawn);
 	enc.writeUint16(mobId);
-	return enc.getBytes();
+	return enc.finish();
 }
 
 export function decodeMobDespawn(buffer: Uint8Array): number {
@@ -1474,7 +1852,7 @@ export function decodeMobImpactInto(
 }
 
 // ArrowShoot (C→S) / ArrowSpawn (S→C):
-//   [type:1][x:f32][y:f32][z:f32][vx:f32][vy:f32][vz:f32]
+//   [type:1][x:f32][y:f32][z:f32][vx:f32][vy:f32][vz:f32][arrowType:u8]
 
 export function encodeArrowShoot(data: ArrowTrajectoryData): Uint8Array {
 	return encodeArrowTrajectory(MessageType.ArrowShoot, data);
@@ -1621,7 +1999,7 @@ export function decodeTntIgniteInto(
 // ---------------------------------------------------------------------------
 
 export function encodeItemDrop(data: ItemDropData): Uint8Array {
-	const enc = new BinaryEncoder(1 + 2 + 2 + 4 * 7);
+	const enc = new BinaryEncoder(1 + 2 + 2 + 4 * 6);
 	enc.writeUint8(MessageType.ItemDrop);
 	enc.writeUint16(data.itemId);
 	enc.writeUint16(data.stackSize);
@@ -1677,7 +2055,7 @@ export function encodeItemSpawn(data: ItemSpawnData): Uint8Array {
 	enc.writeFloat32(data.vx);
 	enc.writeFloat32(data.vy);
 	enc.writeFloat32(data.vz);
-	return enc.getBytes();
+	return enc.finish();
 }
 
 export function decodeItemSpawnInto(
@@ -1702,6 +2080,8 @@ export function writeItemUpdateBatch(
 	entries: ItemUpdateBatchEntry[],
 ): void {
 	const count = Math.min(entries.length, 255);
+	// 1 + 1 + count × (4 + 4×6)
+	enc.reserve(1 + 1 + count * 28);
 	enc.writeUint8(MessageType.ItemUpdateBatch);
 	enc.writeUint8(count);
 	for (let i = 0; i < count; i++) {
@@ -1721,7 +2101,7 @@ export function encodeItemDespawn(id: number): Uint8Array {
 	enc.reset();
 	enc.writeUint8(MessageType.ItemDespawn);
 	enc.writeUint32(id);
-	return enc.getBytes();
+	return enc.finish();
 }
 
 export function decodeItemDespawn(buffer: Uint8Array): number {
@@ -1737,7 +2117,7 @@ export function encodeItemPickupRejected(
 	enc.writeUint8(MessageType.ItemPickupRejected);
 	enc.writeUint32(data.id);
 	enc.writeUint8(data.reason);
-	return enc.getBytes();
+	return enc.finish();
 }
 
 export function decodeItemPickupRejectedInto(
@@ -1762,6 +2142,9 @@ export function decodeItemPickupRejectedInto(
 /** Max slots accepted in a ContainerState payload (guards malicious blobs). */
 export const MAX_CONTAINER_SLOTS = 64;
 
+/** Shared immutable empty slot for encoding missing entries (no per-slot alloc). */
+const EMPTY_CONTAINER_SLOT: ContainerSlotData = { itemId: 0, stackSize: 0 };
+
 export function encodeContainerOpen(data: ContainerOpenData): Uint8Array {
 	const enc = new BinaryEncoder(13);
 	enc.writeUint8(MessageType.ContainerOpen);
@@ -1778,6 +2161,9 @@ export function decodeContainerOpenInto(
 
 export function encodeContainerState(data: ContainerStateData): Uint8Array {
 	const count = data.width * data.height;
+	if (count > MAX_CONTAINER_SLOTS) {
+		throw new RangeError(`container state out of range: ${count} slots`);
+	}
 	const enc = new BinaryEncoder(19 + count * 4);
 	enc.writeUint8(MessageType.ContainerState);
 	enc.writeCoords(data.x, data.y, data.z);
@@ -1785,16 +2171,19 @@ export function encodeContainerState(data: ContainerStateData): Uint8Array {
 	enc.writeUint8(data.width);
 	enc.writeUint8(data.height);
 	for (let i = 0; i < count; i++) {
-		const slot: ContainerSlotData = data.slots[i] ?? {
-			itemId: 0,
-			stackSize: 0,
-		};
+		const slot: ContainerSlotData = data.slots[i] ?? EMPTY_CONTAINER_SLOT;
 		enc.writeUint16(slot.itemId);
 		enc.writeUint16(slot.stackSize);
 	}
 	return enc.getBytes();
 }
 
+/**
+ * Decode a ContainerState into a caller-owned object, updating the slots
+ * array and its slot objects IN PLACE. The slots array is only grown when a
+ * larger container arrives; existing slot objects are reused, so a repeated
+ * snapshot of the same crate allocates nothing per message.
+ */
 export function decodeContainerStateInto(
 	dec: BinaryDecoder,
 	target: ContainerStateData,
@@ -1804,14 +2193,27 @@ export function decodeContainerStateInto(
 	target.width = dec.readUint8();
 	target.height = dec.readUint8();
 	const count = target.width * target.height;
-	if (count < 0 || count > MAX_CONTAINER_SLOTS) {
-		throw new Error(`container state out of range: ${count} slots`);
+	if (count > MAX_CONTAINER_SLOTS) {
+		throw new RangeError(`container state out of range: ${count} slots`);
 	}
-	const slots: ContainerSlotData[] = new Array(count);
+	dec.require(count * 4);
+
+	let slots: ContainerSlotData[] | undefined = target.slots;
+	if (slots === undefined) {
+		slots = [];
+		target.slots = slots;
+	}
+
 	for (let i = 0; i < count; i++) {
-		slots[i] = { itemId: dec.readUint16(), stackSize: dec.readUint16() };
+		let slot = slots[i];
+		if (slot === undefined) {
+			slot = { itemId: 0, stackSize: 0 };
+			slots[i] = slot;
+		}
+		slot.itemId = dec.readUint16();
+		slot.stackSize = dec.readUint16();
 	}
-	target.slots = slots;
+	slots.length = count;
 	return target;
 }
 
@@ -1850,7 +2252,7 @@ export function encodeContainerSlotUpdate(
 	enc.writeUint8(data.col);
 	enc.writeUint16(data.itemId);
 	enc.writeUint16(data.stackSize);
-	return enc.getBytes();
+	return enc.finish();
 }
 
 export function decodeContainerSlotUpdateInto(
@@ -1888,7 +2290,7 @@ export function encodeContainerRejected(
 	enc.writeUint8(MessageType.ContainerRejected);
 	enc.writeCoords(data.x, data.y, data.z);
 	enc.writeUint8(data.reason);
-	return enc.getBytes();
+	return enc.finish();
 }
 
 export function decodeContainerRejectedInto(
@@ -1966,9 +2368,20 @@ export function decodeStationStateInto(
 	target.version = dec.readUint32();
 	target.kind = dec.readUint8();
 	target.capTier = dec.readUint8();
-	target.input = { itemId: dec.readUint16(), stackSize: dec.readUint16() };
-	target.fuel = { itemId: dec.readUint16(), stackSize: dec.readUint16() };
-	target.output = { itemId: dec.readUint16(), stackSize: dec.readUint16() };
+
+	// Reuse the three slot objects instead of allocating fresh ones per
+	// snapshot — station state moves every tick for every viewer.
+	target.input ??= { itemId: 0, stackSize: 0 };
+	target.fuel ??= { itemId: 0, stackSize: 0 };
+	target.output ??= { itemId: 0, stackSize: 0 };
+
+	target.input.itemId = dec.readUint16();
+	target.input.stackSize = dec.readUint16();
+	target.fuel.itemId = dec.readUint16();
+	target.fuel.stackSize = dec.readUint16();
+	target.output.itemId = dec.readUint16();
+	target.output.stackSize = dec.readUint16();
+
 	target.smeltProgress = dec.readUint16();
 	target.burnRemaining = dec.readUint16();
 	target.lit = dec.readUint8() !== 0;
@@ -2028,7 +2441,7 @@ export function encodeStationResultClaimed(
 	enc.writeCoords(data.x, data.y, data.z);
 	enc.writeUint16(data.itemId);
 	enc.writeUint16(data.stackSize);
-	return enc.getBytes();
+	return enc.finish();
 }
 
 export function decodeStationResultClaimedInto(
@@ -2079,7 +2492,7 @@ export function encodeStationSlotUpdate(
 	enc.writeUint16(data.smeltProgress);
 	enc.writeUint16(data.burnRemaining);
 	enc.writeUint8(data.lit ? 1 : 0);
-	return enc.getBytes();
+	return enc.finish();
 }
 
 export function decodeStationSlotUpdateInto(
@@ -2105,7 +2518,7 @@ export function encodeStationRejected(data: StationRejectedData): Uint8Array {
 	enc.writeUint8(MessageType.StationRejected);
 	enc.writeCoords(data.x, data.y, data.z);
 	enc.writeUint8(data.reason);
-	return enc.getBytes();
+	return enc.finish();
 }
 
 export function decodeStationRejectedInto(
