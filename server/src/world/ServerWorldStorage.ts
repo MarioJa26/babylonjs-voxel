@@ -83,6 +83,9 @@ interface CacheNode {
 	 */
 	denseBlocks: Uint8Array | Uint16Array | null;
 
+	/** True while denseBlocks contains edits not yet written to the store. */
+	cacheDirty: boolean;
+
 	prev: CacheNode | null;
 	next: CacheNode | null;
 }
@@ -512,6 +515,7 @@ export class ServerWorldStorage {
 			dense[idx] = packed;
 		}
 
+		node.cacheDirty = true;
 		this.dirtyChunks.add(key);
 		this.scheduleFlush();
 
@@ -530,7 +534,7 @@ export class ServerWorldStorage {
 		const newerNode = this.chunkCache.get(key);
 		if (newerNode) {
 			this.lruTouch(newerNode);
-			return newerNode.data;
+			return this.getLiveChunkData(newerNode);
 		}
 
 		const data = this.parseBlob(cx, cy, cz, blob);
@@ -548,7 +552,7 @@ export class ServerWorldStorage {
 		const node = this.chunkCache.get(key);
 		if (node) {
 			this.lruTouch(node);
-			return Promise.resolve(node.data);
+			return Promise.resolve(this.getLiveChunkData(node));
 		}
 
 		const pending = this.pendingReads.get(key);
@@ -574,32 +578,61 @@ export class ServerWorldStorage {
 		this.assertActive();
 
 		const results = new Map<number, StoredChunkData>();
-		const seen = new Set<number>();
+		const coordCount = coords.length;
+		if (coordCount === 0) return results;
+
+		/*
+		 * One map handles both input deduplication and pending-read collection.
+		 * Unlike parallel pendingKeys/pendingPromises arrays, it cannot lose the
+		 * association between a packed key and its promise.
+		 */
+		const pendingByKey = new Map<number, Promise<StoredChunkData | null>>();
+
 		const missCoords: MissCoordEntry[] = [];
-		const pendingKeys: number[] = [];
-		const pendingPromises: Array<Promise<StoredChunkData | null>> = [];
 
 		try {
-			for (let i = 0; i < coords.length; i++) {
-				const { cx, cy, cz } = coords[i];
-				const cacheKey = packChunkKeyFast(cx, cy, cz);
+			for (let i = 0; i < coordCount; i++) {
+				const coord = coords[i];
+				const cacheKey = packChunkKeyFast(coord.cx, coord.cy, coord.cz);
 
-				if (seen.has(cacheKey)) continue;
-				seen.add(cacheKey);
+				/*
+				 * A key already classified as a cache hit or pending read is a
+				 * duplicate request.
+				 */
+				if (results.has(cacheKey) || pendingByKey.has(cacheKey)) {
+					continue;
+				}
 
 				const node = this.chunkCache.get(cacheKey);
-				if (node) {
+				if (node !== undefined) {
 					this.lruTouch(node);
-					results.set(cacheKey, node.data);
+					results.set(cacheKey, this.getLiveChunkData(node));
 					continue;
 				}
 
 				const pending = this.pendingReads.get(cacheKey);
-				if (pending) {
-					pendingKeys.push(cacheKey);
-					pendingPromises.push(pending);
+				if (pending !== undefined) {
+					pendingByKey.set(cacheKey, pending);
 					continue;
 				}
+
+				/*
+				 * Because misses have not been inserted into either results or
+				 * pendingByKey yet, explicitly check the current batch for a
+				 * duplicate miss.
+				 *
+				 * missCoords is bounded by the network batch size in the primary
+				 * caller. If this method is later used with very large arrays,
+				 * add a pooled Set<number> rather than allowing this scan to grow.
+				 */
+				let duplicateMiss = false;
+				for (let j = 0; j < missCoords.length; j++) {
+					if (missCoords[j].cacheKey === cacheKey) {
+						duplicateMiss = true;
+						break;
+					}
+				}
+				if (duplicateMiss) continue;
 
 				const entry = this.missCoordPool.pop() ?? {
 					cx: 0,
@@ -609,48 +642,84 @@ export class ServerWorldStorage {
 					key: "",
 				};
 
-				entry.cx = cx;
-				entry.cy = cy;
-				entry.cz = cz;
+				entry.cx = coord.cx;
+				entry.cy = coord.cy;
+				entry.cz = coord.cz;
 				entry.cacheKey = cacheKey;
-				entry.key = `${cx},${cy},${cz}`;
-				missCoords.push(entry);
+
+				/*
+				 * LevelDbChunkStore.readChunks() currently indexes returned blobs
+				 * using this textual key. Keep it populated until that API accepts
+				 * packed numeric keys directly.
+				 */
+				entry.key = `${coord.cx},${coord.cy},${coord.cz}`;
+
+				missCoords[missCoords.length] = entry;
 			}
 
-			if (missCoords.length > 0) {
+			if (missCoords.length !== 0) {
 				const found = await this.store.readChunks(missCoords);
 
 				let parsedSinceYield = 0;
+
 				for (let i = 0; i < missCoords.length; i++) {
 					const entry = missCoords[i];
 					const blob = found.get(entry.key);
-					if (!blob) continue;
 
-					const node = this.chunkCache.get(entry.cacheKey);
-					if (node) {
-						this.lruTouch(node);
-						results.set(entry.cacheKey, node.data);
+					if (blob === undefined) continue;
+
+					/*
+					 * Another asynchronous operation may have populated or mutated
+					 * the cache while the LevelDB batch read was in flight.
+					 */
+					const currentNode = this.chunkCache.get(entry.cacheKey);
+
+					if (currentNode !== undefined) {
+						this.lruTouch(currentNode);
+						results.set(entry.cacheKey, this.getLiveChunkData(currentNode));
 						continue;
 					}
 
-					const data = this.parseBlob(entry.cx, entry.cy, entry.cz, blob);
-					this.addToCache(entry.cacheKey, data);
-					results.set(entry.cacheKey, data);
+					const parsed = this.parseBlob(entry.cx, entry.cy, entry.cz, blob);
 
-					if (++parsedSinceYield >= 16) {
+					this.addToCache(entry.cacheKey, parsed);
+
+					/*
+					 * addToCache may decline insertion when the cache is disabled.
+					 * If it inserted the chunk, return the authoritative cache view.
+					 */
+					const insertedNode = this.chunkCache.get(entry.cacheKey);
+
+					if (insertedNode !== undefined) {
+						results.set(entry.cacheKey, this.getLiveChunkData(insertedNode));
+					} else {
+						results.set(entry.cacheKey, parsed);
+					}
+
+					parsedSinceYield++;
+					if (parsedSinceYield >= 16) {
 						parsedSinceYield = 0;
 						await yieldToEventLoop();
 					}
 				}
 			}
 
-			if (pendingPromises.length > 0) {
-				const pendingResults = await Promise.all(pendingPromises);
+			if (pendingByKey.size !== 0) {
+				const entries = Array.from(pendingByKey.entries());
+				const promises = new Array<Promise<StoredChunkData | null>>(
+					entries.length,
+				);
 
-				for (let i = 0; i < pendingResults.length; i++) {
-					const data = pendingResults[i];
-					if (data) {
-						results.set(pendingKeys[i], data);
+				for (let i = 0; i < entries.length; i++) {
+					promises[i] = entries[i][1];
+				}
+
+				const resolved = await Promise.all(promises);
+
+				for (let i = 0; i < resolved.length; i++) {
+					const data = resolved[i];
+					if (data !== null) {
+						results.set(entries[i][0], data);
 					}
 				}
 			}
@@ -658,14 +727,23 @@ export class ServerWorldStorage {
 			return results;
 		} finally {
 			for (let i = missCoords.length - 1; i >= 0; i--) {
+				const entry = missCoords[i];
+
+				/*
+				 * Avoid retaining coordinate strings unnecessarily. The next
+				 * checkout overwrites the field before use.
+				 */
+				entry.key = "";
+
 				if (
 					this.missCoordPool.length < ServerWorldStorage.MAX_MISS_COORD_POOL
 				) {
-					this.missCoordPool.push(missCoords[i]);
+					this.missCoordPool[this.missCoordPool.length] = entry;
 				}
 			}
 		}
 	}
+
 	private getDenseBlocksForNode(node: CacheNode): Uint8Array | Uint16Array {
 		const cached = node.denseBlocks;
 		if (cached) return cached;
@@ -716,6 +794,32 @@ export class ServerWorldStorage {
 		node.denseBlocks = dense;
 		return dense;
 	}
+
+	/**
+	 * Return a chunk view that reflects pending cache edits.
+	 *
+	 * setCachedBlock writes into the dense buffer without replacing data.blocks;
+	 * chunk reads and mutations must see that dense state or they will serialize
+	 * (or edit) a stale snapshot on the next write.
+	 */
+	private getLiveChunkData(node: CacheNode): StoredChunkData {
+		const dense = node.denseBlocks;
+		if (
+			!dense ||
+			(dense === node.data.blocks && !node.data.palette && !node.data.isUniform)
+		) {
+			return node.data;
+		}
+
+		return {
+			...node.data,
+			blocks: dense,
+			palette: undefined,
+			isUniform: false,
+			uniformBlockId: 0,
+		};
+	}
+
 	private parseBlob(
 		cx: number,
 		cy: number,
@@ -784,7 +888,11 @@ export class ServerWorldStorage {
 		return this.queueChunkMutation(key, () => this.writeChunkUnlocked(data));
 	}
 
-	private async writeChunkUnlocked(data: StoredChunkData): Promise<void> {
+	private async writeChunkUnlocked(
+		data: StoredChunkData,
+		updateCache = true,
+		markDirty = true,
+	): Promise<void> {
 		const key = packChunkKeyFast(data.chunkX, data.chunkY, data.chunkZ);
 		const paletteArr = data.palette ? Uint16Array.from(data.palette) : null;
 
@@ -829,9 +937,18 @@ export class ServerWorldStorage {
 			true,
 		);
 
-		this.addToCache(key, data);
-		this.dirtyChunks.add(key);
-		this.scheduleFlush();
+		if (updateCache) {
+			const node = this.chunkCache.get(key);
+			const preserveDense =
+				node !== undefined && node.denseBlocks !== null && node.cacheDirty;
+
+			this.addToCache(key, data, preserveDense);
+		}
+
+		if (markDirty) {
+			this.dirtyChunks.add(key);
+			this.scheduleFlush();
+		}
 	}
 
 	async applyBlockEdits(
@@ -1404,13 +1521,26 @@ export class ServerWorldStorage {
 	 */
 	private findEvictCandidate(): CacheNode | null {
 		const players = this.playerPositions;
-		if (players.length === 0) return this.cacheTail;
+		if (players.length === 0) {
+			let node = this.cacheTail;
+			while (node && node.cacheDirty) {
+				node = node.prev;
+			}
+			return node;
+		}
 
 		// Walk the whole list: the client streams nearest-first, so the
 		// protected near-player chunks sit at the LRU tail and an early-exit
 		// window would never reach the evictable far chunks at the head.
 		let node = this.cacheTail;
 		while (node) {
+			// setCachedBlock writes only into denseBlocks. Evicting a chunk
+			// before its dirty flush would discard those edits.
+			if (node.cacheDirty) {
+				node = node.prev;
+				continue;
+			}
+
 			const coords = unpackChunkKeyFast(node.key);
 			const x = coords[0] * CHUNK_SIZE + (CHUNK_SIZE >> 1);
 			const z = coords[2] * CHUNK_SIZE + (CHUNK_SIZE >> 1);
@@ -1429,16 +1559,23 @@ export class ServerWorldStorage {
 			node = node.prev;
 		}
 
-		return this.cacheTail;
+		return null;
 	}
 
-	private addToCache(key: number, data: StoredChunkData): void {
+	private addToCache(
+		key: number,
+		data: StoredChunkData,
+		preserveDense = false,
+	): void {
 		if (this.maxCacheSize <= 0) return;
 
 		const existing = this.chunkCache.get(key);
 		if (existing) {
 			existing.data = data;
-			existing.denseBlocks = null;
+			if (!preserveDense) {
+				existing.denseBlocks = null;
+				existing.cacheDirty = false;
+			}
 			this.lruTouch(existing);
 			return;
 		}
@@ -1458,6 +1595,7 @@ export class ServerWorldStorage {
 			key,
 			data,
 			denseBlocks: null,
+			cacheDirty: false,
 			prev: null,
 			next: null,
 		};
@@ -1479,6 +1617,54 @@ export class ServerWorldStorage {
 
 	get cachedChunkCount(): number {
 		return this.chunkCache.size;
+	}
+
+	private async persistCachedChunk(key: number): Promise<void> {
+		return this.queueChunkMutation(key, async () => {
+			const node = this.chunkCache.get(key);
+			if (!node || !node.cacheDirty) return;
+
+			const dense = node.denseBlocks;
+			if (!dense) {
+				node.cacheDirty = false;
+				return;
+			}
+
+			const blocks = dense.slice();
+			const compressed = compressBlocks(blocks);
+			const [cx, cy, cz] = unpackChunkKeyFast(key);
+			const baseVersion = node.data.version > 0 ? node.data.version : 1;
+
+			const data: StoredChunkData = {
+				chunkX: cx,
+				chunkY: cy,
+				chunkZ: cz,
+				blocks: compressed.data,
+				light: node.data.light,
+				palette: compressed.palette,
+				isUniform: compressed.isUniform,
+				uniformBlockId: compressed.uniformBlockId,
+				version: baseVersion + 1,
+			};
+
+			node.cacheDirty = false;
+
+			try {
+				await this.writeChunkUnlocked(data, false, false);
+			} catch (error) {
+				node.cacheDirty = true;
+				throw error;
+			}
+
+			if (this.chunkCache.get(key) !== node) return;
+
+			node.data.version = data.version;
+
+			if (!node.cacheDirty) {
+				node.data = data;
+				node.denseBlocks = blocks;
+			}
+		});
 	}
 
 	private scheduleFlush(): void {
@@ -1519,6 +1705,13 @@ export class ServerWorldStorage {
 			this.dirtyChunks = new Set<number>();
 
 			try {
+				for (const key of flushing) {
+					const node = this.chunkCache.get(key);
+					if (node?.cacheDirty) {
+						await this.persistCachedChunk(key);
+					}
+				}
+
 				await this.store.flush();
 			} catch (error) {
 				for (const key of flushing) {

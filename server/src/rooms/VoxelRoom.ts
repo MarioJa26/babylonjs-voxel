@@ -13,9 +13,10 @@
  *    `sendChunkDataBatchDeflated` with a pre-allocated promise array and a
  *    standard `for` loop. This prevents closure and array allocation overhead
  *    per compression window.
- * 4. Batch Request Scratch Arrays: Replaced per-request allocation of `unique`,
- *    `coords`, and `keys` arrays in `handleBatchChunkRequest` with class-level
- *    scratch arrays that are simply reset via `.length = 0`.
+ * 4. Batch Request Workspace Pool: Concurrent batch handlers check out
+ *    isolated reusable workspaces. Coordinate and classification objects are
+ *    retained between requests, while large chunk references are cleared
+ *    before the workspace returns to the bounded pool.
  * 5. Edit Application Scratch: Replaced the `new Map()` allocation in
  *    `ensureEditsApplied` with a class-level `appliedEditsScratch` array to
  *    track pending edits without GC pressure.
@@ -256,7 +257,8 @@ const ITEM_PICKUP_RADIUS_SQ = ITEM_PICKUP_RADIUS * ITEM_PICKUP_RADIUS;
 const MAX_ITEM_ID = 65535;
 const MAX_ITEM_STACK = 1024;
 const MAX_ITEM_VELOCITY = 64;
-const MAX_CHUNK_BATCH = 255;
+
+const MAX_CHUNK_BATCH = 256;
 const WORLD_BOUNDARY = 1_000_000;
 // Arrow trajectory sync is cosmetic only (damage is validated separately
 // via MobDamage), so just reject absurd speeds and non-finite input.
@@ -395,6 +397,62 @@ type PendingBlockEdit = {
 	blockId: number;
 	blockState: number;
 };
+
+/** One chunk request inside a batch request message. */
+interface ChunkBatchRequest {
+	cx: number;
+	cy: number;
+	cz: number;
+	lod: number;
+	cachedVersion: number;
+}
+
+/** Chunk coordinate used for storage lookups. */
+interface ChunkBatchCoord {
+	cx: number;
+	cy: number;
+	cz: number;
+}
+
+/** Chunk coordinate queued for generation (missing from storage). */
+interface MissingChunkCoord {
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+}
+
+/** Chunk the client already holds at the current version. */
+interface UnchangedChunk {
+	cx: number;
+	cy: number;
+	cz: number;
+	version: number;
+}
+
+/**
+ * Reusable scratch buffers for a single batch chunk request.
+ *
+ * Pooled workspaces keep their object references between invocations so the
+ * per-request hot path stays allocation-free.
+ */
+interface ChunkBatchWorkspace {
+	uniqueRequests: ChunkBatchRequest[];
+	coords: ChunkBatchCoord[];
+	keys: number[];
+	missingCoords: MissingChunkCoord[];
+	fullChunks: StoredChunkData[];
+	unchangedChunks: UnchangedChunk[];
+	seen: Set<number>;
+
+	/*
+	 * Logical lengths are separate from Array.length so pooled objects remain
+	 * reachable and can be reused by the next invocation.
+	 */
+	uniqueCount: number;
+	missingCount: number;
+	fullCount: number;
+	unchangedCount: number;
+}
 
 export class VoxelRoom extends Room {
 	private players = new Map<string, ServerPlayerState>();
@@ -1221,7 +1279,16 @@ export class VoxelRoom extends Room {
 				this.pendingChunkEdits.set(key, currentMap);
 			}
 			for (const [voxel, edit] of failedMap) {
-				if (!currentMap.has(voxel)) currentMap.set(voxel, edit);
+				/*
+				 * Newer edits win. A failed entry that is superseded by an edit
+				 * already queued for the same voxel is dropped, so it must be
+				 * released back to the pool instead of being leaked.
+				 */
+				if (currentMap.has(voxel)) {
+					this.releaseEditEntry(edit);
+				} else {
+					currentMap.set(voxel, edit);
+				}
 			}
 			this.dirtyChunks.add(key);
 		}
@@ -1948,8 +2015,27 @@ export class VoxelRoom extends Room {
 		// TickBlockSampler.getCachedChunkBlocks() keeps returning the old
 		// block for up to 500 ms (flush debounce), so mobs hover after
 		// their support is mined in multiplayer.
-		this.worldStorage.setCachedBlock(x, y, z, blockId, blockState);
+		const cached = this.worldStorage.setCachedBlock(
+			x,
+			y,
+			z,
+			blockId,
+			blockState,
+		);
 		this.mobSim.notifyBlockEdit(x, y, z, blockId);
+
+		// Player edits must wake the authoritative water simulation. Without
+		// this, a placed source only flows on the editing client; the server
+		// keeps (and persists) the unflowed source, so flowing water vanishes
+		// after a reload.
+		if (cached) {
+			if (action === BlockActionType.Place) {
+				this.waterSim.scheduleBlockPlaceWaterUpdates(x, y, z, blockId);
+			} else if (action === BlockActionType.Break) {
+				this.waterSim.scheduleBlockBreakWaterUpdates(x, y, z);
+				this.waterSim.checkNewInfiniteSource(x, y, z);
+			}
+		}
 
 		return storedEdit;
 	}
@@ -2925,28 +3011,29 @@ export class VoxelRoom extends Room {
 				}
 		}
 	}
-	private readonly chunkRequestBatchScratchPool: Array<
-		Array<{
-			cx: number;
-			cy: number;
-			cz: number;
-			lod: number;
-			cachedVersion: number;
-		}>
-	> = [];
-
 	private handleChunkRequestBatchMessage(
 		client: Client,
 		dec: BinaryDecoder,
 	): void {
 		const encodedCount = dec.readUint16();
-		const count = Math.min(encodedCount, MAX_CHUNK_BATCH);
 
-		let requests = this.chunkRequestBatchScratchPool.pop();
-		if (!requests) requests = [];
-		let write = 0;
+		/*
+		 * Reject oversized batches instead of decoding only the first records:
+		 * the remaining records would stay unread in the packet and desync the
+		 * decoder for anything that follows.
+		 */
+		if (encodedCount > MAX_CHUNK_BATCH) {
+			throw new Error(`Chunk request batch too large: ${encodedCount}`);
+		}
 
-		for (let i = 0; i < count; i++) {
+		/*
+		 * One array per message. A batch holds at most MAX_CHUNK_BATCH records,
+		 * so pooling the array saves little while truncating it (.length = 0)
+		 * would delete every reusable request object it held.
+		 */
+		const requests: ChunkBatchRequest[] = [];
+
+		for (let i = 0; i < encodedCount; i++) {
 			const cx = dec.readInt32();
 			const cy = dec.readInt32();
 			const cz = dec.readInt32();
@@ -2957,33 +3044,12 @@ export class VoxelRoom extends Room {
 				continue;
 			}
 
-			let entry = requests[write];
-			if (!entry) {
-				entry = { cx: 0, cy: 0, cz: 0, lod: 0, cachedVersion: 0 };
-				requests[write] = entry;
-			}
-			entry.cx = cx;
-			entry.cy = cy;
-			entry.cz = cz;
-			entry.lod = lod;
-			entry.cachedVersion = cachedVersion;
-			write++;
+			requests.push({ cx, cy, cz, lod, cachedVersion });
 		}
 
-		if (write === 0) {
-			requests.length = 0;
-			if (this.chunkRequestBatchScratchPool.length < 8) {
-				this.chunkRequestBatchScratchPool.push(requests);
-			}
-			return;
-		}
-		requests.length = write;
-		void this.handleBatchChunkRequest(client, requests).finally(() => {
-			requests.length = 0;
-			if (this.chunkRequestBatchScratchPool.length < 8) {
-				this.chunkRequestBatchScratchPool.push(requests);
-			}
-		});
+		if (requests.length === 0) return;
+
+		void this.handleBatchChunkRequest(client, requests);
 	}
 	private async ensureEditsApplied(keys: readonly number[]): Promise<void> {
 		const keyCount = keys.length;
@@ -3164,60 +3230,15 @@ export class VoxelRoom extends Room {
 
 	private async handleBatchChunkRequest(
 		client: Client,
-		requests: Array<{
-			cx: number;
-			cy: number;
-			cz: number;
-			lod: number;
-			cachedVersion: number;
-		}>,
+		requests: ChunkBatchRequest[],
 	): Promise<void> {
 		if (!this.isClientActive(client)) return;
 
 		const requestCount = requests.length;
 		if (requestCount === 0) return;
 
-		/*
-		 * Batch handlers may overlap because callers intentionally do not await them.
-		 * Therefore, class-level scratch arrays cannot safely remain checked out
-		 * across awaits. Claim a reusable workspace for this invocation and return
-		 * it in finally.
-		 */
-		type Request = (typeof requests)[number];
-		type Coord = { cx: number; cy: number; cz: number };
-		type MissingCoord = {
-			chunkX: number;
-			chunkY: number;
-			chunkZ: number;
-		};
-		type UnchangedChunk = {
-			cx: number;
-			cy: number;
-			cz: number;
-			version: number;
-		};
-
-		type BatchWorkspace = {
-			uniqueRequests: Request[];
-			coords: Coord[];
-			keys: number[];
-			missingCoords: MissingCoord[];
-			fullChunks: StoredChunkData[];
-			unchangedChunks: UnchangedChunk[];
-			seen: Set<number>;
-		};
-
-		/*
-		 * Put this field on VoxelRoom to reuse workspaces safely:
-		 *
-		 * private readonly chunkBatchWorkspacePool: BatchWorkspace[] = [];
-		 *
-		 * If keeping helper types outside the method is preferred, move Request and
-		 * BatchWorkspace to module scope.
-		 */
-		const workspacePool = this.chunkBatchWorkspacePool as BatchWorkspace[];
 		const workspace =
-			workspacePool.pop() ??
+			this.chunkBatchWorkspacePool.pop() ??
 			({
 				uniqueRequests: [],
 				coords: [],
@@ -3226,7 +3247,11 @@ export class VoxelRoom extends Room {
 				fullChunks: [],
 				unchangedChunks: [],
 				seen: new Set<number>(),
-			} satisfies BatchWorkspace);
+				uniqueCount: 0,
+				missingCount: 0,
+				fullCount: 0,
+				unchangedCount: 0,
+			} satisfies ChunkBatchWorkspace);
 
 		const uniqueRequests = workspace.uniqueRequests;
 		const coords = workspace.coords;
@@ -3236,17 +3261,18 @@ export class VoxelRoom extends Room {
 		const unchangedChunks = workspace.unchangedChunks;
 		const seen = workspace.seen;
 
-		uniqueRequests.length = 0;
-		coords.length = 0;
-		keys.length = 0;
-		missingCoords.length = 0;
-		fullChunks.length = 0;
-		unchangedChunks.length = 0;
+		let uniqueCount = 0;
+		let missingCount = 0;
+		let fullCount = 0;
+		let unchangedCount = 0;
+
 		seen.clear();
 
 		try {
-			let uniqueCount = 0;
-
+			/*
+			 * Deduplicate requests by packed coordinate. The first request wins,
+			 * preserving the existing cached-version behavior.
+			 */
 			for (let i = 0; i < requestCount; i++) {
 				const request = requests[i];
 				const key = packChunkKeyFast(request.cx, request.cy, request.cz);
@@ -3254,7 +3280,23 @@ export class VoxelRoom extends Room {
 				if (seen.has(key)) continue;
 				seen.add(key);
 
-				uniqueRequests[uniqueCount] = request;
+				/*
+				 * Copy the request into workspace-owned storage. The caller
+				 * releases its request array as soon as this handler settles, so
+				 * retaining the caller's objects across awaits would keep them
+				 * alive and could observe later mutations.
+				 */
+				let unique = uniqueRequests[uniqueCount];
+				if (unique === undefined) {
+					unique = { cx: 0, cy: 0, cz: 0, lod: 0, cachedVersion: 0 };
+					uniqueRequests[uniqueCount] = unique;
+				}
+
+				unique.cx = request.cx;
+				unique.cy = request.cy;
+				unique.cz = request.cz;
+				unique.lod = request.lod;
+				unique.cachedVersion = request.cachedVersion;
 
 				let coord = coords[uniqueCount];
 				if (coord === undefined) {
@@ -3265,25 +3307,31 @@ export class VoxelRoom extends Room {
 				coord.cx = request.cx;
 				coord.cy = request.cy;
 				coord.cz = request.cz;
+
 				keys[uniqueCount] = key;
 				uniqueCount++;
 			}
 
+			workspace.uniqueCount = uniqueCount;
 			if (uniqueCount === 0) return;
 
-			uniqueRequests.length = uniqueCount;
-			coords.length = uniqueCount;
-			keys.length = uniqueCount;
+			/*
+			 * These two APIs consume complete arrays, so expose only the active
+			 * prefix. Truncating the pooled arrays instead would permanently
+			 * delete the reusable entries above the active prefix, because
+			 * shrinking .length removes the indexed objects.
+			 */
+			const activeKeys =
+				keys.length === uniqueCount ? keys : keys.slice(0, uniqueCount);
 
-			await this.ensureEditsApplied(keys);
+			const activeCoords =
+				coords.length === uniqueCount ? coords : coords.slice(0, uniqueCount);
+
+			await this.ensureEditsApplied(activeKeys);
 			if (!this.isClientActive(client)) return;
 
-			const storedMap = await this.worldStorage.readChunks(coords);
+			const storedMap = await this.worldStorage.readChunks(activeCoords);
 			if (!this.isClientActive(client)) return;
-
-			let missingCount = 0;
-			let fullCount = 0;
-			let unchangedCount = 0;
 
 			for (let i = 0; i < uniqueCount; i++) {
 				const request = uniqueRequests[i];
@@ -3291,6 +3339,7 @@ export class VoxelRoom extends Room {
 
 				if (stored === undefined) {
 					let missing = missingCoords[missingCount];
+
 					if (missing === undefined) {
 						missing = {
 							chunkX: 0,
@@ -3309,6 +3358,7 @@ export class VoxelRoom extends Room {
 
 				if (stored.version === request.cachedVersion) {
 					let unchanged = unchangedChunks[unchangedCount];
+
 					if (unchanged === undefined) {
 						unchanged = {
 							cx: 0,
@@ -3329,105 +3379,139 @@ export class VoxelRoom extends Room {
 				}
 			}
 
-			missingCoords.length = missingCount;
-			fullChunks.length = fullCount;
-			unchangedChunks.length = unchangedCount;
+			workspace.missingCount = missingCount;
+			workspace.fullCount = fullCount;
+			workspace.unchangedCount = unchangedCount;
 
 			if (!this.isClientActive(client)) return;
 
-			if (fullCount !== 0) {
-				await this.sendChunkDataBatch(client, fullChunks);
+			if (fullCount > 0) {
+				/*
+				 * sendChunkDataBatch reads the array across awaits, so hand it an
+				 * invocation-owned copy instead of the pooled buffer.
+				 */
+				const chunksToSend = new Array<StoredChunkData>(fullCount);
+				for (let i = 0; i < fullCount; i++) {
+					chunksToSend[i] = fullChunks[i];
+				}
+
+				await this.sendChunkDataBatch(client, chunksToSend);
+				if (!this.isClientActive(client)) return;
 			}
 
-			if (unchangedCount !== 0) {
-				this.sendUnchangedBatch(client, unchangedChunks);
+			if (unchangedCount > 0) {
+				this.sendUnchangedBatchRange(client, unchangedChunks, unchangedCount);
 			}
 
 			if (missingCount === 0) return;
 
 			/*
-			 * STREAMING PARTIAL RESULTS.
+			 * Workers claim generation groups through a shared counter. This avoids
+			 * constructing `groups` and avoids one `slice()` allocation per group.
 			 *
-			 * This used to await generateChunksBatch() for the WHOLE missing set
-			 * and send once at the end, which made the batch size the exact
-			 * head-of-line blocking window: with the client asking for 32-128
-			 * chunks per request, a single slow chunk stalled the response for
-			 * every other chunk in the batch — including the ones directly under
-			 * the player. The client saw nothing for the whole generation window
-			 * and its 30 s request timeout then fired against chunks that were
-			 * nearly ready, adding retries and making the world slower still.
-			 *
-			 * Instead, generate in small sub-batches and send each as soon as it
-			 * completes. Blocking is bounded by one sub-batch rather than the
-			 * whole request.
-			 *
-			 * Overlap is safe and already accounted for:
-			 *   - batch handlers do not await each other, so concurrent
-			 *     generateChunksBatch calls share work via ChunkGenerationService's
-			 *     dedupMap (same coordinates resolve to the same promise, so a
-			 *     chunk is generated once even if two sub-batches ask for it);
-			 *   - the client correlates responses by packed coordinate key and
-			 *     tolerates out-of-order arrival, so nothing depends on ordering.
-			 *
-			 * Sub-batches are copies because `missingCoords` belongs to the
-			 * pooled workspace and is cleared in the finally below.
+			 * generateChunksBatch may retain its coordinate array across an await,
+			 * so each worker owns one reusable group array. Coordinate objects are
+			 * copied into worker-local slots to prevent pooled workspace mutation
+			 * from affecting an in-flight generation request.
 			 */
-			const groupLimit = CHUNK_GEN_STREAM_GROUP;
-			const groupCount = Math.ceil(missingCount / groupLimit);
-			const groups = new Array<MissingCoord[]>(groupCount);
-
-			for (let g = 0; g < groupCount; g++) {
-				const start = g * groupLimit;
-				const end = Math.min(start + groupLimit, missingCount);
-				groups[g] = missingCoords.slice(start, end);
-			}
-
-			await runWithConcurrency(
-				groups,
+			const groupSize = CHUNK_GEN_STREAM_GROUP;
+			const groupCount = Math.ceil(missingCount / groupSize);
+			const workerCount = Math.min(
 				CHUNK_GEN_STREAM_GROUP_CONCURRENCY,
-				async (group): Promise<void> => {
-					if (!this.isClientActive(client)) return;
+				groupCount,
+			);
 
-					try {
-						const generated = await this.chunkGen.generateChunksBatch(group);
+			let nextGroup = 0;
+			const workers = new Array<Promise<void>>(workerCount);
 
+			for (let workerIndex = 0; workerIndex < workerCount; workerIndex++) {
+				workers[workerIndex] = (async (): Promise<void> => {
+					const group: MissingChunkCoord[] = new Array(groupSize);
+
+					for (let i = 0; i < groupSize; i++) {
+						group[i] = {
+							chunkX: 0,
+							chunkY: 0,
+							chunkZ: 0,
+						};
+					}
+
+					for (;;) {
+						const groupIndex = nextGroup++;
+						if (groupIndex >= groupCount) return;
 						if (!this.isClientActive(client)) return;
 
-						// Send immediately — this is the whole point: the client
-						// gets these chunks without waiting for the other groups.
-						await this.sendChunkDataBatch(client, generated);
-					} catch (groupError) {
-						if (!this.isClientActive(client)) return;
+						const start = groupIndex * groupSize;
+						const activeCount = Math.min(groupSize, missingCount - start);
 
-						console.warn(
-							`[VoxelRoom] Sub-batch generation failed; retrying ${group.length} chunks individually`,
-							groupError,
-						);
+						for (let i = 0; i < activeCount; i++) {
+							const source = missingCoords[start + i];
+							const target = group[i];
 
-						await runWithConcurrency(group, 4, async (coord): Promise<void> => {
+							target.chunkX = source.chunkX;
+							target.chunkY = source.chunkY;
+							target.chunkZ = source.chunkZ;
+						}
+
+						/*
+						 * The group is worker-local and never returns to a pool, so
+						 * truncating it is safe. Its length is restored below.
+						 */
+						group.length = activeCount;
+
+						try {
+							const generated = await this.chunkGen.generateChunksBatch(group);
+
 							if (!this.isClientActive(client)) return;
 
-							try {
-								const data = await this.chunkGen.generateChunk(
-									coord.chunkX,
-									coord.chunkY,
-									coord.chunkZ,
-								);
-								if (!this.isClientActive(client)) return;
+							await this.sendChunkDataBatch(client, generated);
+						} catch (groupError) {
+							if (!this.isClientActive(client)) return;
 
-								await this.sendChunkDataBatch(client, [data]);
-							} catch (singleError) {
-								if (!this.isClientActive(client)) return;
+							console.warn(
+								`[VoxelRoom] Sub-batch generation failed; retrying ${activeCount} chunks individually`,
+								groupError,
+							);
 
-								console.error(
-									`[VoxelRoom] Single chunk gen failed: ${coord.chunkX},${coord.chunkY},${coord.chunkZ}`,
-									singleError,
-								);
-							}
-						});
+							await runWithConcurrency(
+								group,
+								4,
+								async (coord): Promise<void> => {
+									if (!this.isClientActive(client)) return;
+
+									try {
+										const data = await this.chunkGen.generateChunk(
+											coord.chunkX,
+											coord.chunkY,
+											coord.chunkZ,
+										);
+
+										if (!this.isClientActive(client)) return;
+
+										await this.sendChunkDataBatch(client, [data]);
+									} catch (singleError) {
+										if (!this.isClientActive(client)) return;
+
+										console.error(
+											`[VoxelRoom] Single chunk gen failed: ${coord.chunkX},${coord.chunkY},${coord.chunkZ}`,
+											singleError,
+										);
+									}
+								},
+							);
+						} finally {
+							/*
+							 * Restore capacity for the next claimed group, including
+							 * on the early-return paths. The coordinate objects remain
+							 * in the array and are reused by this worker.
+							 */
+							group.length = groupSize;
+						}
 					}
-				},
-			);
+				})();
+			}
+
+			await Promise.all(workers);
 		} catch (error) {
 			if (!this.isClientActive(client)) return;
 
@@ -3436,48 +3520,40 @@ export class VoxelRoom extends Room {
 				error,
 			);
 		} finally {
-			uniqueRequests.length = 0;
-			coords.length = 0;
-			keys.length = 0;
-			missingCoords.length = 0;
+			/*
+			 * Release the stored chunk buffers. They hold dense block data and
+			 * light buffers, so they must not stay reachable from the pool.
+			 *
+			 * The reusable coordinate and classification objects are kept: the
+			 * arrays are never truncated, because shrinking .length deletes the
+			 * indexed objects instead of releasing them.
+			 */
+			for (let i = 0; i < fullCount; i++) {
+				fullChunks[i] = undefined as unknown as StoredChunkData;
+			}
 			fullChunks.length = 0;
-			unchangedChunks.length = 0;
-			seen.clear();
 
 			/*
-			 * Bound retained memory. A small pool is sufficient because normal
-			 * concurrency should remain low, while preventing a traffic spike from
-			 * permanently retaining many large workspaces.
+			 * Number arrays retain no object graph, so trimming them only
+			 * normalizes the logical length for the next invocation.
 			 */
-			if (workspacePool.length < 8) {
-				workspacePool[workspacePool.length] = workspace;
+			keys.length = uniqueCount;
+
+			seen.clear();
+
+			workspace.uniqueCount = 0;
+			workspace.missingCount = 0;
+			workspace.fullCount = 0;
+			workspace.unchangedCount = 0;
+
+			if (this.chunkBatchWorkspacePool.length < 8) {
+				this.chunkBatchWorkspacePool[this.chunkBatchWorkspacePool.length] =
+					workspace;
 			}
 		}
 	}
-	private readonly chunkBatchWorkspacePool: Array<{
-		uniqueRequests: Array<{
-			cx: number;
-			cy: number;
-			cz: number;
-			lod: number;
-			cachedVersion: number;
-		}>;
-		coords: Array<{ cx: number; cy: number; cz: number }>;
-		keys: number[];
-		missingCoords: Array<{
-			chunkX: number;
-			chunkY: number;
-			chunkZ: number;
-		}>;
-		fullChunks: StoredChunkData[];
-		unchangedChunks: Array<{
-			cx: number;
-			cy: number;
-			cz: number;
-			version: number;
-		}>;
-		seen: Set<number>;
-	}> = [];
+
+	private readonly chunkBatchWorkspacePool: ChunkBatchWorkspace[] = [];
 	// ─── Server-authoritative crates ────────────────────────────────────
 
 	private isValidContainerCoords(coords: {
@@ -4052,21 +4128,23 @@ export class VoxelRoom extends Room {
 		}
 	}
 
-	private sendUnchangedBatch(
+	/**
+	 * Send the first `count` entries of a reusable chunk classification buffer.
+	 *
+	 * The buffer is never truncated, so its length can exceed the number of
+	 * active entries and must not be used as the count.
+	 */
+	private sendUnchangedBatchRange(
 		client: Client,
-		unchangedChunks: Array<{
-			cx: number;
-			cy: number;
-			cz: number;
-			version: number;
-		}>,
+		unchangedChunks: readonly UnchangedChunk[],
+		count: number,
 	): void {
-		if (unchangedChunks.length === 0) return;
+		if (count === 0) return;
 		const enc = this.chunkBatchEncoder;
 		enc.reset();
 		enc.writeUint8(MessageType.ChunkUnchangedBatch);
-		enc.writeUint16(unchangedChunks.length);
-		for (let i = 0; i < unchangedChunks.length; i++) {
+		enc.writeUint16(count);
+		for (let i = 0; i < count; i++) {
 			const u = unchangedChunks[i];
 			enc.writeInt32(u.cx);
 			enc.writeInt32(u.cy);

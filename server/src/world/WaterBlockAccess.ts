@@ -2,13 +2,17 @@
  * ServerWaterBlockAccess — synchronous WaterBlockAccess adapter for the
  * authoritative server.
  *
- * Backed by ServerWorldStorage's in-memory LRU chunk cache, so reads and
- * writes never touch LevelDB. Writes go through setCachedBlock, which mutates
- * the cached dense buffer and marks the chunk dirty for the next async flush.
+ * Backed by ServerWorldStorage's in-memory LRU chunk cache. Reads and writes
+ * never touch LevelDB. Writes mutate the cached dense buffer and mark the
+ * affected chunk dirty for the next asynchronous flush.
  *
- * Coordinates are integer world voxel coordinates (the simulation always
- * passes integers). The storage layout matches the client: index =
- * localX + (localY << 5) + (localZ << 10), entries are packed id|state values.
+ * Coordinates are integer world voxel coordinates.
+ *
+ * Chunk layout:
+ * index = localX + (localY << CHUNK_SHIFT)
+ *                    + (localZ << (CHUNK_SHIFT * 2))
+ *
+ * Entries contain packed block ID and state values.
  */
 
 import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath";
@@ -28,24 +32,24 @@ export interface WaterBlockChange {
 }
 
 export class ServerWaterBlockAccess implements WaterBlockAccess {
-	// Accumulates block changes made by the simulation this tick. Drained by
-	// broadcastWaterEdits() after processFrame() so clients stay in sync.
-	private readonly pendingChanges: WaterBlockChange[] = [];
+	/**
+	 * Block changes made since the previous drain.
+	 *
+	 * This reference is replaced by drainChanges(), allowing the accumulated
+	 * array to be returned without cloning it.
+	 */
+	private pendingChanges: WaterBlockChange[] = [];
 
 	constructor(private readonly storage: ServerWorldStorage) {}
 
 	getBlock(worldX: number, worldY: number, worldZ: number): number {
-		const blocks = this.getBlocks(worldX, worldY, worldZ);
-		if (!blocks) return 0; // Treat unloaded chunks as air.
-		const idx = this.localIndex(worldX, worldY, worldZ);
-		return unpackBlockId(blocks[idx]);
+		const packed = this.getPackedBlock(worldX, worldY, worldZ);
+		return packed === undefined ? 0 : unpackBlockId(packed);
 	}
 
 	getBlockState(worldX: number, worldY: number, worldZ: number): number {
-		const blocks = this.getBlocks(worldX, worldY, worldZ);
-		if (!blocks) return 0;
-		const idx = this.localIndex(worldX, worldY, worldZ);
-		return unpackBlockState(blocks[idx]);
+		const packed = this.getPackedBlock(worldX, worldY, worldZ);
+		return packed === undefined ? 0 : unpackBlockState(packed);
 	}
 
 	getBlockAndStateInto(
@@ -54,14 +58,14 @@ export class ServerWaterBlockAccess implements WaterBlockAccess {
 		worldZ: number,
 		out: { blockId: number; blockState: number },
 	): void {
-		const blocks = this.getBlocks(worldX, worldY, worldZ);
-		if (!blocks) {
+		const packed = this.getPackedBlock(worldX, worldY, worldZ);
+
+		if (packed === undefined) {
 			out.blockId = 0;
 			out.blockState = 0;
 			return;
 		}
-		const idx = this.localIndex(worldX, worldY, worldZ);
-		const packed = blocks[idx];
+
 		out.blockId = unpackBlockId(packed);
 		out.blockState = unpackBlockState(packed);
 	}
@@ -73,42 +77,56 @@ export class ServerWaterBlockAccess implements WaterBlockAccess {
 		blockId: number,
 		state: number,
 	): void {
-		if (this.storage.setCachedBlock(worldX, worldY, worldZ, blockId, state)) {
-			// Only record when the write actually hit a loaded chunk.
-			this.pendingChanges.push({
-				x: worldX,
-				y: worldY,
-				z: worldZ,
-				blockId,
-				blockState: state,
-			});
+		if (!this.storage.setCachedBlock(worldX, worldY, worldZ, blockId, state)) {
+			return;
 		}
+
+		this.pendingChanges.push({
+			x: worldX,
+			y: worldY,
+			z: worldZ,
+			blockId,
+			blockState: state,
+		});
 	}
 
-	/** Returns and clears the block changes accumulated since the last drain. */
+	/** Returns and clears all block changes accumulated since the last drain. */
 	drainChanges(): WaterBlockChange[] {
+		if (this.pendingChanges.length === 0) {
+			return [];
+		}
+
 		const changes = this.pendingChanges;
-		this.pendingChanges.length = 0;
-		// We reused the array object; return a snapshot reference. Since we
-		// cleared it, callers get the drained entries. But to be safe against
-		// the caller retaining a reference we just filled, swap in a fresh array.
+		this.pendingChanges = [];
 		return changes;
 	}
 
-	private getBlocks(worldX: number, worldY: number, worldZ: number) {
-		const cx = Math.floor(worldX / CHUNK_SIZE);
-		const cy = Math.floor(worldY / CHUNK_SIZE);
-		const cz = Math.floor(worldZ / CHUNK_SIZE);
-		return this.storage.getCachedChunkBlocks(cx, cy, cz);
-	}
+	/**
+	 * Returns the packed block entry, or undefined when the owning chunk is
+	 * not cached.
+	 */
+	private getPackedBlock(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+	): number | undefined {
+		const chunkX = Math.floor(worldX / CHUNK_SIZE);
+		const chunkY = Math.floor(worldY / CHUNK_SIZE);
+		const chunkZ = Math.floor(worldZ / CHUNK_SIZE);
 
-	private localIndex(worldX: number, worldY: number, worldZ: number): number {
-		const cx = Math.floor(worldX / CHUNK_SIZE);
-		const cy = Math.floor(worldY / CHUNK_SIZE);
-		const cz = Math.floor(worldZ / CHUNK_SIZE);
-		const lx = worldX - cx * CHUNK_SIZE;
-		const ly = worldY - cy * CHUNK_SIZE;
-		const lz = worldZ - cz * CHUNK_SIZE;
-		return lx + (ly << CHUNK_SHIFT) + (lz << (CHUNK_SHIFT * 2));
+		const blocks = this.storage.getCachedChunkBlocks(chunkX, chunkY, chunkZ);
+
+		if (!blocks) {
+			return undefined;
+		}
+
+		const localX = worldX - chunkX * CHUNK_SIZE;
+		const localY = worldY - chunkY * CHUNK_SIZE;
+		const localZ = worldZ - chunkZ * CHUNK_SIZE;
+
+		const index =
+			localX + (localY << CHUNK_SHIFT) + (localZ << (CHUNK_SHIFT * 2));
+
+		return blocks[index];
 	}
 }

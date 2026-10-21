@@ -552,8 +552,9 @@ ${Array.from(
 default: { return vec3<u32>(faceData0[i3], faceData0[i3 + 1u], faceData0[i3 + 2u]); }
 }`;
 
-	const boundaryRestoreBlock = o.boundarySentinel || o.boundaryFlag
-		? `
+	const boundaryRestoreBlock =
+		o.boundarySentinel || o.boundaryFlag
+			? `
 if (${o.boundarySentinel ? "(((metaByte >> 1u) & 3u) == 3u)" : "false"} || ${o.boundaryFlag ? "(((metaByte >> 5u) & 1u) != 0u)" : "false"}) {
 if (axis == 0u) {
 baseX += INV_POS;
@@ -564,7 +565,7 @@ baseZ += INV_POS;
 }
 }
 `
-		: "";
+			: "";
 
 	const tintDecode = o.tint ? " let tintBucket = (face.x >> 27u) & 7u;" : "";
 
