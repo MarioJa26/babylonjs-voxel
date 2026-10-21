@@ -1,6 +1,7 @@
 /**
  * ChunkWorkerPool.ts — Manages a pool of Node.js worker threads for parallel
- * chunk generation. Handles task queuing, worker lifecycle, and crash recovery.
+ * chunk generation. Handles task queuing, worker lifecycle, priority tiers,
+ * overload control, and crash recovery.
  */
 
 import { cpus } from "node:os";
@@ -107,26 +108,17 @@ function pendingTaskKindLabel(kind: PendingTaskKindType): string {
 /**
  * Worker queue priority tiers.
  *
- * PERFORMANCE / FAIRNESS.
- *
- * This pool used to be a single FIFO. The consequence was that the 637-chunk
- * spawn prewarm — enqueued during `onCreate`, before any player exists — sat
- * in front of every chunk a joining player asks for. A player who joined while
- * prewarm was still draining queued behind the whole tail of it.
- *
- * Tiers let interactive work jump the queue. Within a tier, FIFO is preserved
- * so equal-priority work stays fair and the batch grouping in dispatchAll still
- * sees similar work close together.
- *
- * A frozen object rather than a `const enum` so the value crosses the
- * module boundary to ChunkGenerationService under isolatedModules builds.
+ * Interactive work is served before background work. Within each tier, FIFO
+ * order is retained.
  */
 export const TaskPriority = {
-	/** A player is waiting for this chunk right now. Always served first. */
+	/** A player is waiting for this chunk or relight operation. */
 	Interactive: 0,
-	/** Background warming (spawn prewarm). Never delays an interactive task. */
+
+	/** Background warming, such as spawn-area pre-generation. */
 	Background: 1,
-	/** Speculative/exploratory. Only runs when the pool would otherwise idle. */
+
+	/** Speculative work that should only consume otherwise-idle capacity. */
 	Speculative: 2,
 } as const;
 
@@ -144,75 +136,67 @@ function priorityTierName(tier: TaskPriority): string {
 }
 
 /**
- * Resolve the chunk-generation worker thread count.
+ * Resolve the chunk-generation worker count.
  *
- * PHYSICAL CORES, NOT LOGICAL THREADS. `cpus().length` reports hardware
- * threads, which is 2x physical cores on any SMT machine. Sizing a CPU-bound
- * pool from that oversubscribes: N threads on N/2 physical cores run slower
- * than N/2 threads on N/2 cores, because SMT siblings contend for the same
- * execution resources. The old `Math.min(8, cpus().length - 1)` produced 8
- * workers on a 6-core Ryzen — measurably worse than 6.
- *
- * One core is reserved for the main thread, which is the most
- * latency-sensitive thread in the process (20 Hz tick, mob/water simulation,
- * blob deflate, LevelDB write pump). Chunk generation is a background
- * workload and must never starve it.
- *
- * `override` > 0 wins outright. Use it when co-locating this server with the
- * game client on one box and leaving it roughly half the physical cores.
+ * CPU-bound workers are sized from physical cores rather than logical CPUs.
+ * One physical core is reserved for the latency-sensitive main thread.
  */
 export function resolvePoolSize(override = 0): number {
 	const requested = Math.floor(override);
+
 	if (Number.isFinite(requested) && requested > 0) {
 		return Math.max(1, requested);
 	}
 
 	const physical = detectPhysicalCores(cpus().length);
-	const budget = Math.max(1, physical - 1);
-
-	return Math.max(1, budget);
+	return Math.max(1, physical - 1);
 }
 
 export class ChunkWorkerPool {
 	private workers: WorkerState[] = [];
+
 	private readonly workerByInstance = new Map<Worker, WorkerState>();
 
-	/*
-	 * Per-tier FIFO queues drained in priority order. `queueStart` makes dequeue
-	 * O(1) per tier; dispatched entries are released periodically by
-	 * compactQueueIfNeeded().
+	/**
+	 * Per-tier FIFO queues.
 	 *
-	 * Three queues instead of one because interactive work must be able to jump
-	 * ahead of the 637-chunk spawn prewarm that runs at room creation — under a
-	 * single FIFO a joining player queued behind the entire prewarm tail.
+	 * queueStarts points at the first live entry in each queue, allowing normal
+	 * dequeue operations to remain O(1).
 	 */
 	private queues: PendingTask[][] = [[], [], []];
+
 	private queueStarts: number[] = [0, 0, 0];
 
 	/**
-	 * Hard cap on queued (not yet dispatched) tasks.
+	 * Soft queue cap.
 	 *
-	 * The queue used to be unbounded and `pendingCount` was exported but never
-	 * read, so a client that walked away from unexplored terrain left its
-	 * chunks queued to be generated — and written to disk — for nothing. Bounding
-	 * it makes overload visible and sheddable instead of silently unbounded.
+	 * Replaceable background and speculative tasks are rejected after this
+	 * threshold. Interactive tasks remain admitted so existing player-facing
+	 * behavior is preserved.
 	 */
 	private static readonly MAX_QUEUED_TASKS = 512;
+
 	private droppedTaskCount = 0;
 
+	/**
+	 * Tasks currently owned by workers and awaiting responses.
+	 */
 	private readonly pendingTasks = new Map<number, PendingTask>();
 
 	private nextId = 1;
+
 	private seed = "default";
+
 	private wasmEnabled = true;
+
 	private poolSizeOverride = 0;
+
 	private initialized = false;
+
 	private terminated = false;
 
 	/**
-	 * Max chunks per column to send to a single worker. Larger columns are split
-	 * across workers so bulk generation can use all workers in parallel while
-	 * still keeping adjacent Y-levels together for column-cache hits.
+	 * Maximum adjacent Y-levels from one column sent together to one worker.
 	 */
 	private static readonly MAX_COLUMN_GROUP_SIZE = 4;
 
@@ -230,8 +214,10 @@ export class ChunkWorkerPool {
 				this.seed = seed;
 				this.wasmEnabled = wasmEnabled;
 				this.poolSizeOverride = poolSizeOverride;
+
 				await this.recreateWorkers();
 			}
+
 			return;
 		}
 
@@ -250,10 +236,13 @@ export class ChunkWorkerPool {
 		this.workers = workers;
 		this.initialized = true;
 
+		const logicalCores = cpus().length;
+		const physicalCores = detectPhysicalCores(logicalCores);
+
 		console.log(
 			`[ChunkWorkerPool] ${poolSize} generation worker thread(s) ` +
-				`(cpus() reports ${cpus().length} logical / ` +
-				`${detectPhysicalCores(cpus().length)} physical` +
+				`(cpus() reports ${logicalCores} logical / ` +
+				`${physicalCores} physical` +
 				`${poolSizeOverride > 0 ? `, override=${poolSizeOverride}` : ""})`,
 		);
 	}
@@ -265,6 +254,7 @@ export class ChunkWorkerPool {
 		priority: TaskPriority = TaskPriority.Interactive,
 	): Promise<ChunkResult> {
 		const unavailable = this.getUnavailableError();
+
 		if (unavailable) {
 			return Promise.reject(unavailable);
 		}
@@ -273,7 +263,7 @@ export class ChunkWorkerPool {
 			return Promise.reject(this.overflowError());
 		}
 
-		const id = this.nextId++;
+		const id = this.allocateTaskId();
 
 		return new Promise((resolve, reject) => {
 			this.queues[priority].push({
@@ -292,12 +282,10 @@ export class ChunkWorkerPool {
 	}
 
 	/**
-	 * Admit a task only if the queue has room.
+	 * Admit a task if the relevant overload policy permits it.
 	 *
-	 * Interactive work is never shed — it is what a player is waiting on, and
-	 * dropping it would leave a hole in the world. Background and speculative
-	 * work is shed first, because it is by definition replaceable: the player
-	 * will ask again when they get close.
+	 * Interactive work preserves the original non-shedding behavior. Background
+	 * and speculative work are rejected once the queued-task cap is reached.
 	 */
 	private tryReserveQueueSlot(priority: TaskPriority): boolean {
 		if (this.queuedTaskCount < ChunkWorkerPool.MAX_QUEUED_TASKS) {
@@ -305,9 +293,6 @@ export class ChunkWorkerPool {
 		}
 
 		if (priority === TaskPriority.Interactive) {
-			// Still admit interactive work even when the queue is at the cap.
-			// The cap exists to bound speculative memory growth, and a player
-			// waiting on a chunk must never be refused because of one.
 			return true;
 		}
 
@@ -317,11 +302,11 @@ export class ChunkWorkerPool {
 
 	private overflowError(): Error {
 		return new Error(
-			"Chunk worker pool queue is full — background generation shed under load",
+			"Chunk worker pool queue is full; background generation was shed under load",
 		);
 	}
 
-	/** Tasks shed because the queue was full. Surfaced in logs for tuning. */
+	/** Number of replaceable tasks rejected due to queue pressure. */
 	get droppedTasks(): number {
 		return this.droppedTaskCount;
 	}
@@ -337,6 +322,7 @@ export class ChunkWorkerPool {
 		}
 
 		const unavailable = this.getUnavailableError();
+
 		if (unavailable) {
 			return Promise.reject(unavailable);
 		}
@@ -345,8 +331,8 @@ export class ChunkWorkerPool {
 		const maxGroupSize = ChunkWorkerPool.MAX_COLUMN_GROUP_SIZE;
 
 		/*
-		 * Keep numeric nested maps to avoid temporary string keys and coordinate
-		 * collisions. Each leaf contains indices into the caller's coords array.
+		 * Group coordinate indices by X/Z column. Numeric nested maps avoid
+		 * coordinate-string construction and accidental string collisions.
 		 */
 		const columnsByX = new Map<number, Map<number, number[]>>();
 
@@ -354,12 +340,14 @@ export class ChunkWorkerPool {
 			const coord = coords[i];
 
 			let columnsByZ = columnsByX.get(coord.chunkX);
+
 			if (columnsByZ === undefined) {
 				columnsByZ = new Map<number, number[]>();
 				columnsByX.set(coord.chunkX, columnsByZ);
 			}
 
 			let indices = columnsByZ.get(coord.chunkZ);
+
 			if (indices === undefined) {
 				indices = [];
 				columnsByZ.set(coord.chunkZ, indices);
@@ -368,18 +356,6 @@ export class ChunkWorkerPool {
 			indices.push(i);
 		}
 
-		/*
-		 * Build final worker batches directly.
-		 *
-		 * The previous implementation first allocated:
-		 *   - a groups array
-		 *   - one object per group
-		 *   - sliced index arrays for large columns
-		 *   - an array of group arrays per worker
-		 *
-		 * None of those structures are needed. A column group can be assigned
-		 * immediately to the least-loaded worker.
-		 */
 		const batches = new Array<ChunkCoord[] | undefined>(workerCount);
 		const originalIndices = new Array<number[] | undefined>(workerCount);
 		const workerLoads = new Uint32Array(workerCount);
@@ -415,12 +391,14 @@ export class ChunkWorkerPool {
 					}
 
 					let batch = batches[targetWorker];
+
 					if (batch === undefined) {
 						batch = [];
 						batches[targetWorker] = batch;
 					}
 
 					let batchIndices = originalIndices[targetWorker];
+
 					if (batchIndices === undefined) {
 						batchIndices = [];
 						originalIndices[targetWorker] = batchIndices;
@@ -431,9 +409,8 @@ export class ChunkWorkerPool {
 						const coord = coords[originalIndex];
 
 						/*
-						 * Preserve the original snapshot behavior. Keeping the
-						 * caller's object reference would allow mutations after
-						 * dispatchAll() to alter a queued worker request.
+						 * Snapshot coordinates so later caller mutations cannot
+						 * alter a queued worker request.
 						 */
 						batch.push({
 							chunkX: coord.chunkX,
@@ -449,10 +426,6 @@ export class ChunkWorkerPool {
 			}
 		}
 
-		/*
-		 * Release the temporary column maps before asynchronous work begins.
-		 * This does not force garbage collection, but it shortens reachability.
-		 */
 		columnsByX.clear();
 
 		const results = new Array<ChunkResult>(count);
@@ -460,6 +433,7 @@ export class ChunkWorkerPool {
 
 		for (let workerIndex = 0; workerIndex < workerCount; workerIndex++) {
 			const batch = batches[workerIndex];
+
 			if (batch === undefined) {
 				continue;
 			}
@@ -468,6 +442,12 @@ export class ChunkWorkerPool {
 
 			dispatches.push(
 				this._dispatchBatch(batch, priority).then((batchResults) => {
+					if (batchResults.length !== batchIndices.length) {
+						throw new Error(
+							"Chunk worker returned an unexpected batch result count",
+						);
+					}
+
 					for (let i = 0; i < batchResults.length; i++) {
 						results[batchIndices[i]] = batchResults[i];
 					}
@@ -475,11 +455,6 @@ export class ChunkWorkerPool {
 			);
 		}
 
-		/*
-		 * Results are written directly into their final positions. This avoids
-		 * Promise.all retaining a second nested array of all batch results for a
-		 * separate flattening pass.
-		 */
 		return Promise.all(dispatches).then(() => results);
 	}
 
@@ -492,28 +467,33 @@ export class ChunkWorkerPool {
 		neighborLight?: ReadonlyArray<Uint8Array | null>,
 	): Promise<Uint8Array> {
 		const unavailable = this.getUnavailableError();
+
 		if (unavailable) {
 			return Promise.reject(unavailable);
 		}
 
-		const id = this.nextId++;
+		const priority = TaskPriority.Interactive;
+
+		if (!this.tryReserveQueueSlot(priority)) {
+			return Promise.reject(this.overflowError());
+		}
+
+		const id = this.allocateTaskId();
 
 		return new Promise((resolve, reject) => {
-			// Relight is triggered by a live block edit, so it is interactive work:
-			// the player is looking at the change they just made.
-			this.queues[TaskPriority.Interactive].push({
+			this.queues[priority].push({
 				id,
 				kind: PendingTaskKindType.RELIGHT,
 				chunkX,
 				chunkY,
 				chunkZ,
-				priority: TaskPriority.Interactive,
+				priority,
 				blocks,
 				topSunlightMask,
 
 				/*
-				 * Preserve the original snapshot of the outer array. The typed
-				 * arrays themselves are intentionally not copied.
+				 * Snapshot the outer array. Typed-array buffers are intentionally
+				 * retained without copying.
 				 */
 				neighborLight: neighborLight
 					? Array.prototype.slice.call(neighborLight)
@@ -563,6 +543,7 @@ export class ChunkWorkerPool {
 		priority: TaskPriority = TaskPriority.Interactive,
 	): Promise<ChunkResult[]> {
 		const unavailable = this.getUnavailableError();
+
 		if (unavailable) {
 			return Promise.reject(unavailable);
 		}
@@ -571,7 +552,7 @@ export class ChunkWorkerPool {
 			return Promise.reject(this.overflowError());
 		}
 
-		const id = this.nextId++;
+		const id = this.allocateTaskId();
 
 		return new Promise((resolve, reject) => {
 			this.queues[priority].push({
@@ -587,8 +568,45 @@ export class ChunkWorkerPool {
 		});
 	}
 
+	/**
+	 * Allocate a safe task ID.
+	 *
+	 * Reaching MAX_SAFE_INTEGER is practically unlikely, but wrapping avoids
+	 * producing imprecise numeric Map keys in a long-running process.
+	 */
+	private allocateTaskId(): number {
+		for (;;) {
+			const id = this.nextId;
+
+			this.nextId = id >= Number.MAX_SAFE_INTEGER ? 1 : id + 1;
+
+			if (!this.taskIdInUse(id)) {
+				return id;
+			}
+		}
+	}
+
+	private taskIdInUse(id: number): boolean {
+		if (this.pendingTasks.has(id)) {
+			return true;
+		}
+
+		for (let tier = 0; tier < this.queues.length; tier++) {
+			const queue = this.queues[tier];
+
+			for (let i = this.queueStarts[tier]; i < queue.length; i++) {
+				if (queue[i].id === id) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
 	private createWorkerState(): WorkerState {
 		const worker = new Worker(workerPath);
+
 		const state: WorkerState = {
 			worker,
 			busy: false,
@@ -605,17 +623,28 @@ export class ChunkWorkerPool {
 
 		worker.on("exit", (code) => {
 			const currentState = this.workerByInstance.get(worker);
+
 			if (currentState?.disposed) {
 				return;
 			}
 
+			/*
+			 * Even a zero-code exit is unexpected unless the worker was explicitly
+			 * disposed. Recover it so pool capacity is not silently reduced.
+			 */
 			if (code !== 0) {
 				console.error(`[ChunkWorkerPool] Worker exited with code ${code}`);
-				this.recoverWorker(worker);
+			} else {
+				console.error(
+					"[ChunkWorkerPool] Worker exited unexpectedly with code 0",
+				);
 			}
+
+			this.recoverWorker(worker);
 		});
 
 		this.workerByInstance.set(worker, state);
+
 		return state;
 	}
 
@@ -623,17 +652,32 @@ export class ChunkWorkerPool {
 		const state = this.workerByInstance.get(worker);
 
 		/*
-		 * Ignore stale messages from a worker that was already recovered or
-		 * intentionally disposed.
+		 * Ignore stale messages from workers that were recovered or intentionally
+		 * disposed.
 		 */
 		if (state === undefined || state.disposed) {
 			return;
 		}
 
-		state.busy = false;
-		state.activeTaskId = undefined;
+		const activeTaskId = state.activeTaskId;
+
+		/*
+		 * A worker must only answer the task currently assigned to it. Ignoring a
+		 * mismatched response prevents an old or malformed response from marking
+		 * the worker idle while its real task remains active.
+		 */
+		if (activeTaskId === undefined || message.id !== activeTaskId) {
+			console.warn(
+				`[ChunkWorkerPool] Ignoring stale worker response id=${message.id}; ` +
+					`active=${activeTaskId ?? "none"}`,
+			);
+			return;
+		}
 
 		const task = this.pendingTasks.get(message.id);
+
+		state.busy = false;
+		state.activeTaskId = undefined;
 
 		if (task === undefined) {
 			this.processQueue();
@@ -667,11 +711,6 @@ export class ChunkWorkerPool {
 			"kind" in message &&
 			message.kind === PendingTaskKindType.SINGLE
 		) {
-			/*
-			 * A new result object is retained here intentionally. Resolving with
-			 * message directly would expose protocol-only id and kind fields and
-			 * would therefore alter observable behavior.
-			 */
 			task.resolve({
 				blocks: message.blocks,
 				light: message.light,
@@ -702,14 +741,8 @@ export class ChunkWorkerPool {
 		const pendingTasks = this.pendingTasks;
 
 		/*
-		 * Walk each worker once.
-		 *
-		 * The previous implementation searched from workers[0] for every task.
-		 * Filling W idle workers therefore examined the same busy prefix repeatedly:
-		 *
-		 *     1 + 2 + ... + W = O(W²)
-		 *
-		 * This pass is O(W), while takeNextTask() retains priority-tier ordering.
+		 * Walk workers once. This avoids repeatedly searching from workers[0]
+		 * while filling multiple idle workers.
 		 */
 		for (let workerIndex = 0; workerIndex < workers.length; workerIndex++) {
 			const state = workers[workerIndex];
@@ -719,9 +752,8 @@ export class ChunkWorkerPool {
 			}
 
 			/*
-			 * Normally this loop runs once. It repeats only when postMessage throws,
-			 * allowing the same still-idle worker to accept the next queued task
-			 * instead of leaving capacity unused until another processQueue call.
+			 * Repeat only when postMessage throws synchronously. That allows this
+			 * still-idle worker to attempt another queued task immediately.
 			 */
 			for (;;) {
 				const task = this.takeNextTask();
@@ -738,7 +770,7 @@ export class ChunkWorkerPool {
 				try {
 					this.postTaskToWorker(state.worker, task);
 
-					// This worker now owns one task.
+					// The worker now owns one task.
 					break;
 				} catch (error: unknown) {
 					state.busy = false;
@@ -750,11 +782,6 @@ export class ChunkWorkerPool {
 							? error
 							: new Error(`Failed to post task to worker: ${String(error)}`),
 					);
-
-					/*
-					 * Continue with the same worker. A synchronous posting failure
-					 * for one task does not necessarily mean the worker is unusable.
-					 */
 				}
 			}
 		}
@@ -793,9 +820,8 @@ export class ChunkWorkerPool {
 			const buffer = task.blocks.buffer;
 
 			/*
-			 * Avoid allocating an empty transfer-list array for shared memory.
-			 * Non-shared buffers retain the original transfer and detachment
-			 * behavior.
+			 * SharedArrayBuffer cannot be transferred. Normal ArrayBuffer-backed
+			 * typed arrays retain the existing transfer-and-detach behavior.
 			 */
 			if (buffer instanceof SharedArrayBuffer) {
 				worker.postMessage(message);
@@ -823,24 +849,59 @@ export class ChunkWorkerPool {
 		}
 
 		const stateIndex = this.workers.indexOf(state);
+
 		if (stateIndex < 0) {
 			return;
 		}
 
+		/*
+		 * Mark disposed before terminate() so a later exit event cannot trigger a
+		 * second recovery.
+		 */
 		state.disposed = true;
+
 		this.workers.splice(stateIndex, 1);
 		this.workerByInstance.delete(deadWorker);
 
 		const activeTaskId = state.activeTaskId;
+
+		state.activeTaskId = undefined;
+		state.busy = false;
 
 		if (activeTaskId !== undefined) {
 			const task = this.pendingTasks.get(activeTaskId);
 
 			if (task !== undefined) {
 				this.pendingTasks.delete(activeTaskId);
-				this.requeueFront(task);
+
+				/*
+				 * A relight request transfers its blocks buffer to the worker.
+				 * If the worker failed after transfer, the main-thread buffer is
+				 * detached and cannot safely be retried.
+				 */
+				if (
+					task.kind === PendingTaskKindType.RELIGHT &&
+					!(task.blocks.buffer instanceof SharedArrayBuffer) &&
+					task.blocks.buffer.byteLength === 0
+				) {
+					task.reject(
+						new Error(
+							"Relight worker failed after its block buffer was transferred",
+						),
+					);
+				} else {
+					this.requeueFront(task);
+				}
 			}
 		}
+
+		/*
+		 * On an exit event this is harmless. On an error event it ensures the
+		 * failed worker does not remain alive after removal from the pool.
+		 */
+		void deadWorker.terminate().catch(() => {
+			// The worker may already have exited.
+		});
 
 		if (!this.terminated) {
 			this.workers.push(this.createWorkerState());
@@ -870,10 +931,6 @@ export class ChunkWorkerPool {
 		const poolSize = resolvePoolSize(this.poolSizeOverride);
 		const replacementWorkers = new Array<WorkerState>(poolSize);
 
-		/*
-		 * Assign the new array before creating workers so event-driven recovery
-		 * always observes the current worker collection.
-		 */
 		this.workers = replacementWorkers;
 
 		for (let i = 0; i < poolSize; i++) {
@@ -881,34 +938,51 @@ export class ChunkWorkerPool {
 		}
 	}
 
+	/**
+	 * Put a recovered task at the front of its existing priority tier.
+	 *
+	 * The consumed slot immediately before queueStart is reused. This is O(1),
+	 * preserves the queued suffix, and prevents already-consumed tasks from
+	 * being restored.
+	 */
 	private requeueFront(task: PendingTask): void {
 		const tier = task.priority;
 		const queue = this.queues[tier];
 		const start = this.queueStarts[tier];
 
 		if (start > 0) {
-			this.queues[tier] = queue.slice(0, start);
-			this.queues[tier].unshift(task);
-			this.queueStarts[tier] = 0;
-		} else {
-			queue.unshift(task);
+			const newStart = start - 1;
+
+			queue[newStart] = task;
+			this.queueStarts[tier] = newStart;
+			return;
 		}
+
+		/*
+		 * No consumed prefix is available. Worker crashes are exceptional, so
+		 * the O(n) shift here is preferable to complicating the normal queue.
+		 */
+		queue.unshift(task);
 	}
 
 	/**
-	 * Pop the next task, highest-priority tier first.
-	 *
-	 * Within a tier this is FIFO, which keeps dispatchAll's column grouping
-	 * seeing similar work close together and stops one tenant from starving
-	 * another at equal priority.
+	 * Return the next task from the highest-priority non-empty tier.
 	 */
 	private takeNextTask(): PendingTask | undefined {
 		for (let tier = 0; tier < this.queues.length; tier++) {
 			const start = this.queueStarts[tier];
+			const queue = this.queues[tier];
 
-			if (start < this.queues[tier].length) {
-				const task = this.queues[tier][start];
+			if (start < queue.length) {
+				const task = queue[start];
+
+				/*
+				 * Release the consumed queue reference immediately. The task stays
+				 * alive in pendingTasks after dispatch.
+				 */
+				queue[start] = undefined as unknown as PendingTask;
 				this.queueStarts[tier] = start + 1;
+
 				return task;
 			}
 		}
@@ -936,8 +1010,7 @@ export class ChunkWorkerPool {
 			}
 
 			/*
-			 * Replace the array rather than setting length to zero so a very
-			 * large queue's backing storage can be reclaimed.
+			 * Replace the array so an oversized backing store can be reclaimed.
 			 */
 			this.queues[tier] = [];
 			this.queueStarts[tier] = 0;
@@ -952,30 +1025,33 @@ export class ChunkWorkerPool {
 		}
 
 		this.pendingTasks.clear();
+
+		for (let i = 0; i < this.workers.length; i++) {
+			this.workers[i].busy = false;
+			this.workers[i].activeTaskId = undefined;
+		}
 	}
 
 	private compactQueuesIfNeeded(): void {
 		for (let tier = 0; tier < this.queues.length; tier++) {
 			const start = this.queueStarts[tier];
 
-			if (start === 0) continue;
+			if (start === 0) {
+				continue;
+			}
 
 			const queue = this.queues[tier];
 			const length = queue.length;
 
 			if (start >= length) {
-				/*
-				 * Replacing the array releases references and allows oversized
-				 * backing storage to be reclaimed.
-				 */
 				this.queues[tier] = [];
 				this.queueStarts[tier] = 0;
 				continue;
 			}
 
 			/*
-			 * Compact only after meaningful drift. slice() allocates one smaller
-			 * array, but releases all references held by consumed queue slots.
+			 * Compact after meaningful drift. One allocation releases the consumed
+			 * prefix and avoids retaining a continually growing sparse queue.
 			 */
 			if (start > 1024 && start * 2 >= length) {
 				this.queues[tier] = queue.slice(start);
