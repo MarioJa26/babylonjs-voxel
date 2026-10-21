@@ -5,6 +5,7 @@ import {
 	isLiquidSourceBlock,
 	type LiquidDefinition,
 	type LiquidReaction,
+	WATER_LIQUID,
 } from "../../Liquid/LiquidRegistry";
 import { BlockType } from "../../Texture/BlockType";
 
@@ -53,8 +54,12 @@ const FLOW_GRID_CELLS = FLOW_GRID_DIM * FLOW_GRID_DIM;
 const FLOW_NOT_FOUND = 255;
 const FLOW_CACHE_UNKNOWN = -1;
 const LIQUID_SOURCE_STATE = 0;
-/** Fallback tick delay for non-liquid cells that may become liquid-fed. */
-const DEFAULT_FLOW_DELAY = 5;
+/**
+ * Fallback tick delay for non-liquid cells that may become liquid-fed.
+ * Matches the water cadence so an empty cell reacts to a neighbouring
+ * liquid on the same schedule the liquid itself flows on.
+ */
+const DEFAULT_FLOW_DELAY = WATER_LIQUID.flowDelay;
 
 function packBlockAndState(blockId: number, blockState: number): number {
 	return (blockId & 0xffff) | ((blockState & 0xffff) << 16);

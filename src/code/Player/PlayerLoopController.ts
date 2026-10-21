@@ -277,6 +277,25 @@ export class PlayerLoopController {
 	// Cache singleton instead of resolving it multiple times in hot paths.
 	#blockTickScheduler = BlockTickScheduler.getInstance();
 
+	/*
+	 * The water scheduler is tick-based, and a tick is 50 ms — the same
+	 * cadence the server's room loop runs at (ServerConfig.tickRate = 20).
+	 * Advancing the scheduler once per RENDERED frame would make the client
+	 * flow water three times faster than the server at 60 FPS, so the ticks
+	 * are accumulated here and drained at a fixed rate instead.
+	 */
+	static readonly BLOCK_TICK_MS = 50;
+
+	// Pending scheduler ticks, in milliseconds, not yet drained.
+	#blockTickAccumulatorMs = 0;
+
+	/*
+	 * Catch-up cap. A long stall (tab switch, a big hitch) would otherwise
+	 * dump a burst of water updates in one frame, so the backlog is dropped
+	 * instead: the water sim runs briefly slow, but never in a burst.
+	 */
+	static readonly MAX_BLOCK_TICKS_PER_FRAME = 5;
+
 	// Per-emitter throttle state so the local player keeps its own sprint-dust
 	// cadence independent of remote players.
 	#sprintEmitter = makeSprintEmitterState();
@@ -457,10 +476,28 @@ export class PlayerLoopController {
 		// Batch the whole tick wave: a flood tick can write hundreds of blocks;
 		// coalescing turns that into one remesh per touched chunk instead of
 		// dozens of intermediate rebuilds.
+		this.#blockTickAccumulatorMs += deltaMs;
+
+		const maxAccumulatedMs =
+			PlayerLoopController.MAX_BLOCK_TICKS_PER_FRAME *
+			PlayerLoopController.BLOCK_TICK_MS;
+
+		if (this.#blockTickAccumulatorMs > maxAccumulatedMs) {
+			this.#blockTickAccumulatorMs = maxAccumulatedMs;
+		}
+
+		const blockTicks = Math.floor(
+			this.#blockTickAccumulatorMs / PlayerLoopController.BLOCK_TICK_MS,
+		);
+
+		this.#blockTickAccumulatorMs -= blockTicks * PlayerLoopController.BLOCK_TICK_MS;
+
 		frameProfiler.begin("blockTicks");
 		Chunk.beginBlockEditBatch();
 		try {
-			this.#blockTickScheduler.processFrame();
+			for (let i = 0; i < blockTicks; i++) {
+				this.#blockTickScheduler.processFrame();
+			}
 			// Stations tick here rather than on BlockTickScheduler: that ring is
 			// built for sparse one-shots (max 63 ticks of delay, a 4096-entry
 			// safety ceiling), and a world full of smelting furnaces would blow

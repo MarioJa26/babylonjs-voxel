@@ -77,9 +77,11 @@ export interface LiquidDefinition {
 // ---------------------------------------------------------------------------
 
 /**
- * Water: the original liquid. Flows fast (one step every 5 ticks = 0.25 s
- * at 20 TPS), creates infinite sources from two adjacent sources, renders
- * in the animated water bucket.
+ * Water: the original liquid. Flows at 2 blocks/second (one step every 10
+ * ticks at 20 TPS), which is the same speed as the block-placement puff
+ * (see Maps/BlockBreakParticles.playPlaceScaled, ~1.7-2.7 blocks/second).
+ * Creates infinite sources from two adjacent sources, renders in the
+ * animated water bucket.
  */
 export const WATER_LIQUID: LiquidDefinition = {
 	key: "water",
@@ -88,7 +90,7 @@ export const WATER_LIQUID: LiquidDefinition = {
 	bucketItemId: 1052,
 	renderBucket: "water",
 	lightEmission: 0,
-	flowDelay: 5,
+	flowDelay: 10,
 	infiniteSourceFromTwo: true,
 	damagePerSecond: 0,
 	overlayCss:
@@ -147,7 +149,8 @@ export const LAVA_LIQUID: LiquidDefinition = {
 };
 
 /**
- * Oil: thick, dark, harmless. Slightly slower than water; no light.
+ * Oil: thick, dark, harmless. Slower than water (one step every 15 ticks
+ * at 20 TPS = ~1.3 blocks/second); no light.
  */
 export const OIL_LIQUID: LiquidDefinition = {
 	key: "oil",
@@ -156,7 +159,7 @@ export const OIL_LIQUID: LiquidDefinition = {
 	bucketItemId: 1054,
 	renderBucket: "cutout",
 	lightEmission: 0,
-	flowDelay: 8,
+	flowDelay: 15,
 	infiniteSourceFromTwo: false,
 	damagePerSecond: 0,
 	overlayCss:
