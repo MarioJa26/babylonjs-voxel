@@ -54,8 +54,8 @@ export class RemoteGenerationPump {
 
 	/*
 	 * Incremented whenever the provider changes. Every asynchronous operation
-	 * captures this value so results from a previous provider/session cannot be
-	 * applied to the current world.
+	 * captures this value so results from a previous provider or session cannot
+	 * be applied to the current world.
 	 */
 	private providerGeneration = 0;
 
@@ -69,8 +69,7 @@ export class RemoteGenerationPump {
 
 	/*
 	 * Disposal removes a chunk from remoteTaskQueueSet in O(1). The next
-	 * selection compacts the backing array once rather than paying O(N) for
-	 * every disposal.
+	 * selection compacts the backing array rather than paying O(N) per disposal.
 	 */
 	private remoteQueueNeedsCompaction = false;
 
@@ -90,6 +89,12 @@ export class RemoteGenerationPump {
 
 	private readonly pendingRemoteChunks = new Set<Chunk>();
 	private pendingRemeshScheduled = false;
+
+	/*
+	 * Reused by selectColumnBatch(). Only one selection cycle can run at a time
+	 * because remotePumpScheduled serializes pump cycles.
+	 */
+	private readonly remoteSelectionScratch = new Set<Chunk>();
 
 	constructor(private readonly host: RemotePumpHost) {}
 
@@ -163,7 +168,7 @@ export class RemoteGenerationPump {
 	): void {
 		if (!this.isLiveRemoteRequestChunk(chunk) || chunk.isLoaded) {
 			this.clearChunkRetryState(chunk);
-			if (chunk) chunk.isTerrainScheduled = false;
+			chunk.isTerrainScheduled = false;
 			return;
 		}
 
@@ -269,9 +274,7 @@ export class RemoteGenerationPump {
 
 		if (reaped > 0) {
 			console.warn(
-				`[RemoteGen] reaped ${reaped} remote request(s) stuck ` +
-					`pending for >${REMOTE_PENDING_STALE_MS / 1000}s; ` +
-					`retrying them.`,
+				`[RemoteGen] reaped ${reaped} remote request(s) stuck pending for >${REMOTE_PENDING_STALE_MS / 1000}s; retrying them.`,
 			);
 
 			this.pumpRemoteGeneration();
@@ -289,6 +292,13 @@ export class RemoteGenerationPump {
 			this.remotePendingReapTimer = null;
 			this.reapStaleRemotePending();
 		}, REMOTE_PENDING_REAP_INTERVAL_MS);
+	}
+
+	private cancelRemotePendingReap(): void {
+		if (this.remotePendingReapTimer === null) return;
+
+		clearTimeout(this.remotePendingReapTimer);
+		this.remotePendingReapTimer = null;
 	}
 
 	enableRemoteMode(): void {
@@ -344,9 +354,8 @@ export class RemoteGenerationPump {
 		}
 
 		/*
-		 * Promise.resolve safely accepts synchronous, PromiseLike and ordinary
-		 * return values. Cache warming is advisory, so success and failure have
-		 * the same continuation.
+		 * Cache warming is advisory. Both success and failure continue into the
+		 * actual remote request cycle.
 		 */
 		void Promise.resolve(cacheRequest).then(
 			() => this.finishRemotePumpCycle(toCheck),
@@ -378,34 +387,7 @@ export class RemoteGenerationPump {
 		);
 	}
 
-	private compactRemoteTaskQueueIfNeeded(): void {
-		if (!this.remoteQueueNeedsCompaction) return;
-
-		const queue = this.remoteTaskQueue;
-		let write = 0;
-
-		for (let read = 0; read < queue.length; read++) {
-			const chunk = queue[read];
-
-			if (
-				!this.remoteTaskQueueSet.has(chunk) ||
-				!this.isLiveRemoteRequestChunk(chunk)
-			) {
-				this.remoteTaskQueueSet.delete(chunk);
-				chunk.isTerrainScheduled = false;
-				continue;
-			}
-
-			queue[write++] = chunk;
-		}
-
-		queue.length = write;
-		this.remoteQueueNeedsCompaction = false;
-	}
-
 	private selectColumnBatch(maxCount: number): Chunk[] {
-		this.compactRemoteTaskQueueIfNeeded();
-
 		const result: Chunk[] = [];
 
 		if (maxCount <= 0 || this.remoteTaskQueue.length === 0) {
@@ -415,28 +397,24 @@ export class RemoteGenerationPump {
 		const queue = this.remoteTaskQueue;
 		const queueSet = this.remoteTaskQueueSet;
 		const pending = this.remotePendingChunks;
+		const selected = this.remoteSelectionScratch;
+
+		selected.clear();
 
 		let anchorX = 0;
 		let anchorZ = 0;
 		let hasAnchor = false;
-
-		/*
-		 * Chunk objects are pooled and numericId may be reused. Object identity is
-		 * safe for this operation because queueSet and the queue contain the same
-		 * live object instances.
-		 */
-		const selected = new Set<Chunk>();
+		let write = 0;
 
 		/*
 		 * First pass:
-		 * 1. Find the first eligible chunk.
-		 * 2. Prefer other chunks from the same X/Z column.
-		 *
-		 * Continue scanning after reaching maxCount so invalid queue entries can
-		 * still be cleaned during compaction below.
+		 * - clean invalid queue entries
+		 * - choose the first eligible chunk as the anchor
+		 * - prefer other chunks in the same X/Z column
+		 * - compact non-selected survivors in place
 		 */
-		for (let i = 0; i < queue.length; i++) {
-			const chunk = queue[i];
+		for (let read = 0; read < queue.length; read++) {
+			const chunk = queue[read];
 
 			if (!queueSet.has(chunk)) {
 				continue;
@@ -448,9 +426,7 @@ export class RemoteGenerationPump {
 				continue;
 			}
 
-			const key = chunk.id;
-
-			if (pending.has(key)) {
+			if (pending.has(chunk.id)) {
 				queueSet.delete(chunk);
 				continue;
 			}
@@ -472,70 +448,53 @@ export class RemoteGenerationPump {
 			) {
 				selected.add(chunk);
 				result.push(chunk);
-			}
-		}
-
-		if (!hasAnchor) {
-			queue.length = 0;
-			return result;
-		}
-
-		/*
-		 * Second pass:
-		 * Fill remaining capacity with eligible chunks from any column.
-		 */
-		if (result.length < maxCount) {
-			for (let i = 0; i < queue.length && result.length < maxCount; i++) {
-				const chunk = queue[i];
-
-				if (
-					selected.has(chunk) ||
-					!queueSet.has(chunk) ||
-					!this.isLiveRemoteRequestChunk(chunk) ||
-					chunk.isLoaded
-				) {
-					continue;
-				}
-
-				if (pending.has(chunk.id)) {
-					queueSet.delete(chunk);
-					continue;
-				}
-
-				selected.add(chunk);
-				result.push(chunk);
-			}
-		}
-
-		/*
-		 * Compact in place, removing selected, disposed, loaded, duplicate, and
-		 * already-pending chunks.
-		 */
-		let write = 0;
-
-		for (let read = 0; read < queue.length; read++) {
-			const chunk = queue[read];
-
-			if (!queueSet.has(chunk) || selected.has(chunk)) {
-				queueSet.delete(chunk);
-				continue;
-			}
-
-			if (!this.isLiveRemoteRequestChunk(chunk) || chunk.isLoaded) {
-				queueSet.delete(chunk);
-				chunk.isTerrainScheduled = false;
-				continue;
-			}
-
-			if (pending.has(chunk.id)) {
-				queueSet.delete(chunk);
 				continue;
 			}
 
 			queue[write++] = chunk;
 		}
 
+		if (!hasAnchor) {
+			queue.length = 0;
+			this.remoteQueueNeedsCompaction = false;
+			selected.clear();
+			return result;
+		}
+
+		/*
+		 * If the preferred column did not fill the batch, consume additional
+		 * chunks from the compacted survivor prefix without disturbing the
+		 * relative order of chunks that remain queued.
+		 */
+		if (result.length < maxCount && write > 0) {
+			const additionalCount = Math.min(maxCount - result.length, write);
+
+			for (let i = 0; i < additionalCount; i++) {
+				const chunk = queue[i];
+				selected.add(chunk);
+				result.push(chunk);
+			}
+
+			if (additionalCount > 0) {
+				let remainingWrite = 0;
+
+				for (let read = additionalCount; read < write; read++) {
+					queue[remainingWrite++] = queue[read];
+				}
+
+				write = remainingWrite;
+			}
+		}
+
 		queue.length = write;
+
+		for (let i = 0; i < result.length; i++) {
+			queueSet.delete(result[i]);
+		}
+
+		this.remoteQueueNeedsCompaction = false;
+		selected.clear();
+
 		return result;
 	}
 
@@ -543,8 +502,8 @@ export class RemoteGenerationPump {
 		this.remotePumpScheduled = false;
 
 		if (this.remoteChunkProvider === null) {
-			for (const chunk of toCheck) {
-				chunk.isTerrainScheduled = false;
+			for (let i = 0; i < toCheck.length; i++) {
+				toCheck[i].isTerrainScheduled = false;
 			}
 			return;
 		}
@@ -552,15 +511,14 @@ export class RemoteGenerationPump {
 		const available = MAX_OUTSTANDING_REMOTE - this.remotePendingChunks.size;
 
 		if (available <= 0) {
-			for (const chunk of toCheck) {
-				this.requeueRemoteChunk(chunk, false);
+			for (let i = 0; i < toCheck.length; i++) {
+				this.requeueRemoteChunk(toCheck[i], false);
 			}
 
 			this.scheduleBackpressureRetry();
 			return;
 		}
 
-		const requestCount = Math.min(available, toCheck.length);
 		const toRequest: Chunk[] = [];
 
 		for (let i = 0; i < toCheck.length; i++) {
@@ -571,7 +529,11 @@ export class RemoteGenerationPump {
 				continue;
 			}
 
-			if (i >= requestCount) {
+			/*
+			 * Count accepted requests rather than source-array positions. Invalid
+			 * entries therefore do not consume remote capacity.
+			 */
+			if (toRequest.length >= available) {
 				this.requeueRemoteChunk(chunk, false);
 				continue;
 			}
@@ -639,8 +601,8 @@ export class RemoteGenerationPump {
 		const available = MAX_OUTSTANDING_REMOTE - pending.size;
 
 		if (available <= 0) {
-			for (const chunk of toRequest) {
-				this.requeueRemoteChunk(chunk, false);
+			for (let i = 0; i < toRequest.length; i++) {
+				this.requeueRemoteChunk(toRequest[i], false);
 			}
 
 			this.scheduleBackpressureRetry();
@@ -656,7 +618,7 @@ export class RemoteGenerationPump {
 		const keys: bigint[] = [];
 		const entries: RemotePendingEntry[] = [];
 
-		for (let i = 0; i < toRequest.length && chunks.length < available; i++) {
+		for (let i = 0; i < toRequest.length; i++) {
 			const chunk = toRequest[i];
 
 			if (!this.isLiveRemoteRequestChunk(chunk) || chunk.isLoaded) {
@@ -668,6 +630,11 @@ export class RemoteGenerationPump {
 
 			if (pending.has(key)) {
 				chunk.isTerrainScheduled = false;
+				continue;
+			}
+
+			if (chunks.length >= available) {
+				this.requeueRemoteChunk(chunk, false);
 				continue;
 			}
 
@@ -813,6 +780,10 @@ export class RemoteGenerationPump {
 			}
 		}
 
+		/*
+		 * Observe unmatched promises so an extra rejected provider promise does
+		 * not create an unhandled rejection.
+		 */
 		for (let i = requestCount; i < promiseCount; i++) {
 			const extra = promises[i];
 
@@ -928,11 +899,11 @@ export class RemoteGenerationPump {
 
 		/*
 		 * Invalidate every asynchronous operation created by the preceding
-		 * provider, including when switching directly between two non-null
-		 * providers.
+		 * provider, including direct non-null to non-null switches.
 		 */
 		if (provider !== previousProvider) {
 			this.providerGeneration++;
+			this.cancelRemotePendingReap();
 		}
 
 		if (previousProvider !== null) {
@@ -946,6 +917,7 @@ export class RemoteGenerationPump {
 		this.remoteGenerationEnabled = provider !== null;
 		this.expectingRemoteProvider = provider !== null;
 		this.remotePumpScheduled = false;
+
 		this.cancelBackpressureRetry();
 
 		if (provider !== null) {
@@ -964,13 +936,14 @@ export class RemoteGenerationPump {
 
 			for (const chunk of Chunk.chunkInstances.values()) {
 				if (chunk.isBoatChunk) continue;
+
 				if (!chunk.isLoaded && !chunk.hasVoxelData) {
 					continue;
 				}
 
 				/*
-				 * Loaded authoritative replacement requests must be allowed,
-				 * so enqueue directly instead of rejecting loaded chunks.
+				 * Loaded authoritative replacement requests are valid here, so
+				 * enqueue directly instead of using enqueueRemoteGeneration().
 				 */
 				const key = chunk.id;
 
@@ -990,10 +963,11 @@ export class RemoteGenerationPump {
 			}
 
 			console.log(
-				`[RemoteGen] setRemoteChunkProvider enabled=true ` +
+				"[RemoteGen] setRemoteChunkProvider enabled=true " +
 					`(requeued ${requeued} loaded chunks, ` +
 					`flushed ${flushed} deferred)`,
 			);
+
 			return;
 		}
 
@@ -1001,14 +975,14 @@ export class RemoteGenerationPump {
 		this.remoteTaskQueue.length = 0;
 		this.remoteTaskQueueSet.clear();
 		this.remoteQueueNeedsCompaction = false;
+		this.remoteSelectionScratch.clear();
+
 		this.clearDeferredRemoteChunkRetries();
+
 		this.pendingRemoteChunks.clear();
 		this.pendingRemeshScheduled = false;
 
-		if (this.remotePendingReapTimer !== null) {
-			clearTimeout(this.remotePendingReapTimer);
-			this.remotePendingReapTimer = null;
-		}
+		this.cancelRemotePendingReap();
 
 		console.log("[RemoteGen] setRemoteChunkProvider enabled=false");
 	}
@@ -1045,9 +1019,10 @@ export class RemoteGenerationPump {
 		if (resultKey !== expectedKey) {
 			const got = unpackChunkCoords(resultKey);
 			const want = unpackChunkCoords(expectedKey);
+
 			this.handleRemoteGenError(
 				new Error(
-					`Remote provider returned coordinates for ` +
+					"Remote provider returned coordinates for " +
 						`${resultKey} (${got.x},${got.y},${got.z}) ` +
 						`while request ${expectedKey} ` +
 						`(${want.x},${want.y},${want.z}) was pending`,
@@ -1056,6 +1031,7 @@ export class RemoteGenerationPump {
 				expectedKey,
 				expectedEntry,
 			);
+
 			return;
 		}
 
@@ -1122,83 +1098,15 @@ export class RemoteGenerationPump {
 					return;
 				}
 
+				let cachedRequest: unknown;
+
 				try {
-					void provider
-						.getCachedChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
-						.then((cached) => {
-							if (
-								generation !== this.providerGeneration ||
-								provider !== this.remoteChunkProvider
-							) {
-								return;
-							}
-
-							if (!this.isLiveRemoteRequestChunk(chunk)) {
-								chunk.isTerrainScheduled = false;
-								return;
-							}
-
-							if (cached !== null && cached !== undefined) {
-								chunk.loadFromStorage(
-									cached.blocks,
-									cached.palette ?? null,
-									cached.isUniform,
-									cached.uniformBlockId,
-									cached.light,
-									false,
-								);
-
-								chunk.isModified = true;
-								this.remoteNoBlobRetries.delete(expectedKey);
-								this.queueRemoteChunkRemesh(chunk);
-								return;
-							}
-
-							const retries = this.remoteNoBlobRetries.get(expectedKey) ?? 0;
-
-							if (result.version === 0) {
-								this.remoteNoBlobRetries.delete(expectedKey);
-								chunk.isTerrainScheduled = false;
-								this.host.queueLocalTerrain(chunk);
-								return;
-							}
-
-							if (retries < 1) {
-								this.remoteNoBlobRetries.set(expectedKey, retries + 1);
-
-								this.requeueRemoteChunk(chunk, true);
-								return;
-							}
-
-							this.remoteNoBlobRetries.delete(expectedKey);
-							chunk.isTerrainScheduled = false;
-							this.host.queueLocalTerrain(chunk);
-						})
-						.catch((error: unknown) => {
-							if (
-								generation !== this.providerGeneration ||
-								provider !== this.remoteChunkProvider
-							) {
-								return;
-							}
-
-							console.warn(
-								`[RemoteGen] cached-blob read failed for ${expectedKey}; re-requesting from server:`,
-								error,
-							);
-
-							this.requeueRemoteChunk(chunk, true);
-						})
-						.finally(() => {
-							if (generation === this.providerGeneration) {
-								this.pumpRemoteGeneration();
-							}
-						});
+					cachedRequest = provider.getCachedChunk(
+						chunk.chunkX,
+						chunk.chunkY,
+						chunk.chunkZ,
+					);
 				} catch (error) {
-					/*
-					 * Handles a provider implementation that throws synchronously instead
-					 * of returning a rejected promise.
-					 */
 					if (
 						generation !== this.providerGeneration ||
 						provider !== this.remoteChunkProvider
@@ -1207,13 +1115,105 @@ export class RemoteGenerationPump {
 					}
 
 					console.warn(
-						`[RemoteGen] cached-blob read threw for ${expectedKey}; re-requesting from server:`,
+						`[RemoteGen] cached-blob read threw for ${expectedKey}; ` +
+							"re-requesting from server:",
 						error,
 					);
 
 					this.requeueRemoteChunk(chunk, true);
 					this.pumpRemoteGeneration();
+					return;
 				}
+
+				if (
+					!this.isPromiseLike<
+						Awaited<ReturnType<RemoteChunkProvider["getCachedChunk"]>>
+					>(cachedRequest)
+				) {
+					console.warn(
+						`[RemoteGen] cached-blob reader returned an invalid promise ` +
+							`for ${expectedKey}; re-requesting from server`,
+					);
+
+					this.requeueRemoteChunk(chunk, true);
+					this.pumpRemoteGeneration();
+					return;
+				}
+
+				void Promise.resolve(cachedRequest)
+					.then((cached) => {
+						if (
+							generation !== this.providerGeneration ||
+							provider !== this.remoteChunkProvider
+						) {
+							return;
+						}
+
+						if (!this.isLiveRemoteRequestChunk(chunk)) {
+							chunk.isTerrainScheduled = false;
+							return;
+						}
+
+						if (cached !== null && cached !== undefined) {
+							chunk.loadFromStorage(
+								cached.blocks,
+								cached.palette ?? null,
+								cached.isUniform,
+								cached.uniformBlockId,
+								cached.light,
+								false,
+							);
+
+							chunk.isModified = true;
+							this.remoteNoBlobRetries.delete(expectedKey);
+							this.queueRemoteChunkRemesh(chunk);
+							return;
+						}
+
+						const retries = this.remoteNoBlobRetries.get(expectedKey) ?? 0;
+
+						if (result.version === 0) {
+							this.remoteNoBlobRetries.delete(expectedKey);
+							chunk.isTerrainScheduled = false;
+							this.host.queueLocalTerrain(chunk);
+							return;
+						}
+
+						if (retries < 1) {
+							this.remoteNoBlobRetries.set(expectedKey, retries + 1);
+
+							this.requeueRemoteChunk(chunk, true);
+							return;
+						}
+
+						this.remoteNoBlobRetries.delete(expectedKey);
+						chunk.isTerrainScheduled = false;
+						this.host.queueLocalTerrain(chunk);
+					})
+					.catch((error: unknown) => {
+						if (
+							generation !== this.providerGeneration ||
+							provider !== this.remoteChunkProvider
+						) {
+							return;
+						}
+
+						console.warn(
+							`[RemoteGen] cached-blob read failed for ${expectedKey}; ` +
+								"re-requesting from server:",
+							error,
+						);
+
+						this.requeueRemoteChunk(chunk, true);
+					})
+					.finally(() => {
+						if (
+							generation === this.providerGeneration &&
+							provider === this.remoteChunkProvider
+						) {
+							this.pumpRemoteGeneration();
+						}
+					});
 
 				return;
 			}
@@ -1319,6 +1319,7 @@ export class RemoteGenerationPump {
 		this.remoteRetryCount.delete(remoteKey);
 		this.remoteNoBlobRetries.delete(remoteKey);
 		this.pendingRemoteChunks.delete(chunk);
+
 		chunk.isTerrainScheduled = false;
 
 		if (this.pendingRemoteChunks.size === 0) {
@@ -1326,8 +1327,8 @@ export class RemoteGenerationPump {
 		}
 
 		/*
-		 * Disposal may have released a pending slot. Continue immediately
-		 * rather than waiting for the backpressure timer.
+		 * Disposal may have released a pending slot. Continue immediately rather
+		 * than waiting for the backpressure timer.
 		 */
 		if (
 			this.remoteChunkProvider !== null &&
