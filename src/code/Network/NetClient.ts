@@ -180,6 +180,7 @@ export class NetClient {
 	private playerName = "";
 
 	private readonly binaryHandlers: BinaryHandler[] = [];
+	private readonly binaryHandlerDispatchScratch: BinaryHandler[] = [];
 	private readonly disconnectListeners: (() => void)[] = [];
 
 	private readonly batchScratch: PlayerStateBatchEntry[] = [];
@@ -320,7 +321,13 @@ export class NetClient {
 		const client = new ColyseusSDK(this.serverUrl);
 		this.client = client;
 
-		const generation = ++this.roomGeneration;
+		/*
+		 * detachCurrentRoom() already incremented the generation for the
+		 * superseded room. Reuse the resulting value instead of incrementing
+		 * again, which would otherwise advance the generation twice per
+		 * connect and make "which room" checks harder to reason about.
+		 */
+		const generation = this.roomGeneration;
 
 		try {
 			const room = await client.joinOrCreate("voxel", {
@@ -406,32 +413,43 @@ export class NetClient {
 	}
 
 	private handleBinaryMessage(data: Uint8Array): void {
-		const handlers = this.binaryHandlers;
-
 		/*
-		 * Capture the original length so a handler added during dispatch does
-		 * not unexpectedly receive the packet currently being dispatched.
+		 * Snapshot handler references into reusable storage.
 		 *
-		 * This matches normal array-loop behavior more predictably while still
-		 * avoiding copies such as handlers.slice().
+		 * Iterating binaryHandlers directly is unsafe when a handler removes
+		 * itself or another handler: Array.splice() shifts remaining entries,
+		 * which can skip the next handler or change which handler receives the
+		 * current packet.
+		 *
+		 * The scratch array avoids allocating handlers.slice() for every
+		 * network packet while guaranteeing that:
+		 * - handlers present at dispatch start receive this packet once;
+		 * - handlers added during dispatch wait until the next packet;
+		 * - removals during dispatch do not alter this packet's recipient set.
 		 */
+		const handlers = this.binaryHandlers;
+		const dispatch = this.binaryHandlerDispatchScratch;
 		const handlerCount = handlers.length;
 
+		dispatch.length = handlerCount;
+
 		for (let i = 0; i < handlerCount; i++) {
-			const handler = handlers[i];
+			dispatch[i] = handlers[i];
+		}
 
-			/*
-			 * A preceding handler can remove entries. Preserve the old
-			 * defensive behavior without allocating a snapshot array.
-			 */
-			if (handler === undefined) break;
-
+		for (let i = 0; i < handlerCount; i++) {
 			try {
-				handler(data);
+				dispatch[i](data);
 			} catch (err) {
 				console.error("[NetClient] Binary handler failed:", err);
 			}
 		}
+
+		/*
+		 * Release handler references promptly. The live registrations remain in
+		 * binaryHandlers; this array only represents the current dispatch.
+		 */
+		dispatch.length = 0;
 
 		if (data.byteLength === 0) return;
 
@@ -521,33 +539,35 @@ export class NetClient {
 					}
 
 					case MessageType.BlockEditBatch: {
+						const count = decodeBlockEditBatchInto(
+							dec,
+							this.blockEditBatchView,
+						);
+
+						if (count === 0) break;
+
 						const batch = callbacks.onBlockEditBatch;
 
 						if (batch !== undefined) {
 							// Batch path: the consumer applies every edit inside one
 							// edit batch so lighting and remesh scheduling are
 							// deduplicated. See NetworkManager.applyRemoteBlockEdits.
-							const count = decodeBlockEditBatchInto(
-								dec,
-								this.blockEditBatchView,
-							);
-							if (count > 0) {
-								this.blockEditBatchView.count = count;
-								batch(this.blockEditBatchView);
-							}
+							this.blockEditBatchView.count = count;
+							batch(this.blockEditBatchView);
 							break;
 						}
 
-						// Legacy path: one callback per edit, for callers that have not
-						// migrated yet. Decoded as a view rather than per-edit objects
-						// so even this path stops allocating.
-						const count = decodeBlockEditBatchInto(
-							dec,
-							this.blockEditBatchView,
-						);
+						// Compatibility path for consumers that have not adopted the
+						// batch callback. The same scratch edit is overwritten for
+						// each synchronous callback.
+						const single = callbacks.onBlockEdit;
+
+						if (single === undefined) {
+							break;
+						}
+
 						const view = this.blockEditBatchView;
 						const scratch = this.blockEditBroadcastScratch;
-						const single = callbacks.onBlockEdit;
 
 						for (let i = 0; i < count; i++) {
 							scratch.sessionId = "";
@@ -557,8 +577,10 @@ export class NetClient {
 							scratch.blockId = view.blockId[i];
 							scratch.blockState = view.blockState[i];
 							scratch.action = view.action[i];
-							single?.(scratch);
+
+							single(scratch);
 						}
+
 						break;
 					}
 
@@ -818,8 +840,13 @@ export class NetClient {
 		const existing = this.playersByIndex[index];
 
 		if (existing === undefined) {
+			/*
+			 * A leave for an index we never saw (duplicate leave, or a stale
+			 * frame from a previous room) has no session to report. Dropping
+			 * it avoids presentation code trying to remove a player with an
+			 * empty session ID.
+			 */
 			this.warnedUnknownIndices.delete(index);
-			this.callbacks.onPlayerLeave?.("", undefined);
 			return;
 		}
 
@@ -934,24 +961,30 @@ export class NetClient {
 		cz: number,
 		lod: number,
 		cachedVersion = 0,
-	): void {
+	): boolean {
+		/*
+		 * Callers treat "no exception" as "the request was actually put on the
+		 * wire". Returning false when disconnected lets them fail pending
+		 * requests immediately instead of waiting for the timeout.
+		 */
 		const room = this.getConnectedRoom();
 
 		if (room === null) {
 			console.warn(
 				`[NetClient] sendChunkRequest skipped (not connected): ${cx},${cy},${cz}`,
 			);
-			return;
+			return false;
 		}
 
 		this.encoder.reset();
 		this.encoder.writeChunkRequest(cx, cy, cz, lod, cachedVersion);
 
 		room.sendBytes("binary", this.encoder.getBytes());
+		return true;
 	}
 
-	sendChunkRequestBatch(requests: ChunkRequest[]): void {
-		if (requests.length === 0) return;
+	sendChunkRequestBatch(requests: ChunkRequest[]): boolean {
+		if (requests.length === 0) return true;
 
 		const room = this.getConnectedRoom();
 
@@ -959,13 +992,14 @@ export class NetClient {
 			console.warn(
 				`[NetClient] sendChunkRequestBatch skipped (connected=${this.connected}): ${requests.length} chunks`,
 			);
-			return;
+			return false;
 		}
 
 		this.encoder.reset();
 		this.encoder.writeChunkRequestBatch(requests);
 
 		room.sendBytes("binary", this.encoder.getBytes());
+		return true;
 	}
 
 	sendItemDrop(
@@ -1134,11 +1168,22 @@ export class NetClient {
 	}
 
 	private async uploadOwnSkin(): Promise<void> {
+		/*
+		 * The skin fetch can outlive the connection that started it. Capture
+		 * the generation before the first await and verify it before sending,
+		 * so a slow fetch from a superseded room cannot upload a skin into a
+		 * newly joined room.
+		 */
+		const generation = this.roomGeneration;
+
 		try {
 			const response = await fetch(PLAYER_SKIN_PATH);
-			if (!response.ok) return;
+
+			if (!response.ok || generation !== this.roomGeneration) return;
 
 			const buffer = await response.arrayBuffer();
+
+			if (generation !== this.roomGeneration) return;
 
 			/*
 			 * Uint8Array(ArrayBuffer) creates a view over the buffer. It does

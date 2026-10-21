@@ -1467,7 +1467,19 @@ export class RemoteChunkProvider {
 		notePipelineWork({ chunksRequested: 1 });
 		noteChunkRequested(packCoords(cx, cy, cz), performance.now());
 
-		this.client.sendChunkRequest(cx, cy, cz, DEFAULT_LOD, cachedVersion);
+		const sent = this.client.sendChunkRequest(
+			cx,
+			cy,
+			cz,
+			DEFAULT_LOD,
+			cachedVersion,
+		);
+
+		if (!sent) {
+			throw new Error(
+				`Chunk request send failed: not connected (${cx},${cy},${cz})`,
+			);
+		}
 	}
 
 	private sortRequestsByPriority(
@@ -1625,12 +1637,24 @@ export class RemoteChunkProvider {
 		this.scheduleSweep();
 		this.sortRequestsByPriority(requests, createdKeys);
 
-		try {
-			this.client.sendChunkRequestBatch(requests);
-		} catch (error) {
-			const sendError =
-				error instanceof Error ? error : new Error(String(error));
+		/*
+		 * sendChunkRequestBatch is the authoritative signal: it can fail
+		 * between the isConnected check above and the actual send. Reject
+		 * every pending entry it did not put on the wire.
+		 */
+		let sendError: Error | null = null;
 
+		try {
+			const sent = this.client.sendChunkRequestBatch(requests);
+
+			if (!sent) {
+				sendError = new Error("Chunk batch send failed: not connected");
+			}
+		} catch (error) {
+			sendError = error instanceof Error ? error : new Error(String(error));
+		}
+
+		if (sendError !== null) {
 			for (let i = 0; i < requestCount; i++) {
 				this.removePending(createdKeys[i])?.reject(sendError);
 			}
