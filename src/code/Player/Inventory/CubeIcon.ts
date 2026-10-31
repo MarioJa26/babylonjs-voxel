@@ -589,15 +589,18 @@ export function drawCubeIcon(
 	const topTX = topTile !== null ? topTile[0] * TILE : 0;
 	const topTY = topTile !== null ? topTile[1] * TILE : 0;
 
+	// Face slots must match the world naming (FaceName.West is the +X face,
+	// FaceName.South the +Z face — see getFaceName), otherwise a block with
+	// per-face tiles such as the anvil shows the wrong art on the icon.
 	const leftTile =
-		getFaceAtlasTile(blockId, FaceName.West) ??
+		getFaceAtlasTile(blockId, FaceName.South) ??
 		getFaceAtlasTile(blockId, FaceName.Side);
 
 	const leftTX = leftTile !== null ? leftTile[0] * TILE : topTX;
 	const leftTY = leftTile !== null ? leftTile[1] * TILE : topTY;
 
 	const rightTile =
-		getFaceAtlasTile(blockId, FaceName.East) ??
+		getFaceAtlasTile(blockId, FaceName.West) ??
 		getFaceAtlasTile(blockId, FaceName.South) ??
 		getFaceAtlasTile(blockId, FaceName.Side);
 

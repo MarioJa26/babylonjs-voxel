@@ -724,7 +724,8 @@
 	{
 		"id": "Anvil",
 		"name": "anvil",
-		"path": "/texture/metal/metal_grate_rusty_1k",
+		"path": "/texture/metal/anvil_1k",
+		"shape": "anvil",
 		"hardness": 3.5,
 		"preferredTool": "pickaxe",
 		"requiredLevel": 3

@@ -501,7 +501,11 @@ const BLOCKS = [
 	{ id: 106, name: "furnace", template: FURNACE, baseFromBlocksJson: true },
 	{ id: 107, name: "whetstone", template: WHETSTONE, baseFromBlocksJson: true },
 	{ id: 108, name: "crucible", template: CRUCIBLE, baseFromBlocksJson: true },
-	{ id: 109, name: "anvil", template: ANVIL, baseFromBlocksJson: true },
+	// The anvil is a real 3D model now: a box shape with per-face atlas
+	// tiles painted by scripts/inject-anvil-atlas.mjs. Its sequential slot
+	// carries the front cross-section, so this script must not overwrite it
+	// with the flat silhouette below.
+	{ id: 109, name: "anvil", template: ANVIL, baseFromBlocksJson: true, skip: true },
 	{ id: 110, name: "smeltery", template: SMELTERY, baseFromBlocksJson: true },
 ];
 
@@ -737,6 +741,10 @@ function main() {
 
 	// ── Stations + temple glyph ──
 	for (const spec of BLOCKS) {
+		// Blocks with their own 3D model keep the tiles painted by
+		// scripts/inject-anvil-atlas.mjs.
+		if (spec.skip) continue;
+
 		const entry = byName.get(spec.name) ?? byName.get(spec.id);
 		if (!entry) throw new Error(`blocks.json has no entry for ${spec.name}`);
 
