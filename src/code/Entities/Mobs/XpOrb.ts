@@ -7,6 +7,7 @@ import {
 	onBeforeRender,
 	removeFromScene,
 	type ShaderMaterial,
+	setMeshVisible,
 	setShaderTexture,
 	setShaderUniform,
 	type Texture2D,
@@ -193,7 +194,7 @@ export class XpOrb {
 		this.#mesh.pickable = false;
 		this.#mesh.position.set(x, y, z);
 		this.#mesh.scaling.set(0.35, 0.35, 0.35);
-		this.#mesh.visible = false;
+		setMeshVisible(this.#mesh, false);
 
 		this.#material = acquireSpriteMaterial(XP_ORB_ICON_URL);
 		this.#mesh.material = this.#material;
@@ -230,7 +231,7 @@ export class XpOrb {
 				addToScene(Map1.mainScene, this.#mesh);
 			}
 
-			this.#mesh.visible = true;
+			setMeshVisible(this.#mesh, true);
 		});
 
 		// Random initial impulse so stacked orbs scatter like item drops.

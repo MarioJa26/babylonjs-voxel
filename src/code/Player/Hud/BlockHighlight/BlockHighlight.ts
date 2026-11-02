@@ -8,6 +8,7 @@ import {
 	resizeMeshGeometry,
 	type SceneContext,
 	type ShaderMaterial,
+	setMeshVisible,
 	setShaderUniform,
 } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
@@ -98,7 +99,7 @@ export class BlockHighlight {
 		const visible = hit !== null;
 
 		if (visible !== this.#prevVisible) {
-			this.#mesh.visible = visible;
+			setMeshVisible(this.#mesh, visible);
 			this.#prevVisible = visible;
 		}
 
@@ -204,7 +205,7 @@ export class BlockHighlight {
 
 		mesh.material = this.#material;
 		mesh.pickable = false;
-		mesh.visible = false;
+		setMeshVisible(mesh, false);
 
 		addToScene(this.#scene, mesh);
 		return mesh;

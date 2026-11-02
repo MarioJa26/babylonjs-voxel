@@ -8,6 +8,7 @@ import {
 	onBeforeRender,
 	removeFromScene,
 	type ShaderMaterial,
+	setMeshVisible,
 	setShaderTexture,
 	setShaderUniform,
 	setShaderVector3,
@@ -521,7 +522,7 @@ export class PrimedTnt {
 		mesh.pickable = false;
 		// Stays out of the scene (and invisible) until the atlas texture is
 		// bound — an unbound sampler crashes the Lite bind-group build.
-		mesh.visible = false;
+		setMeshVisible(mesh, false);
 
 		const material = createPrimedTntMaterial();
 		mesh.material = material;
@@ -652,7 +653,7 @@ export class PrimedTnt {
 	#ensureAddedToScene(): void {
 		if (this.#sceneAdded || this.#disposed) return;
 		this.#sceneAdded = true;
-		this.#mesh.visible = true;
+		setMeshVisible(this.#mesh, true);
 		addToScene(Map1.mainScene, this.#mesh);
 	}
 

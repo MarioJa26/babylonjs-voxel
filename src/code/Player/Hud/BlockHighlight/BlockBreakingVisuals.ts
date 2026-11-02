@@ -6,6 +6,7 @@ import {
 	resizeMeshGeometry,
 	type SceneContext,
 	type ShaderMaterial,
+	setMeshVisible,
 	setShaderUniform,
 } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
@@ -98,7 +99,7 @@ export function initializeBlockBreakingVisuals(
 
 	mesh.material = crackMaterials[0];
 	mesh.pickable = false;
-	mesh.visible = false;
+	setMeshVisible(mesh, false);
 
 	addToScene(scene, mesh);
 	crackMesh = mesh;
@@ -165,7 +166,7 @@ export function updateBlockBreakingVisuals(
 	ensureCrackGeometry(targetBlock.blockId, targetBlock.blockState);
 
 	mesh.material = crackMaterials[stage];
-	mesh.visible = true;
+	setMeshVisible(mesh, true);
 
 	const boatContext = resolveBoatBlockContext(targetBlock.dynamicContext);
 	if (boatContext) {
@@ -183,7 +184,7 @@ export function updateBlockBreakingVisuals(
 
 export function resetBlockBreakingVisuals(): void {
 	if (crackMesh) {
-		crackMesh.visible = false;
+		setMeshVisible(crackMesh, false);
 	}
 }
 

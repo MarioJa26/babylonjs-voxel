@@ -8,6 +8,7 @@ import {
 	type Mesh,
 	onBeforeRender,
 	removeFromScene,
+	setMeshVisible,
 	setShaderTexture,
 	setShaderUniform,
 	setShaderVector3,
@@ -696,7 +697,7 @@ export class DroppedItem implements IUsable {
 			? acquireSpriteMaterial(item.icon)
 			: acquireDroppedItemMaterial(item.blockId ?? -1);
 		this._boxMesh.material = this._material;
-		this._boxMesh.visible = false;
+		setMeshVisible(this._boxMesh, false);
 
 		const size = DroppedItem.sizeFor(item.stackSize);
 		this._boxMesh.scaling.set(size, size, size);
@@ -724,7 +725,7 @@ export class DroppedItem implements IUsable {
 			if (sharedAtlas) {
 				setShaderTexture(this._material, "diffuseTexture", sharedAtlas);
 				this._applyAtlasTile(item);
-				this._boxMesh.visible = true;
+				setMeshVisible(this._boxMesh, true);
 				this._ensureAddedToScene();
 			} else {
 				// Capture the material identity: if this item is disposed before
@@ -744,7 +745,7 @@ export class DroppedItem implements IUsable {
 					setShaderTexture(this._material, "diffuseTexture", atlas);
 					this._applyAtlasTile(item);
 					this._ensureAddedToScene();
-					this._boxMesh.visible = true;
+					setMeshVisible(this._boxMesh, true);
 				});
 			}
 		}
@@ -789,7 +790,7 @@ export class DroppedItem implements IUsable {
 				// loaded long after spawn, so the swing could otherwise
 				// reveal the sprite mid-bob instead of at rest.
 				this._bobAge = 0;
-				this._boxMesh.visible = true;
+				setMeshVisible(this._boxMesh, true);
 			});
 	}
 

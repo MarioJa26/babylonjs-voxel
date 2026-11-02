@@ -9,7 +9,11 @@
  */
 
 import type { FreeCamera, Mat4 } from "@babylonjs/lite";
-import { getCameraPosition, getViewProjectionMatrix } from "@babylonjs/lite";
+import {
+	getCameraPosition,
+	getViewProjectionMatrix,
+	setMeshVisible,
+} from "@babylonjs/lite";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { isOceanFloorBandChunk } from "@/code/Generation/TerrainHeightMap";
 import { isInCave } from "@/code/Lib/GameRuntimeState";
@@ -955,14 +959,14 @@ export class OcclusionCuller {
 		}
 
 		if (newChunk.bfsQueryId === queryId && newChunk.mesh) {
-			newChunk.mesh.visible = true;
+			setMeshVisible(newChunk.mesh, true);
 
 			if (newChunk.waterMesh) {
-				newChunk.waterMesh.visible = true;
+				setMeshVisible(newChunk.waterMesh, true);
 			}
 
 			if (newChunk.cutoutMesh) {
-				newChunk.cutoutMesh.visible = true;
+				setMeshVisible(newChunk.cutoutMesh, true);
 			}
 		}
 	}

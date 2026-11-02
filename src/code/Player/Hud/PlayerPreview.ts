@@ -21,6 +21,7 @@ import {
 	registerScene,
 	type SceneContext,
 	type ShaderMaterial,
+	setMeshVisible,
 	setShaderTexture,
 	startEngine,
 	stopEngine,
@@ -206,7 +207,7 @@ export class PlayerPreview {
 
 		model.material = rigMat;
 		model.pickable = false;
-		model.visible = false;
+		setMeshVisible(model, false);
 
 		addToScene(scene, model);
 
@@ -218,7 +219,7 @@ export class PlayerPreview {
 			rigMat,
 			() => {
 				if (!this.#disposed && this.#model === model) {
-					model.visible = true;
+					setMeshVisible(model, true);
 				}
 			},
 			() => !this.#disposed && this.#model === model,

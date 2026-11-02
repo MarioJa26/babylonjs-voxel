@@ -19,24 +19,24 @@
 		"postinstall": "patch-package"
 	},
 	"dependencies": {
-		"@babylonjs/lite": "^1.33.0",
-		"@colyseus/sdk": "^0.18.5",
+		"@babylonjs/lite": "^1.38.0",
+		"@colyseus/sdk": "^0.18.9",
 		"@types/level": "^8.0.0",
 		"@types/level-js": "^4.0.5",
 		"@webgpu/types": "^0.1.74",
 		"alea": "^1.0.1",
-		"babylon-lite-explorer": "^0.6.0",
+		"babylon-lite-explorer": "^0.7.1",
 		"idb": "^8.0.4",
 		"level": "^10.0.0"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.15",
-		"@types/node": "^26.6.4",
+		"@biomejs/biome": "2.6.4",
+		"@types/node": "^26.6.6",
 		"assemblyscript": "^0.28.20",
 		"patch-package": "^8.0.1",
 		"tsx": "^4.23.15",
 		"typescript": "^7.0.2",
-		"vite": "^8.3.3",
+		"vite": "^8.3.5",
 		"vite-plugin-glsl": "^1.6.2"
 	}
 }

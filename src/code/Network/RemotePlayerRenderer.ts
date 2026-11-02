@@ -27,6 +27,7 @@ import {
 	rebuildSceneRenderables,
 	removeFromScene,
 	type SpriteAtlas,
+	setMeshVisible,
 	setShaderTexture,
 	updateDynamicTexture,
 } from "@babylonjs/lite";
@@ -479,7 +480,7 @@ export class RemotePlayerVisual {
 		this.mat = createRigShaderMaterial("remoteRigMat");
 		this.mesh.material = this.mat;
 		this.mesh.pickable = false;
-		this.mesh.visible = false;
+		setMeshVisible(this.mesh, false);
 
 		addToScene(scene, this.mesh);
 		// Shader meshes added after `registerScene` are normally built via
@@ -549,7 +550,7 @@ export class RemotePlayerVisual {
 		// Notification: skin is ready — make mesh visible and force a billboard/
 		// transform flush without waiting for position polling.
 		if (!this.culled) {
-			this.mesh.visible = true;
+			setMeshVisible(this.mesh, true);
 		}
 		this.needsForcedRefresh = true;
 		this.needsBillboardSync = true;
@@ -629,7 +630,7 @@ export class RemotePlayerVisual {
 				this.skinBound = true;
 				// Notification: skin updated — force visibility/billboard sync
 				if (!this.culled) {
-					this.mesh.visible = true;
+					setMeshVisible(this.mesh, true);
 				}
 				this.needsForcedRefresh = true;
 				this.needsBillboardSync = true;
@@ -920,7 +921,7 @@ export class RemotePlayerVisual {
 				this.needsForcedRefresh = true;
 				this.needsBillboardSync = true;
 				if (this.skinBound) {
-					this.mesh.visible = true;
+					setMeshVisible(this.mesh, true);
 				}
 				this.walkSampleMs = Number.NaN;
 				this.sprintPrevMs = Number.NaN;
@@ -930,7 +931,7 @@ export class RemotePlayerVisual {
 			}
 		} else if (!visibility.visible) {
 			this.culled = true;
-			this.mesh.visible = false;
+			setMeshVisible(this.mesh, false);
 			this.heldItem.hide();
 			this.walkSampleMs = Number.NaN;
 			this.sprintPrevMs = Number.NaN;
@@ -1009,7 +1010,7 @@ export class RemotePlayerVisual {
 		{
 			const desiredVisible = this.skinBound && !this.culled;
 			if (this.mesh.visible !== desiredVisible) {
-				this.mesh.visible = desiredVisible;
+				setMeshVisible(this.mesh, desiredVisible);
 				if (desiredVisible) {
 					this.needsForcedRefresh = true;
 					this.needsBillboardSync = true;
@@ -1095,7 +1096,7 @@ export class RemotePlayerVisual {
 		this.heldItem.dispose();
 		this.skinArrived = null;
 
-		this.mesh.visible = false;
+		setMeshVisible(this.mesh, false);
 		this.billboard.visible = false;
 
 		if (this.billboardActive) {

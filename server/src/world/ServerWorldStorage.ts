@@ -1634,7 +1634,7 @@ export class ServerWorldStorage {
 	private async persistCachedChunk(key: number): Promise<void> {
 		return this.queueChunkMutation(key, async () => {
 			const node = this.chunkCache.get(key);
-			if (!node || !node.cacheDirty) return;
+			if (!node?.cacheDirty) return;
 
 			const dense = node.denseBlocks;
 			if (!dense) {

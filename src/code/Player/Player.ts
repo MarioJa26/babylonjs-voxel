@@ -6,6 +6,7 @@ import type {
 	Vec3,
 } from "@babylonjs/lite";
 import { addToScene } from "@babylonjs/lite";
+import { setMeshVisible } from "@babylonjs/lite";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { interactWithGlyph } from "@/code/Entities/MayaTempleGlyphs";
 import { type IMountableUser, Mount } from "@/code/Entities/Mount";
@@ -253,7 +254,7 @@ export class Player {
 		body.pickable = false;
 
 		// An unbound skin sampler produces an invalid render pass.
-		body.visible = false;
+		setMeshVisible(body, false);
 
 		addToScene(scene, body);
 
@@ -311,7 +312,7 @@ export class Player {
 
 		const isVisible = this.#playerCamera.isThirdPerson && this.#bodySkinBound;
 
-		body.visible = isVisible;
+		setMeshVisible(body, isVisible);
 
 		if (!isVisible) {
 			this.#bodyHeldItem?.hide();

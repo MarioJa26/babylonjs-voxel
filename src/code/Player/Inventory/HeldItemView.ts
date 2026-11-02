@@ -949,7 +949,7 @@ export class HeldItemView {
 		);
 
 		mesh.pickable = false;
-		mesh.visible = false;
+		setMeshVisible(mesh, false);
 		mesh.scaling.set(SPRITE_SCALE, SPRITE_SCALE, SPRITE_SCALE);
 
 		const material = createHeldItemMaterial(`heldSprite_${icon}`);
@@ -1025,7 +1025,7 @@ export class HeldItemView {
 		);
 
 		mesh.pickable = false;
-		mesh.visible = false;
+		setMeshVisible(mesh, false);
 		mesh.scaling.set(CUBE_SCALE, CUBE_SCALE, CUBE_SCALE);
 
 		const material = createHeldItemMaterial(

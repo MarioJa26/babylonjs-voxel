@@ -5,6 +5,7 @@ import {
 	type Mesh,
 	type SceneContext,
 	type ShaderMaterial,
+	setMeshVisible,
 	scaleVec3InPlace,
 	scaleVec3ToRef,
 	type Vec3,
@@ -1595,7 +1596,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		const mat = createRigShaderMaterial("playerDisplayRigMat");
 		body.material = mat;
 		body.pickable = false;
-		body.visible = false;
+		setMeshVisible(body, false);
 		addToScene(this.scene, body);
 		this.#displayMat = mat;
 		applyRigSkin(this.#engine, mat);
