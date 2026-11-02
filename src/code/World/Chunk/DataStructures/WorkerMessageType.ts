@@ -180,6 +180,8 @@ export type GenerateDistantTerrainRequest = {
 export type GenerateFarTileRequest = {
 	type: WorkerTaskType.GenerateFarTile;
 	requestId: number;
+	/** Ladder-generation token; echoed back in the result for staleness rejection. */
+	generation: number;
 	levelIndex: number;
 	tileX: number;
 	tileZ: number;
@@ -188,6 +190,8 @@ export type GenerateFarTileRequest = {
 export type FarTileGeneratedMessage = {
 	type: WorkerTaskType.GenerateFarTile;
 	requestId: number;
+	/** Ladder-generation token as received on the request. */
+	generation: number;
 	levelIndex: number;
 	tileX: number;
 	tileZ: number;

@@ -579,14 +579,26 @@ export class ServerWorldStorage {
 
 		const results = new Map<number, StoredChunkData>();
 		const coordCount = coords.length;
-		if (coordCount === 0) return results;
+
+		if (coordCount === 0) {
+			return results;
+		}
 
 		/*
-		 * One map handles both input deduplication and pending-read collection.
-		 * Unlike parallel pendingKeys/pendingPromises arrays, it cannot lose the
-		 * association between a packed key and its promise.
+		 * Deduplicates the entire input in O(1) average time per coordinate.
+		 *
+		 * The previous implementation scanned missCoords for every new miss,
+		 * making an all-miss batch O(n²). This set also handles duplicates across
+		 * cache hits, existing pending reads, and LevelDB misses uniformly.
 		 */
-		const pendingByKey = new Map<number, Promise<StoredChunkData | null>>();
+		const seenKeys = new Set<number>();
+
+		/*
+		 * Keep packed keys aligned with promises without allocating one
+		 * [key, promise] tuple per pending read through Map.entries().
+		 */
+		const pendingKeys: number[] = [];
+		const pendingPromises: Array<Promise<StoredChunkData | null>> = [];
 
 		const missCoords: MissCoordEntry[] = [];
 
@@ -595,44 +607,27 @@ export class ServerWorldStorage {
 				const coord = coords[i];
 				const cacheKey = packChunkKeyFast(coord.cx, coord.cy, coord.cz);
 
-				/*
-				 * A key already classified as a cache hit or pending read is a
-				 * duplicate request.
-				 */
-				if (results.has(cacheKey) || pendingByKey.has(cacheKey)) {
+				if (seenKeys.has(cacheKey)) {
 					continue;
 				}
 
-				const node = this.chunkCache.get(cacheKey);
-				if (node !== undefined) {
-					this.lruTouch(node);
-					results.set(cacheKey, this.getLiveChunkData(node));
+				seenKeys.add(cacheKey);
+
+				const cachedNode = this.chunkCache.get(cacheKey);
+
+				if (cachedNode !== undefined) {
+					this.lruTouch(cachedNode);
+					results.set(cacheKey, this.getLiveChunkData(cachedNode));
 					continue;
 				}
 
 				const pending = this.pendingReads.get(cacheKey);
+
 				if (pending !== undefined) {
-					pendingByKey.set(cacheKey, pending);
+					pendingKeys.push(cacheKey);
+					pendingPromises.push(pending);
 					continue;
 				}
-
-				/*
-				 * Because misses have not been inserted into either results or
-				 * pendingByKey yet, explicitly check the current batch for a
-				 * duplicate miss.
-				 *
-				 * missCoords is bounded by the network batch size in the primary
-				 * caller. If this method is later used with very large arrays,
-				 * add a pooled Set<number> rather than allowing this scan to grow.
-				 */
-				let duplicateMiss = false;
-				for (let j = 0; j < missCoords.length; j++) {
-					if (missCoords[j].cacheKey === cacheKey) {
-						duplicateMiss = true;
-						break;
-					}
-				}
-				if (duplicateMiss) continue;
 
 				const entry = this.missCoordPool.pop() ?? {
 					cx: 0,
@@ -648,29 +643,41 @@ export class ServerWorldStorage {
 				entry.cacheKey = cacheKey;
 
 				/*
-				 * LevelDbChunkStore.readChunks() currently indexes returned blobs
-				 * using this textual key. Keep it populated until that API accepts
-				 * packed numeric keys directly.
+				 * LevelDbChunkStore.readChunks() currently returns blobs indexed
+				 * by textual coordinate keys.
 				 */
 				entry.key = `${coord.cx},${coord.cy},${coord.cz}`;
 
-				missCoords[missCoords.length] = entry;
+				missCoords.push(entry);
 			}
 
-			if (missCoords.length !== 0) {
-				const found = await this.store.readChunks(missCoords);
+			/*
+			 * Existing pending reads and the LevelDB batch read are independent.
+			 * Start both before awaiting either so their I/O can overlap.
+			 */
+			const pendingResultsPromise =
+				pendingPromises.length === 0 ? null : Promise.all(pendingPromises);
 
+			const found =
+				missCoords.length === 0
+					? null
+					: await this.store.readChunks(missCoords);
+
+			if (found !== null) {
 				let parsedSinceYield = 0;
 
 				for (let i = 0; i < missCoords.length; i++) {
 					const entry = missCoords[i];
 					const blob = found.get(entry.key);
 
-					if (blob === undefined) continue;
+					if (blob === undefined) {
+						continue;
+					}
 
 					/*
-					 * Another asynchronous operation may have populated or mutated
-					 * the cache while the LevelDB batch read was in flight.
+					 * A read or mutation may have populated the cache while the
+					 * LevelDB batch operation was in flight. The cache is then the
+					 * authoritative source.
 					 */
 					const currentNode = this.chunkCache.get(entry.cacheKey);
 
@@ -685,41 +692,50 @@ export class ServerWorldStorage {
 					this.addToCache(entry.cacheKey, parsed);
 
 					/*
-					 * addToCache may decline insertion when the cache is disabled.
-					 * If it inserted the chunk, return the authoritative cache view.
+					 * addToCache() may decline insertion when caching is disabled.
 					 */
 					const insertedNode = this.chunkCache.get(entry.cacheKey);
 
-					if (insertedNode !== undefined) {
-						results.set(entry.cacheKey, this.getLiveChunkData(insertedNode));
-					} else {
-						results.set(entry.cacheKey, parsed);
-					}
+					results.set(
+						entry.cacheKey,
+						insertedNode === undefined
+							? parsed
+							: this.getLiveChunkData(insertedNode),
+					);
 
 					parsedSinceYield++;
-					if (parsedSinceYield >= 16) {
+
+					if (parsedSinceYield === 16) {
 						parsedSinceYield = 0;
 						await yieldToEventLoop();
 					}
 				}
 			}
 
-			if (pendingByKey.size !== 0) {
-				const entries = Array.from(pendingByKey.entries());
-				const promises = new Array<Promise<StoredChunkData | null>>(
-					entries.length,
-				);
+			if (pendingResultsPromise !== null) {
+				const pendingResults = await pendingResultsPromise;
 
-				for (let i = 0; i < entries.length; i++) {
-					promises[i] = entries[i][1];
-				}
+				for (let i = 0; i < pendingResults.length; i++) {
+					const data = pendingResults[i];
 
-				const resolved = await Promise.all(promises);
+					if (data === null) {
+						continue;
+					}
 
-				for (let i = 0; i < resolved.length; i++) {
-					const data = resolved[i];
-					if (data !== null) {
-						results.set(entries[i][0], data);
+					const key = pendingKeys[i];
+
+					/*
+					 * Prefer a newer cache value if one appeared while waiting.
+					 * In particular, this avoids returning an older pending-read
+					 * snapshot after a concurrent cache mutation.
+					 */
+					const currentNode = this.chunkCache.get(key);
+
+					if (currentNode !== undefined) {
+						this.lruTouch(currentNode);
+						results.set(key, this.getLiveChunkData(currentNode));
+					} else {
+						results.set(key, data);
 					}
 				}
 			}
@@ -729,16 +745,12 @@ export class ServerWorldStorage {
 			for (let i = missCoords.length - 1; i >= 0; i--) {
 				const entry = missCoords[i];
 
-				/*
-				 * Avoid retaining coordinate strings unnecessarily. The next
-				 * checkout overwrites the field before use.
-				 */
 				entry.key = "";
 
 				if (
 					this.missCoordPool.length < ServerWorldStorage.MAX_MISS_COORD_POOL
 				) {
-					this.missCoordPool[this.missCoordPool.length] = entry;
+					this.missCoordPool.push(entry);
 				}
 			}
 		}

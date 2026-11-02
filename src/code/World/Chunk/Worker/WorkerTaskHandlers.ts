@@ -244,6 +244,7 @@ export function handleGenerateFarTile(request: GenerateFarTileRequest): {
 } {
 	const generated = generateFarTile({
 		requestId: request.requestId,
+		generation: request.generation,
 		levelIndex: request.levelIndex,
 		tileX: request.tileX,
 		tileZ: request.tileZ,
@@ -273,6 +274,7 @@ export function handleGenerateFarTile(request: GenerateFarTileRequest): {
 		payload: {
 			type: WorkerTaskType.GenerateFarTile,
 			requestId: generated.requestId,
+			generation: generated.generation,
 			levelIndex: generated.levelIndex,
 			tileX: generated.tileX,
 			tileZ: generated.tileZ,

@@ -1839,8 +1839,14 @@ export class ChunkWorkerPool {
 		levelIndex: number,
 		tileX: number,
 		tileZ: number,
+		generation: number,
 	): number {
-		const requestId = this.farTiles.schedule(levelIndex, tileX, tileZ);
+		const requestId = this.farTiles.schedule(
+			levelIndex,
+			tileX,
+			tileZ,
+			generation,
+		);
 		this.processQueue();
 		return requestId;
 	}
@@ -2747,6 +2753,7 @@ export class ChunkWorkerPool {
 
 				worker.postGenerateFarTile(
 					farTask.requestId,
+					farTask.generation,
 					farTask.levelIndex,
 					farTask.tileX,
 					farTask.tileZ,

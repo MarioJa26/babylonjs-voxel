@@ -8,13 +8,26 @@
  *   w0: x:u10 | (y + Y_OFFSET):u12 | z:u10
  *   w1: w:u10 | h:u10 | backFace:u1 | axis:u2
  *   w2: tileX:u8 | tileY:u8 | light:u8
- *   w3: kind:u8
+ *   w3: kind:u8 (bits 0-7) | tileOriginIndex:u16 (bits 8-23)
  *
  * Bits 8-23 of w3 carry the tile-origin slot index. The worker leaves those
  * bits clear and FarTileManager stamps them after receiving the face data.
+ * Bits 24-31 of w3 are UNASSIGNED: neither the CPU decoder nor the shader
+ * reads them, and a format version bump must explicitly assign them before
+ * anything else does.
+ *
+ * emit() performs no validation: every field is coerced into a well-formed,
+ * decodable record at pack time (range masks + modulo-3 axis), so no input
+ * can produce undecodable words. Geometry sanity — strictly positive sizes,
+ * integer coordinates (terrain heights are floored once in the generator's
+ * height lattice) — is the caller's responsibility; zero sizes decode as
+ * degenerate no-op quads. Origin slots must never exceed
+ * FAR_TILE_MAX_ORIGIN_SLOTS - 1.
  *
  * Faces are consumed verbatim by the GPU. FarTileShaderLite expands each
- * packed face into a quad in the vertex stage using faceData and tileOrigins.
+ * packed face into a quad in the vertex stage using faceData and tileOrigins,
+ * so the shader word3 decode (`kind = w3 & 0xff; originSlot = (w3 >> 8) &
+ * 0xffff`) must match decodeFarTileFace() exactly.
  *
  * Axis dimension convention used by axisBases():
  *   axis 0 (+/-X): w = Y extent, h = Z extent
@@ -26,6 +39,13 @@
  */
 
 export const FAR_TILE_Y_OFFSET = 1024;
+
+/**
+ * Origin slots are 16-bit wide in word3, so the manager must hand out slot
+ * ids strictly below this bound (bits 8-23) or packed indices would collide
+ * with the kind byte / wrap onto stale origins.
+ */
+export const FAR_TILE_MAX_ORIGIN_SLOTS = 1 << 16;
 
 export const KIND_OPAQUE = 0;
 export const KIND_WATER = 1;
@@ -83,6 +103,8 @@ export interface DecodedFarTileFace {
 	tileY: number;
 	light: number;
 	kind: number;
+	/** Bits 8-23 of word3: tile-origin slot index (cleared by the worker). */
+	originSlot: number;
 }
 
 /**
@@ -118,6 +140,9 @@ export function decodeFarTileFace(
 		tileY: (word2 >>> TILE_Y_SHIFT) & BYTE_MASK,
 		light: (word2 >>> LIGHT_SHIFT) & BYTE_MASK,
 
+		// Mirrors FarTileShaderLite's word3 decode exactly:
+		//   kind = w3 & 0xff; originSlot = (w3 >> 8) & 0xffff
 		kind: word3 & BYTE_MASK,
+		originSlot: (word3 >>> 8) & 0xffff,
 	};
 }

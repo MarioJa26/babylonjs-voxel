@@ -340,6 +340,7 @@ const onMessageHandler = (event: MessageEvent) => {
 				self.postMessage({
 					type: WorkerTaskType.GenerateFarTile,
 					requestId: event.data.requestId,
+					generation: event.data.generation,
 					levelIndex: event.data.levelIndex,
 					tileX: event.data.tileX,
 					tileZ: event.data.tileZ,

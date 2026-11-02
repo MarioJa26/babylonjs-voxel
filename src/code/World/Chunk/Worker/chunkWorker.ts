@@ -581,6 +581,7 @@ export class ChunkWorker {
 
 	public postGenerateFarTile(
 		requestId: number,
+		generation: number,
 		levelIndex: number,
 		tileX: number,
 		tileZ: number,
@@ -588,6 +589,7 @@ export class ChunkWorker {
 		const message: GenerateFarTileRequest = {
 			type: WorkerTaskType.GenerateFarTile,
 			requestId,
+			generation,
 			levelIndex,
 			tileX,
 			tileZ,

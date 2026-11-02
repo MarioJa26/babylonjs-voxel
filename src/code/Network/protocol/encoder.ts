@@ -84,10 +84,7 @@ export class BinaryEncoder {
 	 * message so the inner writes skip their individual capacity checks.
 	 */
 	reserve(additionalBytes: number): void {
-		if (
-			!Number.isSafeInteger(additionalBytes) ||
-			additionalBytes < 0
-		) {
+		if (!Number.isSafeInteger(additionalBytes) || additionalBytes < 0) {
 			throw new RangeError(`Invalid reserve size: ${additionalBytes}`);
 		}
 

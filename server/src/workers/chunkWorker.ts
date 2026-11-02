@@ -1,15 +1,9 @@
 /**
  * chunkWorker.ts — Node.js worker thread for parallel chunk generation.
  *
- * Each worker owns one WorldGenerator instance. Receives single or batch
- * chunk requests, generates terrain, compresses blocks, and posts finalized
- * results back with zero-copy buffer transfers.
- *
- * Compression happens here so the main event loop is never blocked by
- * per-chunk CPU work, and the IPC payload is smaller.
- *
- * When wasmEnabled is true, loads the WASM SIMD noise backend before
- * constructing the WorldGenerator.
+ * Each worker owns one WorldGenerator instance. It generates terrain,
+ * compresses block data, and transfers finalized buffers back without copies
+ * whenever the underlying buffers are transferable ArrayBuffers.
  */
 
 import { parentPort } from "node:worker_threads";
@@ -23,17 +17,18 @@ type ChunkCoord = {
 	chunkY: number;
 	chunkZ: number;
 };
+
 type GenerationRuntime = {
 	WorldGenerator: new (params: unknown) => Generator;
 	GenerationParams: Record<string, unknown>;
 };
 
-type GenRequest = {
+type GenRequest = ChunkCoord & {
 	id: number;
 	seed: string;
 	wasmEnabled: boolean;
 	kind: PendingTaskKindType.SINGLE;
-} & ChunkCoord;
+};
 
 type GenBatchRequest = {
 	id: number;
@@ -42,6 +37,17 @@ type GenBatchRequest = {
 	kind: PendingTaskKindType.BATCH;
 	items: ChunkCoord[];
 };
+
+type RelightRequest = ChunkCoord & {
+	id: number;
+	blocks: Uint8Array | Uint16Array;
+	topSunlightMask?: Uint8Array;
+	neighborLight?: (Uint8Array | null)[];
+	seed: string;
+	wasmEnabled: boolean;
+};
+
+type WorkerRequest = GenRequest | GenBatchRequest | RelightRequest;
 
 type ChunkResult = {
 	blocks: Uint8Array;
@@ -54,18 +60,6 @@ type FinalizedChunk = {
 	palette?: number[];
 	isUniform: boolean;
 	uniformBlockId: number;
-};
-
-type RelightRequest = {
-	id: number;
-	chunkX: number;
-	chunkY: number;
-	chunkZ: number;
-	blocks: Uint8Array | Uint16Array;
-	topSunlightMask?: Uint8Array;
-	neighborLight?: (Uint8Array | null)[];
-	seed: string;
-	wasmEnabled: boolean;
 };
 
 type RelightResult = {
@@ -94,8 +88,6 @@ type GenError = {
 	error: string;
 };
 
-type WorkerRequest = GenRequest | GenBatchRequest | RelightRequest;
-
 type Generator = {
 	generateChunkData: (x: number, y: number, z: number) => ChunkResult;
 
@@ -114,12 +106,18 @@ const port = parentPort;
 if (port === null) {
 	throw new Error("chunkWorker must run inside a worker thread");
 }
-let generationRuntimePromise: Promise<GenerationRuntime> | null = null;
 
+/*
+ * Capture the validated port once. This avoids repeated non-null assertions
+ * and optional chaining throughout hot request paths.
+ */
+const workerPort = port;
+
+let generationRuntimePromise: Promise<GenerationRuntime> | null = null;
 let generator: Generator | null = null;
 let currentSeed = "";
 
-let wasmEnabledConfig = false;
+let wasmRequested = false;
 let wasmLoadPromise: Promise<void> | null = null;
 let wasmLoadAttempted = false;
 let jsBackendLogged = false;
@@ -128,18 +126,25 @@ let initPromise: Promise<void> | null = null;
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
-} /**
- * Load and initialize the seed-independent generation runtime once.
- *
- * Dynamic imports, shape initialization, and closed-face-mask generation do
- * not depend on the world seed. Repeating them whenever the seed changes adds
- * unnecessary module coordination and LUT generation work.
- */
-async function loadGenerationRuntime(): Promise<GenerationRuntime> {
-	const existing = generationRuntimePromise;
+}
 
-	if (existing !== null) {
-		return existing;
+function postError(id: number, error: unknown): void {
+	const message: GenError = {
+		id,
+		error: errorMessage(error),
+	};
+
+	workerPort.postMessage(message);
+}
+
+/**
+ * Loads seed-independent generation modules once per worker.
+ *
+ * A rejected load is removed from the cache so a later request can retry.
+ */
+function loadGenerationRuntime(): Promise<GenerationRuntime> {
+	if (generationRuntimePromise !== null) {
+		return generationRuntimePromise;
 	}
 
 	const loading = (async (): Promise<GenerationRuntime> => {
@@ -157,16 +162,8 @@ async function loadGenerationRuntime(): Promise<GenerationRuntime> {
 			import("@/code/World/Shape/BlockShapes"),
 		]);
 
-		/*
-		 * Shape-aware lighting depends on the asynchronous shape registry.
-		 * This completes once for the lifetime of the worker.
-		 */
 		await blockShapesModule.shapeInitPromise;
 
-		/*
-		 * The closed-face LUT is seed-independent and relatively expensive to
-		 * derive. Build and publish it only once per worker.
-		 */
 		lightGeneratorModule.LightGenerator.setClosedFaceMaskLUT(
 			faceMasksModule.precomputeClosedFaceMasks(),
 		);
@@ -184,59 +181,50 @@ async function loadGenerationRuntime(): Promise<GenerationRuntime> {
 
 	generationRuntimePromise = loading;
 
-	try {
-		return await loading;
-	} catch (error) {
-		/*
-		 * Permit retry after a transient module or shape-initialization failure.
-		 * Clear only when this promise still owns the cache slot.
-		 */
+	void loading.catch(() => {
 		if (generationRuntimePromise === loading) {
 			generationRuntimePromise = null;
 		}
+	});
 
-		throw error;
-	}
+	return loading;
 }
 
 /**
- * Performs the single WASM loading attempt.
- *
- * Kept outside ensureWasm() so a new async closure is not allocated when the
- * first WASM-enabled request arrives.
+ * Performs the worker's only WASM loading attempt.
  */
 async function loadWasmBackend(): Promise<void> {
 	wasmLoadAttempted = true;
 
 	const loaded = await loadWasmNoiseFromFile();
 
-	if (loaded) {
-		console.log("[chunk-worker] WASM noise backend active");
-	} else {
-		console.log("[chunk-worker] JS noise backend (WASM unavailable)");
-	}
+	console.log(
+		loaded
+			? "[chunk-worker] WASM noise backend active"
+			: "[chunk-worker] JS noise backend (WASM unavailable)",
+	);
 }
 
 /**
- * Load the WASM backend at most once, but do not memoize a disabled request
- * as a permanent "no WASM" decision.
+ * Requests WASM initialization without treating an earlier JS-only request as
+ * a permanent decision.
  */
-function ensureWasm(wasmEnabled: boolean): Promise<void> | undefined {
+function ensureWasm(wasmEnabled: boolean): Promise<void> | null {
 	if (wasmEnabled) {
-		wasmEnabledConfig = true;
+		wasmRequested = true;
 	}
 
-	if (!wasmEnabledConfig) {
+	if (!wasmRequested) {
 		if (!jsBackendLogged) {
 			jsBackendLogged = true;
 			console.log("[chunk-worker] JS noise backend (wasm-enabled=false)");
 		}
 
-		return undefined;
+		return null;
 	}
 
 	if (wasmLoadAttempted) {
-		return undefined;
+		return null;
 	}
 
 	if (wasmLoadPromise === null) {
@@ -247,54 +235,56 @@ function ensureWasm(wasmEnabled: boolean): Promise<void> | undefined {
 }
 
 /**
- * Construct the generator for one seed.
+ * Constructs a generator for the supplied seed.
  *
- * WASM initialization and seed-independent module initialization may run in
- * parallel. Generator construction waits until both are ready.
+ * Runtime loading and optional WASM initialization run concurrently.
  */
 async function initializeGenerator(
 	seed: string,
 	wasmEnabled: boolean,
 ): Promise<void> {
-	const wasmReady = ensureWasm(wasmEnabled);
 	const runtimePromise = loadGenerationRuntime();
+	const wasmPromise = ensureWasm(wasmEnabled);
 
-	const runtime = wasmReady
-		? (await Promise.all([runtimePromise, wasmReady]))[0]
-		: await runtimePromise;
+	const runtime =
+		wasmPromise === null
+			? await runtimePromise
+			: (await Promise.all([runtimePromise, wasmPromise]))[0];
 
-	/*
-	 * TerrainHeightMap contains module-global seed-dependent state. This write
-	 * occurs only after ensureInit has given this initialization exclusive
-	 * ownership.
-	 */
 	setTerrainSeed(seed);
 
-	/*
-	 * Preserve the original isolation from the shared GenerationParams object.
-	 * Only one shallow copy is made for each actual seed change.
-	 */
-	const params = {
+	generator = new runtime.WorldGenerator({
 		...runtime.GenerationParams,
 		SEED: seed,
-	};
+	});
 
-	generator = new runtime.WorldGenerator(params);
 	currentSeed = seed;
 }
 
 /**
- * Ensure that exactly one generator initialization runs at a time.
- *
- * Message handlers are asynchronous and can overlap while awaiting imports or
- * WASM loading. The loop is important: after waiting for another request's
- * initialization, this request must re-check both the active seed and the
- * initialization slot before starting work of its own.
+ * Serializes generator initialization and makes the fast path aware of a late
+ * request to enable WASM.
  */
-async function ensureInit(seed: string, wasmEnabled: boolean): Promise<void> {
+async function ensureInit(
+	seed: string,
+	wasmEnabled: boolean,
+): Promise<Generator> {
 	for (;;) {
-		if (generator !== null && currentSeed === seed) {
-			return;
+		/*
+		 * Check WASM before accepting the existing generator. Otherwise, a
+		 * worker initialized by a JS-only request would ignore a later
+		 * wasmEnabled request for the same seed.
+		 */
+		const wasmPromise = ensureWasm(wasmEnabled);
+
+		if (wasmPromise !== null) {
+			await wasmPromise;
+		}
+
+		const activeGenerator = generator;
+
+		if (activeGenerator !== null && currentSeed === seed) {
+			return activeGenerator;
 		}
 
 		const pending = initPromise;
@@ -305,54 +295,50 @@ async function ensureInit(seed: string, wasmEnabled: boolean): Promise<void> {
 		}
 
 		const initialization = initializeGenerator(seed, wasmEnabled);
-
 		initPromise = initialization;
 
 		try {
 			await initialization;
-			return;
 		} finally {
-			/*
-			 * Retain identity protection in case initialization ownership is
-			 * changed by future code.
-			 */
 			if (initPromise === initialization) {
 				initPromise = null;
 			}
 		}
+
+		const initializedGenerator = generator;
+
+		if (initializedGenerator !== null && currentSeed === seed) {
+			return initializedGenerator;
+		}
 	}
 }
 
+function isTransferableBuffer(buffer: ArrayBufferLike): buffer is ArrayBuffer {
+	return buffer instanceof ArrayBuffer;
+}
+
 /**
- * Collect unique transferable result buffers in linear time.
- *
- * Large batches contain two buffers per generated chunk. Repeatedly scanning
- * the growing transfer array for duplicates is O(n²), even though duplicates
- * are uncommon. A Set makes collection O(n) with one short-lived allocation
- * per batch.
+ * Collects unique transferable buffers in O(n).
  */
 function collectBatchTransferables(
 	items: readonly FinalizedChunk[],
 ): ArrayBuffer[] {
-	const itemCount = items.length;
 	const transfer: ArrayBuffer[] = [];
 	const seen = new Set<ArrayBuffer>();
 
-	for (let i = 0; i < itemCount; i++) {
+	for (let i = 0; i < items.length; i++) {
 		const item = items[i];
 
 		const blocksBuffer = item.blocks.buffer;
 
-		if (blocksBuffer instanceof ArrayBuffer) {
-			if (!seen.has(blocksBuffer)) {
-				seen.add(blocksBuffer);
-				transfer.push(blocksBuffer);
-			}
+		if (isTransferableBuffer(blocksBuffer) && !seen.has(blocksBuffer)) {
+			seen.add(blocksBuffer);
+			transfer.push(blocksBuffer);
 		}
 
 		const lightBuffer = item.light.buffer;
 
-		if (lightBuffer instanceof ArrayBuffer && !seen.has(lightBuffer)) {
+		if (isTransferableBuffer(lightBuffer) && !seen.has(lightBuffer)) {
 			seen.add(lightBuffer);
 			transfer.push(lightBuffer);
 		}
@@ -362,16 +348,39 @@ function collectBatchTransferables(
 }
 
 /**
- * Posts a single generated chunk.
- *
- * This path builds the response directly instead of first allocating a
- * FinalizedChunk and then copying all of its properties into a second object.
+ * Posts a message with two potentially transferable typed-array buffers.
  */
+function postWithBuffers(
+	message: GenSuccess,
+	firstBuffer: ArrayBufferLike,
+	secondBuffer: ArrayBufferLike,
+): void {
+	const firstTransferable = isTransferableBuffer(firstBuffer);
+	const secondTransferable = isTransferableBuffer(secondBuffer);
+
+	if (firstTransferable) {
+		if (secondTransferable && secondBuffer !== firstBuffer) {
+			workerPort.postMessage(message, [firstBuffer, secondBuffer]);
+		} else {
+			workerPort.postMessage(message, [firstBuffer]);
+		}
+
+		return;
+	}
+
+	if (secondTransferable) {
+		workerPort.postMessage(message, [secondBuffer]);
+		return;
+	}
+
+	workerPort.postMessage(message);
+}
+
 async function handleRequest(request: GenRequest): Promise<void> {
 	try {
-		await ensureInit(request.seed, request.wasmEnabled);
+		const activeGenerator = await ensureInit(request.seed, request.wasmEnabled);
 
-		const raw = generator!.generateChunkData(
+		const raw = activeGenerator.generateChunkData(
 			request.chunkX,
 			request.chunkY,
 			request.chunkZ,
@@ -389,63 +398,22 @@ async function handleRequest(request: GenRequest): Promise<void> {
 			uniformBlockId: compressed.uniformBlockId,
 		};
 
-		const blocksBuffer = message.blocks.buffer;
-		const lightBuffer = message.light.buffer;
-
-		const blocksTransferable = !(blocksBuffer instanceof SharedArrayBuffer);
-
-		const lightTransferable = !(lightBuffer instanceof SharedArrayBuffer);
-
-		if (blocksTransferable) {
-			const blocksArrayBuffer = blocksBuffer as ArrayBuffer;
-
-			if (lightTransferable && lightBuffer !== blocksArrayBuffer) {
-				port!.postMessage(message, [
-					blocksArrayBuffer,
-					lightBuffer as ArrayBuffer,
-				]);
-			} else {
-				port!.postMessage(message, [blocksArrayBuffer]);
-			}
-		} else if (lightTransferable) {
-			port!.postMessage(message, [lightBuffer as ArrayBuffer]);
-		} else {
-			/*
-			 * Omitting the transfer list avoids allocating an empty array when
-			 * both views use shared memory.
-			 */
-			port!.postMessage(message);
-		}
+		postWithBuffers(message, message.blocks.buffer, message.light.buffer);
 	} catch (error: unknown) {
-		const message: GenError = {
-			id: request.id,
-			error: errorMessage(error),
-		};
-
-		port!.postMessage(message);
+		postError(request.id, error);
 	}
 }
 
-/**
- * Generate and finalize one worker-owned batch.
- */
 async function handleBatchRequest(request: GenBatchRequest): Promise<void> {
 	try {
-		await ensureInit(request.seed, request.wasmEnabled);
-
-		const activeGenerator = generator;
-
-		if (activeGenerator === null) {
-			throw new Error("Chunk generator was not initialized");
-		}
+		const activeGenerator = await ensureInit(request.seed, request.wasmEnabled);
 
 		const requestItems = request.items;
 		const itemCount = requestItems.length;
 		const items = new Array<FinalizedChunk>(itemCount);
 
 		/*
-		 * Preserve the supplied column/Y ordering for terrain column-cache
-		 * locality.
+		 * Preserve caller-provided ordering for terrain column-cache locality.
 		 */
 		for (let i = 0; i < itemCount; i++) {
 			const coordinate = requestItems[i];
@@ -476,27 +444,20 @@ async function handleBatchRequest(request: GenBatchRequest): Promise<void> {
 		const transfer = collectBatchTransferables(items);
 
 		if (transfer.length === 0) {
-			port?.postMessage(message);
+			workerPort.postMessage(message);
 		} else {
-			port?.postMessage(message, transfer);
+			workerPort.postMessage(message, transfer);
 		}
 	} catch (error: unknown) {
-		const message: GenError = {
-			id: request.id,
-			error: errorMessage(error),
-		};
-
-		port?.postMessage(message);
+		postError(request.id, error);
 	}
 }
 
 async function handleRelightRequest(request: RelightRequest): Promise<void> {
 	try {
-		if (generator === null || currentSeed !== request.seed) {
-			await ensureInit(request.seed, request.wasmEnabled);
-		}
+		const activeGenerator = await ensureInit(request.seed, request.wasmEnabled);
 
-		const light = generator!.relightChunk(
+		const light = activeGenerator.relightChunk(
 			request.chunkX,
 			request.chunkY,
 			request.chunkZ,
@@ -512,29 +473,21 @@ async function handleRelightRequest(request: RelightRequest): Promise<void> {
 
 		const buffer = light.buffer;
 
-		if (buffer instanceof SharedArrayBuffer) {
-			/*
-			 * Structured cloning preserves the SharedArrayBuffer reference.
-			 */
-			port!.postMessage(message);
+		if (isTransferableBuffer(buffer)) {
+			workerPort.postMessage(message, [buffer]);
 		} else {
-			port!.postMessage(message, [buffer as ArrayBuffer]);
+			workerPort.postMessage(message);
 		}
 	} catch (error: unknown) {
-		const message: GenError = {
-			id: request.id,
-			error: errorMessage(error),
-		};
-
-		port!.postMessage(message);
+		postError(request.id, error);
 	}
 }
 
 function isRelightRequest(message: WorkerRequest): message is RelightRequest {
-	return "blocks" in message && "chunkX" in message && !("kind" in message);
+	return !("kind" in message) && "blocks" in message;
 }
 
-port.on("message", (message: WorkerRequest) => {
+workerPort.on("message", (message: WorkerRequest) => {
 	if (isRelightRequest(message)) {
 		void handleRelightRequest(message);
 		return;

@@ -30,12 +30,29 @@ export class FarTileScheduler {
 		return this.inFlight;
 	}
 
-	schedule(levelIndex: number, tileX: number, tileZ: number): number {
+	schedule(
+		levelIndex: number,
+		tileX: number,
+		tileZ: number,
+		generation: number,
+	): number {
 		const requestId = this.nextRequestId++;
-		this.queue.push({ requestId, levelIndex, tileX, tileZ });
+		this.queue.push({
+			requestId,
+			generation,
+			levelIndex,
+			tileX,
+			tileZ,
+		});
 		return requestId;
 	}
 
+	/**
+	 * Drops every queued-but-undispatched request. In-flight accounting is
+	 * left alone on purpose: completions of already-dispatched tasks still
+	 * arrive and must keep decrementing `inFlight`, otherwise the cap could
+	 * be exceeded by fresh dispatches racing those stale interactions.
+	 */
 	reset(): void {
 		this.queue.length = 0;
 		this.readIdx = 0;

@@ -221,28 +221,86 @@ export class Bird extends FlyingMob {
 		count: number,
 		registry: MobRegistry,
 	): Bird[] {
+		/*
+		 * Preserve the previous no-member result without allocating a flock entry.
+		 * Math.max(1, count) previously meant zero and negative counts returned an
+		 * empty array but still leaked an unreachable entry in Bird.#flocks.
+		 */
+		const memberCount = Math.max(0, Math.trunc(count));
+
+		if (memberCount === 0) {
+			return [];
+		}
+
 		const flockId = Bird.#nextFlockId++;
 		const heading = Math.random() * Math.PI * 2;
+
 		const flock: BirdFlock = {
 			waypoint: { x, y, z },
 			heading,
 			baseY: y,
 		};
+
 		Bird.#flocks.set(flockId, flock);
 
-		const members: Bird[] = [];
-		for (let i = 0; i < count; i++) {
-			const bird = new Bird(x, y, z, scene);
-			const slotAngle = (i / Math.max(1, count)) * Math.PI * 2;
-			const slotRadius = 1.5 + (i % 3);
-			bird.#flockId = flockId;
-			bird.#offset.x = Math.cos(slotAngle) * slotRadius;
-			bird.#offset.y = (i % 2) * 1.2;
-			bird.#offset.z = Math.sin(slotAngle) * slotRadius;
-			registry.addMob(bird);
-			members.push(bird);
+		const members = new Array<Bird>(memberCount);
+
+		/*
+		 * Compute the angular step once rather than dividing and multiplying for
+		 * every member.
+		 */
+		const angleStep = (Math.PI * 2) / memberCount;
+
+		let createdCount = 0;
+
+		try {
+			for (let i = 0; i < memberCount; i++) {
+				const bird = new Bird(x, y, z, scene);
+
+				/*
+				 * Assign flock ownership immediately after construction so rollback
+				 * cleanup can remove the shared flock when registration fails.
+				 */
+				bird.#flockId = flockId;
+
+				const slotAngle = i * angleStep;
+				const slotRadius = 1.5 + (i % 3);
+
+				bird.#offset.x = Math.cos(slotAngle) * slotRadius;
+				bird.#offset.y = (i & 1) * 1.2;
+				bird.#offset.z = Math.sin(slotAngle) * slotRadius;
+
+				/*
+				 * Store the member before registry registration. If addMob throws
+				 * after partially registering it, the rollback path still owns and
+				 * disposes the bird.
+				 */
+				members[createdCount] = bird;
+				createdCount++;
+
+				registry.addMob(bird);
+			}
+
+			return members;
+		} catch (error) {
+			/*
+			 * Dispose in reverse construction order. Bird.dispose() is idempotent,
+			 * so this is safe even when registry.addMob() partially registered a
+			 * bird before throwing.
+			 */
+			for (let i = createdCount - 1; i >= 0; i--) {
+				members[i].dispose();
+			}
+
+			/*
+			 * dispose() normally prunes the flock through Map1.mobRegistry, but the
+			 * supplied registry is not guaranteed to be that global registry and
+			 * construction may fail before any member is registered.
+			 */
+			Bird.#flocks.delete(flockId);
+
+			throw error;
 		}
-		return members;
 	}
 
 	/** Drop empty flocks so the map never grows across a long session. */

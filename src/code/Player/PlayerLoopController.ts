@@ -490,7 +490,8 @@ export class PlayerLoopController {
 			this.#blockTickAccumulatorMs / PlayerLoopController.BLOCK_TICK_MS,
 		);
 
-		this.#blockTickAccumulatorMs -= blockTicks * PlayerLoopController.BLOCK_TICK_MS;
+		this.#blockTickAccumulatorMs -=
+			blockTicks * PlayerLoopController.BLOCK_TICK_MS;
 
 		frameProfiler.begin("blockTicks");
 		Chunk.beginBlockEditBatch();
