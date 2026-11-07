@@ -1,90 +1,102 @@
 diff --git a/node_modules/@babylonjs/lite/index.d.ts b/node_modules/@babylonjs/lite/index.d.ts
-index 8a4c766..505f3f0 100644
+index 8a4c766..94bb63f 100644
 --- a/node_modules/@babylonjs/lite/index.d.ts
 +++ b/node_modules/@babylonjs/lite/index.d.ts
-@@ -15286,6 +15286,15 @@ declare const storageBufferBrand: unique symbol;
+@@ -15286,6 +15286,16 @@ declare const storageBufferBrand: unique symbol;
   *  Writable/vertex/index/indirect allocations keep no CPU mirror and require recreation after device loss. */
  export declare interface StorageBufferOptions {
      readonly label?: string;
-+    /**
-+     * CPU recovery-data policy for read-only STORAGE-only buffers.
-+     *
-+     * `"copy"` stores a private copy of the uploaded bytes.
-+     * `"source"` aliases the supplied array's backing memory. The caller must
-+     * keep that memory alive and treat it as the authoritative recovery copy.
-+     *
-+     * Ignored for writable, vertex, index, and indirect allocations.
-+     */
-+    readonly cpuShadow?: "copy" | "source";
++	/**
++	 * CPU recovery-data policy for read-only STORAGE-only buffers.
++	 *
++	 * `"copy"` stores a private copy of the uploaded bytes.
++	 * `"source"` aliases the supplied array's backing memory. The caller must
++	 * keep that memory alive and treat it as the authoritative recovery copy.
++	 *
++	 * Ignored for writable, vertex, index, and indirect allocations.
++	 */
++	readonly cpuShadow?: "copy" | "source";
      /** Bind as `var<storage, read_write>` so shaders — including compute — can write it.
       *
       *  A writable allocation keeps NO CPU shadow copy: its contents are produced on the
 diff --git a/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js b/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js
-index 0043b6c..649925d 100644
+index 0043b6c..06bc4e2 100644
 --- a/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js
 +++ b/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js
-@@ -1,21 +1,34 @@
+@@ -1,21 +1,36 @@
  import { syncThinInstanceBuffers, syncThinInstanceForDraw } from "../../mesh/thin-instance-gpu.js";
  //#region src/material/shader/shader-thin-instance.ts
  /** Append matching GPU layouts and WGSL inputs from the same matrix-row locations. */
- function appendInstanceInputs(layouts, baseLocation, hasColor) {
-     const attributes = [];
-     let source = ``;
--    for (let row = 0; row < 4; row++) {
--        const shaderLocation = baseLocation + row;
-+    for (let row = 0; row < 4; row++) {
-+        const shaderLocation = baseLocation + row;
-         attributes.push({
-             shaderLocation,
-             offset: row * 16,
-             format: "float32x4"
-         });
-         source = `${source}@location(${shaderLocation})world${row}:vec4<f32>,`;
-     }
-     layouts.push({
-         arrayStride: 64,
-         stepMode: "instance",
-         attributes
-     });
-     if (hasColor) {
-@@ -42,10 +55,17 @@ function buildShaderRenderablesWithInstancing(scene, meshes, buildPlain, createP
-         const mesh = packet.mesh;
-         const ti = mesh.thinInstances;
-         const hasColor = !!ti.colors && material._tic != 0;
-+        const compact = ti.compact === true;
-+        /*
-+         * Capacity is an allocation detail and must not select shader
-+         * semantics. Only the explicit mode flag enables this path.
-+         */
-+        const compactConstant =
-+            compact && ti.compactConstant === true;
-         const baseLocation = material.attributes.length;
--        const variantKey = `${+hasColor}${vertexLayout?._key ?? mesh._gpu._vbKey ?? ""}`;
-+        const variantKey =
-+            `${+hasColor}:${+compact}:${+compactConstant}:` +
-+            `${vertexLayout?._key ?? mesh._gpu._vbKey ?? ""}`;
-         const vertexBuffers = [...vertexLayout?._vbs ?? bindings.vertexBuffers];
--        const instanceAttrs = appendInstanceInputs(vertexBuffers, baseLocation, hasColor);
-+        /*
-+         * Keep the established mat4 input layout until the compact WGSL input
-+         * and transform path are supplied together. A 16-byte compact buffer
-+         * cannot be bound to this 64-byte layout.
-+         */
-+        const instanceAttrs = appendInstanceInputs(
-+            vertexBuffers,
-+            baseLocation,
-+            hasColor
-+        );
-         if (!vertexLayout && mesh._gpu._vbLayout) for (let index = 0; index < material.attributes.length; index++) {
-             const packing = mesh._gpu._vbLayout[material.attributes[index]];
-             if (packing) {
+-function appendInstanceInputs(layouts, baseLocation, hasColor) {
++function appendInstanceInputs(layouts, baseLocation, hasColor, compact, compactConstant) {
+ 	const attributes = [];
+ 	let source = ``;
+-	for (let row = 0; row < 4; row++) {
+-		const shaderLocation = baseLocation + row;
++	if (compact) {
++		/*
++		 * Compact instance records: ONE vec4<f32> per instance (16-byte
++		 * stride) instead of a full mat4. The WGSL input is `instData`, and
++		 * constant mode steps per VERTEX so the 4 fixed records cover the
++		 * shared quad while the draw count stays free to vary.
++		 */
+ 		attributes.push({
+-			shaderLocation,
+-			offset: row * 16,
++			shaderLocation: baseLocation,
++			offset: 0,
+ 			format: "float32x4"
+ 		});
+-		source = `${source}@location(${shaderLocation})world${row}:vec4<f32>,`;
++		source = `@location(${baseLocation})instData:vec4<f32>,`;
++	} else {
++		for (let row = 0; row < 4; row++) {
++			const shaderLocation = baseLocation + row;
++			attributes.push({
++				shaderLocation,
++				offset: row * 16,
++				format: "float32x4"
++			});
++			source = `${source}@location(${shaderLocation})world${row}:vec4<f32>,`;
++		}
+ 	}
+ 	layouts.push({
+-		arrayStride: 64,
+-		stepMode: "instance",
++		arrayStride: compact ? 16 : 64,
++		stepMode: compactConstant ? "vertex" : "instance",
+ 		attributes
+ 	});
+ 	if (hasColor) {
+@@ -42,10 +57,18 @@ function buildShaderRenderablesWithInstancing(scene, meshes, buildPlain, createP
+ 		const mesh = packet.mesh;
+ 		const ti = mesh.thinInstances;
+ 		const hasColor = !!ti.colors && material._tic != 0;
++		const compact = !!ti.compact;
++		const compactConstant = !!ti.compactConstant || (compact && ti._capacity === 4);
+ 		const baseLocation = material.attributes.length;
+-		const variantKey = `${+hasColor}${vertexLayout?._key ?? mesh._gpu._vbKey ?? ""}`;
++		const variantKey = `${+hasColor}:${+compact}:${+compactConstant}${vertexLayout?._key ?? mesh._gpu._vbKey ?? ""}`;
+ 		const vertexBuffers = [...vertexLayout?._vbs ?? bindings.vertexBuffers];
+-		const instanceAttrs = appendInstanceInputs(vertexBuffers, baseLocation, hasColor);
++		const instanceAttrs = appendInstanceInputs(
++			vertexBuffers,
++			baseLocation,
++			hasColor,
++			compact,
++			compactConstant
++		);
+ 		if (!vertexLayout && mesh._gpu._vbLayout) for (let index = 0; index < material.attributes.length; index++) {
+ 			const packing = mesh._gpu._vbLayout[material.attributes[index]];
+ 			if (packing) {
 diff --git a/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js b/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
-index 7e76aa5..938427a 100644
+index 7e76aa5..cc9ae68 100644
 --- a/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
 +++ b/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
-@@ -8,37 +8,115 @@ import { writeMeshIndexedIndirectArgs } from "./mesh-indexed-indirect.js";
+@@ -7,43 +7,183 @@ import { writeMeshIndexedIndirectArgs } from "./mesh-indexed-indirect.js";
+ //#region src/mesh/thin-instance-gpu.ts
  /** Thin instance GPU buffer sync — dynamically loaded only by scenes with thin instances.
-  *  Keeps the standard renderable chunk unchanged for scenes without thin instances. */
+ *  Keeps the standard renderable chunk unchanged for scenes without thin instances. */
 +
 +/*
 + * Keep individual queue.writeBuffer submissions small enough that Dawn does
@@ -94,290 +106,298 @@ index 7e76aa5..938427a 100644
 +const MAX_THIN_INSTANCE_WRITE_BYTES = 256 * 1024;
 +const THIN_INSTANCE_WRITE_ALIGNMENT = 16;
 +const THIN_INSTANCE_WRITE_CHUNK_BYTES =
-+    MAX_THIN_INSTANCE_WRITE_BYTES -
-+    MAX_THIN_INSTANCE_WRITE_BYTES % THIN_INSTANCE_WRITE_ALIGNMENT;
++	MAX_THIN_INSTANCE_WRITE_BYTES -
++	MAX_THIN_INSTANCE_WRITE_BYTES % THIN_INSTANCE_WRITE_ALIGNMENT;
 +
 +function writeThinInstanceBuffer(
-+    device,
-+    buffer,
-+    destinationByteOffset,
-+    source,
-+    sourceByteOffset,
-+    byteLength
++	device,
++	buffer,
++	destinationByteOffset,
++	source,
++	sourceByteOffset,
++	byteLength
 +) {
-+    if (byteLength <= 0) return;
++	if (byteLength <= 0) return;
 +
-+    let destinationOffset = destinationByteOffset;
-+    let currentSourceOffset = sourceByteOffset;
-+    let remainingBytes = byteLength;
++	let destinationOffset = destinationByteOffset;
++	let currentSourceOffset = sourceByteOffset;
++	let remainingBytes = byteLength;
 +
-+    while (remainingBytes > 0) {
-+        const currentByteLength = Math.min(
-+            remainingBytes,
-+            THIN_INSTANCE_WRITE_CHUNK_BYTES
-+        );
++	while (remainingBytes > 0) {
++		const currentByteLength = Math.min(
++			remainingBytes,
++			THIN_INSTANCE_WRITE_CHUNK_BYTES
++		);
 +
-+        device.queue.writeBuffer(
-+            buffer,
-+            destinationOffset,
-+            source,
-+            currentSourceOffset,
-+            currentByteLength
-+        );
++		device.queue.writeBuffer(
++			buffer,
++			destinationOffset,
++			source,
++			currentSourceOffset,
++			currentByteLength
++		);
 +
-+        destinationOffset += currentByteLength;
-+        currentSourceOffset += currentByteLength;
-+        remainingBytes -= currentByteLength;
-+    }
++		destinationOffset += currentByteLength;
++		currentSourceOffset += currentByteLength;
++		remainingBytes -= currentByteLength;
++	}
 +}
 +
  /** @internal Sync CPU thin-instance data to GPU buffers, optionally with STORAGE usage for compute culling. */
  function syncThinInstanceGpuData(engine, ti, hasColor) {
-     const device = engine._device;
--    const needsStorage = ti._gpuCullingEnabled;
-+    const needsStorage = ti._gpuCullingEnabled === true;
-+    const compact = ti.compact === true;
-+    const compactConstant =
-+        compact && ti.compactConstant === true;
+ 	const device = engine._device;
+-	const needsStorage = ti._gpuCullingEnabled;
++	const needsStorage = ti._gpuCullingEnabled === true;
 +
-+    /*
-+     * The current shader path consumes four vec4 matrix rows per instance.
-+     * Until compact WGSL transformation support is installed, reject compact
-+     * records rather than binding a 16-byte buffer to a 64-byte layout.
-+     */
-+    if (compact) {
-+        throw new Error(
-+            "Compact thin instances require the matching compact WGSL " +
-+            "input and transform path."
-+        );
-+    }
++	/*
++	 * Compact instance mode (ti.compact, set by callers): ONE vec4<f32> per
++	 * record, 16 bytes, instead of a full 4x4 matrix. In constant mode
++	 * (compactConstant, or compact with a 4-record capacity) the GPU buffer
++	 * holds exactly 4 vertex-step records; the draw count is independent of
++	 * capacity, so count changes cost nothing at all.
++	 */
++	const compact = !!ti.compact;
++	const constantCompact =
++		!!ti.compactConstant || (compact && ti._capacity === 4);
++	const stride = compact ? 16 : 64;
++	const gpuStride = constantCompact ? 16 : stride;
++	const constantRecords = 4;
++	const maxRecords = constantCompact ? constantRecords : ti.count;
++	const floatsPerInstance = compact ? 4 : 16;
 +
-+    if (ti.compactConstant === true && !compact) {
-+        throw new Error(
-+            "compactConstant requires compact thin-instance data."
-+        );
-+    }
++	const recordCount = ti.count;
++	const capacity = ti._capacity;
++	const requiredByteSize =
++		(constantCompact ? constantRecords : recordCount) * gpuStride;
++	const usage =
++		BU.VERTEX |
++		BU.COPY_DST |
++		(needsStorage ? BU.STORAGE : 0);
 +
-+    const stride = 64;
-+    const recordCount = ti.count;
-+    const capacity = ti._capacity;
-+    const requiredByteSize = recordCount * stride;
-+    const usage =
-+        BU.VERTEX |
-+        BU.COPY_DST |
-+        (needsStorage ? BU.STORAGE : 0);
+ 	let retiredMatrix = null;
+ 	let retiredColor = null;
+ 	let recreated = false;
+-	if (ti._version !== ti._gpuVersion) {
+-		const byteSize = ti.count * 64;
 +
-     let retiredMatrix = null;
-     let retiredColor = null;
-     let recreated = false;
--    if (ti._version !== ti._gpuVersion) {
--        const byteSize = ti.count * 64;
++	if (
++		ti._version !== ti._gpuVersion ||
++		ti._gpuBufferStorage !== needsStorage
++	) {
+ 		let bufferRecreated = false;
+-		if (!ti._gpuBuffer || ti._gpuBuffer.size < byteSize) {
 +
-+    if (
-+        ti._version !== ti._gpuVersion ||
-+        ti._gpuBufferStorage !== needsStorage
-+    ) {
-         let bufferRecreated = false;
--        if (!ti._gpuBuffer || ti._gpuBuffer.size < byteSize) {
++		if (
++			!ti._gpuBuffer ||
++			ti._gpuBuffer.size < requiredByteSize ||
++			ti._gpuBufferStorage !== needsStorage
++		) {
+ 			if (ti._gpuBuffer) retiredMatrix = ti._gpuBuffer;
 +
-+        if (
-+            !ti._gpuBuffer ||
-+            ti._gpuBuffer.size < requiredByteSize ||
-+            ti._gpuBufferStorage !== needsStorage
-+        ) {
-             if (ti._gpuBuffer) retiredMatrix = ti._gpuBuffer;
+ 			ti._gpuBuffer = device.createBuffer({
+ 				label: "thin-instance-matrices",
+-				size: Math.max(ti._capacity * 64, 4),
+-				usage: BU.VERTEX | BU.COPY_DST | BU.STORAGE
++				size: Math.max(
++					(constantCompact ? constantRecords : capacity) * gpuStride,
++					4
++				),
++				usage
+ 			});
 +
-             ti._gpuBuffer = device.createBuffer({
-                 label: "thin-instance-matrices",
--                size: Math.max(ti._capacity * 64, 4),
--                usage: BU.VERTEX | BU.COPY_DST | BU.STORAGE
-+                size: Math.max(capacity * stride, 4),
-+                usage
-             });
++			ti._gpuBufferStorage = needsStorage;
+ 			bufferRecreated = true;
+ 			recreated = true;
+ 		}
+-		const dirtyMin = bufferRecreated ? 0 : ti._dirtyMin;
+-		const dirtyMax = bufferRecreated ? ti.count : Math.min(ti._dirtyMax, ti.count);
 +
-+            ti._gpuBufferStorage = needsStorage;
-             bufferRecreated = true;
-             recreated = true;
-         }
--        const dirtyMin = bufferRecreated ? 0 : ti._dirtyMin;
--        const dirtyMax = bufferRecreated ? ti.count : Math.min(ti._dirtyMax, ti.count);
++		const dirtyMin = bufferRecreated
++			? 0
++			: Math.min(ti._dirtyMin, maxRecords);
 +
-+        const dirtyMin = bufferRecreated
-+            ? 0
-+            : Math.min(ti._dirtyMin, recordCount);
++		const dirtyMax = bufferRecreated
++			? maxRecords
++			: Math.min(ti._dirtyMax, maxRecords);
 +
-+        const dirtyMax = bufferRecreated
-+            ? recordCount
-+            : Math.min(ti._dirtyMax, recordCount);
+ 		if (dirtyMax > dirtyMin) {
+-			const minByte = dirtyMin * 64;
+-			const maxByte = dirtyMax * 64;
+-			if (ti.matrices instanceof F32) device.queue.writeBuffer(ti._gpuBuffer, minByte, ti.matrices.buffer, ti.matrices.byteOffset + minByte, maxByte - minByte);
+-			else {
+-				const neededFloats = ti._capacity * 16;
+-				if (!ti._uploadF32 || ti._uploadF32.length < neededFloats) ti._uploadF32 = new F32(neededFloats);
++			const minByte = dirtyMin * gpuStride;
++			const maxByte = dirtyMax * gpuStride;
++			const byteLength = maxByte - minByte;
 +
-         if (dirtyMax > dirtyMin) {
--            const minByte = dirtyMin * 64;
--            const maxByte = dirtyMax * 64;
--            if (ti.matrices instanceof F32) device.queue.writeBuffer(ti._gpuBuffer, minByte, ti.matrices.buffer, ti.matrices.byteOffset + minByte, maxByte - minByte);
--            else {
--                const neededFloats = ti._capacity * 16;
--                if (!ti._uploadF32 || ti._uploadF32.length < neededFloats) ti._uploadF32 = new F32(neededFloats);
-+            const minByte = dirtyMin * stride;
-+            const maxByte = dirtyMax * stride;
-+            const byteLength = maxByte - minByte;
++			if (ti.matrices instanceof F32) {
++				writeThinInstanceBuffer(
++					device,
++					ti._gpuBuffer,
++					minByte,
++					ti.matrices.buffer,
++					ti.matrices.byteOffset + minByte,
++					byteLength
++				);
++			} else {
++				const neededFloats = capacity * floatsPerInstance;
 +
-+            if (ti.matrices instanceof F32) {
-+                writeThinInstanceBuffer(
-+                    device,
-+                    ti._gpuBuffer,
-+                    minByte,
-+                    ti.matrices.buffer,
-+                    ti.matrices.byteOffset + minByte,
-+                    byteLength
-+                );
-+            } else {
-+                const neededFloats = capacity * 16;
++				if (
++					!ti._uploadF32 ||
++					ti._uploadF32.length < neededFloats
++				) {
++					ti._uploadF32 = new F32(neededFloats);
++				}
 +
-+                if (
-+                    !ti._uploadF32 ||
-+                    ti._uploadF32.length < neededFloats
-+                ) {
-+                    ti._uploadF32 = new F32(neededFloats);
-+                }
+ 				const upload = ti._uploadF32;
+-				for (let i = dirtyMin; i < dirtyMax; i++) packMat4IntoF32(upload, ti.matrices, i * 16, i * 16);
+-				device.queue.writeBuffer(ti._gpuBuffer, minByte, upload.buffer, upload.byteOffset + minByte, maxByte - minByte);
 +
-                 const upload = ti._uploadF32;
--                for (let i = dirtyMin; i < dirtyMax; i++) packMat4IntoF32(upload, ti.matrices, i * 16, i * 16);
--                device.queue.writeBuffer(ti._gpuBuffer, minByte, upload.buffer, upload.byteOffset + minByte, maxByte - minByte);
++				if (compact) {
++					for (let i = dirtyMin; i < dirtyMax; i++) {
++						const s = i * 4;
++						upload[s] = ti.matrices[s];
++						upload[s + 1] = ti.matrices[s + 1];
++						upload[s + 2] = ti.matrices[s + 2];
++						upload[s + 3] = ti.matrices[s + 3];
++					}
++				} else {
++					for (let i = dirtyMin; i < dirtyMax; i++) {
++						const offset = i * 16;
 +
-+                for (let i = dirtyMin; i < dirtyMax; i++) {
-+                    const offset = i * 16;
++						packMat4IntoF32(
++							upload,
++							ti.matrices,
++							offset,
++							offset
++						);
++					}
++				}
 +
-+                    packMat4IntoF32(
-+                        upload,
-+                        ti.matrices,
-+                        offset,
-+                        offset
-+                    );
-+                }
++				writeThinInstanceBuffer(
++					device,
++					ti._gpuBuffer,
++					minByte,
++					upload.buffer,
++					upload.byteOffset + minByte,
++					byteLength
++				);
+ 			}
+ 		}
+-		ti._dirtyMin = ti.count;
 +
-+                writeThinInstanceBuffer(
-+                    device,
-+                    ti._gpuBuffer,
-+                    minByte,
-+                    upload.buffer,
-+                    upload.byteOffset + minByte,
-+                    byteLength
-+                );
-             }
-         }
--        ti._dirtyMin = ti.count;
++		ti._dirtyMin = recordCount;
+ 		ti._dirtyMax = 0;
+ 		ti._gpuVersion = ti._version;
 +
-+        ti._dirtyMin = recordCount;
-         ti._dirtyMax = 0;
-         ti._gpuVersion = ti._version;
+ 	}
+ 	if (hasColor && ti.colors) {
+ 		if (ti._colorVersion !== ti._colorGpuVersion || ti._colorGpuBufferStorage !== needsStorage) {
+@@ -62,7 +202,18 @@ function syncThinInstanceGpuData(engine, ti, hasColor) {
+ 			}
+ 			const cMin = colorRecreated ? 0 : ti._colorDirtyMin;
+ 			const cMax = colorRecreated ? ti.count : Math.min(ti._colorDirtyMax, ti.count);
+-			if (cMax > cMin) device.queue.writeBuffer(ti._colorGpuBuffer, cMin * 16, ti.colors.buffer, ti.colors.byteOffset + cMin * 16, (cMax - cMin) * 16);
 +
-         if (hasColor && ti.colors && ti._colorVersion !== ti._colorGpuVersion) {
-             const colorByteSize = ti.count * 16;
-             let colorRecreated = false;
-@@ -62,7 +140,18 @@ function syncThinInstanceGpuData(engine, ti, hasColor) {
-             }
-             const cMin = colorRecreated ? 0 : ti._colorDirtyMin;
-             const cMax = colorRecreated ? ti.count : Math.min(ti._colorDirtyMax, ti.count);
--            if (cMax > cMin) device.queue.writeBuffer(ti._colorGpuBuffer, cMin * 16, ti.colors.buffer, ti.colors.byteOffset + cMin * 16, (cMax - cMin) * 16);
++			if (cMax > cMin) {
++				writeThinInstanceBuffer(
++					device,
++					ti._colorGpuBuffer,
++					cMin * 16,
++					ti.colors.buffer,
++					ti.colors.byteOffset + cMin * 16,
++					(cMax - cMin) * 16
++				);
++			}
 +
-+            if (cMax > cMin) {
-+                writeThinInstanceBuffer(
-+                    device,
-+                    ti._colorGpuBuffer,
-+                    cMin * 16,
-+                    ti.colors.buffer,
-+                    ti.colors.byteOffset + cMin * 16,
-+                    (cMax - cMin) * 16
-+                );
-+            }
-+
-             ti._colorDirtyMin = ti.count;
-             ti._colorDirtyMax = 0;
-             ti._colorGpuVersion = ti._colorVersion;
+ 			ti._colorDirtyMin = ti.count;
+ 			ti._colorDirtyMax = 0;
+ 			ti._colorGpuVersion = ti._colorVersion;
 diff --git a/node_modules/@babylonjs/lite/lib/resource/storage-buffer.js b/node_modules/@babylonjs/lite/lib/resource/storage-buffer.js
-index a276f02..57fda10 100644
+index a276f02..8822092 100644
 --- a/node_modules/@babylonjs/lite/lib/resource/storage-buffer.js
 +++ b/node_modules/@babylonjs/lite/lib/resource/storage-buffer.js
-@@ -11,7 +11,13 @@ import { createMappedBuffer } from "./mapped-buffer.js";
-  *  (at least four, even for an empty source) and must fit the device's maxBufferSize.
-  *  Defaults to a read-only, CPU-initialized buffer — pass `writable`/`vertex` to opt in. */
+@@ -11,7 +11,14 @@ import { createMappedBuffer } from "./mapped-buffer.js";
+ *  (at least four, even for an empty source) and must fit the device's maxBufferSize.
+ *  Defaults to a read-only, CPU-initialized buffer — pass `writable`/`vertex` to opt in. */
  function createStorageBuffer(engine, source, labelOrOptions) {
--    const { label, writable = false, vertex = false, index = false, indirect = false } = typeof labelOrOptions === "string" || labelOrOptions === void 0 ? { label: labelOrOptions } : labelOrOptions;
-+    const {
-+        label,
-+        writable = false,
-+        vertex = false,
-+        index = false,
-+        indirect = false,
-+        cpuShadow = "copy"
-+    } = typeof labelOrOptions === "string" || labelOrOptions === void 0 ? { label: labelOrOptions } : labelOrOptions;
-     const isByteLength = typeof source === "number";
-     const requested = isByteLength ? source : source.byteLength;
-     if (!Number.isSafeInteger(requested) || requested < 0) ThrowLiteError(741, requested);
-@@ -19,8 +25,31 @@ function createStorageBuffer(engine, source, labelOrOptions) {
-     const maxBufferSize = engine._device.limits.maxBufferSize;
-     if (!Number.isSafeInteger(byteLength) || byteLength > maxBufferSize) ThrowLiteError(742, byteLength, maxBufferSize);
-     const usage = BU.STORAGE | (vertex ? BU.VERTEX : 0) | (index ? BU.INDEX : 0) | (indirect ? BU.INDIRECT : 0) | (writable ? BU.COPY_SRC : 0);
--    const bytes = usage === BU.STORAGE ? new Uint8Array(byteLength) : null;
--    if (bytes && !isByteLength) bytes.set(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
+-	const { label, writable = false, vertex = false, index = false, indirect = false } = typeof labelOrOptions === "string" || labelOrOptions === void 0 ? { label: labelOrOptions } : labelOrOptions;
++	const {
++		label,
++		writable = false,
++		vertex = false,
++		index = false,
++		indirect = false,
++		cpuShadow = "copy"
++	} = typeof labelOrOptions === "string" || labelOrOptions === void 0 ? { label: labelOrOptions } : labelOrOptions;
+ 	const isByteLength = typeof source === "number";
+ 	const requested = isByteLength ? source : source.byteLength;
+ 	if (!Number.isSafeInteger(requested) || requested < 0) ThrowLiteError(741, requested);
+@@ -19,8 +26,40 @@ function createStorageBuffer(engine, source, labelOrOptions) {
+ 	const maxBufferSize = engine._device.limits.maxBufferSize;
+ 	if (!Number.isSafeInteger(byteLength) || byteLength > maxBufferSize) ThrowLiteError(742, byteLength, maxBufferSize);
+ 	const usage = BU.STORAGE | (vertex ? BU.VERTEX : 0) | (index ? BU.INDEX : 0) | (indirect ? BU.INDIRECT : 0) | (writable ? BU.COPY_SRC : 0);
+-	const bytes = usage === BU.STORAGE ? new Uint8Array(byteLength) : null;
+-	if (bytes && !isByteLength) bytes.set(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
 +
-+    /*
-+     * Only a read-only STORAGE-only allocation keeps a CPU recovery mirror.
-+     * In source mode that mirror aliases caller-owned memory, so subsequent
-+     * source mutations intentionally become the recovery contents.
-+     */
-+    const keepsCpuShadow = usage === BU.STORAGE;
++	/*
++	 * Only a read-only STORAGE-only allocation keeps a CPU recovery mirror.
++	 * In source mode that mirror aliases caller-owned memory, so subsequent
++	 * source mutations intentionally become the recovery contents.
++	 */
++	const keepsCpuShadow = usage === BU.STORAGE;
 +
-+    const sourceShadow =
-+        keepsCpuShadow &&
-+        cpuShadow === "source" &&
-+        !isByteLength &&
-+        source.byteLength === byteLength
-+            ? new Uint8Array(
-+                source.buffer,
-+                source.byteOffset,
-+                byteLength
-+            )
-+            : null;
++	const sourceShadow =
++		keepsCpuShadow &&
++		cpuShadow === "source" &&
++		!isByteLength &&
++		source.byteLength === byteLength
++			? new Uint8Array(
++				source.buffer,
++				source.byteOffset,
++				byteLength
++			)
++			: null;
 +
-+    const bytes = keepsCpuShadow
-+        ? sourceShadow ?? new Uint8Array(byteLength)
-+        : null;
++	const bytes = keepsCpuShadow
++		? sourceShadow ?? new Uint8Array(byteLength)
++		: null;
 +
-+    if (bytes && !sourceShadow && !isByteLength) {
-+        bytes.set(
-+            new Uint8Array(
-+                source.buffer,
-+                source.byteOffset,
-+                source.byteLength
-+            )
-+        );
-+    }
++	if (bytes && !sourceShadow && !isByteLength) {
++		bytes.set(
++			new Uint8Array(
++				source.buffer,
++				source.byteOffset,
++				source.byteLength
++			)
++		);
++	}
 +
-     const initialData = bytes ?? (isByteLength ? null : source);
-     const buffer = initialData ? createMappedBuffer(engine, initialData, usage, label) : engine._device.createBuffer({
-         label,
-@@ -73,7 +102,24 @@ function updateStorageBuffer(engine, buffer, data, byteOffset = 0) {
-     if (data.byteLength === 0) return;
-     engine._device.queue.writeBuffer(buffer._buffer, byteOffset, data.buffer, data.byteOffset, data.byteLength);
-     const shadow = buffer._data;
--    if (shadow) {
+ 	const initialData = bytes ?? (isByteLength ? null : source);
+ 	const buffer = initialData ? createMappedBuffer(engine, initialData, usage, label) : engine._device.createBuffer({
+ 		label,
+@@ -73,7 +112,22 @@ function updateStorageBuffer(engine, buffer, data, byteOffset = 0) {
+ 	if (data.byteLength === 0) return;
+ 	engine._device.queue.writeBuffer(buffer._buffer, byteOffset, data.buffer, data.byteOffset, data.byteLength);
+ 	const shadow = buffer._data;
+-	if (shadow) {
 +
-+    /*
-+     * A source shadow aliases the caller's array. Uploading a matching slice
-+     * of that array would copy bytes onto themselves, so avoid both the copy
-+     * and the temporary Uint8Array view.
-+     *
-+     * Include the byte length in the match. Matching only the starting
-+     * address could incorrectly skip a partial or oversized update.
-+     */
-+    const aliasesMatchingShadowRange =
-+        shadow &&
-+        shadow.buffer === data.buffer &&
-+        data.byteOffset === shadow.byteOffset + byteOffset &&
-+        byteOffset + data.byteLength <= shadow.byteLength;
++	/*
++	 * A source shadow aliases the caller's array. Uploading a matching slice
++	 * of that array would copy bytes onto themselves, so avoid both the copy
++	 * and the temporary Uint8Array view.
++	 *
++	 * Include the byte length in the match. Matching only the starting
++	 * address could incorrectly skip a partial or oversized update.
++	 */
++	const aliasesMatchingShadowRange =
++		shadow &&
++		shadow.buffer === data.buffer &&
++		data.byteOffset === shadow.byteOffset + byteOffset &&
++		byteOffset + data.byteLength <= shadow.byteLength;
 +
-+    if (shadow && !aliasesMatchingShadowRange) {
-         const bytes = data instanceof Uint8Array ? data : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-         shadow.set(bytes, byteOffset);
-     }
++	if (shadow && !aliasesMatchingShadowRange) {
+ 		const bytes = data instanceof Uint8Array ? data : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+ 		shadow.set(bytes, byteOffset);
+ 	}
