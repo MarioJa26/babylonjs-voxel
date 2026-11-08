@@ -877,26 +877,32 @@ export class ChunkStreamingController {
 		playerWorldZ?: number,
 	): Promise<void> {
 		const revision = ++this.streamRevision;
-		// Movement direction in chunk space, clamped to a unit direction.
-		// Teleports and initial loads intentionally receive no ahead bonus.
-		if (
-			prevChunkX !== undefined &&
-			prevChunkZ !== undefined &&
-			absI(chunkX - prevChunkX) <= 8 &&
-			absI(chunkZ - prevChunkZ) <= 8
-		) {
+
+		// ---------------------------------------------------------------------
+		// Movement direction
+		// ---------------------------------------------------------------------
+
+		if (prevChunkX !== undefined && prevChunkZ !== undefined) {
 			const moveX = chunkX - prevChunkX;
 			const moveZ = chunkZ - prevChunkZ;
 
-			this.lastMoveDx = moveX > 0 ? 1 : moveX < 0 ? -1 : 0;
-			this.lastMoveDz = moveZ > 0 ? 1 : moveZ < 0 ? -1 : 0;
+			if (absI(moveX) <= 8 && absI(moveZ) <= 8) {
+				this.lastMoveDx = moveX > 0 ? 1 : moveX < 0 ? -1 : 0;
+				this.lastMoveDz = moveZ > 0 ? 1 : moveZ < 0 ? -1 : 0;
+			} else {
+				this.lastMoveDx = 0;
+				this.lastMoveDz = 0;
+			}
 		} else {
 			this.lastMoveDx = 0;
 			this.lastMoveDz = 0;
 		}
 
-		// Bound long-lived decision-cache growth while retaining its allocation.
-		if (revision % 512 === 0) {
+		/*
+		 * Bound long-lived refresh-cache growth while retaining its allocation.
+		 * 512 is a power of two, so use a mask instead of remainder.
+		 */
+		if ((revision & 511) === 0) {
 			this._refreshCache.clear();
 		}
 
@@ -906,11 +912,6 @@ export class ChunkStreamingController {
 		frameInCaveCache = caveState;
 		frameCacheActive = true;
 
-		/*
-		 * Parentheses are intentional. Although << has higher precedence than ??,
-		 * the explicit grouping prevents this fallback from becoming ambiguous
-		 * during future edits.
-		 */
 		const distantTerrainX = playerWorldX ?? chunkX << CHUNK_SHIFT;
 		const distantTerrainZ = playerWorldZ ?? chunkZ << CHUNK_SHIFT;
 
@@ -930,26 +931,28 @@ export class ChunkStreamingController {
 			const operationalRadius = lodRuleSet.maxHorizontalRadius();
 			const operationalVerticalRadius = lodRuleSet.maxVerticalRadius();
 
+			const lod0HorizontalRadius = lodRuleSet.horizontalRadiusFor(0);
+			const lod1HorizontalRadius = lodRuleSet.horizontalRadiusFor(1);
+			const lod0VerticalRadius = lodRuleSet.verticalRadiusFor(0);
+			const lod1VerticalRadius = lodRuleSet.verticalRadiusFor(1);
+
 			const nearZoneRadius =
-				Math.max(
-					lodRuleSet.horizontalRadiusFor(0),
-					lodRuleSet.horizontalRadiusFor(1),
-				) + 2;
+				(lod0HorizontalRadius > lod1HorizontalRadius
+					? lod0HorizontalRadius
+					: lod1HorizontalRadius) + 2;
 
 			const nearZoneVertical =
-				Math.max(
-					lodRuleSet.verticalRadiusFor(0),
-					lodRuleSet.verticalRadiusFor(1),
-				) + 2;
+				(lod0VerticalRadius > lod1VerticalRadius
+					? lod0VerticalRadius
+					: lod1VerticalRadius) + 2;
 
 			const loadQueue = this.adapter.getLoadQueue();
 			const unloadQueueSet = this.adapter.getUnloadQueueSet();
 			const requestMap = this.loadQueueRequestMap;
 
 			/*
-			 * Rebuild the request map while compacting the queue. This makes the
-			 * queue the authoritative source and removes entries for discarded
-			 * requests without a second pass.
+			 * Rebuild the request map while compacting the queue. The queue remains
+			 * authoritative and discarded requests vanish without another pass.
 			 */
 			requestMap.clear();
 
@@ -963,13 +966,19 @@ export class ChunkStreamingController {
 				const request = loadQueue[readIndex];
 				const chunk = request.chunk;
 
-				const relX = chunk.chunkX - chunkX;
-				const relY = chunk.chunkY - chunkY;
-				const relZ = chunk.chunkZ - chunkZ;
+				const chunkXValue = chunk.chunkX;
+				const chunkYValue = chunk.chunkY;
+				const chunkZValue = chunk.chunkZ;
 
-				const hDist = chebyH(relX, relZ);
-				const vDist = absI(relY);
-				const isUnderground = chunk.chunkY < 0;
+				const relX = chunkXValue - chunkX;
+				const relY = chunkYValue - chunkY;
+				const relZ = chunkZValue - chunkZ;
+
+				const absX = relX < 0 ? -relX : relX;
+				const absZ = relZ < 0 ? -relZ : relZ;
+				const hDist = absX > absZ ? absX : absZ;
+				const vDist = relY < 0 ? -relY : relY;
+				const isUnderground = chunkYValue < 0;
 
 				if (
 					hDist > operationalRadius ||
@@ -979,47 +988,33 @@ export class ChunkStreamingController {
 					continue;
 				}
 
+				const isDirty = chunk.isDirty;
 				let desiredLod = request.desiredLod;
 
 				/*
-				 * Requests near the player, or whose source data changed, must be
-				 * reconciled immediately. Outer requests retain their previous LOD
-				 * until their periodic refresh, preserving the existing hot-path
-				 * optimization.
+				 * Dirty and near-player requests are fully reconciled on every pass.
+				 * Outer clean requests retain their previous LOD until the periodic
+				 * full refresh but still run inexpensive culling checks.
 				 */
-				if (
-					chunk.isDirty ||
-					(hDist <= nearZoneRadius && vDist <= nearZoneVertical)
-				) {
-					const previousLod = chunk.lodLevel ?? request.desiredLod;
-
+				if (isDirty || (hDist <= nearZoneRadius && vDist <= nearZoneVertical)) {
+					const previousLod = chunk.lodLevel ?? desiredLod;
 					const cacheKey = packOffsetKey(
 						relX,
 						relY,
 						relZ,
-						chunk.chunkY,
+						chunkYValue,
 						previousLod,
 					);
 
-					desiredLod = this.getCachedDecisionLod(cacheKey, chunk.isDirty);
+					desiredLod = isDirty
+						? -1
+						: this.getCachedDecisionLod(cacheKey, false);
 
 					if (desiredLod < 0) {
-						/*
-						 * Use the shared resolver rather than calling
-						 * resolveWithHysteresisFromDistance directly.
-						 *
-						 * This preserves:
-						 * - underground horizontal-only LOD selection;
-						 * - underground vertical-cap enforcement;
-						 * - ocean-floor-band handling;
-						 * - burial culling;
-						 * - creation-rule enforcement;
-						 * - underground LOD clamping.
-						 */
 						desiredLod = resolveDesiredLod(
-							chunk.chunkX,
-							chunk.chunkY,
-							chunk.chunkZ,
+							chunkXValue,
+							chunkYValue,
+							chunkZValue,
 							hDist,
 							vDist,
 							previousLod,
@@ -1032,36 +1027,37 @@ export class ChunkStreamingController {
 							continue;
 						}
 
-						this.setCachedDecisionLod(cacheKey, desiredLod, chunk.isDirty);
+						if (!isDirty) {
+							this.setCachedDecisionLod(cacheKey, desiredLod, false);
+						}
 					}
 				} else {
-					/*
-					 * Retained outer requests still need the inexpensive culling
-					 * checks because player altitude and cave state may have changed
-					 * since the request was created.
-					 */
-					const undesired = isUnderground
-						? !undergroundDesired(
-								chunk.chunkX,
-								chunk.chunkY,
-								chunk.chunkZ,
-								hDist,
-								vDist,
-								lodRuleSet,
-							)
-						: buriedChunkCulled(
-								chunk.chunkX,
-								chunk.chunkY,
-								chunk.chunkZ,
-								hDist,
-							);
+					let undesired: boolean;
+
+					if (isUnderground) {
+						undesired = !undergroundDesired(
+							chunkXValue,
+							chunkYValue,
+							chunkZValue,
+							hDist,
+							vDist,
+							lodRuleSet,
+						);
+					} else {
+						undesired = buriedChunkCulled(
+							chunkXValue,
+							chunkYValue,
+							chunkZValue,
+							hDist,
+						);
+					}
 
 					if (undesired) {
 						chunk.isTerrainScheduled = false;
 						continue;
 					}
 
-					desiredLod = clampLodForY(chunk.chunkY, desiredLod);
+					desiredLod = clampLodForY(chunkYValue, desiredLod);
 				}
 
 				request.desiredLod = desiredLod;
@@ -1075,39 +1071,45 @@ export class ChunkStreamingController {
 					chunkZ,
 				);
 
+				const numericId = chunk.numericId;
+
 				this.trackDesiredState(
-					chunk.numericId,
+					numericId,
 					packLodRevision(desiredLod, revision),
 					revision,
 				);
 
-				requestMap.set(chunk.numericId, request);
+				requestMap.set(numericId, request);
 				loadQueue[writeIndex++] = request;
 			}
 
 			loadQueue.length = writeIndex;
 
-			/*
-			 * Cancel unloads for chunks that became desirable again.
-			 *
-			 * Deleting the current Set entry during iteration is defined behavior:
-			 * the removed entry will not be revisited.
-			 */
-			for (const chunk of unloadQueueSet) {
-				const relX = chunk.chunkX - chunkX;
-				const relY = chunk.chunkY - chunkY;
-				const relZ = chunk.chunkZ - chunkZ;
+			// -----------------------------------------------------------------
+			// Cancel unloads for chunks that became desirable again
+			// -----------------------------------------------------------------
 
-				const hDist = chebyH(relX, relZ);
-				const vDist = absI(relY);
+			for (const chunk of unloadQueueSet) {
+				const chunkXValue = chunk.chunkX;
+				const chunkYValue = chunk.chunkY;
+				const chunkZValue = chunk.chunkZ;
+
+				const relX = chunkXValue - chunkX;
+				const relY = chunkYValue - chunkY;
+				const relZ = chunkZValue - chunkZ;
+
+				const absX = relX < 0 ? -relX : relX;
+				const absZ = relZ < 0 ? -relZ : relZ;
+				const hDist = absX > absZ ? absX : absZ;
+				const vDist = relY < 0 ? -relY : relY;
 
 				let keep: boolean;
 
-				if (chunk.chunkY < 0) {
+				if (chunkYValue < 0) {
 					keep = undergroundDesired(
-						chunk.chunkX,
-						chunk.chunkY,
-						chunk.chunkZ,
+						chunkXValue,
+						chunkYValue,
+						chunkZValue,
 						hDist,
 						vDist,
 						lodRuleSet,
@@ -1116,30 +1118,50 @@ export class ChunkStreamingController {
 					keep =
 						hDist <= operationalRadius &&
 						vDist <= operationalVerticalRadius &&
-						!buriedChunkCulled(chunk.chunkX, chunk.chunkY, chunk.chunkZ, hDist);
+						!buriedChunkCulled(chunkXValue, chunkYValue, chunkZValue, hDist);
 				}
 
 				if (keep) {
+					/*
+					 * Deleting the current entry during Set iteration is defined:
+					 * the deleted entry is not revisited.
+					 */
 					unloadQueueSet.delete(chunk);
 				}
 			}
 
-			const canUseDelta =
+			// -----------------------------------------------------------------
+			// Discover newly desired coordinates
+			// -----------------------------------------------------------------
+
+			let canUseDelta = false;
+
+			if (
 				prevChunkX !== undefined &&
 				prevChunkY !== undefined &&
-				prevChunkZ !== undefined &&
-				absI(chunkX - prevChunkX) <= 1 &&
-				absI(chunkY - prevChunkY) <= 1 &&
-				absI(chunkZ - prevChunkZ) <= 1;
+				prevChunkZ !== undefined
+			) {
+				const deltaX = chunkX - prevChunkX;
+				const deltaY = chunkY - prevChunkY;
+				const deltaZ = chunkZ - prevChunkZ;
+
+				canUseDelta =
+					deltaX >= -1 &&
+					deltaX <= 1 &&
+					deltaY >= -1 &&
+					deltaY <= 1 &&
+					deltaZ >= -1 &&
+					deltaZ <= 1;
+			}
 
 			if (canUseDelta) {
 				this.processMovementRings(
 					chunkX,
 					chunkY,
 					chunkZ,
-					prevChunkX,
-					prevChunkY,
-					prevChunkZ,
+					prevChunkX!,
+					prevChunkY!,
+					prevChunkZ!,
 					lodRuleSet,
 				);
 			} else if (SETTING_PARAMS.COLUMN_STREAMING_ENABLED) {
@@ -1155,16 +1177,25 @@ export class ChunkStreamingController {
 
 			this.ensureUndergroundBand(chunkX, chunkY, chunkZ, lodRuleSet);
 
+			// -----------------------------------------------------------------
+			// Collect loaded chunks for refresh and unloading
+			// -----------------------------------------------------------------
+
 			const unloadBuffer = SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER + 8;
 
 			const unloadScanRadius = operationalRadius + unloadBuffer;
 
-			const unloadScanVertical = Math.max(
-				operationalVerticalRadius + unloadBuffer,
-				chunkY - SETTING_PARAMS.MIN_CHUNK_Y,
-			);
+			const minimumVerticalScan = chunkY - SETTING_PARAMS.MIN_CHUNK_Y;
 
-			_queryScratch.length = 0;
+			const bufferedVerticalScan = operationalVerticalRadius + unloadBuffer;
+
+			const unloadScanVertical =
+				bufferedVerticalScan > minimumVerticalScan
+					? bufferedVerticalScan
+					: minimumVerticalScan;
+
+			const queryScratch = _queryScratch;
+			queryScratch.length = 0;
 
 			Chunk.loadedChunkIndex.queryCollect(
 				chunkX,
@@ -1172,7 +1203,7 @@ export class ChunkStreamingController {
 				chunkZ,
 				unloadScanRadius,
 				unloadScanVertical,
-				_queryScratch,
+				queryScratch,
 			);
 
 			const includeOuterBands =
@@ -1198,6 +1229,10 @@ export class ChunkStreamingController {
 			);
 
 			if (!caveState) {
+				/*
+				 * Resolve the singleton once for this branch rather than repeatedly
+				 * across helper expressions.
+				 */
 				ChunkWorkerPool.getInstance().scheduleBackgroundLodPrecompute(
 					chunkX,
 					chunkY,
@@ -2366,14 +2401,22 @@ export class ChunkStreamingController {
 		const radius = lodRuleSet.maxHorizontalRadius();
 		const verticalRadius = lodRuleSet.maxVerticalRadius();
 
+		if (radius < 0) {
+			return;
+		}
+
 		const worldMinY = SETTING_PARAMS.MIN_CHUNK_Y;
 		const worldMaxYExclusive = worldMinY + SETTING_PARAMS.MAX_CHUNK_HEIGHT;
 
-		// Clamp once rather than checking world bounds for every Y iteration.
-		const startY = Math.max(worldMinY, chunkY - verticalRadius);
-		const endY = Math.min(worldMaxYExclusive - 1, chunkY + verticalRadius);
+		// Clamp the global vertical range once. Each column narrows this
+		// further using its surface and burial bounds.
+		const globalStartY = Math.max(worldMinY, chunkY - verticalRadius);
+		const globalEndY = Math.min(
+			worldMaxYExclusive - 1,
+			chunkY + verticalRadius,
+		);
 
-		if (startY > endY || radius < 0) {
+		if (globalStartY > globalEndY) {
 			return;
 		}
 
@@ -2381,22 +2424,26 @@ export class ChunkStreamingController {
 		const moveDz = this.lastMoveDz;
 		const hasMovement = moveDx !== 0 || moveDz !== 0;
 
-		const processColumn = (x: number, z: number): void => {
-			for (let y = startY; y <= endY; y++) {
-				this.processTargetChunkCoordinate(
-					x,
-					y,
-					z,
-					chunkX,
-					chunkY,
-					chunkZ,
-					lodRuleSet,
-				);
-			}
-		};
+		// Use the streaming pass's cached cave state when available. This keeps
+		// burial decisions consistent and avoids repeated isInCave() calls.
+		const caveState = frameCacheActive ? frameInCaveCache : isInCave();
+		const cullRadius = UNDERGROUND_CULL_EXEMPT_RADIUS;
 
-		// Center is the complete ring at distance zero.
-		processColumn(chunkX, chunkZ);
+		// Center is the complete ring at distance zero; the ring index doubles
+		// as the column's Chebyshev distance.
+		this.processInitialColumnRange(
+			chunkX,
+			chunkZ,
+			0,
+			chunkX,
+			chunkY,
+			chunkZ,
+			globalStartY,
+			globalEndY,
+			caveState,
+			cullRadius,
+			lodRuleSet,
+		);
 
 		for (let ring = 1; ring <= radius; ring++) {
 			const minX = chunkX - ring;
@@ -2419,13 +2466,37 @@ export class ChunkStreamingController {
 					const northAhead = relX * moveDx - ring * moveDz > 0;
 
 					if (!hasMovement || northAhead === requireAhead) {
-						processColumn(x, minZ);
+						this.processInitialColumnRange(
+							x,
+							minZ,
+							ring,
+							chunkX,
+							chunkY,
+							chunkZ,
+							globalStartY,
+							globalEndY,
+							caveState,
+							cullRadius,
+							lodRuleSet,
+						);
 					}
 
 					const southAhead = relX * moveDx + ring * moveDz > 0;
 
 					if (!hasMovement || southAhead === requireAhead) {
-						processColumn(x, maxZ);
+						this.processInitialColumnRange(
+							x,
+							maxZ,
+							ring,
+							chunkX,
+							chunkY,
+							chunkZ,
+							globalStartY,
+							globalEndY,
+							caveState,
+							cullRadius,
+							lodRuleSet,
+						);
 					}
 				}
 
@@ -2436,16 +2507,115 @@ export class ChunkStreamingController {
 					const westAhead = -ring * moveDx + relZ * moveDz > 0;
 
 					if (!hasMovement || westAhead === requireAhead) {
-						processColumn(minX, z);
+						this.processInitialColumnRange(
+							minX,
+							z,
+							ring,
+							chunkX,
+							chunkY,
+							chunkZ,
+							globalStartY,
+							globalEndY,
+							caveState,
+							cullRadius,
+							lodRuleSet,
+						);
 					}
 
 					const eastAhead = ring * moveDx + relZ * moveDz > 0;
 
 					if (!hasMovement || eastAhead === requireAhead) {
-						processColumn(maxX, z);
+						this.processInitialColumnRange(
+							maxX,
+							z,
+							ring,
+							chunkX,
+							chunkY,
+							chunkZ,
+							globalStartY,
+							globalEndY,
+							caveState,
+							cullRadius,
+							lodRuleSet,
+						);
 					}
 				}
 			}
+		}
+	}
+
+	/**
+	 * One X/Z column of processInitialShellColumnOrdered, without a per-call
+	 * closure.
+	 *
+	 * Narrows the column's valid Y range once — skipping provably empty sky
+	 * levels and guaranteed-buried levels — before any
+	 * processTargetChunkCoordinate call. processTargetChunkCoordinate keeps
+	 * its per-Y defensive checks; this only avoids calling it for Y levels
+	 * those checks would provably reject.
+	 */
+	private processInitialColumnRange(
+		x: number,
+		z: number,
+		hDist: number,
+		playerChunkX: number,
+		playerChunkY: number,
+		playerChunkZ: number,
+		globalStartY: number,
+		globalEndY: number,
+		caveState: boolean,
+		cullRadius: number,
+		lodRuleSet: ChunkLodRuleSet,
+	): void {
+		const profile = columnProfile(x, z);
+
+		let startY = globalStartY;
+		let endY = globalEndY;
+
+		// processTargetChunkCoordinate skips positive chunks above
+		// profile.topY + 1. Moving the bound here prevents entering the Y loop
+		// for those guaranteed-empty sky coordinates.
+		if (endY >= 0) {
+			const highestSurfaceChunkY = profile.topY + 1;
+
+			if (startY >= 0) {
+				if (startY > highestSurfaceChunkY) {
+					return;
+				}
+
+				if (endY > highestSurfaceChunkY) {
+					endY = highestSurfaceChunkY;
+				}
+			} else {
+				/*
+				 * effectiveColumnTopChunkY is at least 1 for every reachable
+				 * column (SEA_LEVEL 42 keeps the water branch non-negative), so
+				 * the clamp normally targets the surface band. The -1 floor is
+				 * defensive: the sky guard in processTargetChunkCoordinate only
+				 * ever skips y >= 0, so negative chunks must keep loading even
+				 * if a future config ever produced a negative topY.
+				 */
+				endY = Math.min(endY, Math.max(highestSurfaceChunkY, -1));
+			}
+		}
+
+		// Outside cave mode and the exempt near-player core, every chunk below
+		// buriedTopY is rejected by buriedChunkCulled(). Jump directly to the
+		// first potentially visible chunk instead of testing every buried Y.
+		if (!caveState && hDist > cullRadius && startY < profile.buriedTopY) {
+			startY = profile.buriedTopY;
+		}
+
+		for (let y = startY; y <= endY; y++) {
+			this.processTargetChunkCoordinate(
+				x,
+				y,
+				z,
+				playerChunkX,
+				playerChunkY,
+				playerChunkZ,
+				lodRuleSet,
+			);
 		}
 	}
 }
