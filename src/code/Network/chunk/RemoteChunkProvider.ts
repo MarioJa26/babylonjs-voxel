@@ -31,6 +31,7 @@
 import { DEBUG_ENABLED, debugLog } from "../../Lib/debugLog";
 import { FRAME_WORK_BUDGET } from "../../Lib/FrameWorkBudget";
 import { notePipelineWork } from "../../Lib/PipelineStats";
+import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
 import type { Chunk } from "../../World/Chunk/Chunk";
 import { packCoords } from "../../World/Chunk/DataStructures/ChunkCoords";
 import {
@@ -72,7 +73,6 @@ import { ChunkResultKind, MessageType } from "../protocol/messages";
 const CHUNK_VOLUME = 32 * 32 * 32;
 /** Nibble-packed block payload size for palette chunks (CHUNK_VOLUME / 2). */
 const PACKED_BLOCK_SIZE = CHUNK_VOLUME >>> 1;
-const MAX_LIGHT_BYTES = 65536;
 /** Sentinel for uniform chunks: their single block ID lives in uniformBlockId. */
 const EMPTY_ENCODED_BLOCKS = new Uint8Array(0);
 
@@ -154,10 +154,6 @@ type ChunkRequestEntry = {
 /** Below this batch size, priority ordering is not worth its overhead. */
 const MIN_BATCH_TO_SORT = 8;
 
-// See Lib/yieldToEventLoop.ts for the shared zero-delay event-loop yield
-// (MessageChannel macrotask, no setTimeout(0) clamp).
-import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
-
 export class RemoteChunkProvider {
 	private readonly pending = new Map<bigint, PendingChunk>();
 	private readonly inFlight = new Map<bigint, Promise<RemoteChunkResult>>();
@@ -167,6 +163,8 @@ export class RemoteChunkProvider {
 	private static readonly CHUNK_VERSIONS_MAX = 32768;
 	private static readonly DEFAULT_TIMEOUT_MS = 30_000;
 	private static readonly SWEEP_INTERVAL_MS = 1_000;
+	/** Number of deflated chunks inflated concurrently per batch window. */
+	private static readonly INFLATE_WINDOW_SIZE = 4;
 	private static readonly HEAP_COMPACT_MIN_SIZE = 64;
 	private static readonly HEAP_COMPACT_GHOST_RATIO = 4;
 	private static readonly VALIDATE_NETWORK_CHUNKS = false;
@@ -197,8 +195,6 @@ export class RemoteChunkProvider {
 
 	private heapDeadlines: number[] = [];
 	private heapKeys: bigint[] = [];
-
-	private readonly windowSize = 4;
 
 	private priorityScratch = new Float64Array(MIN_BATCH_TO_SORT);
 
@@ -335,11 +331,21 @@ export class RemoteChunkProvider {
 
 	private handleChunkDataBatch(chunks: readonly RemoteChunkData[]): void {
 		const count = chunks.length;
-		if (count === 0) return;
 
-		const writes = new Array<ChunkWrite>(count);
-		const writtenKeys = new Array<bigint>(count);
-		const writtenVersions = new Array<number>(count);
+		if (count === 0) {
+			return;
+		}
+
+		/*
+		 * These are allocated lazily instead of up-front at the full packet
+		 * size: most batch entries frequently have no matching pending request,
+		 * so sizing by the entry count would waste three arrays. Note they must
+		 * stay local (not class-level scratch) — writeChunks() retains them until
+		 * its promise settles, so reusing them across calls would corrupt data.
+		 */
+		let writes: ChunkWrite[] | null = null;
+		let writtenKeys: bigint[] | null = null;
+		let writtenVersions: number[] | null = null;
 
 		let acceptedCount = 0;
 		let writeCount = 0;
@@ -349,7 +355,9 @@ export class RemoteChunkProvider {
 			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 			const pending = this.getCurrentPending(key);
 
-			if (pending === undefined) continue;
+			if (pending === undefined) {
+				continue;
+			}
 
 			if (!this.acceptFreshVersion(key, chunk.version)) {
 				this.rejectStaleResponse(
@@ -370,7 +378,7 @@ export class RemoteChunkProvider {
 			}
 
 			try {
-				writes[writeCount] = {
+				const write: ChunkWrite = {
 					cx: chunk.chunkX,
 					cy: chunk.chunkY,
 					cz: chunk.chunkZ,
@@ -385,8 +393,19 @@ export class RemoteChunkProvider {
 					),
 				};
 
-				writtenKeys[writeCount] = key;
-				writtenVersions[writeCount] = chunk.version;
+				if (
+					writes === null ||
+					writtenKeys === null ||
+					writtenVersions === null
+				) {
+					writes = [];
+					writtenKeys = [];
+					writtenVersions = [];
+				}
+
+				writes.push(write);
+				writtenKeys.push(key);
+				writtenVersions.push(chunk.version);
 				writeCount++;
 			} catch (error) {
 				console.warn(
@@ -403,11 +422,14 @@ export class RemoteChunkProvider {
 
 		this.clearSweepIfEmpty();
 
-		if (writeCount === 0) return;
-
-		writes.length = writeCount;
-		writtenKeys.length = writeCount;
-		writtenVersions.length = writeCount;
+		if (
+			writeCount === 0 ||
+			writes === null ||
+			writtenKeys === null ||
+			writtenVersions === null
+		) {
+			return;
+		}
 
 		const responseEpoch = this.epoch;
 		const responseConnectionGeneration = this.client.connectionGeneration;
@@ -587,7 +609,9 @@ export class RemoteChunkProvider {
 
 		const writes = new Array<ChunkWrite>(acceptedCount);
 		const successfulIndices = new Array<number>(acceptedCount);
-		const tasks = new Array<Promise<InflatedResult>>(this.windowSize);
+		const tasks = new Array<Promise<InflatedResult>>(
+			RemoteChunkProvider.INFLATE_WINDOW_SIZE,
+		);
 
 		let writeCount = 0;
 		let budgetPacedEntries = 0;
@@ -596,9 +620,12 @@ export class RemoteChunkProvider {
 		for (
 			let windowStart = 0;
 			windowStart < acceptedCount;
-			windowStart += this.windowSize
+			windowStart += RemoteChunkProvider.INFLATE_WINDOW_SIZE
 		) {
-			const windowEnd = Math.min(windowStart + this.windowSize, acceptedCount);
+			const windowEnd = Math.min(
+				windowStart + RemoteChunkProvider.INFLATE_WINDOW_SIZE,
+				acceptedCount,
+			);
 			const taskCount = windowEnd - windowStart;
 
 			if (yieldPerEntry) {
@@ -817,6 +844,11 @@ export class RemoteChunkProvider {
 
 		this.pending.delete(key);
 		expected.resolve(result);
+
+		if (this.pending.size === 0) {
+			this.clearSweepIfEmpty();
+		}
+
 		return true;
 	}
 
@@ -1490,7 +1522,13 @@ export class RemoteChunkProvider {
 		if (count < MIN_BATCH_TO_SORT) return;
 
 		if (this.priorityScratch.length < count) {
-			this.priorityScratch = new Float64Array(count);
+			let capacity = this.priorityScratch.length << 1;
+
+			while (capacity < count) {
+				capacity <<= 1;
+			}
+
+			this.priorityScratch = new Float64Array(capacity);
 		}
 
 		const scores = this.priorityScratch;
@@ -1628,8 +1666,15 @@ export class RemoteChunkProvider {
 			const error = new Error("Chunk batch send failed: not connected");
 
 			for (let i = 0; i < requestCount; i++) {
-				this.removePending(createdKeys[i])?.reject(error);
+				const entry = this.pending.get(createdKeys[i]);
+
+				if (entry === undefined) continue;
+
+				this.pending.delete(createdKeys[i]);
+				entry.reject(error);
 			}
+
+			this.clearSweepIfEmpty();
 
 			return results;
 		}
@@ -1656,8 +1701,15 @@ export class RemoteChunkProvider {
 
 		if (sendError !== null) {
 			for (let i = 0; i < requestCount; i++) {
-				this.removePending(createdKeys[i])?.reject(sendError);
+				const entry = this.pending.get(createdKeys[i]);
+
+				if (entry === undefined) continue;
+
+				this.pending.delete(createdKeys[i]);
+				entry.reject(sendError);
 			}
+
+			this.clearSweepIfEmpty();
 		}
 
 		return results;
@@ -1696,21 +1748,19 @@ export class RemoteChunkProvider {
 
 		while (index > 0) {
 			const parent = (index - 1) >>> 1;
+			const parentDeadline = deadlines[parent];
 
-			if (deadlines[parent] <= deadlines[index]) {
+			if (parentDeadline <= deadline) {
 				break;
 			}
 
-			const parentDeadline = deadlines[parent];
-			const parentKey = keys[parent];
-
-			deadlines[parent] = deadlines[index];
-			keys[parent] = keys[index];
 			deadlines[index] = parentDeadline;
-			keys[index] = parentKey;
-
+			keys[index] = keys[parent];
 			index = parent;
 		}
+
+		deadlines[index] = deadline;
+		keys[index] = key;
 	}
 
 	private heapPop(): void {
@@ -1795,13 +1845,45 @@ export class RemoteChunkProvider {
 	}
 
 	private scheduleSweep(): void {
-		if (this.sweepTimer !== null) return;
-		if (this.pending.size === 0) return;
+		if (this.sweepTimer !== null || this.pending.size === 0) {
+			return;
+		}
+
+		this.discardHeapGhosts();
+
+		if (this.heapDeadlines.length === 0) {
+			this.rebuildHeapFromPending();
+		}
+
+		const now = performance.now();
+		const delay = Math.max(
+			0,
+			Math.min(
+				this.heapDeadlines[0] - now,
+				RemoteChunkProvider.SWEEP_INTERVAL_MS,
+			),
+		);
 
 		this.sweepTimer = setTimeout(() => {
 			this.sweepTimer = null;
 			this.sweepPending();
-		}, RemoteChunkProvider.SWEEP_INTERVAL_MS);
+		}, delay);
+	}
+
+	private discardHeapGhosts(): void {
+		const deadlines = this.heapDeadlines;
+		const keys = this.heapKeys;
+
+		while (deadlines.length > 0) {
+			const key = keys[0];
+			const entry = this.pending.get(key);
+
+			if (entry !== undefined && entry.deadline === deadlines[0]) {
+				return;
+			}
+
+			this.heapPop();
+		}
 	}
 
 	private clearSweepIfEmpty(): void {
@@ -1820,6 +1902,7 @@ export class RemoteChunkProvider {
 		const now = performance.now();
 
 		reapStaleLatencyTracks(now);
+		this.discardHeapGhosts();
 
 		const pending = this.pending;
 		const deadlines = this.heapDeadlines;
@@ -1834,12 +1917,13 @@ export class RemoteChunkProvider {
 			const entry = pending.get(key);
 
 			if (entry === undefined || entry.deadline !== deadline) {
+				this.discardHeapGhosts();
 				continue;
 			}
 
 			pending.delete(key);
-
 			entry.reject(new Error(`Chunk request timed out for ${key}`));
+			this.discardHeapGhosts();
 		}
 
 		this.compactHeapIfNeeded();

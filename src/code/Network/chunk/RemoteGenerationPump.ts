@@ -44,9 +44,6 @@ const REMOTE_PENDING_STALE_MS = 45_000;
 const REMOTE_PENDING_REAP_INTERVAL_MS = 5_000;
 const REMOTE_BACKPRESSURE_RETRY_MS = 100;
 
-const dedupScratch = new Set<number>();
-const queryChunks: Chunk[] = [];
-
 export class RemoteGenerationPump {
 	private remoteChunkProvider: RemoteChunkProvider | null = null;
 	private remoteGenerationEnabled = false;
@@ -67,12 +64,6 @@ export class RemoteGenerationPump {
 	private remoteTaskQueue: Chunk[] = [];
 	private readonly remoteTaskQueueSet = new Set<Chunk>();
 
-	/*
-	 * Disposal removes a chunk from remoteTaskQueueSet in O(1). The next
-	 * selection compacts the backing array rather than paying O(N) per disposal.
-	 */
-	private remoteQueueNeedsCompaction = false;
-
 	private readonly remoteRetryCount = new Map<bigint, number>();
 	private readonly remoteRetryParked = new Map<Chunk, RemoteParkedRetry>();
 
@@ -91,10 +82,11 @@ export class RemoteGenerationPump {
 	private pendingRemeshScheduled = false;
 
 	/*
-	 * Reused by selectColumnBatch(). Only one selection cycle can run at a time
-	 * because remotePumpScheduled serializes pump cycles.
+	 * Instance-local scratch reused by flushPendingRemoteChunkRemesh(). Kept
+	 * per-instance so multiple pump instances never share mutable state.
 	 */
-	private readonly remoteSelectionScratch = new Set<Chunk>();
+	private readonly remeshDedupScratch = new Set<number>();
+	private readonly remeshQueryChunks: Chunk[] = [];
 
 	constructor(private readonly host: RemotePumpHost) {}
 
@@ -397,9 +389,6 @@ export class RemoteGenerationPump {
 		const queue = this.remoteTaskQueue;
 		const queueSet = this.remoteTaskQueueSet;
 		const pending = this.remotePendingChunks;
-		const selected = this.remoteSelectionScratch;
-
-		selected.clear();
 
 		let anchorX = 0;
 		let anchorZ = 0;
@@ -436,8 +425,8 @@ export class RemoteGenerationPump {
 				anchorX = chunk.chunkX;
 				anchorZ = chunk.chunkZ;
 
-				selected.add(chunk);
 				result.push(chunk);
+				queueSet.delete(chunk);
 				continue;
 			}
 
@@ -446,8 +435,8 @@ export class RemoteGenerationPump {
 				chunk.chunkX === anchorX &&
 				chunk.chunkZ === anchorZ
 			) {
-				selected.add(chunk);
 				result.push(chunk);
+				queueSet.delete(chunk);
 				continue;
 			}
 
@@ -456,8 +445,6 @@ export class RemoteGenerationPump {
 
 		if (!hasAnchor) {
 			queue.length = 0;
-			this.remoteQueueNeedsCompaction = false;
-			selected.clear();
 			return result;
 		}
 
@@ -471,30 +458,19 @@ export class RemoteGenerationPump {
 
 			for (let i = 0; i < additionalCount; i++) {
 				const chunk = queue[i];
-				selected.add(chunk);
+
 				result.push(chunk);
+				queueSet.delete(chunk);
 			}
 
-			if (additionalCount > 0) {
-				let remainingWrite = 0;
-
-				for (let read = additionalCount; read < write; read++) {
-					queue[remainingWrite++] = queue[read];
-				}
-
-				write = remainingWrite;
+			if (additionalCount < write) {
+				queue.copyWithin(0, additionalCount, write);
 			}
+
+			write -= additionalCount;
 		}
 
 		queue.length = write;
-
-		for (let i = 0; i < result.length; i++) {
-			queueSet.delete(result[i]);
-		}
-
-		this.remoteQueueNeedsCompaction = false;
-		selected.clear();
-
 		return result;
 	}
 
@@ -974,8 +950,6 @@ export class RemoteGenerationPump {
 		this.remoteDeferredChunks.clear();
 		this.remoteTaskQueue.length = 0;
 		this.remoteTaskQueueSet.clear();
-		this.remoteQueueNeedsCompaction = false;
-		this.remoteSelectionScratch.clear();
 
 		this.clearDeferredRemoteChunkRetries();
 
@@ -1229,8 +1203,8 @@ export class RemoteGenerationPump {
 		const pending = this.pendingRemoteChunks;
 		if (pending.size === 0) return;
 
-		const chunks = queryChunks;
-		const seen = dedupScratch;
+		const chunks = this.remeshQueryChunks;
+		const seen = this.remeshDedupScratch;
 
 		chunks.length = 0;
 		seen.clear();
@@ -1306,9 +1280,7 @@ export class RemoteGenerationPump {
 		this.remoteRetryParked.delete(chunk);
 		this.remoteRetryTier.delete(chunk);
 
-		if (this.remoteTaskQueueSet.delete(chunk)) {
-			this.remoteQueueNeedsCompaction = true;
-		}
+		this.remoteTaskQueueSet.delete(chunk);
 
 		const pendingEntry = this.remotePendingChunks.get(remoteKey);
 
@@ -1321,10 +1293,6 @@ export class RemoteGenerationPump {
 		this.pendingRemoteChunks.delete(chunk);
 
 		chunk.isTerrainScheduled = false;
-
-		if (this.pendingRemoteChunks.size === 0) {
-			this.pendingRemeshScheduled = false;
-		}
 
 		/*
 		 * Disposal may have released a pending slot. Continue immediately rather
