@@ -1,32 +1,10 @@
 /**
- * GroupOctree — dynamic loose octree over merged 4×4×4 chunk groups (128³ world
- * units per side: 4 chunks × CHUNK_SIZE 32) for hierarchical frustum culling.
+ * GroupOctree: dynamic loose octree over merged 4x4x4 chunk groups.
  *
- * Babylon-free on purpose (like Lib/VoxelMath): the culler runs on the main
- * thread, but this module is also importable from workers and plain node tests.
+ * The world is split into sparse 1024-unit root cells. Each root contains an
+ * octree whose leaves correspond exactly to one merged terrain-group cell.
  *
- * Design:
- * - Leaves hold MergedMeshGroup refs (the actual draw unit: 1 mesh per
- *   non-empty layer). Boat chunks are NOT inserted (they carry no world AABB
- *   and manage their own visibility — see ChunkMesher).
- * - Sparse top level: the world is unbounded (camera can travel anywhere), so
- *   space is tiled into aligned ROOT_CELL (1024³) cells, each holding an
- *   octree of depth MAX_DEPTH down to LEAF_SIZE (128³ == exactly one group).
- *   Roots live in a Map and are created/destroyed on demand — no giant empty
- *   tree, no rebalancing on stream.
- * - Alignment guarantee: every level size (1024/512/256/128) is a multiple of
- *   the group extent (128) and every node is aligned to its own size, so a
- *   grid-aligned group ALWAYS fits entirely inside exactly one child. No
- *   boundary straddling, no double-insert. Co-located groups that share the
- *   same grid cell but differ in lodBucket simply share the same leaf array.
- * - Query is callback-based and allocation-free: traverseFrustum() walks the
- *   tree with explicit stacks and yields (group, hint) where hint tells the
- *   caller whether the leaf already proved OUTSIDE / INSIDE, so per-group
- *   6-plane math can be skipped for whole subtrees.
- * - Eye fail-open: a node containing the camera is always classified
- *   INTERSECT (descend), mirroring the eyeInAABB guard in OcclusionCuller —
- *   the positive-vertex near-plane test can otherwise falsely cull the node
- *   the camera sits inside.
+ * This module intentionally has no Babylon.js dependency.
  */
 
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
@@ -35,16 +13,19 @@ import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 // Constants
 // ---------------------------------------------------------------------------
 
-// Merged terrain groups are keyed by chunk coordinates >> 2, so each group is
-// 4x4x4 chunks (128 world units per side with CHUNK_SIZE 32). Keeping this
-// aligned is critical: an INSIDE octree hint skips the per-group frustum test.
 export const OCTREE_GROUP_SIZE = 4;
-export const OCTREE_GROUP_EXTENT = OCTREE_GROUP_SIZE * CHUNK_SIZE; // 128 world units
-export const OCTREE_LEAF_SIZE = OCTREE_GROUP_EXTENT; // leaf == exactly one group cell
-export const OCTREE_ROOT_CELL_SIZE = 1024; // 8 groups per side per root
-export const OCTREE_MAX_DEPTH = 3; // 1024 -> 512 -> 256 -> 128 (leaf == one group)
+export const OCTREE_GROUP_EXTENT = OCTREE_GROUP_SIZE * CHUNK_SIZE;
 
-/** Minimal shape the octree needs. MergedMeshGroup satisfies this structurally. */
+export const OCTREE_LEAF_SIZE = OCTREE_GROUP_EXTENT;
+export const OCTREE_ROOT_CELL_SIZE = 1024;
+export const OCTREE_MAX_DEPTH = 3;
+
+const CHILD_COUNT = 8;
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
 export interface OctreeGroupLike {
 	groupKey: number;
 	gridX: number;
@@ -52,25 +33,34 @@ export interface OctreeGroupLike {
 	gridZ: number;
 }
 
-/** Frustum hint delivered per visited group. Plain enum (not const enum) for isolatedModules safety. */
 export enum FrustumHint {
-	/** Some ancestor (or the leaf, which IS one group cell) proved fully outside: caller may skip plane math. */
 	OUTSIDE = 0,
-	/** Some ancestor proved fully inside: caller may skip plane math (still apply range gate). */
 	INSIDE = 1,
-	/** Straddles the frustum: caller must run its own per-group AABB test. */
 	INTERSECT = 2,
 }
+
+export interface OctreeTraverseStats {
+	visitedGroups: number;
+	culledSubtrees: number;
+	insideFastPath: number;
+}
+
+// ---------------------------------------------------------------------------
+// Internal types
+// ---------------------------------------------------------------------------
 
 interface OctreeNode {
 	minX: number;
 	minY: number;
 	minZ: number;
+
 	size: number;
 	depth: number;
-	children: (OctreeNode | null)[] | null; // length 8 once subdivided
-	groups: OctreeGroupLike[]; // populated only at leaf depth
-	subtreeCount: number; // groups in this node + all descendants
+
+	children: (OctreeNode | null)[] | null;
+	groups: OctreeGroupLike[];
+
+	subtreeCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +68,21 @@ interface OctreeNode {
 // ---------------------------------------------------------------------------
 
 const _roots = new Map<string, OctreeNode>();
+
 let _groupCount = 0;
+
+/*
+ * Traversal stacks are shared to avoid per-frame allocations. Reentrant
+ * traversal is rejected because nested traversal would corrupt these stacks.
+ */
+const _traversalStack: OctreeNode[] = [];
+const _collectStack: OctreeNode[] = [];
+
+let _traversalActive = false;
+
+// ---------------------------------------------------------------------------
+// Public counters
+// ---------------------------------------------------------------------------
 
 export function getOctreeGroupCount(): number {
 	return _groupCount;
@@ -89,7 +93,7 @@ export function getOctreeRootCount(): number {
 }
 
 // ---------------------------------------------------------------------------
-// AABB helpers (exported for unit tests)
+// Coordinate helpers
 // ---------------------------------------------------------------------------
 
 export function groupMinX(gridX: number): number {
@@ -104,71 +108,34 @@ export function groupMinZ(gridZ: number): number {
 	return gridZ * OCTREE_GROUP_EXTENT;
 }
 
-function rootKeyFor(rx: number, ry: number, rz: number): string {
-	return `${rx},${ry},${rz}`;
+function rootKeyFor(rootX: number, rootY: number, rootZ: number): string {
+	return `${rootX},${rootY},${rootZ}`;
 }
-function classifyAabbAgainstPlanes(
+
+function childIndexFor(
 	minX: number,
 	minY: number,
 	minZ: number,
-	maxX: number,
-	maxY: number,
-	maxZ: number,
-	packed: Float32Array,
-	negativeMargin: number,
-): FrustumHint {
-	let fullyInside = true;
+	half: number,
+	x: number,
+	y: number,
+	z: number,
+): number {
+	let index = 0;
 
-	for (let offset = 0; offset < 24; offset += 4) {
-		const nx = packed[offset];
-		const ny = packed[offset + 1];
-		const nz = packed[offset + 2];
-		const d = packed[offset + 3];
-
-		let positiveX: number;
-		let positiveY: number;
-		let positiveZ: number;
-		let negativeX: number;
-		let negativeY: number;
-		let negativeZ: number;
-
-		if (nx >= 0) {
-			positiveX = maxX;
-			negativeX = minX;
-		} else {
-			positiveX = minX;
-			negativeX = maxX;
-		}
-
-		if (ny >= 0) {
-			positiveY = maxY;
-			negativeY = minY;
-		} else {
-			positiveY = minY;
-			negativeY = maxY;
-		}
-
-		if (nz >= 0) {
-			positiveZ = maxZ;
-			negativeZ = minZ;
-		} else {
-			positiveZ = minZ;
-			negativeZ = maxZ;
-		}
-
-		if (nx * positiveX + ny * positiveY + nz * positiveZ + d < negativeMargin) {
-			return FrustumHint.OUTSIDE;
-		}
-
-		if (
-			fullyInside &&
-			nx * negativeX + ny * negativeY + nz * negativeZ + d < negativeMargin
-		) {
-			fullyInside = false;
-		}
+	if (x >= minX + half) {
+		index |= 1;
 	}
 
-	return fullyInside ? FrustumHint.INSIDE : FrustumHint.INTERSECT;
+	if (y >= minY + half) {
+		index |= 2;
+	}
+
+	if (z >= minZ + half) {
+		index |= 4;
+	}
+
+	return index;
 }
 
 function makeNode(
@@ -190,337 +157,13 @@ function makeNode(
 	};
 }
 
-function childIndexFor(
-	minX: number,
-	minY: number,
-	minZ: number,
-	half: number,
-	x: number,
-	y: number,
-	z: number,
-): number {
-	let idx = 0;
-	if (x >= minX + half) idx |= 1;
-	if (y >= minY + half) idx |= 2;
-	if (z >= minZ + half) idx |= 4;
-	return idx;
-}
-
-/** Positive-vertex test: true when the AABB is fully outside at least one plane.
- *  Planes carry inward normals (frustum interior is n·x+d >= 0), so the
- *  outside proof needs the p-vertex (corner maximizing n·x). Verified against
- *  live @babylonjs/lite view-projection matrices (see tests/group-octree). */
-export function aabbOutsidePlanes(
-	minX: number,
-	minY: number,
-	minZ: number,
-	maxX: number,
-	maxY: number,
-	maxZ: number,
-	packed: Float32Array,
-	margin: number,
-): boolean {
-	const negativeMargin = -margin;
-
-	for (let offset = 0; offset < 24; offset += 4) {
-		const nx = packed[offset];
-		const ny = packed[offset + 1];
-		const nz = packed[offset + 2];
-
-		const px = nx >= 0 ? maxX : minX;
-		const py = ny >= 0 ? maxY : minY;
-		const pz = nz >= 0 ? maxZ : minZ;
-
-		if (nx * px + ny * py + nz * pz + packed[offset + 3] < negativeMargin) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
-/** Negative-vertex test: true only when the AABB is fully inside every plane. */
-export function aabbInsidePlanes(
-	minX: number,
-	minY: number,
-	minZ: number,
-	maxX: number,
-	maxY: number,
-	maxZ: number,
-	packed: Float32Array,
-	margin: number,
-): boolean {
-	const negativeMargin = -margin;
-
-	for (let offset = 0; offset < 24; offset += 4) {
-		const nx = packed[offset];
-		const ny = packed[offset + 1];
-		const nz = packed[offset + 2];
-
-		const qx = nx >= 0 ? minX : maxX;
-		const qy = ny >= 0 ? minY : maxY;
-		const qz = nz >= 0 ? minZ : maxZ;
-
-		if (nx * qx + ny * qy + nz * qz + packed[offset + 3] < negativeMargin) {
-			return false;
-		}
-	}
-
-	return true;
+function createChildren(): (OctreeNode | null)[] {
+	return [null, null, null, null, null, null, null, null];
 }
 
 // ---------------------------------------------------------------------------
-// Insert / remove
+// AABB helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Insert a group. Idempotent per groupKey: re-inserting the same groupKey
- * refreshes the stored ref instead of duplicating.
- */
-export function octreeInsert(group: OctreeGroupLike): void {
-	const minX = groupMinX(group.gridX);
-	const minY = groupMinY(group.gridY);
-	const minZ = groupMinZ(group.gridZ);
-
-	const rx = Math.floor(minX / OCTREE_ROOT_CELL_SIZE);
-	const ry = Math.floor(minY / OCTREE_ROOT_CELL_SIZE);
-	const rz = Math.floor(minZ / OCTREE_ROOT_CELL_SIZE);
-	const key = rootKeyFor(rx, ry, rz);
-
-	let root = _roots.get(key);
-	if (!root) {
-		root = makeNode(
-			rx * OCTREE_ROOT_CELL_SIZE,
-			ry * OCTREE_ROOT_CELL_SIZE,
-			rz * OCTREE_ROOT_CELL_SIZE,
-			OCTREE_ROOT_CELL_SIZE,
-			0,
-		);
-		_roots.set(key, root);
-	}
-
-	let node = root;
-	node.subtreeCount++; // provisional; corrected below on duplicate re-insert
-	const path: OctreeNode[] = [node];
-
-	while (node.depth < OCTREE_MAX_DEPTH) {
-		const half = node.size * 0.5;
-		const ci = childIndexFor(
-			node.minX,
-			node.minY,
-			node.minZ,
-			half,
-			minX,
-			minY,
-			minZ,
-		);
-		if (!node.children) {
-			node.children = [null, null, null, null, null, null, null, null];
-		}
-		let child = node.children[ci];
-		if (!child) {
-			child = makeNode(
-				node.minX + (ci & 1 ? half : 0),
-				node.minY + (ci & 2 ? half : 0),
-				node.minZ + (ci & 4 ? half : 0),
-				half,
-				node.depth + 1,
-			);
-			node.children[ci] = child;
-		}
-		node = child;
-		node.subtreeCount++;
-		path.push(node);
-	}
-
-	// Leaf: dedupe by groupKey (same grid cell, different lodBucket are
-	// distinct groupKeys and correctly coexist).
-	const leaf = node.groups;
-	for (let i = 0; i < leaf.length; i++) {
-		if (leaf[i].groupKey === group.groupKey) {
-			leaf[i] = group;
-			// Undo provisional increments — no new group was added.
-			for (let k = 0; k < path.length; k++) path[k].subtreeCount--;
-			return;
-		}
-	}
-	leaf.push(group);
-	_groupCount++;
-}
-
-/**
- * Remove a group. No-op when absent. Prunes empty branches and drops empty
- * roots so streaming unload cannot leak nodes.
- */
-export function octreeRemove(group: OctreeGroupLike): void {
-	const minX = groupMinX(group.gridX);
-	const minY = groupMinY(group.gridY);
-	const minZ = groupMinZ(group.gridZ);
-
-	const rx = Math.floor(minX / OCTREE_ROOT_CELL_SIZE);
-	const ry = Math.floor(minY / OCTREE_ROOT_CELL_SIZE);
-	const rz = Math.floor(minZ / OCTREE_ROOT_CELL_SIZE);
-	const key = rootKeyFor(rx, ry, rz);
-
-	const root = _roots.get(key);
-	if (!root) return;
-
-	let node: OctreeNode = root;
-	const path: OctreeNode[] = [root];
-
-	while (node.depth < OCTREE_MAX_DEPTH) {
-		const children = node.children;
-		if (!children) return; // group was never inserted
-		const half = node.size * 0.5;
-		const ci = childIndexFor(
-			node.minX,
-			node.minY,
-			node.minZ,
-			half,
-			minX,
-			minY,
-			minZ,
-		);
-		const child: OctreeNode | null = children[ci];
-		if (!child) return;
-		node = child;
-		path.push(node);
-	}
-
-	const leaf = node.groups;
-	let foundIdx = -1;
-	for (let i = 0; i < leaf.length; i++) {
-		if (leaf[i].groupKey === group.groupKey) {
-			foundIdx = i;
-			break;
-		}
-	}
-	if (foundIdx < 0) return;
-
-	// Swap-remove.
-	leaf[foundIdx] = leaf[leaf.length - 1];
-	leaf.length--;
-	_groupCount--;
-
-	for (let k = 0; k < path.length; k++) path[k].subtreeCount--;
-
-	// Prune empty branches bottom-up (stop at root; root dropped from map).
-	for (let k = path.length - 1; k >= 1; k--) {
-		const childNode = path[k];
-		const parent = path[k - 1];
-		if (childNode.subtreeCount !== 0) break;
-		if (!parent.children) break;
-		const half = parent.size * 0.5;
-		const ci = childIndexFor(
-			parent.minX,
-			parent.minY,
-			parent.minZ,
-			half,
-			minX,
-			minY,
-			minZ,
-		);
-		parent.children[ci] = null;
-		// Collapse the children array when all slots are empty.
-		let anyLeft = false;
-		for (let s = 0; s < 8; s++) {
-			if (parent.children[s]) {
-				anyLeft = true;
-				break;
-			}
-		}
-		if (!anyLeft) parent.children = null;
-		else break; // siblings remain — higher levels are non-empty too
-	}
-
-	if (root.subtreeCount === 0) _roots.delete(key);
-}
-
-/** Drop the whole tree (world unload / disposeAll). */
-export function octreeClear(): void {
-	_roots.clear();
-	_groupCount = 0;
-}
-
-/** Debug/validation: walk every stored group. */
-export function octreeForEach(visit: (group: OctreeGroupLike) => void): void {
-	for (const root of _roots.values()) {
-		const stack: OctreeNode[] = [root];
-		while (stack.length > 0) {
-			const node = stack.pop()!;
-			if (node.depth === OCTREE_MAX_DEPTH) {
-				for (let i = 0; i < node.groups.length; i++) visit(node.groups[i]);
-			} else if (node.children) {
-				for (let s = 0; s < 8; s++) {
-					const c = node.children[s];
-					if (c) stack.push(c);
-				}
-			}
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Frustum traversal
-// ---------------------------------------------------------------------------
-
-export interface OctreeTraverseStats {
-	visitedGroups: number;
-	culledSubtrees: number;
-	insideFastPath: number;
-}
-
-// Module-level explicit stacks (no per-frame allocation).
-const _travNodes: OctreeNode[] = [];
-const _travHints: FrustumHint[] = [];
-const _collectStack: OctreeNode[] = [];
-
-/**
- * Emits every group below a subtree whose frustum state has already been
- * decided. Uses the shared module-level stack and performs no allocations.
- */
-function visitClassifiedSubtree(
-	root: OctreeNode,
-	hint: FrustumHint,
-	visit: (group: OctreeGroupLike, hint: FrustumHint) => void,
-): number {
-	_collectStack.length = 0;
-	_collectStack.push(root);
-
-	while (_collectStack.length !== 0) {
-		const node = _collectStack.pop();
-
-		if (node === undefined) {
-			break;
-		}
-
-		if (node.depth === OCTREE_MAX_DEPTH) {
-			const groups = node.groups;
-
-			for (let i = 0; i < groups.length; i++) {
-				visit(groups[i], hint);
-			}
-
-			continue;
-		}
-
-		const children = node.children;
-
-		if (children === null) {
-			continue;
-		}
-
-		for (let i = 0; i < 8; i++) {
-			const child = children[i];
-
-			if (child !== null && child.subtreeCount !== 0) {
-				_collectStack.push(child);
-			}
-		}
-	}
-
-	return root.subtreeCount;
-}
 
 function aabbContainsEye(
 	minX: number,
@@ -543,119 +186,455 @@ function aabbContainsEye(
 	);
 }
 
-/**
- * Hierarchical frustum traversal.
- *
- * Yields every stored group exactly once with a hint:
- * - OUTSIDE: an ancestor or leaf AABB proved fully outside.
- * - INSIDE: an ancestor or leaf AABB proved fully inside.
- * - INTERSECT: the leaf straddles the frustum.
- *
- * A leaf is exactly one OCTREE_GROUP_EXTENT cell. Every group stored in that
- * leaf therefore has the same AABB as the leaf, so no additional per-group
- * plane classification is necessary. Groups containing the eye never arrive
- * with OUTSIDE (eye fail-open forces INTERSECT descent).
- */
-export function traverseGroupOctree(
-	packedPlanes: Float32Array,
-	margin: number,
+function nodeContainsEye(
+	node: OctreeNode,
 	eyeX: number,
 	eyeY: number,
 	eyeZ: number,
-	visit: (group: OctreeGroupLike, hint: FrustumHint) => void,
-	stats?: OctreeTraverseStats | null,
-): void {
-	let visitedGroups = 0;
-	let culledSubtrees = 0;
-	let insideFastPath = 0;
+): boolean {
+	return (
+		eyeX >= node.minX &&
+		eyeX <= node.minX + node.size &&
+		eyeY >= node.minY &&
+		eyeY <= node.minY + node.size &&
+		eyeZ >= node.minZ &&
+		eyeZ <= node.minZ + node.size
+	);
+}
 
+/**
+ * Classifies an AABB against packed, normalized frustum planes.
+ *
+ * The frustum interior is n*x + d >= 0.
+ */
+function classifyAabbAgainstPlanes(
+	minX: number,
+	minY: number,
+	minZ: number,
+	maxX: number,
+	maxY: number,
+	maxZ: number,
+	packed: Float32Array,
+	negativeMargin: number,
+): FrustumHint {
+	let fullyInside = true;
+
+	for (let offset = 0; offset < 24; offset += 4) {
+		const nx = packed[offset];
+		const ny = packed[offset + 1];
+		const nz = packed[offset + 2];
+		const d = packed[offset + 3];
+
+		const positiveX = nx >= 0 ? maxX : minX;
+		const positiveY = ny >= 0 ? maxY : minY;
+		const positiveZ = nz >= 0 ? maxZ : minZ;
+
+		if (nx * positiveX + ny * positiveY + nz * positiveZ + d < negativeMargin) {
+			return FrustumHint.OUTSIDE;
+		}
+
+		if (fullyInside) {
+			const negativeX = nx >= 0 ? minX : maxX;
+			const negativeY = ny >= 0 ? minY : maxY;
+			const negativeZ = nz >= 0 ? minZ : maxZ;
+
+			if (
+				nx * negativeX + ny * negativeY + nz * negativeZ + d <
+				negativeMargin
+			) {
+				fullyInside = false;
+			}
+		}
+	}
+
+	return fullyInside ? FrustumHint.INSIDE : FrustumHint.INTERSECT;
+}
+
+function classifyNode(
+	node: OctreeNode,
+	packedPlanes: Float32Array,
+	negativeMargin: number,
+	eyeX: number,
+	eyeY: number,
+	eyeZ: number,
+): FrustumHint {
+	if (nodeContainsEye(node, eyeX, eyeY, eyeZ)) {
+		return FrustumHint.INTERSECT;
+	}
+
+	const maxX = node.minX + node.size;
+	const maxY = node.minY + node.size;
+	const maxZ = node.minZ + node.size;
+
+	return classifyAabbAgainstPlanes(
+		node.minX,
+		node.minY,
+		node.minZ,
+		maxX,
+		maxY,
+		maxZ,
+		packedPlanes,
+		negativeMargin,
+	);
+}
+
+/**
+ * Returns true when the AABB is fully outside at least one plane.
+ */
+export function aabbOutsidePlanes(
+	minX: number,
+	minY: number,
+	minZ: number,
+	maxX: number,
+	maxY: number,
+	maxZ: number,
+	packed: Float32Array,
+	margin: number,
+): boolean {
 	const negativeMargin = -margin;
 
+	for (let offset = 0; offset < 24; offset += 4) {
+		const nx = packed[offset];
+		const ny = packed[offset + 1];
+		const nz = packed[offset + 2];
+
+		const positiveX = nx >= 0 ? maxX : minX;
+		const positiveY = ny >= 0 ? maxY : minY;
+		const positiveZ = nz >= 0 ? maxZ : minZ;
+
+		if (
+			nx * positiveX + ny * positiveY + nz * positiveZ + packed[offset + 3] <
+			negativeMargin
+		) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Returns true only when the AABB is fully inside every plane.
+ */
+export function aabbInsidePlanes(
+	minX: number,
+	minY: number,
+	minZ: number,
+	maxX: number,
+	maxY: number,
+	maxZ: number,
+	packed: Float32Array,
+	margin: number,
+): boolean {
+	const negativeMargin = -margin;
+
+	for (let offset = 0; offset < 24; offset += 4) {
+		const nx = packed[offset];
+		const ny = packed[offset + 1];
+		const nz = packed[offset + 2];
+
+		const negativeX = nx >= 0 ? minX : maxX;
+		const negativeY = ny >= 0 ? minY : maxY;
+		const negativeZ = nz >= 0 ? minZ : maxZ;
+
+		if (
+			nx * negativeX + ny * negativeY + nz * negativeZ + packed[offset + 3] <
+			negativeMargin
+		) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Insert
+// ---------------------------------------------------------------------------
+
+/**
+ * Inserts a group.
+ *
+ * Re-inserting the same groupKey in the same group cell refreshes the stored
+ * reference without changing subtree counts.
+ */
+export function octreeInsert(group: OctreeGroupLike): void {
+	const minX = group.gridX * OCTREE_GROUP_EXTENT;
+	const minY = group.gridY * OCTREE_GROUP_EXTENT;
+	const minZ = group.gridZ * OCTREE_GROUP_EXTENT;
+
+	const rootX = Math.floor(minX / OCTREE_ROOT_CELL_SIZE);
+
+	const rootY = Math.floor(minY / OCTREE_ROOT_CELL_SIZE);
+
+	const rootZ = Math.floor(minZ / OCTREE_ROOT_CELL_SIZE);
+
+	const rootKey = rootKeyFor(rootX, rootY, rootZ);
+
+	let root = _roots.get(rootKey);
+
+	if (root === undefined) {
+		root = makeNode(
+			rootX * OCTREE_ROOT_CELL_SIZE,
+			rootY * OCTREE_ROOT_CELL_SIZE,
+			rootZ * OCTREE_ROOT_CELL_SIZE,
+			OCTREE_ROOT_CELL_SIZE,
+			0,
+		);
+
+		_roots.set(rootKey, root);
+	}
+
+	let node = root;
+
 	/*
-	 * Shared stacks avoid normal per-frame allocation. The finally block is
-	 * required because visit() is user code and may throw.
+	 * Maximum path length is four nodes:
+	 * root, depth 1, depth 2, leaf.
 	 */
-	_travNodes.length = 0;
-	_travHints.length = 0;
+	const path0 = node;
+	let path1: OctreeNode | null = null;
+	let path2: OctreeNode | null = null;
+	let path3: OctreeNode | null = null;
+
+	while (node.depth < OCTREE_MAX_DEPTH) {
+		const half = node.size * 0.5;
+
+		const childIndex = childIndexFor(
+			node.minX,
+			node.minY,
+			node.minZ,
+			half,
+			minX,
+			minY,
+			minZ,
+		);
+
+		let children = node.children;
+
+		if (children === null) {
+			children = createChildren();
+			node.children = children;
+		}
+
+		let child = children[childIndex];
+
+		if (child === null) {
+			child = makeNode(
+				node.minX + ((childIndex & 1) !== 0 ? half : 0),
+				node.minY + ((childIndex & 2) !== 0 ? half : 0),
+				node.minZ + ((childIndex & 4) !== 0 ? half : 0),
+				half,
+				node.depth + 1,
+			);
+
+			children[childIndex] = child;
+		}
+
+		node = child;
+
+		if (node.depth === 1) {
+			path1 = node;
+		} else if (node.depth === 2) {
+			path2 = node;
+		} else {
+			path3 = node;
+		}
+	}
+
+	const groups = node.groups;
+
+	for (let index = 0; index < groups.length; index++) {
+		if (groups[index].groupKey === group.groupKey) {
+			groups[index] = group;
+			return;
+		}
+	}
+
+	groups.push(group);
+
+	path0.subtreeCount++;
+
+	if (path1 !== null) {
+		path1.subtreeCount++;
+	}
+
+	if (path2 !== null) {
+		path2.subtreeCount++;
+	}
+
+	if (path3 !== null) {
+		path3.subtreeCount++;
+	}
+
+	_groupCount++;
+}
+
+// ---------------------------------------------------------------------------
+// Remove
+// ---------------------------------------------------------------------------
+
+/**
+ * Removes a group and prunes empty branches.
+ */
+export function octreeRemove(group: OctreeGroupLike): void {
+	const minX = group.gridX * OCTREE_GROUP_EXTENT;
+	const minY = group.gridY * OCTREE_GROUP_EXTENT;
+	const minZ = group.gridZ * OCTREE_GROUP_EXTENT;
+
+	const rootX = Math.floor(minX / OCTREE_ROOT_CELL_SIZE);
+
+	const rootY = Math.floor(minY / OCTREE_ROOT_CELL_SIZE);
+
+	const rootZ = Math.floor(minZ / OCTREE_ROOT_CELL_SIZE);
+
+	const rootKey = rootKeyFor(rootX, rootY, rootZ);
+	const root = _roots.get(rootKey);
+
+	if (root === undefined) {
+		return;
+	}
+
+	let node = root;
+
+	const pathNodes: OctreeNode[] = [root];
+	const pathIndices: number[] = [];
+
+	while (node.depth < OCTREE_MAX_DEPTH) {
+		const children = node.children;
+
+		if (children === null) {
+			return;
+		}
+
+		const half = node.size * 0.5;
+
+		const childIndex = childIndexFor(
+			node.minX,
+			node.minY,
+			node.minZ,
+			half,
+			minX,
+			minY,
+			minZ,
+		);
+
+		const child = children[childIndex];
+
+		if (child === null) {
+			return;
+		}
+
+		pathIndices.push(childIndex);
+		pathNodes.push(child);
+		node = child;
+	}
+
+	const groups = node.groups;
+	let foundIndex = -1;
+
+	for (let index = 0; index < groups.length; index++) {
+		if (groups[index].groupKey === group.groupKey) {
+			foundIndex = index;
+			break;
+		}
+	}
+
+	if (foundIndex < 0) {
+		return;
+	}
+
+	const finalIndex = groups.length - 1;
+
+	if (foundIndex !== finalIndex) {
+		groups[foundIndex] = groups[finalIndex];
+	}
+
+	groups.pop();
+	_groupCount--;
+
+	for (let index = 0; index < pathNodes.length; index++) {
+		pathNodes[index].subtreeCount--;
+	}
+
+	/*
+	 * Prune from the leaf toward the root. The child index is retained from
+	 * the initial descent, avoiding repeated coordinate classification.
+	 */
+	for (let pathIndex = pathNodes.length - 1; pathIndex >= 1; pathIndex--) {
+		const child = pathNodes[pathIndex];
+
+		if (child.subtreeCount !== 0) {
+			break;
+		}
+
+		const parent = pathNodes[pathIndex - 1];
+		const children = parent.children;
+
+		if (children === null) {
+			break;
+		}
+
+		children[pathIndices[pathIndex - 1]] = null;
+
+		let hasChildren = false;
+
+		for (let childIndex = 0; childIndex < CHILD_COUNT; childIndex++) {
+			if (children[childIndex] !== null) {
+				hasChildren = true;
+				break;
+			}
+		}
+
+		if (hasChildren) {
+			break;
+		}
+
+		parent.children = null;
+	}
+
+	if (root.subtreeCount === 0) {
+		_roots.delete(rootKey);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle and validation
+// ---------------------------------------------------------------------------
+
+export function octreeClear(): void {
+	_roots.clear();
+	_groupCount = 0;
+
+	_traversalStack.length = 0;
 	_collectStack.length = 0;
+}
+
+export function octreeForEach(visit: (group: OctreeGroupLike) => void): void {
+	const stack = _collectStack;
+
+	if (_traversalActive) {
+		throw new Error("GroupOctree traversal is not reentrant.");
+	}
+
+	_traversalActive = true;
+	stack.length = 0;
 
 	try {
 		for (const root of _roots.values()) {
-			if (root.subtreeCount === 0) {
-				continue;
-			}
+			stack.push(root);
 
-			const rootMinX = root.minX;
-			const rootMinY = root.minY;
-			const rootMinZ = root.minZ;
-			const rootMaxX = rootMinX + root.size;
-			const rootMaxY = rootMinY + root.size;
-			const rootMaxZ = rootMinZ + root.size;
+			while (stack.length !== 0) {
+				const node = stack.pop();
 
-			let rootHint: FrustumHint;
-
-			if (
-				aabbContainsEye(
-					rootMinX,
-					rootMinY,
-					rootMinZ,
-					rootMaxX,
-					rootMaxY,
-					rootMaxZ,
-					eyeX,
-					eyeY,
-					eyeZ,
-				)
-			) {
-				rootHint = FrustumHint.INTERSECT;
-			} else {
-				rootHint = classifyAabbAgainstPlanes(
-					rootMinX,
-					rootMinY,
-					rootMinZ,
-					rootMaxX,
-					rootMaxY,
-					rootMaxZ,
-					packedPlanes,
-					negativeMargin,
-				);
-			}
-
-			if (rootHint !== FrustumHint.INTERSECT) {
-				if (rootHint === FrustumHint.OUTSIDE) {
-					culledSubtrees++;
-				} else {
-					insideFastPath += root.subtreeCount;
-				}
-
-				visitedGroups += visitClassifiedSubtree(root, rootHint, visit);
-
-				continue;
-			}
-
-			_travNodes.push(root);
-			_travHints.push(FrustumHint.INTERSECT);
-
-			while (_travNodes.length !== 0) {
-				const node = _travNodes.pop();
-				const hint = _travHints.pop();
-
-				if (node === undefined || hint === undefined) {
+				if (node === undefined) {
 					break;
 				}
 
 				if (node.depth === OCTREE_MAX_DEPTH) {
 					const groups = node.groups;
-					const groupCount = groups.length;
 
-					visitedGroups += groupCount;
-
-					if (hint === FrustumHint.INSIDE) {
-						insideFastPath += groupCount;
-					}
-
-					for (let i = 0; i < groupCount; i++) {
-						visit(groups[i], hint);
+					for (let index = 0; index < groups.length; index++) {
+						visit(groups[index]);
 					}
 
 					continue;
@@ -667,71 +646,179 @@ export function traverseGroupOctree(
 					continue;
 				}
 
-				/*
-				 * This branch is retained defensively. Current traversal emits
-				 * classified subtrees immediately, so stack entries normally
-				 * carry INTERSECT.
-				 */
-				if (hint !== FrustumHint.INTERSECT) {
-					const emitted = visitClassifiedSubtree(node, hint, visit);
+				for (let index = 0; index < CHILD_COUNT; index++) {
+					const child = children[index];
 
-					visitedGroups += emitted;
+					if (child !== null && child.subtreeCount !== 0) {
+						stack.push(child);
+					}
+				}
+			}
+		}
+	} finally {
+		stack.length = 0;
+		_traversalActive = false;
+	}
+}
 
-					if (hint === FrustumHint.OUTSIDE) {
-						culledSubtrees++;
-					} else {
-						insideFastPath += emitted;
+// ---------------------------------------------------------------------------
+// Classified subtree emission
+// ---------------------------------------------------------------------------
+
+function visitClassifiedSubtree(
+	root: OctreeNode,
+	hint: FrustumHint,
+	visit: (group: OctreeGroupLike, hint: FrustumHint) => void,
+): number {
+	const stack = _collectStack;
+
+	stack.length = 0;
+	stack.push(root);
+
+	while (stack.length !== 0) {
+		const node = stack.pop();
+
+		if (node === undefined) {
+			break;
+		}
+
+		if (node.depth === OCTREE_MAX_DEPTH) {
+			const groups = node.groups;
+
+			for (let index = 0; index < groups.length; index++) {
+				visit(groups[index], hint);
+			}
+
+			continue;
+		}
+
+		const children = node.children;
+
+		if (children === null) {
+			continue;
+		}
+
+		for (let index = 0; index < CHILD_COUNT; index++) {
+			const child = children[index];
+
+			if (child !== null && child.subtreeCount !== 0) {
+				stack.push(child);
+			}
+		}
+	}
+
+	return root.subtreeCount;
+}
+
+// ---------------------------------------------------------------------------
+// Frustum traversal
+// ---------------------------------------------------------------------------
+
+export function traverseGroupOctree(
+	packedPlanes: Float32Array,
+	margin: number,
+	eyeX: number,
+	eyeY: number,
+	eyeZ: number,
+	visit: (group: OctreeGroupLike, hint: FrustumHint) => void,
+	stats?: OctreeTraverseStats | null,
+): void {
+	if (_traversalActive) {
+		throw new Error("GroupOctree traversal is not reentrant.");
+	}
+
+	let visitedGroups = 0;
+	let culledSubtrees = 0;
+	let insideFastPath = 0;
+
+	const negativeMargin = -margin;
+	const stack = _traversalStack;
+
+	_traversalActive = true;
+	stack.length = 0;
+	_collectStack.length = 0;
+
+	try {
+		for (const root of _roots.values()) {
+			if (root.subtreeCount === 0) {
+				continue;
+			}
+
+			const rootHint = classifyNode(
+				root,
+				packedPlanes,
+				negativeMargin,
+				eyeX,
+				eyeY,
+				eyeZ,
+			);
+
+			if (rootHint === FrustumHint.OUTSIDE) {
+				culledSubtrees++;
+
+				visitedGroups += visitClassifiedSubtree(
+					root,
+					FrustumHint.OUTSIDE,
+					visit,
+				);
+
+				continue;
+			}
+
+			if (rootHint === FrustumHint.INSIDE) {
+				const emitted = visitClassifiedSubtree(root, FrustumHint.INSIDE, visit);
+
+				visitedGroups += emitted;
+				insideFastPath += emitted;
+				continue;
+			}
+
+			stack.push(root);
+
+			while (stack.length !== 0) {
+				const node = stack.pop();
+
+				if (node === undefined) {
+					break;
+				}
+
+				if (node.depth === OCTREE_MAX_DEPTH) {
+					const groups = node.groups;
+					const count = groups.length;
+
+					visitedGroups += count;
+
+					for (let index = 0; index < count; index++) {
+						visit(groups[index], FrustumHint.INTERSECT);
 					}
 
 					continue;
 				}
 
-				for (let i = 0; i < 8; i++) {
-					const child = children[i];
+				const children = node.children;
+
+				if (children === null) {
+					continue;
+				}
+
+				for (let index = 0; index < CHILD_COUNT; index++) {
+					const child = children[index];
 
 					if (child === null || child.subtreeCount === 0) {
 						continue;
 					}
 
-					const childMinX = child.minX;
-					const childMinY = child.minY;
-					const childMinZ = child.minZ;
-					const childMaxX = childMinX + child.size;
-					const childMaxY = childMinY + child.size;
-					const childMaxZ = childMinZ + child.size;
-
-					let childHint: FrustumHint;
-
-					if (
-						aabbContainsEye(
-							childMinX,
-							childMinY,
-							childMinZ,
-							childMaxX,
-							childMaxY,
-							childMaxZ,
-							eyeX,
-							eyeY,
-							eyeZ,
-						)
-					) {
-						childHint = FrustumHint.INTERSECT;
-					} else {
-						childHint = classifyAabbAgainstPlanes(
-							childMinX,
-							childMinY,
-							childMinZ,
-							childMaxX,
-							childMaxY,
-							childMaxZ,
-							packedPlanes,
-							negativeMargin,
-						);
-					}
+					const childHint = classifyNode(
+						child,
+						packedPlanes,
+						negativeMargin,
+						eyeX,
+						eyeY,
+						eyeZ,
+					);
 
 					if (childHint === FrustumHint.INTERSECT) {
-						_travNodes.push(child);
-						_travHints.push(childHint);
+						stack.push(child);
 						continue;
 					}
 
@@ -746,13 +833,9 @@ export function traverseGroupOctree(
 			}
 		}
 	} finally {
-		/*
-		 * Ensure a throwing callback cannot leave stale nodes that retain
-		 * groups or corrupt the next traversal.
-		 */
-		_travNodes.length = 0;
-		_travHints.length = 0;
+		stack.length = 0;
 		_collectStack.length = 0;
+		_traversalActive = false;
 	}
 
 	if (stats !== undefined && stats !== null) {

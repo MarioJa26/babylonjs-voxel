@@ -74,7 +74,6 @@ const BFS_ORIGIN_BIT = 1 << 7;
 // Face-pair connectivity tables
 // ---------------------------------------------------------------------------
 
-const FACE_PAIR_FLAT = new Int32Array(36);
 const FACE_PAIR_MASK_FLAT = new Int32Array(36);
 
 let _facePairTableInitialized = false;
@@ -85,12 +84,9 @@ function initFacePairTable(): void {
 
 		for (let exitFace = 0; exitFace < 6; exitFace++) {
 			const min = entryFace < exitFace ? entryFace : exitFace;
-
 			const max = entryFace > exitFace ? entryFace : exitFace;
-
 			const pair = facePairIndex(min, max);
 
-			FACE_PAIR_FLAT[row + exitFace] = pair;
 			FACE_PAIR_MASK_FLAT[row + exitFace] = 1 << pair;
 		}
 	}
@@ -192,19 +188,21 @@ function aabbInFrustum(
 	maxY: number,
 	maxZ: number,
 ): boolean {
-	const planes = _frustumPacked;
 	const negativeMargin = -FRUSTUM_MARGIN;
 
 	for (let offset = 0; offset < 24; offset += 4) {
-		const nx = planes[offset];
-		const ny = planes[offset + 1];
-		const nz = planes[offset + 2];
+		const nx = _frustumPacked[offset];
+		const ny = _frustumPacked[offset + 1];
+		const nz = _frustumPacked[offset + 2];
 
 		const px = nx >= 0 ? maxX : minX;
 		const py = ny >= 0 ? maxY : minY;
 		const pz = nz >= 0 ? maxZ : minZ;
 
-		if (nx * px + ny * py + nz * pz + planes[offset + 3] < negativeMargin) {
+		if (
+			nx * px + ny * py + nz * pz + _frustumPacked[offset + 3] <
+			negativeMargin
+		) {
 			return false;
 		}
 	}
@@ -218,7 +216,6 @@ function aabbInFrustum(
 
 function getFStep(chunk: Chunk, face: number): number {
 	const steps = face < 4 ? chunk.bfsSteps0 : chunk.bfsSteps1;
-
 	return (steps >>> ((face & 3) * 8)) & 0xff;
 }
 
@@ -241,11 +238,24 @@ function resetChunkBfs(chunk: Chunk, queryId: number): void {
 	chunk.bfsSteps1 = 0;
 }
 
+function isLiveChunk(chunk: Chunk): boolean {
+	return (
+		chunk.isLoaded &&
+		getChunkFast(chunk.chunkX, chunk.chunkY, chunk.chunkZ) === chunk
+	);
+}
+
+/**
+ * Refreshes null references and stale references that point to an unloaded or
+ * replaced Chunk instance.
+ */
 function ensureNeighborRefs(chunk: Chunk): void {
 	const refs = chunk.neighborRefs;
 
 	for (let direction = 0; direction < 6; direction++) {
-		if (refs[direction] === null) {
+		const cached = refs[direction];
+
+		if (cached === null || !isLiveChunk(cached)) {
 			refs[direction] = chunk.getNeighborChunk(direction) ?? null;
 		}
 	}
@@ -270,45 +280,24 @@ function hasConnectivity(
 	exitFace: number,
 	connectivity: number,
 ): boolean {
-	if (
-		(visitedFaces & 1) !== 0 &&
-		(connectivity & FACE_PAIR_MASK_FLAT[exitFace]) !== 0
-	) {
+	if ((visitedFaces & BFS_ORIGIN_BIT) !== 0) {
 		return true;
 	}
 
-	if (
-		(visitedFaces & 2) !== 0 &&
-		(connectivity & FACE_PAIR_MASK_FLAT[6 + exitFace]) !== 0
-	) {
-		return true;
+	let faces = visitedFaces & 0x3f;
+
+	while (faces !== 0) {
+		const faceBit = faces & -faces;
+		const entryFace = 31 - Math.clz32(faceBit);
+
+		if ((connectivity & FACE_PAIR_MASK_FLAT[entryFace * 6 + exitFace]) !== 0) {
+			return true;
+		}
+
+		faces &= faces - 1;
 	}
 
-	if (
-		(visitedFaces & 4) !== 0 &&
-		(connectivity & FACE_PAIR_MASK_FLAT[12 + exitFace]) !== 0
-	) {
-		return true;
-	}
-
-	if (
-		(visitedFaces & 8) !== 0 &&
-		(connectivity & FACE_PAIR_MASK_FLAT[18 + exitFace]) !== 0
-	) {
-		return true;
-	}
-
-	if (
-		(visitedFaces & 16) !== 0 &&
-		(connectivity & FACE_PAIR_MASK_FLAT[24 + exitFace]) !== 0
-	) {
-		return true;
-	}
-
-	return (
-		(visitedFaces & 32) !== 0 &&
-		(connectivity & FACE_PAIR_MASK_FLAT[30 + exitFace]) !== 0
-	);
+	return false;
 }
 
 function chunkWithinBfsRange(
@@ -321,9 +310,12 @@ function chunkWithinBfsRange(
 	radius: number,
 ): boolean {
 	return (
-		Math.abs(chunkX - cameraX) <= radius &&
-		Math.abs(chunkY - cameraY) <= radius &&
-		Math.abs(chunkZ - cameraZ) <= radius
+		chunkX >= cameraX - radius &&
+		chunkX <= cameraX + radius &&
+		chunkY >= cameraY - radius &&
+		chunkY <= cameraY + radius &&
+		chunkZ >= cameraZ - radius &&
+		chunkZ <= cameraZ + radius
 	);
 }
 
@@ -345,13 +337,6 @@ function nextBfsStepCost(
 	return steps;
 }
 
-function isLiveChunk(chunk: Chunk): boolean {
-	return (
-		chunk.isLoaded &&
-		getChunkFast(chunk.chunkX, chunk.chunkY, chunk.chunkZ) === chunk
-	);
-}
-
 function clearChunkRing(
 	chunks: Array<Chunk | null>,
 	head: number,
@@ -364,10 +349,10 @@ function clearChunkRing(
 }
 
 // ---------------------------------------------------------------------------
+// Culler
+// ---------------------------------------------------------------------------
 
 export class OcclusionCuller {
-	private _topoVisibleChunks: Chunk[] = [];
-
 	private _currentQueryId = 0;
 	private _lastCompletedQueryId = 0;
 
@@ -386,13 +371,13 @@ export class OcclusionCuller {
 	private _bfsQHead = 0;
 	private _bfsQTail = 0;
 
-	/*
+	/**
 	 * True when no usable seed exists, or when BFS overflow prevented a
 	 * complete reachability result. In either case reachability fails open.
 	 */
 	private _bfsOriginMissing = true;
 
-	/*
+	/**
 	 * Records fixed-ring saturation. It is cleared on every BFS restart.
 	 */
 	private _bfsQueueOverflowed = false;
@@ -444,7 +429,6 @@ export class OcclusionCuller {
 
 		const startTime = performance.now();
 		const chunkSize = Chunk.SIZE;
-
 		const cameraPosition = getCameraPosition(camera);
 
 		const camCX = Math.floor(cameraPosition.x / chunkSize);
@@ -479,10 +463,6 @@ export class OcclusionCuller {
 			this._startBFS(camCX, camCY, camCZ);
 		}
 
-		/*
-		 * Capture state before stepping. If the BFS completes or overflows in
-		 * this call, visibility must still be swept this frame.
-		 */
 		const bfsWasInProgress = this._bfsInProgress;
 		const overflowBeforeStep = this._bfsQueueOverflowed;
 
@@ -500,8 +480,8 @@ export class OcclusionCuller {
 		let viewProjectionChanged = !_frustumValid;
 
 		if (!viewProjectionChanged) {
-			for (let i = 0; i < 16; i++) {
-				if (Math.abs(viewProjection[i] - _lastVP[i]) > 1e-6) {
+			for (let index = 0; index < 16; index++) {
+				if (Math.abs(viewProjection[index] - _lastVP[index]) > 1e-6) {
 					viewProjectionChanged = true;
 					break;
 				}
@@ -528,23 +508,18 @@ export class OcclusionCuller {
 			out.total = this._lastTotal;
 			out.occluded = this._lastOccluded;
 			out.timeMs = performance.now() - startTime;
-
 			return out;
 		}
 
 		const allGroups = getAllGroups();
 
-		const groupChunks = GROUP_CHUNKS;
-		const groupExtent = groupChunks * chunkSize;
+		const groupExtent = GROUP_CHUNKS * chunkSize;
 		const groupHalf = groupExtent * 0.5;
 
 		const queryId = this._currentQueryId;
 		const bfsInProgress = this._bfsInProgress;
 		const cameraUnderground = isInCave();
 
-		/*
-		 * Missing origin and overflow both disable reachability gating.
-		 */
 		const bfsGateActive = !this._bfsOriginMissing && !this._bfsQueueOverflowed;
 
 		let groupTotal = 0;
@@ -608,21 +583,21 @@ export class OcclusionCuller {
 			} else if (hint === FrustumHint.OUTSIDE) {
 				inFrustum = false;
 			} else {
-				const minChunkX = group.gridX * groupChunks;
-				const minChunkY = group.gridY * groupChunks;
-				const minChunkZ = group.gridZ * groupChunks;
+				const minChunkX = group.gridX * GROUP_CHUNKS;
+				const minChunkY = group.gridY * GROUP_CHUNKS;
+				const minChunkZ = group.gridZ * GROUP_CHUNKS;
 
-				const maxChunkX = minChunkX + groupChunks - 1;
-				const maxChunkY = minChunkY + groupChunks - 1;
-				const maxChunkZ = minChunkZ + groupChunks - 1;
+				const maxChunkX = minChunkX + GROUP_CHUNKS - 1;
+				const maxChunkY = minChunkY + GROUP_CHUNKS - 1;
+				const maxChunkZ = minChunkZ + GROUP_CHUNKS - 1;
 
 				const inRange =
 					minChunkX <= camCX + MAX_RENDER_RADIUS &&
-					camCX - maxChunkX <= MAX_RENDER_RADIUS &&
+					maxChunkX >= camCX - MAX_RENDER_RADIUS &&
 					minChunkY <= camCY + MAX_RENDER_RADIUS &&
-					camCY - maxChunkY <= MAX_RENDER_RADIUS &&
+					maxChunkY >= camCY - MAX_RENDER_RADIUS &&
 					minChunkZ <= camCZ + MAX_RENDER_RADIUS &&
-					camCZ - maxChunkZ <= MAX_RENDER_RADIUS;
+					maxChunkZ >= camCZ - MAX_RENDER_RADIUS;
 
 				if (!inRange) {
 					inFrustum = false;
@@ -640,12 +615,10 @@ export class OcclusionCuller {
 				setMeshCulled(group.opaqueMeshRef, true);
 				setMeshCulled(group.waterMeshRef, true);
 				setMeshCulled(group.cutoutMeshRef, true);
-
 				return;
 			}
 
 			const isSurfaceGroup = centerGY >= SEA_LEVEL;
-
 			const isOceanFloorGroup =
 				!isSurfaceGroup && this.hasOceanFloorGroupMember(group);
 
@@ -821,14 +794,12 @@ export class OcclusionCuller {
 			const visitedFaces = neighbor.bfsVisitedFaces;
 
 			if (
-				(visitedFaces & BFS_ORIGIN_BIT) === 0 &&
 				!hasConnectivity(visitedFaces, direction, neighbor.faceConnectivity)
 			) {
 				continue;
 			}
 
 			const entryFace = direction ^ 1;
-
 			const newSteps = nextBfsStepCost(
 				minFSteps(neighbor),
 				newChunk,
@@ -841,7 +812,6 @@ export class OcclusionCuller {
 
 			if (newChunk.bfsQueryId !== queryId) {
 				resetChunkBfs(newChunk, queryId);
-				this._topoVisibleChunks.push(newChunk);
 			}
 
 			const faceBit = 1 << entryFace;
@@ -882,6 +852,8 @@ export class OcclusionCuller {
 				current.computeFaceConnectivity();
 			}
 
+			ensureNeighborRefs(current);
+
 			const connectivity = current.faceConnectivity;
 			const connectivityRow = entryFace * 6;
 			const neighbors = current.neighborRefs;
@@ -915,7 +887,6 @@ export class OcclusionCuller {
 				}
 
 				const nextEntry = direction ^ 1;
-
 				const newSteps = nextBfsStepCost(steps, neighbor, chunkSize);
 
 				if (newSteps > MAX_BFS_STEPS) {
@@ -925,7 +896,6 @@ export class OcclusionCuller {
 				if (neighbor.bfsQueryId !== queryId) {
 					ensureNeighborRefs(neighbor);
 					resetChunkBfs(neighbor, queryId);
-					this._topoVisibleChunks.push(neighbor);
 				}
 
 				const faceBit = 1 << nextEntry;
@@ -938,7 +908,6 @@ export class OcclusionCuller {
 				}
 
 				neighbor.bfsVisitedFaces |= faceBit;
-
 				setFStep(neighbor, nextEntry, newSteps);
 
 				if (!enqueue(neighbor, nextEntry, newSteps)) {
@@ -950,10 +919,6 @@ export class OcclusionCuller {
 		clearChunkRing(_incBfsChunks, queueHead, queueTail);
 
 		if (overflowed) {
-			/*
-			 * The incremental result is incomplete. Restart the authoritative
-			 * sliced BFS rather than accepting missing reachability.
-			 */
 			this._startBFS(camCX, camCY, camCZ);
 			return;
 		}
@@ -976,9 +941,6 @@ export class OcclusionCuller {
 			initFacePairTable();
 		}
 
-		/*
-		 * Clear references from an interrupted previous query.
-		 */
 		clearChunkRing(_bfsChunks, this._bfsQHead, this._bfsQTail);
 
 		let queryId = (this._currentQueryId + 1) >>> 0;
@@ -988,7 +950,6 @@ export class OcclusionCuller {
 		}
 
 		this._currentQueryId = queryId;
-		this._topoVisibleChunks.length = 0;
 		this._bfsQueueOverflowed = false;
 
 		const dirty = pendingConnectivity;
@@ -1037,7 +998,6 @@ export class OcclusionCuller {
 
 			origin.bfsVisitedFaces = BFS_ORIGIN_BIT;
 
-			this._topoVisibleChunks.push(origin);
 			enqueueSeed(origin);
 		} else {
 			_nearbyChunksScratch.length = 0;
@@ -1067,8 +1027,6 @@ export class OcclusionCuller {
 
 				chunk.bfsVisitedFaces = BFS_ORIGIN_BIT;
 
-				this._topoVisibleChunks.push(chunk);
-
 				if (!enqueueSeed(chunk)) {
 					break;
 				}
@@ -1079,7 +1037,6 @@ export class OcclusionCuller {
 
 		if (this._bfsQueueOverflowed) {
 			clearChunkRing(_bfsChunks, queueHead, queueTail);
-
 			queueHead = 0;
 			queueTail = 0;
 		}
@@ -1109,7 +1066,6 @@ export class OcclusionCuller {
 		let queueHead = this._bfsQHead;
 		let queueTail = this._bfsQTail;
 		let processed = 0;
-
 		let overflowed = this._bfsQueueOverflowed;
 
 		while (queueHead !== queueTail && processed < budget && !overflowed) {
@@ -1118,11 +1074,7 @@ export class OcclusionCuller {
 			const entryFace = _bfsEntry[slot];
 			const steps = _bfsSteps[slot];
 
-			/*
-			 * Release the queued strong reference immediately.
-			 */
 			_bfsChunks[slot] = null;
-
 			queueHead = (queueHead + 1) & BFS_MASK;
 			processed++;
 
@@ -1138,9 +1090,10 @@ export class OcclusionCuller {
 				current.computeFaceConnectivity();
 			}
 
+			ensureNeighborRefs(current);
+
 			const connectivity = current.faceConnectivity;
 			const neighbors = current.neighborRefs;
-
 			const connectivityRow = entryFace >= 0 ? entryFace * 6 : -1;
 
 			for (let direction = 0; direction < 6; direction++) {
@@ -1173,7 +1126,6 @@ export class OcclusionCuller {
 				}
 
 				const nextEntry = direction ^ 1;
-
 				const newSteps = nextBfsStepCost(steps, neighbor, chunkSize);
 
 				if (newSteps > MAX_BFS_STEPS) {
@@ -1183,8 +1135,6 @@ export class OcclusionCuller {
 				if (neighbor.bfsQueryId !== queryId) {
 					ensureNeighborRefs(neighbor);
 					resetChunkBfs(neighbor, queryId);
-
-					this._topoVisibleChunks.push(neighbor);
 				}
 
 				const faceBit = 1 << nextEntry;
@@ -1197,7 +1147,6 @@ export class OcclusionCuller {
 				}
 
 				neighbor.bfsVisitedFaces |= faceBit;
-
 				setFStep(neighbor, nextEntry, newSteps);
 
 				const nextTail = (queueTail + 1) & BFS_MASK;
@@ -1220,10 +1169,6 @@ export class OcclusionCuller {
 		this._bfsQueueOverflowed = overflowed;
 
 		if (overflowed) {
-			/*
-			 * The frontier is incomplete, so this query cannot safely occlude
-			 * anything by reachability.
-			 */
 			clearChunkRing(_bfsChunks, queueHead, queueTail);
 
 			this._bfsQHead = 0;
@@ -1239,20 +1184,6 @@ export class OcclusionCuller {
 		}
 
 		this._bfsInProgress = false;
-
-		const visible = this._topoVisibleChunks;
-
-		let writeIndex = 0;
-
-		for (let index = 0; index < visible.length; index++) {
-			const chunk = visible[index];
-
-			if (chunk.bfsQueryId === queryId && isLiveChunk(chunk)) {
-				visible[writeIndex++] = chunk;
-			}
-		}
-
-		visible.length = writeIndex;
 		this._lastCompletedQueryId = queryId;
 	}
 }
