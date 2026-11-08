@@ -549,36 +549,40 @@ function buildNeighborArrays(
 	mask: number,
 	includeBlocks = true,
 ): void {
-	let bits = mask >>> 0;
+	const normalizedMask = mask >>> 0;
+	const registrations = _voxelRegistrations;
+	const neighborBlocks = _neighborBlocks;
+	const neighborLights = _neighborLights;
 
+	/*
+	 * Always overwrite all 26 entries because these arrays are shared between
+	 * mesh tasks. Leaving entries from a previous task would expose stale
+	 * neighbor data.
+	 */
 	for (let i = 0; i < 26; i++) {
-		if ((bits & 1) === 0) {
-			_neighborBlocks[i] = undefined;
-			_neighborLights[i] = undefined;
-			bits >>>= 1;
+		if ((normalizedMask & (1 << i)) === 0) {
+			neighborBlocks[i] = undefined;
+			neighborLights[i] = undefined;
 			continue;
 		}
 
 		const dx = NEIGHBOR_DX[i];
 		const dy = NEIGHBOR_DY[i];
 		const dz = NEIGHBOR_DZ[i];
-		const key = packCoords(cx + dx, cy + dy, cz + dz);
-		const reg = _voxelRegistrations.get(key);
+
+		const reg = registrations.get(packCoords(cx + dx, cy + dy, cz + dz));
 
 		if (reg === undefined) {
-			_neighborBlocks[i] = undefined;
-			_neighborLights[i] = undefined;
-			bits >>>= 1;
+			neighborBlocks[i] = undefined;
+			neighborLights[i] = undefined;
 			continue;
 		}
 
-		_neighborBlocks[i] = includeBlocks
+		neighborBlocks[i] = includeBlocks
 			? extractBlockBorder(reg, i, size, dx, dy, dz)
 			: undefined;
 
-		_neighborLights[i] = extractLightBorder(reg, i, size, dx, dy, dz);
-
-		bits >>>= 1;
+		neighborLights[i] = extractLightBorder(reg, i, size, dx, dy, dz);
 	}
 }
 
@@ -1043,7 +1047,8 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 
 		case WorkerTaskType.RelightMesh: {
 			const entry = relightCache.get(data.chunkId);
-			const paddedSize = data.chunk_size + 2;
+			const size = data.chunk_size;
+			const paddedSize = size + 2;
 			const expectedPaddedVolume = paddedSize * paddedSize * paddedSize;
 
 			if (
@@ -1062,33 +1067,57 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 				packCoords(data.chunkX, data.chunkY, data.chunkZ),
 			);
 
+			/*
+			 * A relight requires the current center light storage. Continuing without
+			 * it would rebuild the mesh with an empty light grid.
+			 */
+			const centerLight = centerLightArray(reg);
+
+			if (centerLight === undefined) {
+				postRelightMiss(data.chunkId, data.meshRevision, data.lod);
+				return;
+			}
+
 			buildNeighborArrays(
 				data.chunkX,
 				data.chunkY,
 				data.chunkZ,
-				data.chunk_size,
+				size,
 				data.neighborMask,
 				false,
 			);
 
-			// This object remains a per-task allocation because WorkerMeshInput
-			// is consumed synchronously by begin(). If begin() retains input,
-			// reusing a shared object would be unsafe.
+			/*
+			 * Use presence for the current request rather than entry.neighbors.
+			 *
+			 * A neighboring chunk may have loaded or unloaded since the full mesh that
+			 * created this cache entry. Reusing the old presence array would make the
+			 * current light-border data disagree with the session's neighbor gates.
+			 */
+			const currentNeighbors = presenceFromMask(data.neighborMask);
+
 			buildVoxelMeshFromInput(
 				{
-					neighbors: entry.neighbors,
-					light_array: centerLightArray(reg),
+					neighbors: currentNeighbors,
+					light_array: centerLight,
 					neighborLights: _neighborLights,
 					borderSkirtSides: data.borderSkirtSides,
 					borderSkirtNearInset: data.borderSkirtNearInset,
 				},
-				data.chunk_size,
+				size,
 				data.lod,
 				entry.grids,
 				true,
 			);
 
+			/*
+			 * Keep the cached presence state aligned with the most recent successful
+			 * relight. This is primarily useful for diagnostics and subsequent reuse.
+			 */
+			entry.neighbors = currentNeighbors;
+
 			postMeshResponse(data.chunkId, data.meshRevision, data.lod);
+
 			return;
 		}
 

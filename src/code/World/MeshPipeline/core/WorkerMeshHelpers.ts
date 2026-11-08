@@ -88,6 +88,42 @@ const OPAQUE_TEST_MASK = OPAQUE_REQUIRED | OPAQUE_FORBIDDEN;
 const CUSTOM_TEST_MASK = FLAG_SOLID | FLAG_GREEDY;
 
 /**
+ * Clear only the one-cell-thick shell of a cubic padded grid.
+ *
+ * The interior is overwritten by the current chunk data in begin(), so
+ * clearing the complete padded volume is unnecessary when only neighbor
+ * slabs are missing. For size 32 this clears 6,536 border cells instead of
+ * all 39,304 padded cells.
+ */
+function clearPaddedShell(
+	array: Uint8Array | Uint16Array,
+	ps: number,
+	ps2: number,
+): void {
+	const last = ps - 1;
+
+	// Entire -Z and +Z planes.
+	array.fill(0, 0, ps2);
+	array.fill(0, last * ps2, ps * ps2);
+
+	// For interior Z planes: clear the complete -Y and +Y rows, then the -X
+	// and +X cells of the interior Y rows.
+	for (let z = 1; z < last; z++) {
+		const zBase = z * ps2;
+
+		array.fill(0, zBase, zBase + ps);
+		array.fill(0, zBase + last * ps, zBase + last * ps + ps);
+
+		for (let y = 1; y < last; y++) {
+			const row = zBase + y * ps;
+
+			array[row] = 0;
+			array[row + last] = 0;
+		}
+	}
+}
+
+/**
  * A single build-time context for the voxel meshing pipeline.
  *
  * Before this refactor the pipeline carried its mutable per-build state in
@@ -301,7 +337,12 @@ export class MeshBuildSession implements MeshContext {
 		// Bind either externally owned relight-cache grids or session-owned
 		// fallback grids.
 		if (grids !== undefined) {
-			if (grids.block.length < psVol) {
+			if (
+				grids.block.length < psVol ||
+				grids.light.length < psVol ||
+				grids.opaque.length < psVol ||
+				grids.needsCustom.length < psVol
+			) {
 				grids.block = new Uint16Array(psVol);
 				grids.light = new Uint8Array(psVol);
 				grids.opaque = new Uint8Array(psVol);
@@ -324,43 +365,60 @@ export class MeshBuildSession implements MeshContext {
 		const padded = this.block;
 		const paddedLight = this.light;
 
-		// Missing block neighbors leave stale border cells unless the block grid
-		// is cleared before it is repopulated.
-		let needBlockClear = false;
+		/**
+		 * Determine which stale regions must be cleared.
+		 *
+		 * During a normal full build, the current chunk overwrites the complete
+		 * interior. Missing neighbors therefore require clearing only the shell.
+		 * If the chunk has no block/light source, the corresponding interior is
+		 * not overwritten and the complete grid must be cleared.
+		 */
+		let missingBlockNeighbor = false;
+		let missingLightNeighbor = neighborLights === undefined;
 
 		if (!skipBlockFill) {
 			for (let i = 0; i < 26; i++) {
 				if (neighbors[i] === undefined) {
-					needBlockClear = true;
+					missingBlockNeighbor = true;
 					break;
 				}
 			}
 		}
 
-		// The light grid must be cleared when either the chunk light array or any
-		// neighbor light slab is unavailable.
-		let needLightClear =
-			lightArray === undefined || neighborLights === undefined;
-
-		if (!needLightClear) {
+		if (!missingLightNeighbor) {
 			// Narrow once so the hot loops below do not repeatedly evaluate the
 			// optional neighborLights value.
 			const lights = neighborLights as (Uint8Array | undefined)[];
 
 			for (let i = 0; i < 26; i++) {
 				if (lights[i] === undefined) {
-					needLightClear = true;
+					missingLightNeighbor = true;
 					break;
 				}
 			}
 		}
 
-		if (needBlockClear) {
-			padded.fill(0, 0, psVol);
+		if (!skipBlockFill) {
+			const hasInteriorBlockSource =
+				uniformFill !== undefined || blockArray != null;
+
+			if (!hasInteriorBlockSource) {
+				// No current block data — e.g. an all-air palette chunk — means
+				// stale interior cells must go too.
+				padded.fill(0, 0, psVol);
+			} else if (missingBlockNeighbor) {
+				// Missing block neighbors only leave stale shell cells.
+				clearPaddedShell(padded, ps, ps2);
+			}
 		}
 
-		if (needLightClear) {
+		if (lightArray === undefined) {
+			// Relights and full builds both require stale interior light to be
+			// removed when no current center-light source exists.
 			paddedLight.fill(0, 0, psVol);
+		} else if (missingLightNeighbor) {
+			// The interior light is overwritten below; only the shell is stale.
+			clearPaddedShell(paddedLight, ps, ps2);
 		}
 
 		// ---------------------------------------------------------------------
@@ -441,18 +499,21 @@ export class MeshBuildSession implements MeshContext {
 		// Neighbor padding
 		// ---------------------------------------------------------------------
 
-		for (let ni = 0; ni < 26; ni++) {
+		for (let ni = 0, offsetBase = 0; ni < 26; ni++, offsetBase += 3) {
 			const neighbor = neighbors[ni];
 			const neighborLight =
 				neighborLights === undefined ? undefined : neighborLights[ni];
 
-			// Block borders require block data. Light-only remeshes can populate
-			// padding from light slabs without receiving block slabs again.
-			if (neighbor === undefined && neighborLight === undefined) {
+			// Block borders require block data. Relights may receive only the
+			// corresponding light slab.
+			const copyBlocks = !skipBlockFill && neighbor !== undefined;
+			const copyLights = neighborLight !== undefined;
+
+			// Nothing to copy for this neighbor at all — no slab is required.
+			if (!copyBlocks && !copyLights) {
 				continue;
 			}
 
-			const offsetBase = ni * 3;
 			const ox = NEIGHBOR_OFFSETS_FLAT[offsetBase];
 			const oy = NEIGHBOR_OFFSETS_FLAT[offsetBase + 1];
 			const oz = NEIGHBOR_OFFSETS_FLAT[offsetBase + 2];
@@ -467,11 +528,10 @@ export class MeshBuildSession implements MeshContext {
 
 			const pZStart = oz < 0 ? 0 : oz > 0 ? size + 1 : 1;
 
-			let source = 0;
-
+			// Faces perpendicular to Y or Z contain contiguous X rows.
 			if (xCount === size) {
-				// Face slabs are contiguous in X. Copy each row without creating
-				// temporary subarray views.
+				// Copy each row without creating temporary subarray views.
+				let source = 0;
 				let destinationZBase = pZStart * ps2;
 
 				for (let dz = 0; dz < zCount; dz++) {
@@ -480,29 +540,30 @@ export class MeshBuildSession implements MeshContext {
 					for (let dy = 0; dy < yCount; dy++) {
 						const rowEnd = source + size;
 
-						if (!skipBlockFill && neighbor !== undefined) {
-							if (neighborLight !== undefined) {
-								while (source < rowEnd) {
-									padded[destination] = neighbor[source];
+						if (copyBlocks && copyLights) {
+							const blocks = neighbor as Uint16Array;
+							const lights = neighborLight as Uint8Array;
 
-									paddedLight[destination] = neighborLight[source];
-
-									destination++;
-									source++;
-								}
-							} else {
-								while (source < rowEnd) {
-									padded[destination++] = neighbor[source++];
-								}
-							}
-						} else if (neighborLight !== undefined) {
 							while (source < rowEnd) {
-								paddedLight[destination++] = neighborLight[source++];
+								padded[destination] = blocks[source];
+
+								paddedLight[destination] = lights[source];
+
+								source++;
+								destination++;
+							}
+						} else if (copyBlocks) {
+							const blocks = neighbor as Uint16Array;
+
+							while (source < rowEnd) {
+								padded[destination++] = blocks[source++];
 							}
 						} else {
-							// A block slab may be present during a block-fill skip,
-							// but there is deliberately nothing to copy.
-							source = rowEnd;
+							const lights = neighborLight as Uint8Array;
+
+							while (source < rowEnd) {
+								paddedLight[destination++] = lights[source++];
+							}
 						}
 
 						// Move from the end of this X row to the same X start in
@@ -512,31 +573,57 @@ export class MeshBuildSession implements MeshContext {
 
 					destinationZBase += ps2;
 				}
-			} else {
-				// Edge and corner slabs contain one X value per logical cell.
-				// Keep the original generalized loops for clarity and correctness.
-				let destinationZBase = pZStart * ps2;
+
+				continue;
+			}
+
+			// X-normal faces, edges, and corners contain one X value for each
+			// logical Y/Z position (xCount is 1 here), so there is no dx loop.
+			let source = 0;
+			let destinationZBase = pZStart * ps2;
+
+			if (copyBlocks && copyLights) {
+				const blocks = neighbor as Uint16Array;
+				const lights = neighborLight as Uint8Array;
 
 				for (let dz = 0; dz < zCount; dz++) {
-					let destinationYBase = pYStart * ps + destinationZBase;
+					let destination = pXStart + pYStart * ps + destinationZBase;
 
 					for (let dy = 0; dy < yCount; dy++) {
-						let destination = pXStart + destinationYBase;
+						padded[destination] = blocks[source];
 
-						for (let dx = 0; dx < xCount; dx++) {
-							if (!skipBlockFill && neighbor !== undefined) {
-								padded[destination] = neighbor[source];
-							}
+						paddedLight[destination] = lights[source];
 
-							if (neighborLight !== undefined) {
-								paddedLight[destination] = neighborLight[source];
-							}
+						source++;
+						destination += ps;
+					}
 
-							destination++;
-							source++;
-						}
+					destinationZBase += ps2;
+				}
+			} else if (copyBlocks) {
+				const blocks = neighbor as Uint16Array;
 
-						destinationYBase += ps;
+				for (let dz = 0; dz < zCount; dz++) {
+					let destination = pXStart + pYStart * ps + destinationZBase;
+
+					for (let dy = 0; dy < yCount; dy++) {
+						padded[destination] = blocks[source++];
+
+						destination += ps;
+					}
+
+					destinationZBase += ps2;
+				}
+			} else {
+				const lights = neighborLight as Uint8Array;
+
+				for (let dz = 0; dz < zCount; dz++) {
+					let destination = pXStart + pYStart * ps + destinationZBase;
+
+					for (let dy = 0; dy < yCount; dy++) {
+						paddedLight[destination] = lights[source++];
+
+						destination += ps;
 					}
 
 					destinationZBase += ps2;
@@ -561,41 +648,38 @@ export class MeshBuildSession implements MeshContext {
 		this.ownedNeedsCustom = new Uint8Array(psVol);
 	}
 
-	// One classification byte per possible Uint16 packed block ID:
+	// ── Persistent packed-block classification cache ────────────────────────
 	//
-	// bit 0: opaque full cube
-	// bit 1: requires custom geometry
+	// Block flags do not change between mesh builds after shape/block
+	// initialization (BlockInfoCache builds each packed value's entry lazily
+	// and never mutates it). Cache each Uint16 packed value permanently
+	// instead of stamping and recomputing encountered IDs once per build.
+	//
+	// 0 = not classified
+	// 1 = classified: neither opaque nor custom
+	// 2 = classified: opaque
+	// 3 = classified: custom
+	// 4 is unused because opaque and custom are mutually exclusive here.
+	//
+	// If block definitions can ever be reloaded at runtime, an explicit
+	// blockClassification.fill(0) must be added at that point.
 	private readonly blockClassification = new Uint8Array(0x1_0000);
 
-	/*
-	 * Generation stamps avoid clearing blockClassification every build.
-	 * A packed block ID is recomputed only when its stamp differs from the
-	 * current classification generation.
+	/**
+	 * Return classification bits:
+	 *
+	 * bit 0: opaque full cube
+	 * bit 1: requires custom geometry
+	 *
+	 * The cache stores classification + 1 so zero remains the uninitialized
+	 * sentinel.
 	 */
-	private readonly blockClassificationStamp = new Uint32Array(0x1_0000);
-
-	private blockClassificationGeneration = 0;
-	private beginBlockClassificationGeneration(): number {
-		let generation = (this.blockClassificationGeneration + 1) >>> 0;
-
-		if (generation === 0) {
-			this.blockClassificationStamp.fill(0);
-			generation = 1;
-		}
-
-		this.blockClassificationGeneration = generation;
-		return generation;
-	}
-	private classifyPackedBlock(packed: number, generation: number): number {
-		/*
-		 * The padded block grid is Uint16, but masking documents the indexing
-		 * contract and protects this helper if called independently later.
-		 */
+	private classifyPackedBlock(packed: number): number {
 		const blockId = packed & 0xffff;
-		const stamps = this.blockClassificationStamp;
+		const cached = this.blockClassification[blockId];
 
-		if (stamps[blockId] === generation) {
-			return this.blockClassification[blockId];
+		if (cached !== 0) {
+			return cached - 1;
 		}
 
 		const flags = getCachedFlagsAndId(blockId) & 0xffff;
@@ -603,21 +687,12 @@ export class MeshBuildSession implements MeshContext {
 		let classification = 0;
 
 		if ((flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED) {
-			classification |= 1;
+			classification = 1;
+		} else if ((flags & CUSTOM_TEST_MASK) === FLAG_SOLID) {
+			classification = 2;
 		}
 
-		if ((flags & CUSTOM_TEST_MASK) === FLAG_SOLID) {
-			classification |= 2;
-		}
-
-		this.blockClassification[blockId] = classification;
-
-		/*
-		 * Publish the classification before its matching stamp. JavaScript workers
-		 * are single-threaded and these arrays are not shared, but this order also
-		 * makes the cache invariant explicit.
-		 */
-		stamps[blockId] = generation;
+		this.blockClassification[blockId] = classification + 1;
 
 		return classification;
 	}
@@ -628,8 +703,8 @@ export class MeshBuildSession implements MeshContext {
 	 *
 	 * `computeCustom` is false for lodStep > 1. emitCustomShapes early-outs on
 	 * lodStep > 1 anyway (custom shapes are not emitted at reduced LOD), so
-	 * needsCustom has no consumer at those LODs — skipping it drops one cache
-	 * probe and two byte stores per cell, ~39k of each per chunk.
+	 * needsCustom has no consumer at those LODs — skipping it drops one byte
+	 * load and two byte stores per cell, ~39k of each per chunk.
 	 *
 	 * NOTE: the opaque pass itself must stay full-resolution. emitLodBorderSkirts
 	 * runs only when lodStep > 1 and reads opaque[] at EVERY y of the four border
@@ -641,53 +716,180 @@ export class MeshBuildSession implements MeshContext {
 		psVol: number,
 		computeCustom: boolean,
 	): void {
-		const padded = this.block;
-		const opaqueBits = this.opaque;
-		const customBits = this.needsCustom;
-		const classifications = this.blockClassification;
-		const stamps = this.blockClassificationStamp;
-		const generation = this.beginBlockClassificationGeneration();
+		const blocks = this.block;
+		const opaque = this.opaque;
+		const custom = this.needsCustom;
+		const cache = this.blockClassification;
 
 		let customCount = 0;
+		let index = 0;
 
 		if (computeCustom) {
-			for (let i = 0; i < psVol; i++) {
-				const blockId = padded[i];
-				let classification: number;
+			const bulkEnd = psVol & ~3;
 
-				if (stamps[blockId] === generation) {
-					classification = classifications[blockId];
-				} else {
-					classification = this.classifyPackedBlock(blockId, generation);
+			for (; index < bulkEnd; index += 4) {
+				let blockId = blocks[index];
+				let encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
 				}
 
-				/*
-				 * Classification bits are already 0 or 1 after shifting, so they
-				 * can be written directly without ternaries.
-				 */
-				opaqueBits[i] = classification & 1;
+				let classification = encoded - 1;
+				opaque[index] = classification & 1;
 
-				const custom = classification >>> 1;
-				customBits[i] = custom;
-				customCount += custom;
+				let customBit = classification >>> 1;
+				custom[index] = customBit;
+				customCount += customBit;
+
+				blockId = blocks[index + 1];
+				encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
+				}
+
+				classification = encoded - 1;
+				opaque[index + 1] = classification & 1;
+
+				customBit = classification >>> 1;
+				custom[index + 1] = customBit;
+				customCount += customBit;
+
+				blockId = blocks[index + 2];
+				encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
+				}
+
+				classification = encoded - 1;
+				opaque[index + 2] = classification & 1;
+
+				customBit = classification >>> 1;
+				custom[index + 2] = customBit;
+				customCount += customBit;
+
+				blockId = blocks[index + 3];
+				encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
+				}
+
+				classification = encoded - 1;
+				opaque[index + 3] = classification & 1;
+
+				customBit = classification >>> 1;
+				custom[index + 3] = customBit;
+				customCount += customBit;
+			}
+
+			for (; index < psVol; index++) {
+				const blockId = blocks[index];
+				let encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
+				}
+
+				const classification = encoded - 1;
+				const customBit = classification >>> 1;
+
+				opaque[index] = classification & 1;
+				custom[index] = customBit;
+				customCount += customBit;
 			}
 		} else {
-			for (let i = 0; i < psVol; i++) {
-				const blockId = padded[i];
-				let classification: number;
+			const bulkEnd = psVol & ~7;
 
-				if (stamps[blockId] === generation) {
-					classification = classifications[blockId];
-				} else {
-					/*
-					 * Custom classification is calculated too. This keeps one
-					 * cache representation and usually costs nothing meaningful,
-					 * since each distinct block ID is classified only once.
-					 */
-					classification = this.classifyPackedBlock(blockId, generation);
+			/*
+			 * Reduced LOD does not consume needsCustom. Use a wider unrolled loop
+			 * because only one output byte is written per cell.
+			 */
+			for (; index < bulkEnd; index += 8) {
+				let blockId = blocks[index];
+				let encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
 				}
 
-				opaqueBits[i] = classification & 1;
+				opaque[index] = (encoded - 1) & 1;
+
+				blockId = blocks[index + 1];
+				encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
+				}
+
+				opaque[index + 1] = (encoded - 1) & 1;
+
+				blockId = blocks[index + 2];
+				encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
+				}
+
+				opaque[index + 2] = (encoded - 1) & 1;
+
+				blockId = blocks[index + 3];
+				encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
+				}
+
+				opaque[index + 3] = (encoded - 1) & 1;
+
+				blockId = blocks[index + 4];
+				encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
+				}
+
+				opaque[index + 4] = (encoded - 1) & 1;
+
+				blockId = blocks[index + 5];
+				encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
+				}
+
+				opaque[index + 5] = (encoded - 1) & 1;
+
+				blockId = blocks[index + 6];
+				encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
+				}
+
+				opaque[index + 6] = (encoded - 1) & 1;
+
+				blockId = blocks[index + 7];
+				encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
+				}
+
+				opaque[index + 7] = (encoded - 1) & 1;
+			}
+
+			for (; index < psVol; index++) {
+				const blockId = blocks[index];
+				let encoded = cache[blockId];
+
+				if (encoded === 0) {
+					encoded = this.classifyPackedBlock(blockId) + 1;
+				}
+
+				opaque[index] = (encoded - 1) & 1;
 			}
 		}
 
