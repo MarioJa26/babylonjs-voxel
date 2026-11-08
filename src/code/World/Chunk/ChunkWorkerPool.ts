@@ -2814,36 +2814,34 @@ export class ChunkWorkerPool {
 
 		const remoteKey = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 
-		// Remote-generation cleanup. These structures can otherwise retain
-		// disposed Chunk objects and their voxel/light SharedArrayBuffers.
 		this.remote.onChunkDisposed(chunk, remoteKey);
 
-		// Map cleanups.
 		this.remeshStaging.delete(chunk);
 		this.remeshHeap.remove(chunk);
 		this.terrainTasks.remove(chunk);
 		this.deferredLight.invalidate(chunk);
 		this.remeshFlight.deleteBaseline(chunk.id);
 		this.debugLightSeedLengths.delete(chunk.id);
+		this.remeshSaver.delete(chunk.id);
 
-		// Lazy tombstone cleanup for arrays. Do not splice here, because unload
-		// storms would become O(nÂ²). Queue drains validate live chunks and compact.
 		for (let lod = 0; lod < 16; lod++) {
 			const key = packInflightKey(chunk.numericId, lod);
+
 			this.lodPrecomputes.deleteKey(key);
 			this.relights.deleteKey(key);
 		}
+
 		this.remeshFlight.clearAll(chunk);
 
 		for (let i = 0; i < this.workerTaskContext.length; i++) {
 			const ctx = this.workerTaskContext[i];
 
 			if (
-				ctx &&
+				ctx !== null &&
+				ctx.chunk === chunk &&
 				(ctx.taskType === TaskType.Remesh ||
 					ctx.taskType === TaskType.LodPrecompute ||
-					ctx.taskType === TaskType.Relight) &&
-				ctx.chunk === chunk
+					ctx.taskType === TaskType.Relight)
 			) {
 				this.remeshFlight.clear(chunk, ctx.lod);
 			}
@@ -2860,6 +2858,7 @@ export class ChunkWorkerPool {
 			true,
 		);
 	}
+
 	public static async teardownForHmr(): Promise<void> {
 		const instance = ChunkWorkerPool.instance;
 		if (!instance) return;

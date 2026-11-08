@@ -8,51 +8,66 @@ export const chunkByNumericKey = new Map<number, Chunk>();
 // 256 sets x 4 ways = 1,024 cache entries.
 //
 // Each lookup examines only the four entries assigned to its coordinate hash.
-// The cache uses round-robin replacement independently within each set.
+// Replacement is round-robin independently within each set.
+//
+// These values must remain powers of two because masking is used instead of
+// remainder operations.
 const FAST_SET_COUNT = 256;
 const FAST_WAYS = 4;
 const FAST_SLOTS = FAST_SET_COUNT * FAST_WAYS;
 
 const FAST_SET_MASK = FAST_SET_COUNT - 1;
 const FAST_WAY_MASK = FAST_WAYS - 1;
+const FAST_SET_SHIFT = 2;
 
-const EMPTY_COORDINATE = 0x7fffffff;
+// Numeric-key coordinate limits.
+const NUMERIC_XZ_MIN = -1048576;
+const NUMERIC_XZ_MAX = 1048576;
+const NUMERIC_Y_MIN = -1024;
+const NUMERIC_Y_MAX = 1024;
 
-// Structure-of-arrays layout keeps coordinate probes compact and avoids
-// allocating cache-entry objects.
+/*
+ * Structure-of-arrays layout keeps probes compact and avoids cache-entry
+ * object allocations.
+ *
+ * Coordinate arrays do not need sentinel initialization. fastOccupied is the
+ * authoritative validity marker, so values in unoccupied slots are ignored.
+ */
 const fastX = new Int32Array(FAST_SLOTS);
 const fastY = new Int32Array(FAST_SLOTS);
 const fastZ = new Int32Array(FAST_SLOTS);
 const fastChunks: (Chunk | undefined)[] = new Array(FAST_SLOTS);
 
-// Distinguishes an unused slot from a valid cached miss.
-//
-// fastOccupied[index] === 0:
-//     Slot is unused.
-//
-// fastOccupied[index] === 1 && fastChunks[index] === undefined:
-//     Slot contains a cached miss.
+/*
+ * Distinguishes an unused slot from a cached miss.
+ *
+ * fastOccupied[index] === 0:
+ *     Slot is unused.
+ *
+ * fastOccupied[index] === 1 && fastChunks[index] === undefined:
+ *     Slot contains a cached miss.
+ */
 const fastOccupied = new Uint8Array(FAST_SLOTS);
 
 // Round-robin replacement cursor for each set.
 const fastCursors = new Uint8Array(FAST_SET_COUNT);
 
-// Allows positive entries to be invalidated by Chunk identity without
-// scanning the entire cache.
+/*
+ * Allows positive entries to be invalidated by Chunk identity without
+ * scanning the complete cache.
+ *
+ * Each Chunk can have at most one positive fast-cache entry.
+ */
 const fastSlotByChunk = new WeakMap<Chunk, number>();
-
-fastX.fill(EMPTY_COORDINATE);
-fastY.fill(EMPTY_COORDINATE);
-fastZ.fill(EMPTY_COORDINATE);
 
 function inNumericRange(x: number, y: number, z: number): boolean {
 	return (
-		x >= -1048576 &&
-		x < 1048576 &&
-		z >= -1048576 &&
-		z < 1048576 &&
-		y >= -1024 &&
-		y < 1024
+		x >= NUMERIC_XZ_MIN &&
+		x < NUMERIC_XZ_MAX &&
+		z >= NUMERIC_XZ_MIN &&
+		z < NUMERIC_XZ_MAX &&
+		y >= NUMERIC_Y_MIN &&
+		y < NUMERIC_Y_MAX
 	);
 }
 
@@ -65,10 +80,6 @@ function inNumericRange(x: number, y: number, z: number): boolean {
  * 73856093 % 256 = 93
  * 19349663 % 256 = 159
  * 83492791 % 256 = 183
- *
- * Math.imul preserves the original signed 32-bit coordinate hashing behavior,
- * including for negative coordinates and coordinates outside the numeric-key
- * range.
  */
 function getFastSet(x: number, y: number, z: number): number {
 	return (
@@ -76,6 +87,13 @@ function getFastSet(x: number, y: number, z: number): number {
 	);
 }
 
+/**
+ * Clear one fast-cache slot.
+ *
+ * Coordinate arrays are deliberately not reset because fastOccupied controls
+ * whether their contents are valid. Avoiding those writes reduces cache
+ * invalidation work.
+ */
 function clearFastSlot(index: number): void {
 	if (fastOccupied[index] === 0) {
 		return;
@@ -88,9 +106,6 @@ function clearFastSlot(index: number): void {
 	}
 
 	fastOccupied[index] = 0;
-	fastX[index] = EMPTY_COORDINATE;
-	fastY[index] = EMPTY_COORDINATE;
-	fastZ[index] = EMPTY_COORDINATE;
 	fastChunks[index] = undefined;
 }
 
@@ -101,11 +116,17 @@ function writeFastSlot(
 	z: number,
 	chunk: Chunk | undefined,
 ): void {
+	/*
+	 * Clear the replacement slot first so its previous positive entry is
+	 * removed from fastSlotByChunk.
+	 */
 	clearFastSlot(index);
 
 	if (chunk !== undefined) {
-		// Preserve the invariant that each Chunk has at most one positive
-		// entry in the fast cache.
+		/*
+		 * Preserve the invariant that each Chunk has at most one positive
+		 * cache entry.
+		 */
 		const previousIndex = fastSlotByChunk.get(chunk);
 
 		if (previousIndex !== undefined && previousIndex !== index) {
@@ -119,29 +140,45 @@ function writeFastSlot(
 	fastY[index] = y;
 	fastZ[index] = z;
 	fastChunks[index] = chunk;
+
+	/*
+	 * Publish occupancy last. This keeps the slot internally coherent even
+	 * though JavaScript execution is single-threaded here.
+	 */
 	fastOccupied[index] = 1;
 }
 
+/**
+ * Invalidates a Chunk's positive cache entry and any cached miss stored for
+ * its current coordinates.
+ */
 export function invalidateFastChunkCache(chunk: Chunk): void {
-	// Clear a positive entry directly by object identity.
+	const x = chunk.chunkX;
+	const y = chunk.chunkY;
+	const z = chunk.chunkZ;
+
+	/*
+	 * Clear a positive entry directly by object identity.
+	 */
 	const chunkSlot = fastSlotByChunk.get(chunk);
 
 	if (chunkSlot !== undefined) {
 		clearFastSlot(chunkSlot);
 	}
 
-	// Cached misses contain no Chunk reference. Only inspect the four slots
-	// belonging to this coordinate's set.
-	const setStart = getFastSet(chunk.chunkX, chunk.chunkY, chunk.chunkZ) << 2;
+	/*
+	 * Cached misses have no Chunk identity. Only inspect the four slots in the
+	 * coordinate's set.
+	 */
+	const setStart = getFastSet(x, y, z) << FAST_SET_SHIFT;
+	const end = setStart + FAST_WAYS;
 
-	for (let way = 0; way < FAST_WAYS; way++) {
-		const index = setStart + way;
-
+	for (let index = setStart; index < end; index++) {
 		if (
 			fastOccupied[index] !== 0 &&
-			fastX[index] === chunk.chunkX &&
-			fastY[index] === chunk.chunkY &&
-			fastZ[index] === chunk.chunkZ
+			fastX[index] === x &&
+			fastY[index] === y &&
+			fastZ[index] === z
 		) {
 			clearFastSlot(index);
 		}
@@ -149,36 +186,48 @@ export function invalidateFastChunkCache(chunk: Chunk): void {
 }
 
 export function registerChunk(chunk: Chunk): void {
+	const x = chunk.chunkX;
+	const y = chunk.chunkY;
+	const z = chunk.chunkZ;
+
+	/*
+	 * Invalidate before publishing the replacement. This removes a cached miss
+	 * and any stale positive cache entry for this object.
+	 */
+	invalidateFastChunkCache(chunk);
+
 	chunkInstances.set(chunk.id, chunk);
 
-	if (inNumericRange(chunk.chunkX, chunk.chunkY, chunk.chunkZ)) {
-		const numericKey = packChunkKeyFast(
-			chunk.chunkX,
-			chunk.chunkY,
-			chunk.chunkZ,
-		);
-
-		chunkByNumericKey.set(numericKey, chunk);
+	if (inNumericRange(x, y, z)) {
+		chunkByNumericKey.set(packChunkKeyFast(x, y, z), chunk);
 	}
-
-	// Clears stale positive entries and cached misses for this coordinate.
-	invalidateFastChunkCache(chunk);
 }
 
 export function unregisterChunk(chunk: Chunk): void {
-	chunkInstances.delete(chunk.id);
+	const x = chunk.chunkX;
+	const y = chunk.chunkY;
+	const z = chunk.chunkZ;
 
-	if (inNumericRange(chunk.chunkX, chunk.chunkY, chunk.chunkZ)) {
-		const numericKey = packChunkKeyFast(
-			chunk.chunkX,
-			chunk.chunkY,
-			chunk.chunkZ,
-		);
-
-		chunkByNumericKey.delete(numericKey);
+	/*
+	 * Delete only when this exact object remains authoritative. A replacement
+	 * Chunk may already have been registered for the same ID or coordinates.
+	 */
+	if (chunkInstances.get(chunk.id) === chunk) {
+		chunkInstances.delete(chunk.id);
 	}
 
-	// Prevent getChunkFast from returning the unregistered cached object.
+	if (inNumericRange(x, y, z)) {
+		const numericKey = packChunkKeyFast(x, y, z);
+
+		if (chunkByNumericKey.get(numericKey) === chunk) {
+			chunkByNumericKey.delete(numericKey);
+		}
+	}
+
+	/*
+	 * Prevent the fast cache from returning the unregistered object. This also
+	 * clears any cached entry matching the object's current coordinates.
+	 */
 	invalidateFastChunkCache(chunk);
 }
 
@@ -188,17 +237,20 @@ export function getChunkFast(
 	z: number,
 ): Chunk | undefined {
 	/*
-	 * Inline the hash in this hottest function.
+	 * Inline the coordinate hash in this hottest function.
 	 *
-	 * The reduced multipliers produce the same lowest eight hash bits as the
-	 * original multipliers, which is all that FAST_SET_MASK retains.
+	 * The reduced multipliers produce the same lowest eight bits as the
+	 * original multipliers, which is all FAST_SET_MASK retains.
 	 */
 	const set =
 		(Math.imul(x, 93) ^ Math.imul(y, 159) ^ Math.imul(z, 183)) & FAST_SET_MASK;
 
-	// FAST_WAYS is fixed at four.
-	const setStart = set << 2;
+	const setStart = set << FAST_SET_SHIFT;
 
+	/*
+	 * The four ways are intentionally unrolled. This avoids loop bookkeeping
+	 * and gives JavaScript engines fixed probe offsets.
+	 */
 	let index = setStart;
 
 	if (
@@ -218,7 +270,10 @@ export function getChunkFast(
 			return cached;
 		}
 
-		// The object moved without explicit invalidation.
+		/*
+		 * The object moved without explicit invalidation. Remove this stale
+		 * positive entry and continue to the authoritative maps.
+		 */
 		clearFastSlot(index);
 	}
 
@@ -287,14 +342,17 @@ export function getChunkFast(
 
 	let chunk: Chunk | undefined;
 
-	// Inline the range check on the cache-miss path.
+	/*
+	 * Inline the range check on the cache-miss path. Most lookups should return
+	 * from the four probes above.
+	 */
 	if (
-		x >= -1048576 &&
-		x < 1048576 &&
-		z >= -1048576 &&
-		z < 1048576 &&
-		y >= -1024 &&
-		y < 1024
+		x >= NUMERIC_XZ_MIN &&
+		x < NUMERIC_XZ_MAX &&
+		z >= NUMERIC_XZ_MIN &&
+		z < NUMERIC_XZ_MAX &&
+		y >= NUMERIC_Y_MIN &&
+		y < NUMERIC_Y_MAX
 	) {
 		chunk = chunkByNumericKey.get(packChunkKeyFast(x, y, z));
 	} else {

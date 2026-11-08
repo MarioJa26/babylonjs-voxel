@@ -28,12 +28,19 @@ export class BackgroundLodScanner {
 	 *
 	 * Entries are kept in ascending score order. Their length never exceeds
 	 * LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE.
+	 *
+	 * Candidate keys are retained with each entry so dispatch does not need to
+	 * repack the chunk ID and LOD.
 	 */
-	private candidateChunks: Chunk[] = [];
-	private candidateLods: number[] = [];
-	private candidateScores: number[] = [];
+	private readonly candidateChunks: Chunk[] = [];
+	private readonly candidateLods: number[] = [];
+	private readonly candidateKeys: number[] = [];
+	private readonly candidateScores: number[] = [];
 
-	private queryScratch: Chunk[] = [];
+	/**
+	 * Reused spatial-query output.
+	 */
+	private readonly queryScratch: Chunk[] = [];
 
 	scan(
 		host: LodScanHost,
@@ -59,8 +66,10 @@ export class BackgroundLodScanner {
 		);
 
 		/*
-		 * A full-radius spatial query is unnecessary while enough work is
-		 * already queued to keep the precompute pipeline occupied.
+		 * Avoid the full spatial query while enough work is already queued to
+		 * keep the background precompute pipeline occupied.
+		 *
+		 * Division avoids possible overflow from maxEnqueue * 2.
 		 */
 		if (host.queuedCount() >= maxEnqueue * 2) {
 			return;
@@ -76,10 +85,12 @@ export class BackgroundLodScanner {
 
 		const candidateChunks = this.candidateChunks;
 		const candidateLods = this.candidateLods;
+		const candidateKeys = this.candidateKeys;
 		const candidateScores = this.candidateScores;
 
 		candidateChunks.length = 0;
 		candidateLods.length = 0;
+		candidateKeys.length = 0;
 		candidateScores.length = 0;
 
 		const queryScratch = this.queryScratch;
@@ -106,15 +117,19 @@ export class BackgroundLodScanner {
 				continue;
 			}
 
-			const deltaX = Math.abs(chunk.chunkX - centerChunkX);
-			const deltaZ = Math.abs(chunk.chunkZ - centerChunkZ);
+			const offsetX = chunk.chunkX - centerChunkX;
+			const offsetZ = chunk.chunkZ - centerChunkZ;
+
+			const deltaX = offsetX < 0 ? -offsetX : offsetX;
+			const deltaZ = offsetZ < 0 ? -offsetZ : offsetZ;
 			const horizontalDistance = deltaX > deltaZ ? deltaX : deltaZ;
 
 			if (horizontalDistance > horizontalRadius) {
 				continue;
 			}
 
-			const verticalDistance = Math.abs(chunk.chunkY - centerChunkY);
+			const offsetY = chunk.chunkY - centerChunkY;
+			const verticalDistance = offsetY < 0 ? -offsetY : offsetY;
 
 			if (verticalDistance > verticalRadius) {
 				continue;
@@ -123,6 +138,8 @@ export class BackgroundLodScanner {
 			/*
 			 * The distance component is shared by both LOD candidates.
 			 * Lower scores have higher scheduling priority.
+			 *
+			 * LOD 2 sorts immediately before LOD 3 for the same chunk.
 			 */
 			const distanceScore = horizontalDistance * 100 + verticalDistance * 10;
 
@@ -132,8 +149,8 @@ export class BackgroundLodScanner {
 		}
 
 		/*
-		 * Release query references immediately. The candidate buffers retain
-		 * only the small number of chunks that may actually be enqueued.
+		 * Release query references immediately. Candidate buffers retain only
+		 * the bounded set that may be dispatched.
 		 */
 		queryScratch.length = 0;
 
@@ -146,19 +163,17 @@ export class BackgroundLodScanner {
 		let added = 0;
 
 		for (let i = 0; i < candidateCount; i++) {
-			const chunk = candidateChunks[i];
-			const lod = candidateLods[i];
-			const key = packInflightKey(chunk.numericId, lod);
+			const key = candidateKeys[i];
 
 			/*
-			 * Recheck at dispatch time because host state may have changed
-			 * through callbacks or other scheduling paths.
+			 * Recheck because host state may have changed through another
+			 * scheduling path since candidate selection.
 			 */
 			if (host.hasQueued(key)) {
 				continue;
 			}
 
-			host.enqueue(chunk, lod, key);
+			host.enqueue(candidateChunks[i], candidateLods[i], key);
 			added++;
 		}
 
@@ -167,6 +182,7 @@ export class BackgroundLodScanner {
 		 */
 		candidateChunks.length = 0;
 		candidateLods.length = 0;
+		candidateKeys.length = 0;
 		candidateScores.length = 0;
 
 		if (added > 0) {
@@ -175,10 +191,10 @@ export class BackgroundLodScanner {
 	}
 
 	/**
-	 * Add an eligible candidate to the bounded, score-sorted candidate list.
+	 * Adds an eligible candidate to the bounded, score-sorted list.
 	 *
-	 * Equal scores retain discovery order, matching stable ascending sort
-	 * behavior. Storage never grows beyond `capacity`.
+	 * Equal scores retain discovery order. Storage never grows beyond
+	 * `capacity`.
 	 */
 	private considerCandidate(
 		host: LodScanHost,
@@ -201,19 +217,16 @@ export class BackgroundLodScanner {
 		const candidateCount = scores.length;
 
 		/*
-		 * If the buffer is full and this candidate is no better than the
-		 * current worst candidate, it cannot enter the top-N set.
-		 *
-		 * Equal-score candidates are rejected here so earlier discovery order
-		 * wins, matching a stable full-array sort.
+		 * When full, candidates equal to or worse than the current last entry
+		 * cannot enter the stable top-N set.
 		 */
 		if (candidateCount === capacity && score >= scores[candidateCount - 1]) {
 			return;
 		}
 
 		/*
-		 * Find the first score greater than this candidate's score. Inserting
-		 * after equal scores preserves discovery order for ties.
+		 * Upper-bound binary search: insert after existing equal scores to
+		 * preserve discovery order.
 		 */
 		let low = 0;
 		let high = candidateCount;
@@ -231,14 +244,17 @@ export class BackgroundLodScanner {
 		const insertAt = low;
 		const chunks = this.candidateChunks;
 		const lods = this.candidateLods;
+		const keys = this.candidateKeys;
 
 		if (candidateCount < capacity) {
 			/*
-			 * Extend the arrays before shifting entries right.
+			 * Extend the arrays once before shifting entries right.
+			 * Placeholder values are overwritten below.
 			 */
-			chunks.push(chunk);
-			lods.push(lod);
-			scores.push(score);
+			chunks.length = candidateCount + 1;
+			lods.length = candidateCount + 1;
+			keys.length = candidateCount + 1;
+			scores.length = candidateCount + 1;
 		}
 
 		const lastIndex = candidateCount < capacity ? candidateCount : capacity - 1;
@@ -246,11 +262,13 @@ export class BackgroundLodScanner {
 		for (let i = lastIndex; i > insertAt; i--) {
 			chunks[i] = chunks[i - 1];
 			lods[i] = lods[i - 1];
+			keys[i] = keys[i - 1];
 			scores[i] = scores[i - 1];
 		}
 
 		chunks[insertAt] = chunk;
 		lods[insertAt] = lod;
+		keys[insertAt] = key;
 		scores[insertAt] = score;
 	}
 }

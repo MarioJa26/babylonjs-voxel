@@ -661,126 +661,223 @@ function processSkyQueue(
 	q: LightQueue,
 	dirtySlots: DirtySlotSet,
 ): void {
+	const bySlot = registry.bySlot;
+	const directions = LIGHT_DIRS_FLAT;
+	const queueSlots = q.slots;
+	const queueCoords = q.coords;
+
+	const queueMask = BFS_CAPACITY - 1;
 	const skyShift = LIGHT_SKY_SHIFT;
 	const blockMask = LIGHT_BLOCK_MASK;
+	const skyMask = blockMask << skyShift;
+	const lastCoord = LIGHT_CHUNK_SIZE - 1;
 
-	let lastRefreshedView: ChunkView | null = null;
-	let lastRefreshedTarget: ChunkView | null = null;
+	let lastSourceView: ChunkView | null = null;
+	let lastTargetView: ChunkView | null = null;
 
 	while (q.head !== q.tail) {
-		const slot = q.head & (BFS_CAPACITY - 1);
-		q.head = (q.head + 1) & (BFS_CAPACITY - 1);
-		const headerSlot = q.slots[slot];
-		const coord = q.coords[slot];
-		const x = coord & 0x1f;
-		const y = (coord >> 5) & 0x1f;
-		const z = (coord >> 10) & 0x1f;
+		const queueIndex = q.head;
+		q.head = (queueIndex + 1) & queueMask;
 
-		const view =
-			headerSlot >= 0 && headerSlot < MAX_HEADER_SLOTS
-				? registry.bySlot[headerSlot]
-				: undefined;
-		if (!view) continue;
-		if (view !== lastRefreshedView) {
-			lastRefreshedView = view;
+		const nodeIndex = queueIndex & queueMask;
+		const headerSlot = queueSlots[nodeIndex];
+
+		/*
+		 * Queue entries originate from registered ChunkViews, but a chunk can
+		 * be unregistered before a deferred queue is fully consumed.
+		 */
+		if (headerSlot < 0 || headerSlot >= MAX_HEADER_SLOTS) {
+			continue;
+		}
+
+		const view = bySlot[headerSlot];
+
+		if (view === null) {
+			continue;
+		}
+
+		if (view !== lastSourceView) {
+			lastSourceView = view;
 			refreshLayout(registry, view);
 		}
-		if (!view.isLoaded) continue;
 
-		const lightArr = view.light_array;
-		if (lightArr.length === 0) continue;
+		if (!view.isLoaded) {
+			continue;
+		}
 
-		const idx = x + (y << 5) + (z << 10);
-		const level = (lightArr[idx] >> skyShift) & 0xf;
-		if (level <= 0) continue;
+		const lightArray = view.light_array;
 
-		const sourcePacked = getViewBlockPackedAt(view, idx);
+		if (lightArray.length === 0) {
+			continue;
+		}
+
+		const coord = queueCoords[nodeIndex];
+		const x = coord & 0x1f;
+		const y = (coord >>> 5) & 0x1f;
+		const z = (coord >>> 10) & 0x1f;
+		const index = x + (y << 5) + (z << 10);
+
+		const level = (lightArray[index] & skyMask) >>> skyShift;
+
+		if (level === 0) {
+			continue;
+		}
+
+		const sourcePacked = getViewBlockPackedAt(view, index);
 		const sourceBlockId = unpackBlockId(sourcePacked);
-		const srcFiltersFullSun = filtersFullSunlight(sourceBlockId);
+		const sourceFiltersFullSun = filtersFullSunlight(sourceBlockId);
+		const sourceNeighbors = view.neighborViews;
 
 		for (
-			let i = 0, base = 0;
-			i < LIGHT_DIR_COUNT;
-			i++, base += LIGHT_DIR_STRIDE
+			let directionIndex = 0, base = 0;
+			directionIndex < LIGHT_DIR_COUNT;
+			directionIndex++, base += LIGHT_DIR_STRIDE
 		) {
-			const dx = LIGHT_DIRS_FLAT[base];
-			const dy = LIGHT_DIRS_FLAT[base + 1];
-			const dz = LIGHT_DIRS_FLAT[base + 2];
-			const axis = LIGHT_DIRS_FLAT[base + 3];
-			const dir = LIGHT_DIRS_FLAT[base + 4];
-			const isDown = LIGHT_DIRS_FLAT[base + 5];
+			const dx = directions[base];
+			const dy = directions[base + 1];
+			const dz = directions[base + 2];
+			const axis = directions[base + 3];
+			const direction = directions[base + 4];
+			const isDown = directions[base + 5] === 1;
 
-			let tx = x + dx;
-			let ty = y + dy;
-			let tz = z + dz;
-			// FIX: Type as ChunkView | null to allow neighbor assignment
-			let targetView: ChunkView | null = view;
+			let targetX = x + dx;
+			let targetY = y + dy;
+			let targetZ = z + dz;
+			let targetView: ChunkView = view;
 
-			if (tx < 0) {
-				targetView = view.neighborViews[DIR_NX];
-				if (!targetView) continue;
-				tx = 31;
-			} else if (tx >= 32) {
-				targetView = view.neighborViews[DIR_PX];
-				if (!targetView) continue;
-				tx = 0;
-			} else if (ty < 0) {
-				targetView = view.neighborViews[DIR_NY];
-				if (!targetView) continue;
-				ty = 31;
-			} else if (ty >= 32) {
-				targetView = view.neighborViews[DIR_PY];
-				if (!targetView) continue;
-				ty = 0;
-			} else if (tz < 0) {
-				targetView = view.neighborViews[DIR_NZ];
-				if (!targetView) continue;
-				tz = 31;
-			} else if (tz >= 32) {
-				targetView = view.neighborViews[DIR_PZ];
-				if (!targetView) continue;
-				tz = 0;
+			if (targetX < 0) {
+				const neighbor = sourceNeighbors[DIR_NX];
+
+				if (neighbor === null) {
+					continue;
+				}
+
+				targetView = neighbor;
+				targetX = lastCoord;
+			} else if (targetX > lastCoord) {
+				const neighbor = sourceNeighbors[DIR_PX];
+
+				if (neighbor === null) {
+					continue;
+				}
+
+				targetView = neighbor;
+				targetX = 0;
+			} else if (targetY < 0) {
+				const neighbor = sourceNeighbors[DIR_NY];
+
+				if (neighbor === null) {
+					continue;
+				}
+
+				targetView = neighbor;
+				targetY = lastCoord;
+			} else if (targetY > lastCoord) {
+				const neighbor = sourceNeighbors[DIR_PY];
+
+				if (neighbor === null) {
+					continue;
+				}
+
+				targetView = neighbor;
+				targetY = 0;
+			} else if (targetZ < 0) {
+				const neighbor = sourceNeighbors[DIR_NZ];
+
+				if (neighbor === null) {
+					continue;
+				}
+
+				targetView = neighbor;
+				targetZ = lastCoord;
+			} else if (targetZ > lastCoord) {
+				const neighbor = sourceNeighbors[DIR_PZ];
+
+				if (neighbor === null) {
+					continue;
+				}
+
+				targetView = neighbor;
+				targetZ = 0;
 			}
 
+			/*
+			 * Refresh before reading isLoaded. The cached layout may have
+			 * changed since this view was last visited.
+			 */
 			if (targetView !== view) {
-				if (!targetView.isLoaded) continue;
-				if (targetView !== lastRefreshedTarget) {
-					lastRefreshedTarget = targetView;
+				if (targetView !== lastTargetView) {
+					lastTargetView = targetView;
 					refreshLayout(registry, targetView);
+				}
+
+				if (!targetView.isLoaded) {
+					continue;
 				}
 			}
 
-			const tidx = tx + (ty << 5) + (tz << 10);
-			const tSlot = targetView.headerSlot;
-			const targetPacked = getViewBlockPackedAt(targetView, tidx);
-			// Single decode per direction visit — the full-sun filter below
-			// and the preserves-full-sun test both need the block id.
-			const targetBlockId = unpackBlockId(targetPacked);
+			const targetIndex = targetX + (targetY << 5) + (targetZ << 10);
 
-			if (isDown !== 1 && srcFiltersFullSun) {
-				if (!filtersFullSunlight(targetBlockId)) continue;
-			} else if (!isTransparent(sourcePacked, axis, dir)) {
+			const targetPacked = getViewBlockPackedAt(targetView, targetIndex);
+
+			/*
+			 * Filtered full sunlight can only travel downward or laterally
+			 * into another block that applies the same full-sun filter.
+			 */
+			let targetBlockId: number;
+
+			if (!isDown && sourceFiltersFullSun) {
+				targetBlockId = unpackBlockId(targetPacked);
+
+				if (!filtersFullSunlight(targetBlockId)) {
+					continue;
+				}
+			} else {
+				if (!isTransparent(sourcePacked, axis, direction)) {
+					continue;
+				}
+
+				/*
+				 * Needed later by the full-sun preservation rule. Decode here
+				 * once rather than decoding targetPacked twice.
+				 */
+				targetBlockId = unpackBlockId(targetPacked);
+			}
+
+			if (!isTransparent(targetPacked, axis, -direction)) {
 				continue;
 			}
 
-			if (!isTransparent(targetPacked, axis, -dir)) continue;
+			const targetLightArray = targetView.light_array;
+			const currentByte = targetLightArray[targetIndex];
+			const currentLevel = (currentByte & skyMask) >>> skyShift;
 
-			const tLight = targetView.light_array;
-			const curLight = tLight[tidx];
-			const currentLevel = (curLight >> skyShift) & 0xf;
+			let nextLevel: number;
 
-			const preservesFullSun =
-				isDown === 1 &&
+			if (
+				isDown &&
 				level === 15 &&
-				!srcFiltersFullSun &&
-				!filtersFullSunlight(targetBlockId);
-			const nextLevel = preservesFullSun ? 15 : level - 1;
-			if (nextLevel <= 0 || currentLevel >= nextLevel) continue;
+				!sourceFiltersFullSun &&
+				!filtersFullSunlight(targetBlockId)
+			) {
+				nextLevel = 15;
+			} else {
+				nextLevel = level - 1;
+			}
 
-			tLight[tidx] = (curLight & blockMask) | (nextLevel << skyShift);
-			dirtySlots.add(tSlot);
-			addAdjacentBorderSlots(dirtySlots, targetView, tx, ty, tz);
-			q.push(tSlot, tx, ty, tz, nextLevel);
+			if (nextLevel <= 0 || currentLevel >= nextLevel) {
+				continue;
+			}
+
+			targetLightArray[targetIndex] =
+				(currentByte & blockMask) | (nextLevel << skyShift);
+
+			const targetSlot = targetView.headerSlot;
+
+			dirtySlots.add(targetSlot);
+			addAdjacentBorderSlots(dirtySlots, targetView, targetX, targetY, targetZ);
+
+			q.push(targetSlot, targetX, targetY, targetZ, nextLevel);
 		}
 	}
 }
@@ -1531,84 +1628,222 @@ function seedSkyEdgePair(
 	return count + 1;
 }
 
+function propagateSkySeeds(
+	registry: ChunkViewRegistry,
+	count: number,
+	dirtySlots: DirtySlotSet,
+): DirtySlotSet {
+	Q_A.clear();
+
+	for (let i = 0; i < count; i++) {
+		const base = i * 3;
+
+		Q_A.push(
+			seedSlots[i],
+			seedCoords[base],
+			seedCoords[base + 1],
+			seedCoords[base + 2],
+			seedLevels[i],
+		);
+	}
+
+	if (Q_A.head !== Q_A.tail) {
+		processSkyQueue(registry, Q_A, dirtySlots);
+	}
+
+	return dirtySlots;
+}
+
 export function lightSkyReconcile(
 	registry: ChunkViewRegistry,
 	headerSlot: number,
 ): DirtySlotSet {
 	_dirtySlotsScratch.clear();
 	const dirtySlots = _dirtySlotsScratch;
-	const view =
-		headerSlot >= 0 && headerSlot < MAX_HEADER_SLOTS
-			? registry.bySlot[headerSlot]
-			: undefined;
-	if (!view) return dirtySlots;
-	refreshLayout(registry, view);
-	if (!view.isLoaded) return dirtySlots;
 
+	if (headerSlot < 0 || headerSlot >= MAX_HEADER_SLOTS) {
+		return dirtySlots;
+	}
+
+	const view = registry.bySlot[headerSlot];
+
+	if (view === null) {
+		return dirtySlots;
+	}
+
+	refreshLayout(registry, view);
+
+	if (!view.isLoaded || view.light_array.length === 0) {
+		return dirtySlots;
+	}
+
+	const lightArray = view.light_array;
 	const size = LIGHT_CHUNK_SIZE;
-	const size2 = size * size;
+	const last = size - 1;
+	const size2 = LIGHT_CHUNK_SIZE2;
+	const skyShift = LIGHT_SKY_SHIFT;
 
 	let seedCount = 0;
 
-	for (let x = 0; x < size; x++) {
-		for (let z = 0; z < size; z++) {
-			for (let y = 0; y < size; y++) {
-				// OPTIMIZATION: Bitwise shift instead of multiplication
-				const idx = x + (y << 5) + (z << 10);
-				const sky = (view.light_array[idx] >> LIGHT_SKY_SHIFT) & 0xf;
-				if (sky <= 1) continue;
-				if (!isTransparent(getViewBlockPackedAt(view, idx), 1, 1)) {
+	/*
+	 * Scan the chunk in flattened storage order. This avoids recomputing
+	 * x + y * size + z * size² from scratch for every voxel.
+	 */
+	for (let z = 0; z < size; z++) {
+		const zOffset = z << 10;
+		const zIsBorder = z === 0 || z === last;
+
+		for (let y = 0; y < size; y++) {
+			const rowStart = zOffset + (y << 5);
+			const yzIsBorder = zIsBorder || y === 0 || y === last;
+
+			for (let x = 0; x < size; x++) {
+				const idx = rowStart + x;
+				const sky = (lightArray[idx] >> skyShift) & LIGHT_BLOCK_MASK;
+
+				if (sky <= 1) {
 					continue;
 				}
-				let seed = false;
-				for (let i = 0; i < LIGHT_DIR_COUNT; i++) {
-					const base = i * LIGHT_DIR_STRIDE;
-					const tx = x + LIGHT_DIRS_FLAT[base];
-					const ty = y + LIGHT_DIRS_FLAT[base + 1];
-					const tz = z + LIGHT_DIRS_FLAT[base + 2];
+
+				const packed = getViewBlockPackedAt(view, idx);
+
+				if (!isTransparent(packed, 1, 1)) {
+					continue;
+				}
+
+				/*
+				 * Border voxels are always propagation seeds because a loaded
+				 * neighboring chunk may need reconciliation.
+				 */
+				let isSeed = yzIsBorder || x === 0 || x === last;
+
+				if (!isSeed) {
+					const threshold = sky - 1;
+
+					/*
+					 * Direct flattened-index checks avoid:
+					 * - six direction-table reads per neighbor
+					 * - coordinate additions
+					 * - six coordinate bounds checks
+					 * - repeated flattened-index reconstruction
+					 *
+					 * Preserve the original behavior by checking transparency
+					 * on the neighboring voxel with the +Y face convention.
+					 */
+					let neighborIdx = idx + 1;
+
 					if (
-						tx < 0 ||
-						tx >= size ||
-						ty < 0 ||
-						ty >= size ||
-						tz < 0 ||
-						tz >= size
+						((lightArray[neighborIdx] >> skyShift) & LIGHT_BLOCK_MASK) <
+							threshold &&
+						isTransparent(getViewBlockPackedAt(view, neighborIdx), 1, 1)
 					) {
-						seed = true;
-						break;
+						isSeed = true;
 					}
-					// OPTIMIZATION: Bitwise shift instead of multiplication
-					const nIdx = tx + (ty << 5) + (tz << 10);
-					const neighborSky = (view.light_array[nIdx] >> LIGHT_SKY_SHIFT) & 0xf;
-					if (
-						neighborSky < sky - 1 &&
-						isTransparent(getViewBlockPackedAt(view, nIdx), 1, 1)
-					) {
-						seed = true;
-						break;
+
+					if (!isSeed) {
+						neighborIdx = idx - 1;
+
+						if (
+							((lightArray[neighborIdx] >> skyShift) & LIGHT_BLOCK_MASK) <
+								threshold &&
+							isTransparent(getViewBlockPackedAt(view, neighborIdx), 1, 1)
+						) {
+							isSeed = true;
+						}
+					}
+
+					if (!isSeed) {
+						neighborIdx = idx + size;
+
+						if (
+							((lightArray[neighborIdx] >> skyShift) & LIGHT_BLOCK_MASK) <
+								threshold &&
+							isTransparent(getViewBlockPackedAt(view, neighborIdx), 1, 1)
+						) {
+							isSeed = true;
+						}
+					}
+
+					if (!isSeed) {
+						neighborIdx = idx - size;
+
+						if (
+							((lightArray[neighborIdx] >> skyShift) & LIGHT_BLOCK_MASK) <
+								threshold &&
+							isTransparent(getViewBlockPackedAt(view, neighborIdx), 1, 1)
+						) {
+							isSeed = true;
+						}
+					}
+
+					if (!isSeed) {
+						neighborIdx = idx + size2;
+
+						if (
+							((lightArray[neighborIdx] >> skyShift) & LIGHT_BLOCK_MASK) <
+								threshold &&
+							isTransparent(getViewBlockPackedAt(view, neighborIdx), 1, 1)
+						) {
+							isSeed = true;
+						}
+					}
+
+					if (!isSeed) {
+						neighborIdx = idx - size2;
+
+						if (
+							((lightArray[neighborIdx] >> skyShift) & LIGHT_BLOCK_MASK) <
+								threshold &&
+							isTransparent(getViewBlockPackedAt(view, neighborIdx), 1, 1)
+						) {
+							isSeed = true;
+						}
 					}
 				}
-				if (!seed) continue;
+
+				if (!isSeed) {
+					continue;
+				}
+
 				ensureSeedCapacity(seedCount + 1);
-				seedSlots[seedCount] = view.headerSlot;
-				seedCoords[seedCount * 3] = x;
-				seedCoords[seedCount * 3 + 1] = y;
-				seedCoords[seedCount * 3 + 2] = z;
+
+				const coordBase = seedCount * 3;
+
+				seedSlots[seedCount] = headerSlot;
+				seedCoords[coordBase] = x;
+				seedCoords[coordBase + 1] = y;
+				seedCoords[coordBase + 2] = z;
 				seedLevels[seedCount] = sky;
+
 				seedCount++;
 			}
 		}
 	}
 
-	for (let f = 0; f < 6; f++) {
-		const face = RECONCILE_FACES[f];
-		const neighbor = view.neighborViews[f ^ 1];
-		if (!neighbor) continue;
-		refreshLayout(registry, neighbor);
-		if (!neighbor.isLoaded) continue;
+	/*
+	 * Reconcile each shared face. neighborViews uses:
+	 * 0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z.
+	 *
+	 * RECONCILE_FACES is ordered -X,+X,-Y,+Y,-Z,+Z, so `faceIndex ^ 1`
+	 * produces the correct neighborViews index.
+	 */
+	for (let faceIndex = 0; faceIndex < 6; faceIndex++) {
+		const neighbor = view.neighborViews[faceIndex ^ 1];
 
-		for (let u = 0; u < size; u++) {
-			for (let v = 0; v < size; v++) {
+		if (neighbor === null) {
+			continue;
+		}
+
+		refreshLayout(registry, neighbor);
+
+		if (!neighbor.isLoaded || neighbor.light_array.length === 0) {
+			continue;
+		}
+
+		const face = RECONCILE_FACES[faceIndex];
+
+		for (let v = 0; v < size; v++) {
+			for (let u = 0; u < size; u++) {
 				seedCount = seedSkyEdgePair(
 					view,
 					neighbor,
@@ -1625,42 +1860,11 @@ export function lightSkyReconcile(
 		}
 	}
 
-	if (seedCount > 0) {
-		return batchPropagate(
-			registry,
-			seedSlots,
-			seedCoords,
-			seedLevels,
-			seedCount,
-			dirtySlots,
-		);
+	if (seedCount === 0) {
+		return dirtySlots;
 	}
-	return dirtySlots;
 
-	function batchPropagate(
-		registry: ChunkViewRegistry,
-		slots: Int32Array,
-		coords: Int32Array,
-		levels: Uint8Array,
-		count: number,
-		dirty: DirtySlotSet,
-	): DirtySlotSet {
-		Q_A.clear();
-		for (let i = 0; i < count; i++) {
-			const base = i * 3;
-			Q_A.push(
-				slots[i],
-				coords[base],
-				coords[base + 1],
-				coords[base + 2],
-				levels[i],
-			);
-		}
-		if (Q_A.head !== Q_A.tail) {
-			processSkyQueue(registry, Q_A, dirty);
-		}
-		return dirty;
-	}
+	return propagateSkySeeds(registry, seedCount, dirtySlots);
 }
 
 // Engine perf: border-reconcile path only (per chunk load/edit, never in the
