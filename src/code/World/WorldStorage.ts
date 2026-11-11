@@ -272,6 +272,111 @@ class WorldStorageImpl {
 		return deserializeVoxelDataShared(blob);
 	}
 
+	/**
+	 * Build the storage read coordinates for a batch of chunk ids.
+	 *
+	 * The store's numeric API is keyed by a packed coordinate, so the string
+	 * key is only materialised on the path that needs it.
+	 */
+	private buildReadCoords(chunkIds: bigint[]): ChunkReadCoord[] {
+		const count = chunkIds.length;
+
+		const coords = new Array<ChunkReadCoord>(count);
+
+		for (let i = 0; i < count; i++) {
+			const chunkId = chunkIds[i];
+
+			/*
+			 * Decode directly inside the loop. The low and high conversions are
+			 * each performed exactly once per ID, with the remaining extraction
+			 * handled using Number bit operations.
+			 */
+			const low = Number(chunkId & LOW32_MASK);
+			const high = Number((chunkId >> 32n) & LOW32_MASK);
+
+			coords[i] = {
+				id: chunkId,
+				cx: (low & 0x1fffff) - BIAS_NUM,
+				cy: (((low >>> 21) | (high << 11)) & 0x1fffff) - BIAS_NUM,
+				cz: ((high >>> 10) & 0x1fffff) - BIAS_NUM,
+			};
+		}
+
+		return coords;
+	}
+
+	/**
+	 * Raw storage blobs for the given chunks, keyed by chunk id.
+	 *
+	 * The caller decodes these. Decoding inside loadChunks() made the decode
+	 * loop unbounded: a 255-chunk batch decoded into one 9.2 ms main-thread
+	 * task, against a 4 ms frame budget, because there was no budget check
+	 * inside the loop. The scheduler decodes under its own budget instead.
+	 */
+	async loadChunkBlobs(
+		chunkIds: bigint[],
+		outMap?: Map<bigint, Uint8Array>,
+	): Promise<Map<bigint, Uint8Array>> {
+		const result = outMap ?? new Map<bigint, Uint8Array>();
+
+		const count = chunkIds.length;
+
+		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING || count === 0) {
+			return result;
+		}
+
+		const store = this.store ?? (await this.getStore());
+
+		if (store === null) {
+			return result;
+		}
+
+		const coords = this.buildReadCoords(chunkIds);
+
+		const numericStore = store as NumericChunkStore;
+
+		const readChunksNumeric = numericStore.readChunksNumeric;
+
+		if (readChunksNumeric !== undefined) {
+			const blobs = await readChunksNumeric.call(numericStore, coords);
+
+			for (let i = 0; i < count; i++) {
+				const coord = coords[i];
+
+				const numericKey = packChunkKeyNumeric(coord.cx, coord.cy, coord.cz);
+
+				const blob = blobs.get(numericKey);
+
+				if (blob !== undefined) {
+					result.set(coord.id as bigint, blob);
+				}
+			}
+
+			return result;
+		}
+
+		assignStringChunkKeys(coords);
+
+		const blobs = await store.readChunks(coords);
+
+		for (let i = 0; i < count; i++) {
+			const coord = coords[i];
+			const key = coord.key;
+
+			if (key === undefined) {
+				continue;
+			}
+
+			const blob = blobs.get(key);
+
+			if (blob !== undefined) {
+				result.set(coord.id as bigint, blob);
+			}
+		}
+
+		return result;
+	}
+
 	async loadChunks(
 		chunkIds: bigint[],
 		options?: LoadChunkOptions,
@@ -293,31 +398,7 @@ class WorldStorageImpl {
 
 		const includeVoxelData = options?.includeVoxelData !== false;
 
-		/*
-		 * Store the caller's bigint ID in each coordinate entry so results can
-		 * be written directly into the output map without maintaining a second
-		 * parallel ID array.
-		 */
-		const coords = new Array<ChunkReadCoord>(count);
-
-		for (let i = 0; i < count; i++) {
-			const chunkId = chunkIds[i];
-
-			/*
-			 * Decode directly inside the loop. The low and high conversions are
-			 * each performed exactly once per ID, with the remaining extraction
-			 * handled using Number bit operations.
-			 */
-			const low = Number(chunkId & LOW32_MASK);
-			const high = Number((chunkId >> 32n) & LOW32_MASK);
-
-			coords[i] = {
-				id: chunkId,
-				cx: (low & 0x1fffff) - BIAS_NUM,
-				cy: (((low >>> 21) | (high << 11)) & 0x1fffff) - BIAS_NUM,
-				cz: ((high >>> 10) & 0x1fffff) - BIAS_NUM,
-			};
-		}
+		const coords = this.buildReadCoords(chunkIds);
 
 		const numericStore = store as NumericChunkStore;
 

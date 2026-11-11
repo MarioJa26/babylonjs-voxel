@@ -43,7 +43,15 @@ export type InFlightProcessState = {
 	validLoadBatch: QueuedChunkRequest[];
 	nearRequests: QueuedChunkRequest[];
 	farRequests: QueuedChunkRequest[];
-	nearLoadedDataMap: Map<bigint, SavedChunkData>;
+	/**
+	 * Raw storage blobs for the near (voxel-bearing) requests.
+	 *
+	 * Blobs, not decoded data: the decode is a full chunk-volume copy, and
+	 * doing it inside the storage read produced one unbounded main-thread task
+	 * per batch. The decode happens in the apply stage, under the frame
+	 * budget, one chunk at a time.
+	 */
+	nearLoadedDataMap: Map<bigint, Uint8Array>;
 	farLoadedDataMap: Map<bigint, SavedChunkData>;
 	applyLoadedIndex: number;
 	chunksToGenerate: Chunk[];
@@ -52,7 +60,8 @@ export type InFlightProcessState = {
 
 	hydrateIds: bigint[];
 	hydrateChunks: Chunk[];
-	hydrateMap: Map<bigint, SavedChunkData>;
+	/** Raw storage blobs for the hydration requests — see nearLoadedDataMap. */
+	hydrateMap: Map<bigint, Uint8Array>;
 	hydrateIndex: number;
 
 	/**

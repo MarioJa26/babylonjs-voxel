@@ -61,5 +61,31 @@ export interface IWorldFeature {
 		generatingChunkX: number,
 		generatingChunkZ: number,
 		columnPrepassResolver?: ColumnPrepassResolver,
+		emitContext?: StructureEmitContext,
 	): void;
+}
+
+/**
+ * Per-chunk scratch that lets a feature claim the structures it has already
+ * emitted into the chunk currently being generated.
+ *
+ * The placer probes a 5x5 window of chunk positions for every chunk it
+ * generates. A feature whose structure is placed per REGION resolves the same
+ * region from every position inside that region, so without a claim the same
+ * structure was emitted into the same chunk once per position. The Maya
+ * temple was emitted 418 times into one chunk, and that is where the 500 ms
+ * generation tail came from.
+ *
+ * Claiming is keyed by (feature, key) so two features that happen to resolve
+ * the same key never block each other, and the context is created per chunk
+ * so a claim never leaks into the next chunk.
+ */
+export interface StructureEmitContext {
+	/**
+	 * Claim `key` for `feature` in the chunk currently being generated.
+	 *
+	 * @returns true the first time the pair is seen — the caller should emit.
+	 *   false on every later call — the caller should skip.
+	 */
+	tryClaim(feature: IWorldFeature, key: string): boolean;
 }

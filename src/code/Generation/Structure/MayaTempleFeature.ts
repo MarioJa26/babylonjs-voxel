@@ -2,7 +2,11 @@ import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { getFinalTerrainHeight } from "../TerrainHeightMap";
-import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
+import type {
+	ColumnPrepassResolver,
+	IWorldFeature,
+	StructureEmitContext,
+} from "./IWorldFeature";
 import {
 	isMayaTempleSiteValid,
 	MAYA_ROOM_HEIGHT,
@@ -110,6 +114,7 @@ export class MayaTempleFeature implements IWorldFeature {
 		generatingChunkX: number,
 		generatingChunkZ: number,
 		columnPrepassResolver?: ColumnPrepassResolver,
+		emitContext?: StructureEmitContext,
 	) {
 		if (!MAYA_BIOMES.has(biome.id)) return;
 
@@ -130,6 +135,31 @@ export class MayaTempleFeature implements IWorldFeature {
 			) {
 				const resolved = resolveTempleInRegion(cx, cz, chunkSize, seed);
 				if (!resolved) continue;
+
+				/*
+				 * One temple per region.
+				 *
+				 * The placer probes a 5x5 window of chunk positions, and this
+				 * feature probes its own 5x5 window inside that, so a temple
+				 * region is reached once per position that lands in it — 418
+				 * times for one chunk. Every one of those built the whole
+				 * temple into the same chunk, which is where the 500 ms
+				 * generation tail came from.
+				 *
+				 * The claim is per chunk, and repeating an emission is
+				 * byte-identical to emitting once (see
+				 * scripts/maya-temple-emit-test.ts), so skipping the repeats
+				 * changes nothing about the generated world.
+				 */
+				if (
+					emitContext !== undefined &&
+					!emitContext.tryClaim(
+						this,
+						`${resolved.centerX}:${resolved.centerZ}`,
+					)
+				) {
+					continue;
+				}
 
 				// Cheap XZ test before touching ground: the seal box is a fixed
 				// half-extent around the centre, so this needs no terrain.

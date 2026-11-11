@@ -2,6 +2,7 @@ import type { Biome } from "../Biome/BiomeTypes";
 import type {
 	ColumnPrepassResolver,
 	IWorldFeature,
+	StructureEmitContext,
 } from "../Structure/IWorldFeature";
 import type { PlaceBlockFn } from "../SurfaceGenerator";
 
@@ -46,6 +47,35 @@ export function generateStructures(
 	const minSearchChunkZ = chunkZ - STRUCTURE_SEARCH_RADIUS;
 	const maxSearchChunkZ = chunkZ + STRUCTURE_SEARCH_RADIUS;
 
+	/*
+	 * One claim set per feature, scoped to this chunk.
+	 *
+	 * The search window below calls every feature once per chunk position in
+	 * it. A feature whose structure is placed per region resolves the same
+	 * region from every position inside that region, so without a claim the
+	 * same structure is emitted into the same chunk once per position. The
+	 * claim turns that into one emission per region, which is both what the
+	 * generator means and what the cost model assumes.
+	 */
+	const claimsByFeature = new Map<IWorldFeature, Set<string>>();
+
+	const emitContext: StructureEmitContext = {
+		tryClaim(feature, key): boolean {
+			let claims = claimsByFeature.get(feature);
+
+			if (claims === undefined) {
+				claims = new Set<string>();
+				claimsByFeature.set(feature, claims);
+			}
+
+			if (claims.has(key)) return false;
+
+			claims.add(key);
+
+			return true;
+		},
+	};
+
 	for (let cx = minSearchChunkX; cx <= maxSearchChunkX; cx++) {
 		for (let cz = minSearchChunkZ; cz <= maxSearchChunkZ; cz++) {
 			for (let i = 0; i < relevantFeatureCount; i++) {
@@ -60,6 +90,7 @@ export function generateStructures(
 					chunkX,
 					chunkZ,
 					columnPrepassResolver,
+					emitContext,
 				);
 			}
 		}

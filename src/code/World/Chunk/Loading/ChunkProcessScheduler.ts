@@ -1,5 +1,6 @@
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
+import { deserializeVoxelDataShared } from "../../Storage/VoxelSerializer";
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
 import { Chunk } from "../Chunk";
 import { ChunkLifecycle, ResidencyState } from "./ChunkLifecycle";
@@ -732,11 +733,18 @@ export class ChunkProcessScheduler {
 						}
 
 						try {
+							/*
+							 * The near read returns RAW blobs. Decoding them here
+							 * would put the whole batch's decode into one
+							 * unbounded main-thread task (measured: 9.2 ms for a
+							 * 255-chunk batch, against a 4 ms frame budget), so
+							 * the decode waits for the apply stage, which checks
+							 * the budget between chunks.
+							 */
 							const nearPromise =
 								this._nearIdScratch.length > 0
-									? WorldStorage.loadChunks(
+									? WorldStorage.loadChunkBlobs(
 											this._nearIdScratch,
-											{ includeVoxelData: true },
 											state.nearLoadedDataMap,
 										)
 									: undefined;
@@ -810,7 +818,7 @@ export class ChunkProcessScheduler {
 							}
 
 							const savedData = request.includeVoxelData
-								? state.nearLoadedDataMap.get(request.chunk.id)
+								? this.decodeNearChunk(state, request.chunk.id)
 								: state.farLoadedDataMap.get(request.chunk.id);
 
 							if (savedData) {
@@ -840,10 +848,9 @@ export class ChunkProcessScheduler {
 
 							markSuspend();
 							await this.withIoTimeout(
-								"WorldStorage.loadChunks (hydration)",
-								WorldStorage.loadChunks(
+								"WorldStorage.loadChunkBlobs (hydration)",
+								WorldStorage.loadChunkBlobs(
 									state.hydrateIds,
-									{ includeVoxelData: true },
 									state.hydrateMap,
 								),
 							);
@@ -897,8 +904,8 @@ export class ChunkProcessScheduler {
 								continue;
 							}
 
-							const savedData = state.hydrateMap.get(chunk.id);
-							if (!savedData) {
+							const blob = state.hydrateMap.get(chunk.id);
+							if (!blob) {
 								/*
 								 * The hydration read came back without this chunk's data
 								 * — the request disappeared between being issued and
@@ -914,7 +921,16 @@ export class ChunkProcessScheduler {
 								continue;
 							}
 
-							this.adapter.applyHydratedChunkFromSavedData(chunk, savedData);
+							/*
+							 * Decoded here rather than in the storage read, so the
+							 * decode is charged against the frame budget one chunk
+							 * at a time. The whole hydration batch decoded in one
+							 * unbounded loop was a single main-thread task.
+							 */
+							this.adapter.applyHydratedChunkFromSavedData(
+								chunk,
+								deserializeVoxelDataShared(blob),
+							);
 							state.hydratedCount++;
 						}
 
@@ -1236,6 +1252,28 @@ export class ChunkProcessScheduler {
 
 		state.chunksToGenerateIds.add(chunk.id);
 		state.chunksToGenerate.push(chunk);
+	}
+
+	/**
+	 * Decode one near-chunk blob into live voxel/light storage.
+	 *
+	 * The decode is a full chunk-volume copy into fresh SharedArrayBuffers,
+	 * so it is deliberately done here — inside the apply stage, one chunk at a
+	 * time — rather than inside the storage read, where the whole batch was
+	 * decoded in one unbounded loop.
+	 *
+	 * @returns The decoded data, or undefined when the chunk was not in
+	 *   storage.
+	 */
+	private decodeNearChunk(
+		state: InFlightProcessState,
+		chunkId: bigint,
+	): SavedChunkData | undefined {
+		const blob = state.nearLoadedDataMap.get(chunkId);
+
+		if (blob === undefined) return undefined;
+
+		return deserializeVoxelDataShared(blob);
 	}
 
 	public beginSlice(state: InFlightProcessState): void {

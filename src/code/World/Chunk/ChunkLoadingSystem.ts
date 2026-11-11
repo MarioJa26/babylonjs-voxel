@@ -443,8 +443,6 @@ export function validateChunksAround(
 
 	const queuedIds = buildQueuedIdSet();
 
-	// Lazily allocate diagnostics because a healthy streaming state produces
-	// no entries.
 	let missing: MissingChunkDiagnostic[] | undefined;
 	let unhydrated: UnhydratedChunkDiagnostic[] | undefined;
 	let untracked: UntrackedChunkDiagnostic[] | undefined;
@@ -463,8 +461,11 @@ export function validateChunksAround(
 	for (let y = startY; y <= endY; y++) {
 		for (let x = startX; x <= endX; x++) {
 			for (let z = startZ; z <= endZ; z++) {
-				// This scan can inspect thousands of coordinates. Prefer the
-				// numeric-key path and avoid creating a BigInt key per cell.
+				/*
+				 * getDesiredState() accepts a numeric chunk ID. Therefore
+				 * desired-state validation is only possible after resolving
+				 * an existing Chunk instance.
+				 */
 				const chunk = getChunkFast(x, y, z);
 
 				if (!chunk || unloadQueueSet.has(chunk)) {
@@ -479,14 +480,22 @@ export function validateChunksAround(
 
 				const isQueued = queuedIds.has(chunk.id);
 
+				if (isQueued) {
+					continue;
+				}
+
+				const isTracked = streamingController.isOrphanCandidate(chunk);
+
 				if (chunk.isLoaded) {
-					if (chunk.lodLevel > 1 || chunk.hasVoxelData || isQueued) {
+					if (chunk.lodLevel > 1 || chunk.hasVoxelData) {
 						continue;
 					}
 
-					const isTracked = streamingController.isOrphanCandidate(chunk);
+					if (!unhydrated) {
+						unhydrated = [];
+					}
 
-					(unhydrated ??= []).push({
+					unhydrated.push({
 						chunkX: x,
 						chunkY: y,
 						chunkZ: z,
@@ -497,7 +506,8 @@ export function validateChunksAround(
 					});
 
 					if (!isTracked) {
-						(untracked ??= []).push({
+						//Was checked above!
+						untracked!.push({
 							chunkX: x,
 							chunkY: y,
 							chunkZ: z,
@@ -507,13 +517,11 @@ export function validateChunksAround(
 					continue;
 				}
 
-				if (isQueued) {
-					continue;
+				if (!missing) {
+					missing = [];
 				}
 
-				const isTracked = streamingController.isOrphanCandidate(chunk);
-
-				(missing ??= []).push({
+				missing.push({
 					chunkX: x,
 					chunkY: y,
 					chunkZ: z,
@@ -526,7 +534,11 @@ export function validateChunksAround(
 				});
 
 				if (!isTracked) {
-					(untracked ??= []).push({
+					if (!untracked) {
+						untracked = [];
+					}
+
+					untracked.push({
 						chunkX: x,
 						chunkY: y,
 						chunkZ: z,
@@ -536,11 +548,11 @@ export function validateChunksAround(
 		}
 	}
 
-	if (missing !== undefined) {
+	if (missing) {
 		console.warn("[ChunkLoadingSystem] Missing desired chunks:", missing);
 	}
 
-	if (unhydrated !== undefined) {
+	if (unhydrated) {
 		console.warn(
 			"[ChunkLoadingSystem] Stuck un-hydrated chunks " +
 				"(loaded at near LOD with no voxel data and no pending load request):",
@@ -548,7 +560,7 @@ export function validateChunksAround(
 		);
 	}
 
-	if (untracked !== undefined) {
+	if (untracked) {
 		console.error(
 			`[ChunkLoadingSystem] ${untracked.length} orphaned chunk(s) ` +
 				"MISSING from the orphan candidate registry. " +
