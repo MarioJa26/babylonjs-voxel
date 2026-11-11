@@ -30,20 +30,33 @@ type VoxelObbDebugOptions = {
  * Fully compatible with VoxelAabbCollider's moveAxis() interface.
  */
 export class VoxelObbCollider {
-	#halfExtents = vec3(0, 0, 0); // Local-space extents
+	#halfExtents = vec3(0, 0, 0);
 	#centerOffset = vec3(0, 0, 0);
-	// Local-space offset of OBB center from position
+
 	#epsilon: number;
 	#isSolidBlockAt: IsSolidBlockAt;
 
-	#yaw = 0; // Boat yaw (radians)
-	#rotX = vec3(0, 0, 0);
-	// Rotated X axis vector
-	#rotZ = vec3(0, 0, 0);
-	// Rotated Z axis vector
+	#yaw = 0;
 
-	#tmpCandidate = vec3(0, 0, 0); // Temporary candidate vector
-	#debugRot = Quaternion.Identity(); // Debug rotation vector
+	// Rotated local axes in world space.
+	#rotX = vec3(1, 0, 0);
+	#rotZ = vec3(0, 0, 1);
+
+	// Cached absolute axis components.
+	#absRotXX = 1;
+	#absRotXZ = 0;
+	#absRotZX = 0;
+	#absRotZZ = 1;
+
+	// Cached SAT radii.
+	#voxelRadiusOnObbX = 0.5;
+	#voxelRadiusOnObbZ = 0.5;
+	#obbRadiusOnWorldX = 0;
+	#obbRadiusOnWorldZ = 0;
+
+	#tmpCandidate = vec3(0, 0, 0);
+
+	#debugRot = Quaternion.Identity();
 	#debugMesh: Mesh | null = null;
 	#debugOptions: VoxelObbDebugOptions | null = null;
 
@@ -57,35 +70,41 @@ export class VoxelObbCollider {
 		debugOptions?: VoxelObbDebugOptions,
 	) {
 		copyVec3(this.#halfExtents, halfExtents);
+
 		this.#epsilon = epsilon;
 		this.#isSolidBlockAt = isSolidBlockAt;
+
+		this.#updateRotAxes();
 
 		if (debugOptions) {
 			this.#debugOptions = debugOptions;
 			VoxelObbCollider.#debugColliders.add(this);
+
 			if (VoxelObbCollider.#debugEnabled) {
 				this.#createDebugMesh(debugOptions);
 			}
 		}
-
-		this.#updateRotAxes();
 	}
 
-	/** Set yaw in radians */
+	/** Set yaw in radians. */
 	public setYaw(yaw: number): void {
-		if (yaw === this.#yaw) return;
+		if (yaw === this.#yaw) {
+			return;
+		}
 
 		this.#yaw = yaw;
 		this.#updateRotAxes();
 
 		if (this.#debugMesh) {
 			Quaternion.FromEulerAnglesToRef(0, yaw, 0, this.#debugRot);
+
 			this.#debugMesh.rotationQuaternion.copyFrom(this.#debugRot);
 		}
 	}
 
 	public setHalfExtents(halfExtents: Vec3): void {
 		copyVec3(this.#halfExtents, halfExtents);
+		this.#updateCachedRadii();
 
 		if (this.#debugMesh) {
 			this.#debugMesh.scaling.set(
@@ -101,98 +120,170 @@ export class VoxelObbCollider {
 	}
 
 	#updateRotAxes(): void {
-		const c = Math.cos(this.#yaw);
-		const s = Math.sin(this.#yaw);
+		const cosine = Math.cos(this.#yaw);
+		const sine = Math.sin(this.#yaw);
 
-		// Matches Matrix.RotationY() and transformCoordinatesVec3ToRef().
-		setVec3(this.#rotX, c, 0, -s);
-		setVec3(this.#rotZ, s, 0, c);
+		// Matches Matrix.RotationY().
+		setVec3(this.#rotX, cosine, 0, -sine);
+		setVec3(this.#rotZ, sine, 0, cosine);
+
+		this.#absRotXX = Math.abs(cosine);
+		this.#absRotXZ = Math.abs(sine);
+		this.#absRotZX = this.#absRotXZ;
+		this.#absRotZZ = this.#absRotXX;
+
+		this.#updateCachedRadii();
 	}
 
-	/** Create debug OBB wireframe */
+	#updateCachedRadii(): void {
+		const hx = this.#halfExtents.x;
+		const hz = this.#halfExtents.z;
+
+		this.#voxelRadiusOnObbX = 0.5 * (this.#absRotXX + this.#absRotXZ);
+
+		this.#voxelRadiusOnObbZ = 0.5 * (this.#absRotZX + this.#absRotZZ);
+
+		this.#obbRadiusOnWorldX = hx * this.#absRotXX + hz * this.#absRotZX;
+
+		this.#obbRadiusOnWorldZ = hx * this.#absRotXZ + hz * this.#absRotZZ;
+	}
+
 	#createDebugMesh(options: VoxelObbDebugOptions): void {
-		if (this.#debugMesh) return;
+		if (this.#debugMesh) {
+			return;
+		}
 
 		const name = options.name ?? "voxelObbDebug";
+		const mesh = createBox(options.scene.surface.engine, 1);
 
-		// Create a unit cube, then scale it to the full OBB dimensions.
-		this.#debugMesh = createBox(options.scene.surface.engine, 1);
-		this.#debugMesh.name = name;
-		this.#debugMesh.pickable = false;
-		this.#debugMesh.renderOrder = options.renderOrder ?? 1;
+		mesh.name = name;
+		mesh.pickable = false;
+		mesh.renderOrder = options.renderOrder ?? 1;
 
-		this.#debugMesh.scaling.set(
+		mesh.scaling.set(
 			this.#halfExtents.x * 2,
 			this.#halfExtents.y * 2,
 			this.#halfExtents.z * 2,
 		);
 
 		Quaternion.FromEulerAnglesToRef(0, this.#yaw, 0, this.#debugRot);
-		this.#debugMesh.rotationQuaternion.copyFrom(this.#debugRot);
+
+		mesh.rotationQuaternion.copyFrom(this.#debugRot);
 
 		const material = createStandardMaterial();
 		material.name = `${name}Mat`;
 		material.alpha = 0.25;
 		material.diffuseColor = [1, 0.2, 0.2];
 
-		this.#debugMesh.material = material;
-		addToScene(options.scene, this.#debugMesh);
+		mesh.material = material;
+
+		this.#debugMesh = mesh;
+		addToScene(options.scene, mesh);
 
 		if (options.position) {
 			this.syncDebugMesh(options.position);
 		}
 	}
 
-	#ensureDebugMesh() {
-		if (!this.#debugOptions) return;
-		this.#createDebugMesh(this.#debugOptions);
+	#ensureDebugMesh(): void {
+		if (this.#debugOptions) {
+			this.#createDebugMesh(this.#debugOptions);
+		}
 	}
 
-	/** Test if OBB intersects any solid voxel */
+	/** Test whether the OBB intersects any solid voxel. */
 	public overlaps(position: Vec3): boolean {
-		// OBB world axes
-		const hx = this.#halfExtents.x;
-		const hy = this.#halfExtents.y;
-		const hz = this.#halfExtents.z;
+		const halfExtents = this.#halfExtents;
+		const centerOffset = this.#centerOffset;
 
-		// Apply local-space center offset (rotate by yaw into world space)
-		const px =
-			position.x +
-			this.#centerOffset.x * this.#rotX.x +
-			this.#centerOffset.z * this.#rotZ.x;
-		const py = position.y + this.#centerOffset.y;
-		const pz =
-			position.z +
-			this.#centerOffset.x * this.#rotX.z +
-			this.#centerOffset.z * this.#rotZ.z;
+		const hx = halfExtents.x;
+		const hy = halfExtents.y;
+		const hz = halfExtents.z;
 
-		// Expand into AABB to identify candidate voxels (coarse test)
-		const extX = Math.abs(this.#rotX.x) * hx + Math.abs(this.#rotZ.x) * hz;
-		const extZ = Math.abs(this.#rotX.z) * hx + Math.abs(this.#rotZ.z) * hz;
+		const rotXX = this.#rotX.x;
+		const rotXZ = this.#rotX.z;
+		const rotZX = this.#rotZ.x;
+		const rotZZ = this.#rotZ.z;
 
-		const minX = px - extX;
-		const maxX = px + extX;
-		const minY = py - hy;
-		const maxY = py + hy;
-		const minZ = pz - extZ;
-		const maxZ = pz + extZ;
+		const px = position.x + centerOffset.x * rotXX + centerOffset.z * rotZX;
 
-		const x0 = Math.floor(minX + this.#epsilon);
-		const x1 = Math.floor(maxX - this.#epsilon);
-		const y0 = Math.floor(minY + this.#epsilon);
-		const y1 = Math.floor(maxY - this.#epsilon);
-		const z0 = Math.floor(minZ + this.#epsilon);
-		const z1 = Math.floor(maxZ - this.#epsilon);
+		const py = position.y + centerOffset.y;
 
-		// Fine test: test OBB penetration with voxel cubes
-		for (let x = x0; x <= x1; x++) {
-			for (let y = y0; y <= y1; y++) {
+		const pz = position.z + centerOffset.x * rotXZ + centerOffset.z * rotZZ;
+
+		/*
+		 * These are also the OBB projection radii onto the world X/Z axes,
+		 * already cached for the SAT tests.
+		 */
+		const extX = this.#obbRadiusOnWorldX;
+		const extZ = this.#obbRadiusOnWorldZ;
+		const epsilon = this.#epsilon;
+
+		const x0 = Math.floor(px - extX + epsilon);
+		const x1 = Math.floor(px + extX - epsilon);
+		const y0 = Math.floor(py - hy + epsilon);
+		const y1 = Math.floor(py + hy - epsilon);
+		const z0 = Math.floor(pz - extZ + epsilon);
+		const z1 = Math.floor(pz + extZ - epsilon);
+
+		const isSolidBlockAt = this.#isSolidBlockAt;
+
+		const maxYDistance = hy + 0.5 - epsilon;
+
+		const maxDistanceOnObbX = hx + this.#voxelRadiusOnObbX - epsilon;
+
+		const maxDistanceOnObbZ = hz + this.#voxelRadiusOnObbZ - epsilon;
+
+		const maxDistanceOnWorldX = extX + 0.5 - epsilon;
+
+		const maxDistanceOnWorldZ = extZ + 0.5 - epsilon;
+
+		for (let y = y0; y <= y1; y++) {
+			const relativeY = y + 0.5 - py;
+
+			/*
+			 * Normally guaranteed by the coarse bounds, but retaining this
+			 * check preserves the SAT behavior around epsilon boundaries.
+			 */
+			if (Math.abs(relativeY) > maxYDistance) {
+				continue;
+			}
+
+			for (let x = x0; x <= x1; x++) {
+				const relativeX = x + 0.5 - px;
+
+				if (Math.abs(relativeX) > maxDistanceOnWorldX) {
+					continue;
+				}
+
 				for (let z = z0; z <= z1; z++) {
-					if (!this.#isSolidBlockAt(x, y, z)) continue;
-
-					if (this.#obbIntersectsVoxel(px, py, pz, hx, hy, hz, x, y, z)) {
-						return true;
+					if (!isSolidBlockAt(x, y, z)) {
+						continue;
 					}
+
+					const relativeZ = z + 0.5 - pz;
+
+					if (Math.abs(relativeZ) > maxDistanceOnWorldZ) {
+						continue;
+					}
+
+					const distanceOnObbX = Math.abs(
+						relativeX * rotXX + relativeZ * rotXZ,
+					);
+
+					if (distanceOnObbX > maxDistanceOnObbX) {
+						continue;
+					}
+
+					const distanceOnObbZ = Math.abs(
+						relativeX * rotZX + relativeZ * rotZZ,
+					);
+
+					if (distanceOnObbZ > maxDistanceOnObbZ) {
+						continue;
+					}
+
+					return true;
 				}
 			}
 		}
@@ -200,69 +291,7 @@ export class VoxelObbCollider {
 		return false;
 	}
 
-	#obbIntersectsVoxel(
-		px: number,
-		py: number,
-		pz: number,
-		hx: number,
-		hy: number,
-		hz: number,
-		vx: number,
-		vy: number,
-		vz: number,
-	): boolean {
-		const rx = vx + 0.5 - px;
-		const ry = vy + 0.5 - py;
-		const rz = vz + 0.5 - pz;
-
-		// Y remains axis-aligned.
-		if (Math.abs(ry) > hy + 0.5 - this.#epsilon) {
-			return false;
-		}
-
-		const rxX = this.#rotX.x;
-		const rxZ = this.#rotX.z;
-		const rzX = this.#rotZ.x;
-		const rzZ = this.#rotZ.z;
-
-		/*
-		 * Test the two OBB axes. The voxel projection radius is the projection
-		 * of its 0.5 x 0.5 horizontal half-extents onto each rotated axis.
-		 */
-		const distanceOnObbX = Math.abs(rx * rxX + rz * rxZ);
-		const voxelRadiusOnObbX = 0.5 * Math.abs(rxX) + 0.5 * Math.abs(rxZ);
-
-		if (distanceOnObbX > hx + voxelRadiusOnObbX - this.#epsilon) {
-			return false;
-		}
-
-		const distanceOnObbZ = Math.abs(rx * rzX + rz * rzZ);
-		const voxelRadiusOnObbZ = 0.5 * Math.abs(rzX) + 0.5 * Math.abs(rzZ);
-
-		if (distanceOnObbZ > hz + voxelRadiusOnObbZ - this.#epsilon) {
-			return false;
-		}
-
-		/*
-		 * Test the voxel's world X and Z axes. These were missing from the
-		 * previous implementation, so it was not a complete SAT test.
-		 */
-		const obbRadiusOnWorldX = hx * Math.abs(rxX) + hz * Math.abs(rzX);
-
-		if (Math.abs(rx) > obbRadiusOnWorldX + 0.5 - this.#epsilon) {
-			return false;
-		}
-
-		const obbRadiusOnWorldZ = hx * Math.abs(rxZ) + hz * Math.abs(rzZ);
-
-		if (Math.abs(rz) > obbRadiusOnWorldZ + 0.5 - this.#epsilon) {
-			return false;
-		}
-
-		return true;
-	}
-
-	/** Same API as AABB collider — used by boat physics */
+	/** Same API as VoxelAabbCollider, used by boat physics. */
 	public moveAxis(
 		position: Vec3,
 		velocity: Vec3,
@@ -270,35 +299,67 @@ export class VoxelObbCollider {
 		delta: number,
 		stepSize: number,
 	): void {
-		if (delta === 0) return;
+		if (delta === 0) {
+			return;
+		}
 
-		// delta's sign never changes across steps, so hoist direction and loop
-		// on `remaining !== 0` (steps are exactly stepSize or remaining, which
-		// converges to exactly 0).
-		const dir = delta > 0 ? 1 : -1;
-		let remaining = delta;
-		while (remaining !== 0) {
-			const absRem = remaining > 0 ? remaining : -remaining;
-			const step = absRem > stepSize ? stepSize * dir : remaining;
+		/*
+		 * Prevent a non-terminating loop if a caller accidentally supplies
+		 * zero or a negative step size.
+		 */
+		if (!(stepSize > 0)) {
+			throw new RangeError(
+				"VoxelObbCollider.moveAxis: stepSize must be greater than zero",
+			);
+		}
 
-			const candidate = copyVec3(this.#tmpCandidate, position);
+		const direction = delta > 0 ? 1 : -1;
+		let remaining = Math.abs(delta);
 
-			if (axis === Axis.X) candidate.x += step;
-			else if (axis === Axis.Y) candidate.y += step;
-			else candidate.z += step;
+		let x = position.x;
+		let y = position.y;
+		let z = position.z;
 
-			if (this.overlaps(candidate)) {
-				// Stop movement along that axis
-				if (axis === Axis.X) velocity.x = 0;
-				else if (axis === Axis.Y) velocity.y = 0;
-				else velocity.z = 0;
-				return;
+		const candidate = this.#tmpCandidate;
+
+		while (remaining > 1e-8) {
+			const distance = remaining > stepSize ? stepSize : remaining;
+
+			const movement = distance * direction;
+
+			candidate.x = x;
+			candidate.y = y;
+			candidate.z = z;
+
+			if (axis === Axis.X) {
+				candidate.x += movement;
+			} else if (axis === Axis.Y) {
+				candidate.y += movement;
+			} else {
+				candidate.z += movement;
 			}
 
-			copyVec3(position, candidate);
+			if (this.overlaps(candidate)) {
+				if (axis === Axis.X) {
+					velocity.x = 0;
+				} else if (axis === Axis.Y) {
+					velocity.y = 0;
+				} else {
+					velocity.z = 0;
+				}
 
-			remaining -= step;
+				break;
+			}
+
+			x = candidate.x;
+			y = candidate.y;
+			z = candidate.z;
+			remaining -= distance;
 		}
+
+		position.x = x;
+		position.y = y;
+		position.z = z;
 	}
 
 	public syncDebugMesh(position: Vec3): void {
@@ -306,20 +367,28 @@ export class VoxelObbCollider {
 			this.#ensureDebugMesh();
 		}
 
-		if (!this.#debugMesh) return;
+		const mesh = this.#debugMesh;
 
-		this.#debugMesh.position.set(
+		if (!mesh) {
+			return;
+		}
+
+		const centerOffset = this.#centerOffset;
+
+		mesh.position.set(
 			position.x +
-				this.#centerOffset.x * this.#rotX.x +
-				this.#centerOffset.z * this.#rotZ.x,
-			position.y + this.#centerOffset.y,
+				centerOffset.x * this.#rotX.x +
+				centerOffset.z * this.#rotZ.x,
+			position.y + centerOffset.y,
 			position.z +
-				this.#centerOffset.x * this.#rotX.z +
-				this.#centerOffset.z * this.#rotZ.z,
+				centerOffset.x * this.#rotX.z +
+				centerOffset.z * this.#rotZ.z,
 		);
 
-		Quaternion.FromEulerAnglesToRef(0, this.#yaw, 0, this.#debugRot);
-		this.#debugMesh.rotationQuaternion.copyFrom(this.#debugRot);
+		/*
+		 * setYaw() already updates the quaternion. Recalculating it here on
+		 * every debug synchronization is unnecessary.
+		 */
 	}
 
 	public dispose(): void {
@@ -329,12 +398,26 @@ export class VoxelObbCollider {
 	}
 
 	#disposeDebugMesh(): void {
-		if (!this.#debugMesh) return;
 		const mesh = this.#debugMesh;
+
+		if (!mesh) {
+			return;
+		}
+
 		this.#debugMesh = null;
-		const engine = (this.#debugOptions?.scene?.surface as any)?.engine;
+
+		const engine = (
+			this.#debugOptions?.scene?.surface as
+				| {
+						engine?: Parameters<typeof onGpuWorkDone>[0];
+				  }
+				| undefined
+		)?.engine;
+
 		if (engine) {
-			void onGpuWorkDone(engine).then(() => disposeMeshGpu(mesh));
+			void onGpuWorkDone(engine).then(() => {
+				disposeMeshGpu(mesh);
+			});
 		} else {
 			disposeMeshGpu(mesh);
 		}
@@ -345,12 +428,18 @@ export class VoxelObbCollider {
 	}
 
 	public static setDebugEnabled(enabled: boolean): void {
+		if (enabled === VoxelObbCollider.#debugEnabled) {
+			return;
+		}
+
 		VoxelObbCollider.#debugEnabled = enabled;
-		VoxelObbCollider.#debugColliders.forEach((collider) => {
-			if (enabled) collider.#ensureDebugMesh();
-			else if (collider.#debugMesh) {
+
+		for (const collider of VoxelObbCollider.#debugColliders) {
+			if (enabled) {
+				collider.#ensureDebugMesh();
+			} else {
 				collider.#disposeDebugMesh();
 			}
-		});
+		}
 	}
 }

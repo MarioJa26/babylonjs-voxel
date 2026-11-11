@@ -106,13 +106,12 @@ export class QuadBuffer {
 		meta: number,
 	): void {
 		const count = this.count;
-		const byteIndex = count * BYTES_PER_FACE;
-		const requiredLength = byteIndex + BYTES_PER_FACE;
+		const requiredLength = (count + 1) * BYTES_PER_FACE;
 
 		if (requiredLength > this.buf.length) {
 			const rta = this.rta;
 
-			rta.length = byteIndex;
+			rta.length = count * BYTES_PER_FACE;
 			rta.ensureCapacity(requiredLength);
 			this.updateBackingViews(rta.backingArray);
 		}

@@ -239,80 +239,121 @@ function testShapeBoxOverlap(
 	blockZ: number,
 ): boolean {
 	const boxes = shape.boxes;
-	const usesSliceState = shape.usesSliceState;
-	const needsFlipY = flipY;
-	const rot = shape.rotateY ? rotation & 3 : 0;
+	const count = boxes.length;
 
-	for (let i = 0, count = boxes.length; i < count; i++) {
+	if (count === 0) {
+		return false;
+	}
+
+	/*
+	 * Move epsilon adjustment outside the shape-box loop. These six values
+	 * remain constant for every box belonging to this voxel shape.
+	 */
+	const overlapMinX = aMinX + eps;
+	const overlapMaxX = aMaxX - eps;
+	const overlapMinY = aMinY + eps;
+	const overlapMaxY = aMaxY - eps;
+	const overlapMinZ = aMinZ + eps;
+	const overlapMaxZ = aMaxZ - eps;
+
+	const usesSliceState = shape.usesSliceState;
+	const rotationY = shape.rotateY ? rotation & 3 : 0;
+
+	/*
+	 * Slice bounds are identical for all boxes of a sliced shape, so calculate
+	 * them once rather than once per box.
+	 */
+	let slicedMinY = 0;
+	let slicedMaxY = 0;
+
+	if (usesSliceState) {
+		slicedMinY = slice * 0.5;
+		slicedMaxY = slicedMinY + 0.5;
+
+		if (flipY) {
+			const originalMinY = slicedMinY;
+			slicedMinY = 1 - slicedMaxY;
+			slicedMaxY = 1 - originalMinY;
+		}
+	}
+
+	for (let i = 0; i < count; i++) {
 		const box = boxes[i];
 
-		const boxMinX = box.min[0];
-		const boxMinZ = box.min[2];
-		const boxMaxX = box.max[0];
-		const boxMaxZ = box.max[2];
+		const min = box.min;
+		const max = box.max;
 
-		let minY = box.min[1];
-		let maxY = box.max[1];
+		let minY: number;
+		let maxY: number;
 
 		if (usesSliceState) {
-			minY = slice * 0.5;
-			maxY = minY + 0.5;
+			minY = slicedMinY;
+			maxY = slicedMaxY;
+		} else if (flipY) {
+			minY = 1 - max[1];
+			maxY = 1 - min[1];
+		} else {
+			minY = min[1];
+			maxY = max[1];
 		}
 
-		if (needsFlipY) {
-			const oldMinY = minY;
-			minY = 1 - maxY;
-			maxY = 1 - oldMinY;
+		const worldMinY = blockY + minY;
+		const worldMaxY = blockY + maxY;
+
+		/*
+		 * Reject on Y first. For player and mob colliders this commonly removes
+		 * stairs, fences and multi-box shapes before calculating rotated X/Z
+		 * coordinates.
+		 */
+		if (overlapMaxY <= worldMinY || overlapMinY >= worldMaxY) {
+			continue;
 		}
 
-		let bMinX: number;
-		let bMinZ: number;
-		let bMaxX: number;
-		let bMaxZ: number;
+		const minX = min[0];
+		const minZ = min[2];
+		const maxX = max[0];
+		const maxZ = max[2];
 
-		switch (rot) {
+		let worldMinX: number;
+		let worldMaxX: number;
+		let worldMinZ: number;
+		let worldMaxZ: number;
+
+		switch (rotationY) {
 			case 1:
-				// 90 degrees CW around block center: (x, z) -> (1 - z, x)
-				bMinX = blockX + 1 - boxMaxZ;
-				bMaxX = blockX + 1 - boxMinZ;
-				bMinZ = blockZ + boxMinX;
-				bMaxZ = blockZ + boxMaxX;
+				worldMinX = blockX + 1 - maxZ;
+				worldMaxX = blockX + 1 - minZ;
+				worldMinZ = blockZ + minX;
+				worldMaxZ = blockZ + maxX;
 				break;
 
 			case 2:
-				// 180 degrees
-				bMinX = blockX + 1 - boxMaxX;
-				bMaxX = blockX + 1 - boxMinX;
-				bMinZ = blockZ + 1 - boxMaxZ;
-				bMaxZ = blockZ + 1 - boxMinZ;
+				worldMinX = blockX + 1 - maxX;
+				worldMaxX = blockX + 1 - minX;
+				worldMinZ = blockZ + 1 - maxZ;
+				worldMaxZ = blockZ + 1 - minZ;
 				break;
 
 			case 3:
-				// 270 degrees CW around block center: (x, z) -> (z, 1 - x)
-				bMinX = blockX + boxMinZ;
-				bMaxX = blockX + boxMaxZ;
-				bMinZ = blockZ + 1 - boxMaxX;
-				bMaxZ = blockZ + 1 - boxMinX;
+				worldMinX = blockX + minZ;
+				worldMaxX = blockX + maxZ;
+				worldMinZ = blockZ + 1 - maxX;
+				worldMaxZ = blockZ + 1 - minX;
 				break;
 
 			default:
-				bMinX = blockX + boxMinX;
-				bMaxX = blockX + boxMaxX;
-				bMinZ = blockZ + boxMinZ;
-				bMaxZ = blockZ + boxMaxZ;
+				worldMinX = blockX + minX;
+				worldMaxX = blockX + maxX;
+				worldMinZ = blockZ + minZ;
+				worldMaxZ = blockZ + maxZ;
 				break;
 		}
 
-		const bMinY = blockY + minY;
-		const bMaxY = blockY + maxY;
-
 		if (
-			aMaxX - eps > bMinX &&
-			aMinX + eps < bMaxX &&
-			aMaxY - eps > bMinY &&
-			aMinY + eps < bMaxY &&
-			aMaxZ - eps > bMinZ &&
-			aMinZ + eps < bMaxZ
+			overlapMaxX > worldMinX &&
+			overlapMinX < worldMaxX &&
+			overlapMaxZ > worldMinZ &&
+			overlapMinZ < worldMaxZ
 		) {
 			return true;
 		}
