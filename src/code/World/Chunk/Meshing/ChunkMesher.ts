@@ -751,11 +751,24 @@ setOnGroupMeshNeedsRebuild((group) => {
 	}
 });
 
+/**
+ * Apply mesh data to a chunk.
+ *
+ * `appliedLod` records which LOD level the data was built at, so the chunk
+ * knows what it is actually rendering (`chunk.appliedMeshLod`). It must be
+ * the LOD the mesh data was produced for — NOT the chunk's current
+ * `lodLevel`, which the streaming controller advances before the rebuild
+ * lands. Pass -1 when clearing the mesh.
+ *
+ * Defaults to `chunk.lodLevel` for callers that already guarantee the data
+ * matches the chunk's current LOD.
+ */
 export function createMeshFromData(
 	chunk: Chunk,
 	opaqueMeshData: MeshData | null,
 	waterMeshData: MeshData | null,
 	cutoutMeshData: MeshData | null,
+	appliedLod?: number,
 ): void {
 	const opaque =
 		opaqueMeshData && opaqueMeshData.faceCount > 0 ? opaqueMeshData : null;
@@ -765,6 +778,8 @@ export function createMeshFromData(
 
 	const cutout =
 		cutoutMeshData && cutoutMeshData.faceCount > 0 ? cutoutMeshData : null;
+
+	chunk.appliedMeshLod = appliedLod ?? chunk.lodLevel ?? 0;
 
 	if (chunk.isBoatChunk) {
 		createBoatChunkMesh(chunk, opaque, water, cutout);

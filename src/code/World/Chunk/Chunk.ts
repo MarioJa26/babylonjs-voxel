@@ -118,6 +118,26 @@ export class Chunk {
 	public id: bigint = 0n;
 	public lodLevel = 0;
 
+	/**
+	 * LOD level the currently rendered mesh was actually built at.
+	 *
+	 * -1 means "no mesh applied yet" (never meshed, or the mesh was cleared
+	 * because the chunk turned out to be empty).
+	 *
+	 * WHY THIS EXISTS. `lodLevel` is the LOD the streaming controller DECIDED
+	 * the chunk should have, and it is assigned BEFORE the mesh for that LOD
+	 * has been rebuilt — so a chunk can claim lodLevel 0 while still
+	 * rendering its old LOD-3 mesh. Comparing `lodLevel` against the decision
+	 * therefore says nothing about what is on screen, and a rebuild that gets
+	 * lost leaves no trace: the chunk looks settled, and nothing re-queues it.
+	 *
+	 * `appliedMeshLod` is the ground truth for "what is on screen". A mismatch
+	 * (`appliedMeshLod >= 0 && appliedMeshLod !== lodLevel`) is the precise
+	 * stale-LOD condition, and it is what the streaming controller's refresh
+	 * path uses to re-queue a lost rebuild.
+	 */
+	public appliedMeshLod = -1;
+
 	public static readonly SIZE = GenerationParams.CHUNK_SIZE;
 	public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
 	public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
@@ -152,6 +172,7 @@ export class Chunk {
 			c.remeshQueued = false;
 			c.rerunRemeshAfterInflight = false;
 			c.meshRevision = 0;
+			c.appliedMeshLod = -1;
 			// blockRevision / generation keep their pooled values + bump on next loadFromStorage
 			c.mergedGroupKey = null;
 			c.faceConnectivity = 0;
@@ -1678,6 +1699,7 @@ export class Chunk {
 		this.isTerrainScheduled = false;
 		this.remeshQueued = false;
 		this.rerunRemeshAfterInflight = false;
+		this.appliedMeshLod = -1;
 
 		this.bfsQueryId = 0;
 		this.bfsVisitedFaces = 0;

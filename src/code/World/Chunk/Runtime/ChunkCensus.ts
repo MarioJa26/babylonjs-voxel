@@ -10,6 +10,8 @@
  * cached entry.
  */
 
+import { isStaleLodMesh } from "../LOD/LodCurrency";
+
 // Minimal structural view — Chunk satisfies this without exposing privates.
 export interface CensusMeshData {
 	readonly faceData: Uint8Array;
@@ -24,6 +26,12 @@ export interface CensusLODMesh {
 export interface CensusChunk {
 	readonly hasVoxelData: boolean;
 	readonly lodLevel: number;
+	/**
+	 * LOD the rendered mesh was actually built at (-1 = no mesh). A chunk whose
+	 * `appliedMeshLod` differs from `lodLevel` is rendering the WRONG LOD -
+	 * the coarse mesh left over from before the chunk moved in closer.
+	 */
+	readonly appliedMeshLod: number;
 	getCachedLODMesh(lod: number): CensusLODMesh | null;
 }
 
@@ -33,6 +41,8 @@ export interface ChunkCensus {
 	lodLow: number;
 	lodMid: number;
 	lodHigh: number;
+	/** Chunks whose rendered mesh LOD does not match their decided LOD. */
+	staleLod: number;
 	cachedMeshEntries: number;
 	cachedMeshBytes: number;
 }
@@ -46,6 +56,7 @@ export function getChunkCensus(
 	let lodLow = 0;
 	let lodMid = 0;
 	let lodHigh = 0;
+	let staleLod = 0;
 	let cachedMeshEntries = 0;
 	let cachedMeshBytes = 0;
 
@@ -64,6 +75,15 @@ export function getChunkCensus(
 			lodMid++;
 		} else {
 			lodHigh++;
+		}
+
+		/*
+		 * Stale-LOD detector. `lodLevel` is the DECIDED level and is advanced
+		 * before the rebuild lands, so a mismatch here means the chunk is
+		 * still showing the mesh of its previous (coarser) LOD.
+		 */
+		if (isStaleLodMesh(chunk)) {
+			staleLod++;
 		}
 
 		for (let l = 0; l < lodCount; l++) {
@@ -93,6 +113,7 @@ export function getChunkCensus(
 		lodLow,
 		lodMid,
 		lodHigh,
+		staleLod,
 		cachedMeshEntries,
 		cachedMeshBytes,
 	};

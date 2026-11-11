@@ -1270,7 +1270,7 @@ export class ChunkWorkerPool {
 			chunk.waterMeshData ||
 			chunk.cutoutMeshData
 		) {
-			createMeshFromData(chunk, null, null, null);
+			createMeshFromData(chunk, null, null, null, -1);
 		}
 	}
 
@@ -1461,7 +1461,7 @@ export class ChunkWorkerPool {
 				}
 
 				if (isCurrentLod) {
-					createMeshFromData(chunk, opaqueData, waterData, cutoutData);
+					createMeshFromData(chunk, opaqueData, waterData, cutoutData, lod);
 					// Route through the owner: clears dirty + queued, preserves the
 					// rerun latch so a superseded chunk still re-runs after this
 					// (previously two manual flag writes with the same outcome).
@@ -1470,13 +1470,33 @@ export class ChunkWorkerPool {
 					this.debugStats.meshAppliedTotal++;
 					this._summaryApplied++;
 				} else {
-					// The current LOD changed while this build was in flight: the
-					// re-queue must supersede it with a fresh revision. Clear the
-					// queued flag first so the owner's bump guard below advances
-					// meshRevision exactly as the legacy manual writes did.
-					chunk.remeshQueued = false;
-					ChunkLifecycle.markDirty(chunk);
-					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
+					/*
+					 * The current LOD changed while this build was in flight: the
+					 * result belongs to the OLD lod, so it was cached above but
+					 * must not be applied. The chunk stays dirty until a build
+					 * for the CURRENT lod lands.
+					 *
+					 * Do NOT clear `remeshQueued` and do NOT advance
+					 * `meshRevision` here. A build for the current lod is
+					 * normally already queued or in flight (the LOD change
+					 * requested it), and wiping the flag / bumping the revision
+					 * invalidates that build's result — the drain drops results
+					 * whose meshRevision no longer matches (the stale-drop
+					 * branch above) — so every LOD transition paid for TWO full
+					 * mesh builds instead of one, and the redundant work
+					 * saturated the remesh queue exactly when the player was
+					 * moving and LOD upgrades mattered most.
+					 */
+					if (
+						!chunk.remeshQueued &&
+						!this.isSameLodRemeshInflight(chunk)
+					) {
+						// Nothing is on its way for the current lod — queue one.
+						// bumpRevision=false: only the LOD changed, the content
+						// did not, so there is nothing to invalidate.
+						ChunkLifecycle.markDirty(chunk);
+						this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0, false);
+					}
 					this.debugStats.meshCachedForOtherLodTotal++;
 				}
 
@@ -1868,7 +1888,13 @@ export class ChunkWorkerPool {
 		const cached = chunk.getCachedLODMesh(chunk.lodLevel);
 		if (!cached?.opaque && !cached?.water && !cached?.cutout) return false;
 
-		createMeshFromData(chunk, cached.opaque, cached.water, cached.cutout);
+		createMeshFromData(
+			chunk,
+			cached.opaque,
+			cached.water,
+			cached.cutout,
+			chunk.lodLevel ?? 0,
+		);
 		chunk.isDirty = false;
 		return true;
 	}
@@ -2488,6 +2514,28 @@ export class ChunkWorkerPool {
 				// rerunAfterInflight; the heap entry itself is stale.
 				this.remeshStaging.delete(chunk);
 				this.remeshHeap.deletePriority(chunk);
+
+				/*
+				 * STALLFIX. The ingest only re-queues when a worker result
+				 * actually arrives. If the in-flight build was LOST (worker
+				 * crash, or the chunk was recycled before the result came
+				 * back) that result will never arrive, so the latch stays set
+				 * forever — and with it set, this branch drops every future
+				 * queue entry for the chunk, `Chunk.scheduleRemesh` early-
+				 * returns on `remeshQueued`, and `ChunkLifecycle.queueRemesh`
+				 * coalesces on Superseded. The chunk could then never be
+				 * meshed again: it would keep rendering the mesh it had,
+				 * which for an LOD transition is the OLD, coarser LOD.
+				 *
+				 * When nothing is in flight for this chunk any more, the
+				 * latch is provably stale: clear it and re-stage the chunk
+				 * so it gets the build it is owed.
+				 */
+				if (!this.remeshFlight.isAnyLodInflight(chunk)) {
+					ChunkLifecycle.rerunAfterInflight(chunk);
+					this.remeshStaging.add(chunk, (chunk.lodLevel ?? 0) === 0);
+					this.scheduleRemeshFlush();
+				}
 				return false;
 			}
 			if (!chunk.remeshQueued) {

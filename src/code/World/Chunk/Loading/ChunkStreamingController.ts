@@ -22,6 +22,7 @@ import {
 	DistantOnlyChunkCreationRule,
 	Lod0ChunkCreationRule,
 } from "../LOD/ChunkLodRules";
+import { isStaleLodMesh } from "../LOD/LodCurrency";
 import {
 	maxLodForChunkY,
 	UNDERGROUND_CULL_EXEMPT_RADIUS,
@@ -1709,6 +1710,28 @@ export class ChunkStreamingController {
 				if (this.tryApplyCachedLodTransitionMesh(chunk, desiredLod)) {
 					chunk.isDirty = false;
 				}
+			} else if (
+				chunk.hasVoxelData &&
+				isStaleLodMesh(chunk) &&
+				!chunk.remeshQueued
+			) {
+				/*
+				 * STALLFIX (stale LOD). The chunk renders a mesh built for
+				 * `appliedMeshLod`, but the decision says it should be at
+				 * `desiredLod` — i.e. the rebuild for the finer LOD was
+				 * requested and then LOST (dropped queue entry, lost worker
+				 * result, stale-drop chain). `chunk.lodLevel` was already
+				 * advanced to `desiredLod` when the decision was applied, so
+				 * the refresh scan's own guard (`lodLevel === decision`)
+				 * keeps skipping this chunk and NOTHING re-queues it: it
+				 * would render its old, coarser LOD forever.
+				 *
+				 * Re-queue it here. `remeshQueued` is false in exactly the
+				 * lost-rebuild case; when a build is already pending or in
+				 * flight the flag is set and this branch is skipped, so the
+				 * normal path is untouched.
+				 */
+				chunk.scheduleRemesh(true);
 			}
 
 			return;
@@ -2135,6 +2158,7 @@ export class ChunkStreamingController {
 			cached.opaque ?? null,
 			cached.water ?? null,
 			cached.cutout ?? null,
+			targetLod,
 		);
 
 		chunk.isDirty = false;

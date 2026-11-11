@@ -1553,6 +1553,7 @@ export class PlayerLoopController {
 			"Chunk Census",
 			`total:${census.total} vox:${census.withVoxels} ` +
 				`lod<=1:${census.lodLow} lod2-3:${census.lodMid} lod4+:${census.lodHigh} ` +
+				`stale:${census.staleLod} ` +
 				`meshes:${census.cachedMeshEntries}/${mib(census.cachedMeshBytes)}MiB`,
 			"workers",
 		);

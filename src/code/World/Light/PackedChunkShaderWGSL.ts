@@ -492,6 +492,7 @@ export function buildPackedVertexWGSL(
 	opts: VertexShaderOptions = {},
 ): string {
 	const arenas = Math.max(1, arenaCount | 0);
+
 	const rawUnits = opts.rawUnits ?? false;
 	const bakeShade = opts.bakeShade ?? false;
 	const tangentSpaceLighting = opts.tangentSpaceLighting ?? false;
@@ -503,24 +504,49 @@ export function buildPackedVertexWGSL(
 		tangent: opts.tangent ?? true,
 		worldPosition: opts.worldPosition ?? true,
 
+		// Tangent-space lighting already exports the view vector in tangent
+		// space. Do not also emit the world-space view direction.
 		viewDir: !tangentSpaceLighting && (opts.viewDir ?? true),
+
 		tangentSpaceLighting,
 
+		// bakeShade replaces both vNormal/vLight and vertexDiffuse.
 		vertexDiffuse: !bakeShade && (opts.vertexDiffuse ?? false),
+
 		rawUnits,
+
+		// Neither boundary correction applies to raw-units geometry.
 		boundarySentinel: !rawUnits && (opts.boundarySentinel ?? true),
+
 		boundaryFlag: !rawUnits && (opts.boundaryFlag ?? false),
+
 		ao: opts.ao ?? true,
 		bakeShade,
 	};
 
+	/*
+	 * Dependency analysis
+	 * -------------------
+	 * Camera vector:
+	 *   fog                 -> distance + view direction Y
+	 *   viewDir             -> normalized world-space view direction
+	 *   tangentSpaceLighting -> tangent-space view direction
+	 */
 	const needsCameraVector = o.fog || o.viewDir || o.tangentSpaceLighting;
 
+	/*
+	 * worldPos is required either as an output or as the source of the
+	 * camera vector.
+	 */
 	const needsWorldPosition = o.worldPosition || needsCameraVector;
 
-	// Packed bakeShade (LOD2/LOD3) needs sharedNormal for the general shade
-	// assignment; rawUnits bakeShade (LOD4) shades via axis/faceSign and needs
-	// no normal. Non-baked variants always emit vNormal (@5).
+	/*
+	 * Packed bakeShade requires sharedNormal for general face shading.
+	 *
+	 * rawUnits + bakeShade can calculate diffuse and face shading directly
+	 * from axis/isBackFace, unless another enabled feature consumes the
+	 * normal.
+	 */
 	const needsNormal =
 		!o.rawUnits ||
 		!o.bakeShade ||
@@ -530,48 +556,86 @@ export function buildPackedVertexWGSL(
 
 	const needsTangent = o.tangent || o.tangentSpaceLighting;
 
-	// Packed (non-rawUnits) position needs sharedTangent for the diagonal
-	// branch even when no varying consumes it. Raw-units guarantees no
-	// diagonal faces, so only packed forces the tangent path.
+	/*
+	 * Packed diagonal positioning consumes sharedTangent even when the
+	 * tangent is not exported. rawUnits guarantees axis-aligned faces.
+	 */
 	const needsTangentWithPosition = needsTangent || !o.rawUnits;
 
 	const needsBitangent = o.tangentSpaceLighting;
 
-	const needsLight = !o.bakeShade;
-	void needsLight;
-
+	/*
+	 * Generate a static arena switch. Each generated shader therefore has a
+	 * fixed number of storage buffers and no generic arena loop.
+	 */
 	const loadFaceBody =
 		arenas === 1
-			? " return vec3<u32>(faceData0[i3], faceData0[i3 + 1u], faceData0[i3 + 2u]);"
+			? ` return vec3<u32>(
+ faceData0[i3],
+ faceData0[i3 + 1u],
+ faceData0[i3 + 2u]
+);`
 			: ` switch arena {
 ${Array.from(
 	{ length: arenas },
-	(_, i) =>
-		` case ${i}u: { return vec3<u32>(faceData${i}[i3], faceData${i}[i3 + 1u], faceData${i}[i3 + 2u]); }`,
+	(_, i) => ` case ${i}u: {
+ return vec3<u32>(
+ faceData${i}[i3],
+ faceData${i}[i3 + 1u],
+ faceData${i}[i3 + 2u]
+ );
+}`,
 ).join("\n")}
-default: { return vec3<u32>(faceData0[i3], faceData0[i3 + 1u], faceData0[i3 + 2u]); }
+ default: {
+ return vec3<u32>(
+ faceData0[i3],
+ faceData0[i3 + 1u],
+ faceData0[i3 + 2u]
+ );
+ }
 }`;
 
+	/*
+	 * This block is omitted completely for pipelines that cannot contain
+	 * either boundary representation.
+	 */
 	const boundaryRestoreBlock =
 		o.boundarySentinel || o.boundaryFlag
 			? `
-if (${o.boundarySentinel ? "(((metaByte >> 1u) & 3u) == 3u)" : "false"} || ${o.boundaryFlag ? "(((metaByte >> 5u) & 1u) != 0u)" : "false"}) {
-if (axis == 0u) {
-baseX += INV_POS;
-} else if (axis == 1u) {
-baseY += INV_POS;
-} else {
-baseZ += INV_POS;
-}
-}
+ let restoreBoundary =
+     ${o.boundarySentinel ? "(((metaByte >> 1u) & 3u) == 3u)" : "false"} ||
+     ${o.boundaryFlag ? "(((metaByte >> 5u) & 1u) != 0u)" : "false"};
+
+ if (restoreBoundary) {
+     if (axis == 0u) {
+         baseX += INV_POS;
+     } else if (axis == 1u) {
+         baseY += INV_POS;
+     } else {
+         baseZ += INV_POS;
+     }
+ }
 `
 			: "";
 
-	const tintDecode = o.tint ? " let tintBucket = (face.x >> 27u) & 7u;" : "";
+	/*
+	 * Decode tint only if the fragment interface consumes vTint.
+	 */
+	const tintDecode = o.tint ? " let tintBucket = (faceX >> 27u) & 7u;" : "";
 
+	/*
+	 * rawUnits removes:
+	 *   - position scaling
+	 *   - fractional position correction
+	 *   - meta decoding
+	 *   - diagonal flags
+	 *   - raw dimension selection
+	 *   - boundary restoration
+	 */
 	const decodeBlock = o.rawUnits
-		? ` let metaByte = 0u;
- let localChunk = face.z >> 24u;
+		? `
+ let metaByte = 0u;
+ let localChunk = faceZ >> 24u;
 ${tintDecode}
 
  let axis = axisFace >> 1u;
@@ -586,36 +650,42 @@ ${tintDecode}
  let baseY = f32(bByte) + co.y;
  let baseZ = f32(cByte) + co.z;
 `
-		: ` let metaByte = (face.z >> 16u) & 0xffu;
- let localChunk = face.z >> 24u;
+		: `
+ let metaByte = (faceZ >> 16u) & 0xffu;
+ let localChunk = faceZ >> 24u;
 ${tintDecode}
 
  let axis = axisFace >> 1u;
  let isBackFace = axisFace & 1u;
+
  let flip = metaByte & 1u;
  let diagonalEnabled = (metaByte >> 4u) & 1u;
  let diagonalVariant = (metaByte >> 5u) & 1u;
  let rawDimensions = (metaByte >> 6u) & 1u;
 
+ let usesRawDimensions = rawDimensions != 0u;
+
  let faceWidth = select(
- f32(widthByte) * INV_POS,
- f32(widthByte),
- rawDimensions != 0u
+     f32(widthByte) * INV_POS,
+     f32(widthByte),
+     usesRawDimensions
  );
 
  let faceHeight = select(
- f32(heightByte) * INV_POS,
- f32(heightByte),
- rawDimensions != 0u
+     f32(heightByte) * INV_POS,
+     f32(heightByte),
+     usesRawDimensions
  );
 
  let co = chunkOffsets[offsetBase + localChunk];
 
- let posX = f32(aByte) * INV_POS -
- f32((metaByte >> 3u) & 1u) * HALF_INV_POS;
+ let posX =
+     f32(aByte) * INV_POS -
+     f32((metaByte >> 3u) & 1u) * HALF_INV_POS;
 
- let posZ = f32(cByte) * INV_POS -
- f32((metaByte >> 7u) & 1u) * HALF_INV_POS;
+ let posZ =
+     f32(cByte) * INV_POS -
+     f32((metaByte >> 7u) & 1u) * HALF_INV_POS;
 
  var baseX = posX + co.x;
  var baseY = f32(bByte) * INV_POS + co.y;
@@ -634,11 +704,17 @@ ${boundaryRestoreBlock}`;
 		? buildRawUnitsPositionBlock()
 		: buildPackedPositionBlock();
 
-	const aoDecode = o.ao ? " let packedAO = face.z & 0xffu;" : "";
+	/*
+	 * AO extraction is omitted entirely when AO is disabled. This also
+	 * removes vAO from VSOut through vsOutFields().
+	 */
+	const aoDecode = o.ao ? " let packedAO = faceZ & 0xffu;" : "";
 
 	const ambientOcclusionDecode = o.ao
-		? ` let ambientOcclusion =
- (packedAO >> (corner << 1u)) & 3u;`
+		? `
+ let ambientOcclusion =
+     (packedAO >> (corner << 1u)) & 3u;
+`
 		: "";
 
 	const worldBlock = buildWorldAndCameraBlock(
@@ -652,8 +728,11 @@ struct VSOut {
 ${vsOutFields(o)}
 };
 
-fn loadFace(arena : u32, idx : u32) -> vec3<u32> {
-let i3 = idx * 3u;
+fn loadFace(
+    arena : u32,
+    idx : u32
+) -> vec3<u32> {
+    let i3 = idx * 3u;
 ${loadFaceBody}
 }
 
@@ -665,86 +744,117 @@ const HALF_INV_POS : f32 = 0.0625;
 const INV_LIGHT : f32 = 0.0666666667;
 
 const CORNER_LUT = array<u32, 16>(
-0u, 1u, 2u, 3u,
-3u, 0u, 1u, 2u,
-2u, 1u, 0u, 3u,
-1u, 0u, 3u, 2u
+    0u, 1u, 2u, 3u,
+    3u, 0u, 1u, 2u,
+    2u, 1u, 0u, 3u,
+    1u, 0u, 3u, 2u
 );
 
 const ATLAS_CORNER_LUT = array<u32, 24>(
-0u, 3u, 2u, 1u,
-1u, 2u, 3u, 0u,
-0u, 3u, 2u, 1u,
-3u, 0u, 1u, 2u,
-1u, 0u, 3u, 2u,
-0u, 1u, 2u, 3u
+    0u, 3u, 2u, 1u,
+    1u, 2u, 3u, 0u,
+    0u, 3u, 2u, 1u,
+    3u, 0u, 1u, 2u,
+    1u, 0u, 3u, 2u,
+    0u, 1u, 2u, 3u
 );
 
 const AXIS_BASIS = array<vec3<f32>, 3>(
-vec3<f32>(1.0, 0.0, 0.0),
-vec3<f32>(0.0, 1.0, 0.0),
-vec3<f32>(0.0, 0.0, 1.0)
+    vec3<f32>(1.0, 0.0, 0.0),
+    vec3<f32>(0.0, 1.0, 0.0),
+    vec3<f32>(0.0, 0.0, 1.0)
 );
 
-const CORNER_U = array<f32, 4>(0.0, 1.0, 1.0, 0.0);
-const CORNER_V = array<f32, 4>(0.0, 0.0, 1.0, 1.0);
-const U_AXIS = array<u32, 3>(1u, 2u, 0u);
-const V_AXIS = array<u32, 3>(2u, 0u, 1u);
+const CORNER_U = array<f32, 4>(
+    0.0, 1.0, 1.0, 0.0
+);
+
+const CORNER_V = array<f32, 4>(
+    0.0, 0.0, 1.0, 1.0
+);
+
+const U_AXIS = array<u32, 3>(
+    1u, 2u, 0u
+);
+
+const V_AXIS = array<u32, 3>(
+    2u, 0u, 1u
+);
 
 @vertex
 fn mainVertex(
-input : VertexInput,
-@builtin(instance_index) instanceIndex : u32,
-@builtin(vertex_index) vertexIndex : u32
+    input : VertexInput,
+    @builtin(instance_index) instanceIndex : u32,
+    @builtin(vertex_index) vertexIndex : u32
 ) -> VSOut {
-var out : VSOut;
+    var out : VSOut;
 
-let faceBase = u32(input.instData.x);
-let arena = u32(input.instData.y);
-let offsetBase = u32(input.instData.z);
-let face = loadFace(arena, faceBase + instanceIndex);
+    let faceBase = u32(input.instData.x);
+    let arena = u32(input.instData.y);
+    let offsetBase = u32(input.instData.z);
 
-let faceX = face.x;
-let faceY = face.y;
-let faceZ = face.z;
+    let face = loadFace(
+        arena,
+        faceBase + instanceIndex
+    );
 
-let aByte = faceX & 0xffu;
-let bByte = (faceX >> 8u) & 0xffu;
-let cByte = (faceX >> 16u) & 0xffu;
-let axisFace = (faceX >> 24u) & 7u;
+    let faceX = face.x;
+    let faceY = face.y;
+    let faceZ = face.z;
 
-let widthByte = faceY & 0xffu;
-let heightByte = (faceY >> 8u) & 0xffu;
-let tileX = (faceY >> 16u) & 0xffu;
-let tileY = faceY >> 24u;
+    let aByte = faceX & 0xffu;
+    let bByte = (faceX >> 8u) & 0xffu;
+    let cByte = (faceX >> 16u) & 0xffu;
+    let axisFace = (faceX >> 24u) & 7u;
+
+    let widthByte = faceY & 0xffu;
+    let heightByte = (faceY >> 8u) & 0xffu;
+    let tileX = (faceY >> 16u) & 0xffu;
+    let tileY = faceY >> 24u;
 
 ${aoDecode}
-let lightByte = (faceZ >> 8u) & 0xffu;
+    let lightByte = (faceZ >> 8u) & 0xffu;
+
 ${decodeBlock}
 
-let skyLight = f32((lightByte >> 4u) & 0x0fu) * INV_LIGHT;
-let blockLight = f32(lightByte & 0x0fu) * INV_LIGHT;
+    let skyLight =
+        f32((lightByte >> 4u) & 0x0fu) *
+        INV_LIGHT;
+
+    let blockLight =
+        f32(lightByte & 0x0fu) *
+        INV_LIGHT;
 
 ${normalBlock}
 
-let corner = CORNER_LUT[cornerState * 4u + vertexIndex];
-let cuF = CORNER_U[corner];
-let cvF = CORNER_V[corner];
+    let corner =
+        CORNER_LUT[
+            cornerState * 4u +
+            vertexIndex
+        ];
 
-var position : vec3<f32>;
-var faceU : f32;
-var faceV : f32;
+    let cuF = CORNER_U[corner];
+    let cvF = CORNER_V[corner];
+
+    var position : vec3<f32>;
+    var faceU : f32;
+    var faceV : f32;
 
 ${positionBlock}
 
-let localPosition = vec4<f32>(position, 1.0);
-out.pos = shaderSystem.worldViewProjection * localPosition;
+    let localPosition =
+        vec4<f32>(position, 1.0);
+
+    out.pos =
+        shaderSystem.worldViewProjection *
+        localPosition;
 
 ${worldBlock}
 ${ambientOcclusionDecode}
 
 ${vsOutAssignments(o)}
-return out;
+
+    return out;
 }
 `;
 }
