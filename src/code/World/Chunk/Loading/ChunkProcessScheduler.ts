@@ -849,10 +849,7 @@ export class ChunkProcessScheduler {
 							markSuspend();
 							await this.withIoTimeout(
 								"WorldStorage.loadChunkBlobs (hydration)",
-								WorldStorage.loadChunkBlobs(
-									state.hydrateIds,
-									state.hydrateMap,
-								),
+								WorldStorage.loadChunkBlobs(state.hydrateIds, state.hydrateMap),
 							);
 
 							markResume();

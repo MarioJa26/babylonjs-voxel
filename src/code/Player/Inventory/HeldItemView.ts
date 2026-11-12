@@ -4,6 +4,7 @@ import {
 	createMeshFromData,
 	createShaderMaterial,
 	createSolidTexture2D,
+	createTexture2DArrayFromPixels,
 	type EngineContext,
 	getProjectionMatrix,
 	type Mesh,
@@ -17,16 +18,15 @@ import {
 	setShaderUniform,
 	setShaderVector3,
 	type Texture2D,
+	type Texture2DArray,
 } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import { isRegisteredBlockId } from "@/code/World/Shape/BlockShapes";
-import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
 import {
-	atlasSize,
-	atlasTileSize,
-	getDiffuseTexture2D,
+	getDiffuseArray,
+	getNormalArray,
 } from "@/code/World/Texture/TextureAtlasFactory";
 import type { Player } from "../Player";
 import {
@@ -37,10 +37,10 @@ import {
 } from "../PlayerModel";
 import {
 	getBillboardQuadGeometry,
-	getBlockItemGeometry,
 	getIconTexture,
 	PLACEHOLDER_ICON_URL,
 } from "./DroppedItem";
+import { getHeldBlockGeometry } from "./HeldBlockGeometry";
 import { getRegisteredItemById } from "./ItemRegistry";
 
 /**
@@ -258,7 +258,7 @@ function syncRelativeViewProjection(
 }
 
 /**
- * Held-item shader.
+ * Held-item sprite shader.
  *
  * This shader applies environment voxel lighting and directional sunlight.
  * The mesh normal is transformed into the same rotated space as the item.
@@ -368,6 +368,205 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 }
 `;
 
+/**
+ * Held-item block shader.
+ *
+ * Blocks are sampled from the same atlas arrays the world mesher uses: one
+ * atlas tile per layer, addressed by the per-face tile index carried in
+ * uv2.x. Sampling a tile layer instead of a rectangle of the 2D atlas is
+ * what keeps a face from reaching into the neighbouring tile at its border,
+ * which showed up as a sub-pixel seam at the corners of the held cube.
+ *
+ * The UVs are the world mesher's frame, so one tile covers exactly one
+ * block face and the texture scale matches the terrain blocks.
+ *
+ * Lighting is tangent-space, like the world's opaque chunk shader: the
+ * normal map is sampled from the matching layer of the normal atlas and
+ * modulates the direct sunlight term.
+ */
+const heldBlockVertexWGSL = /* wgsl */ `
+struct VSOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) vUV : vec2<f32>,
+  @location(1) @interpolate(flat) vTileLayer : u32,
+  @location(2) vNormal : vec3<f32>,
+  @location(3) vTangent : vec3<f32>,
+  @location(4) vBitangent : vec3<f32>,
+  @location(5) vViewDirTS : vec3<f32>,
+  @location(6) @interpolate(flat) vLightDirTS : vec3<f32>,
+  @location(7) @interpolate(flat) vDiffuse : f32,
+};
+
+@vertex
+fn mainVertex(input : VertexInput) -> VSOut {
+  var out : VSOut;
+
+  let world = shaderSystem.world;
+
+  let relativeWorldPosition =
+    world * vec4<f32>(input.position, 1.0);
+
+  out.pos =
+    shaderUniforms.uViewProjection *
+    relativeWorldPosition;
+
+  out.vUV = input.uv;
+  out.vTileLayer = u32(input.uv2.x);
+
+  let worldNormal = normalize(
+    (world * vec4<f32>(input.normal, 0.0)).xyz
+  );
+
+  out.vNormal = worldNormal;
+
+  // Tangent frame of the world mesher: the +X faces use the Y axis, the
+  // +Y faces the Z axis and the +Z faces the X axis, flipped for the
+  // back faces. Keeping the same frame means the held block reacts to the
+  // sun exactly like the same block placed in the world.
+  let localNormal = input.normal;
+
+  var localTangent = vec3<f32>(1.0, 0.0, 0.0);
+
+  if (abs(localNormal.y) > 0.5) {
+    localTangent = vec3<f32>(0.0, 0.0, localNormal.y);
+  } else if (abs(localNormal.x) > 0.5) {
+    localTangent = vec3<f32>(0.0, localNormal.x, 0.0);
+  } else {
+    localTangent = vec3<f32>(localNormal.z, 0.0, 0.0);
+  }
+
+  let worldTangent = normalize(
+    (world * vec4<f32>(localTangent, 0.0)).xyz
+  );
+
+  let worldBitangent = cross(worldNormal, worldTangent);
+
+  out.vTangent = worldTangent;
+  out.vBitangent = worldBitangent;
+
+  // The viewmodel lives in camera-relative space, so the camera sits at
+  // the origin of that space.
+  let viewDirection = normalize(-relativeWorldPosition.xyz);
+
+  let lightDirection = normalize(shaderUniforms.lightDirection);
+
+  out.vViewDirTS = vec3<f32>(
+    dot(viewDirection, worldTangent),
+    dot(viewDirection, worldBitangent),
+    dot(viewDirection, worldNormal)
+  );
+
+  out.vLightDirTS = normalize(vec3<f32>(
+    dot(lightDirection, worldTangent),
+    dot(lightDirection, worldBitangent),
+    dot(lightDirection, worldNormal)
+  ));
+
+  out.vDiffuse = max(0.0, dot(lightDirection, worldNormal));
+
+  return out;
+}
+`;
+
+const heldBlockFragmentWGSL = /* wgsl */ `
+struct VSOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) vUV : vec2<f32>,
+  @location(1) @interpolate(flat) vTileLayer : u32,
+  @location(2) vNormal : vec3<f32>,
+  @location(3) vTangent : vec3<f32>,
+  @location(4) vBitangent : vec3<f32>,
+  @location(5) vViewDirTS : vec3<f32>,
+  @location(6) @interpolate(flat) vLightDirTS : vec3<f32>,
+  @location(7) @interpolate(flat) vDiffuse : f32,
+};
+
+@fragment
+fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
+  let singleTileUV = fract(in.vUV);
+
+  let dx = dpdx(in.vUV);
+  let dy = dpdy(in.vUV);
+
+  let tex = textureSampleGrad(
+    diffuseTexture,
+    diffuseTextureSampler,
+    singleTileUV,
+    in.vTileLayer,
+    dx,
+    dy
+  );
+
+  // Cutout blocks (leaves, grass) keep their alpha cutout.
+  if (tex.a < 0.5) {
+    discard;
+  }
+
+  let sampledNormal = textureSampleGrad(
+    normalTexture,
+    normalTextureSampler,
+    singleTileUV,
+    in.vTileLayer,
+    dx,
+    dy
+  ).rgb;
+
+  let normalTS = normalize(sampledNormal * 2.0 - 1.0);
+
+  let lightDirectionTS = in.vLightDirTS;
+  let viewDirectionTS = normalize(in.vViewDirTS);
+
+  let normalMapDiffuse = max(
+    0.0,
+    dot(normalTS, lightDirectionTS)
+  );
+
+  let halfwayDirectionTS = normalize(
+    viewDirectionTS + lightDirectionTS
+  );
+
+  let normalHalf = max(
+    dot(normalTS, halfwayDirectionTS),
+    0.0
+  );
+
+  let specularPower = exp2(
+    clamp(
+      32.0 * 1.4427 * (normalHalf - 1.0),
+      -126.0,
+      0.0
+    )
+  );
+
+  let voxelLight = shaderUniforms.lightColor;
+
+  let localSunIntensity =
+    shaderUniforms.sunLightIntensity *
+    shaderUniforms.skyLightLevel;
+
+  let lightMix = clamp(
+    voxelLight +
+      in.vDiffuse * localSunIntensity * 0.5,
+    vec3<f32>(0.06),
+    vec3<f32>(1.0)
+  );
+
+  // The normal map adds the surface relief the flat diffuse term cannot
+  // show. The world shader uses the same 1 + N.L * sun * sky shape.
+  let directLight =
+    1.0 +
+    normalMapDiffuse * localSunIntensity * 0.5;
+
+  let color =
+    tex.rgb * lightMix * directLight +
+    vec3<f32>(0.25) *
+      specularPower *
+      localSunIntensity;
+
+  return vec4<f32>(color, tex.a);
+}
+`;
+
 function createHeldItemMaterial(name: string): ShaderMaterial {
 	return createShaderMaterial({
 		name,
@@ -385,6 +584,34 @@ function createHeldItemMaterial(name: string): ShaderMaterial {
 			{ name: "skyLightLevel", type: "f32" },
 		],
 		samplers: ["diffuseTexture"],
+		backFaceCulling: true,
+	});
+}
+
+/**
+ * Block material.
+ *
+ * Both samplers are array views so a face can only ever read the atlas
+ * tile it was assigned, never the neighbouring tile.
+ */
+function createHeldBlockMaterial(name: string): ShaderMaterial {
+	return createShaderMaterial({
+		name,
+		vertexSource: heldBlockVertexWGSL,
+		fragmentSource: heldBlockFragmentWGSL,
+		attributes: ["position", "normal", "uv", "uv2"],
+		uniforms: [
+			"world",
+			{ name: "uViewProjection", type: "mat4x4<f32>" },
+			{ name: "lightColor", type: "vec3<f32>" },
+			{ name: "lightDirection", type: "vec3<f32>" },
+			{ name: "sunLightIntensity", type: "f32" },
+			{ name: "skyLightLevel", type: "f32" },
+		],
+		samplers: [
+			{ name: "diffuseTexture", viewDimension: "2d-array" },
+			{ name: "normalTexture", viewDimension: "2d-array" },
+		],
 		backFaceCulling: true,
 	});
 }
@@ -417,6 +644,49 @@ function getWhiteFallback(engine: EngineContext): Texture2D {
 }
 
 /**
+ * Cached single-layer fallback arrays for the block material.
+ *
+ * The block shader samples two array views, so the fallback has to be an
+ * array too. A one-layer array is enough: an out-of-range layer index is
+ * clamped to the only valid layer.
+ */
+let whiteFallbackArray: Texture2DArray | null = null;
+let flatNormalFallbackArray: Texture2DArray | null = null;
+
+function getWhiteFallbackArray(engine: EngineContext): Texture2DArray {
+	if (whiteFallbackArray === null) {
+		whiteFallbackArray = createTexture2DArrayFromPixels(
+			engine,
+			new Uint8Array([255, 255, 255, 255]),
+			1,
+			1,
+			1,
+			{ mipMaps: false, magFilter: "nearest", minFilter: "nearest" },
+		);
+	}
+
+	return whiteFallbackArray;
+}
+
+/**
+ * Flat tangent-space normal (0, 0, 1) as an array layer.
+ */
+function getFlatNormalFallbackArray(engine: EngineContext): Texture2DArray {
+	if (flatNormalFallbackArray === null) {
+		flatNormalFallbackArray = createTexture2DArrayFromPixels(
+			engine,
+			new Uint8Array([128, 128, 255, 255]),
+			1,
+			1,
+			1,
+			{ mipMaps: false, magFilter: "nearest", minFilter: "nearest" },
+		);
+	}
+
+	return flatNormalFallbackArray;
+}
+
+/**
  * Sprite entries use their icon URL as the cache key. Cube entries use
  * blockId * 64 + state. Map compares strings and numbers by type, so these
  * two key spaces cannot collide.
@@ -432,7 +702,8 @@ type Entry = {
 	added: boolean;
 
 	/**
-	 * True after the diffuse atlas has been bound to this cube material.
+	 * True after the diffuse and normal atlas arrays have been bound to
+	 * this cube material.
 	 */
 	atlasBound: boolean;
 
@@ -1013,7 +1284,7 @@ export class HeldItemView {
 
 		const blockId = Math.floor(key / 64);
 		const blockState = key & 63;
-		const cube = getBlockItemGeometry(blockId, blockState);
+		const cube = getHeldBlockGeometry(blockId, blockState);
 
 		const mesh = createMeshFromData(
 			Map1.engine,
@@ -1022,37 +1293,33 @@ export class HeldItemView {
 			cube.normals,
 			cube.indices,
 			cube.uvs,
+			cube.uvs2,
 		);
 
 		mesh.pickable = false;
 		setMeshVisible(mesh, false);
 		mesh.scaling.set(CUBE_SCALE, CUBE_SCALE, CUBE_SCALE);
 
-		const material = createHeldItemMaterial(
+		const material = createHeldBlockMaterial(
 			`heldCube_${blockId}_${blockState}`,
 		);
 
 		mesh.material = material;
 
-		const tile = getAtlasTile(blockId);
-		const tileX = tile?.[0] ?? 0;
-		const tileY = tile?.[1] ?? 0;
-
-		const clampedX = Math.max(0, Math.min(atlasSize - 1, tileX));
-
-		const clampedY = Math.max(0, Math.min(atlasSize - 1, tileY));
-
-		setShaderUniform(material, "uScale", atlasTileSize);
-
-		setShaderUniform(material, "uOffset", [
-			clampedX * atlasTileSize,
-			(atlasSize - 1 - clampedY) * atlasTileSize,
-		]);
-
 		setShaderVector3(material, "lightColor", [1, 1, 1]);
 		setShaderUniform(material, "skyLightLevel", 0);
 
-		setShaderTexture(material, "diffuseTexture", getWhiteFallback(Map1.engine));
+		setShaderTexture(
+			material,
+			"diffuseTexture",
+			getWhiteFallbackArray(Map1.engine),
+		);
+
+		setShaderTexture(
+			material,
+			"normalTexture",
+			getFlatNormalFallbackArray(Map1.engine),
+		);
 
 		const entry = createEntry(mesh, material, "cube");
 
@@ -1071,7 +1338,10 @@ export class HeldItemView {
 	}
 
 	/**
-	 * Binds the shared diffuse atlas when available.
+	 * Binds the shared atlas arrays when available.
+	 *
+	 * Blocks read the diffuse and normal atlas arrays the world mesher uses,
+	 * so the held block shows the very same tiles as the terrain.
 	 *
 	 * The operation is idempotent and is retried from the normal update path
 	 * while the atlas is unavailable.
@@ -1087,13 +1357,15 @@ export class HeldItemView {
 			return;
 		}
 
-		const atlas = getDiffuseTexture2D();
+		const diffuse = getDiffuseArray();
+		const normal = getNormalArray();
 
-		if (!atlas) {
+		if (!diffuse || !normal) {
 			return;
 		}
 
-		setShaderTexture(entry.material, "diffuseTexture", atlas);
+		setShaderTexture(entry.material, "diffuseTexture", diffuse);
+		setShaderTexture(entry.material, "normalTexture", normal);
 
 		entry.atlasBound = true;
 	}

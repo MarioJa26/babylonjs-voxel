@@ -94,6 +94,98 @@ export class BadlandsSpireFeature implements IWorldFeature {
 	};
 	public readonly maxAboveSurface = MAX_SPIRE_HEIGHT + 20;
 
+	/**
+	 * Column-top cache for the streaming controller's sky guard.
+	 *
+	 * Keyed by the spire's origin (plus the seed): the height belongs to the
+	 * spire, and so does the biome gate (which is evaluated on the spire's
+	 * centre, not on the queried column). Only the footprint test depends
+	 * on the query, and that one is cheap.
+	 */
+	private static columnTopCache = new Map<string, number>();
+
+	/**
+	 * Highest world Y the spire reaches in the chunk containing
+	 * (worldX, worldZ), or -1 when there is no spire here.
+	 *
+	 * A spire is up to 600 blocks tall, so its upper chunks live far above
+	 * the terrain. Without this the streaming controller's sky guard treats
+	 * them as empty sky: they are never created once the player moves, and
+	 * the ones that do exist are never re-evaluated, so the spire is
+	 * truncated and its LOD freezes.
+	 */
+	public columnTopHeight(worldX: number, worldZ: number, seed: number): number {
+		const chunkSize = 32;
+		const chunkX = Math.floor(worldX / chunkSize);
+		const chunkZ = Math.floor(worldZ / chunkSize);
+
+		const region = computeRegion(
+			chunkX,
+			chunkZ,
+			chunkSize,
+			seed,
+			BADLANDS_SPIRE_REGION,
+		);
+		if (!region) return -1;
+
+		const { centerX: spireX, centerZ: spireZ } = region;
+
+		const cacheKey = `${spireX},${spireZ},${seed}`;
+		let top = BadlandsSpireFeature.columnTopCache.get(cacheKey);
+		if (top === undefined) {
+			top = this.spireTop(spireX, spireZ, seed);
+			if (
+				BadlandsSpireFeature.columnTopCache.size >=
+				BadlandsSpireFeature.COLUMN_TOP_CACHE_MAX
+			) {
+				BadlandsSpireFeature.columnTopCache.clear();
+			}
+			BadlandsSpireFeature.columnTopCache.set(cacheKey, top);
+		}
+
+		if (top < 0) return -1;
+
+		// Footprint: the spire's square must intersect the queried chunk.
+		const minX = chunkX * chunkSize;
+		const minZ = chunkZ * chunkSize;
+		const maxX = minX + chunkSize - 1;
+		const maxZ = minZ + chunkSize - 1;
+		const overlapsFootprint =
+			spireX <= maxX &&
+			spireX + SPIRE_FOOTPRINT >= minX &&
+			spireZ <= maxZ &&
+			spireZ + SPIRE_FOOTPRINT >= minZ;
+
+		return overlapsFootprint ? top : -1;
+	}
+
+	/**
+	 * The spire's top height, or -1 when no spire exists here.
+	 *
+	 * Applies the same gates the generator applies: the badlands biome at
+	 * the spire's centre and at its four edge probes.
+	 */
+	private spireTop(spireX: number, spireZ: number, seed: number): number {
+		const halfFp = SPIRE_FOOTPRINT / 2;
+		const cx = spireX + halfFp;
+		const cz = spireZ + halfFp;
+
+		if (getBiome(cx, cz).id !== BIOME_ID.BADLANDS) return -1;
+		for (const [ox, oz] of EDGE_OFFSETS) {
+			if (getBiome(cx + ox, cz + oz).id !== BIOME_ID.BADLANDS) return -1;
+		}
+
+		const heightHash = getPRNGBySeed(spireX * 7 + spireZ * 13, seed);
+		const spireHeight =
+			MIN_SPIRE_HEIGHT +
+			(Math.abs(heightHash) % (MAX_SPIRE_HEIGHT - MIN_SPIRE_HEIGHT + 1));
+		const groundHeight = this.findGroundHeight(spireX, spireZ, halfFp);
+
+		return groundHeight + spireHeight;
+	}
+
+	private static readonly COLUMN_TOP_CACHE_MAX = 4096;
+
 	public generate(
 		chunkX: number,
 		chunkY: number,

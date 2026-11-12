@@ -32,6 +32,12 @@ export interface CensusChunk {
 	 * the coarse mesh left over from before the chunk moved in closer.
 	 */
 	readonly appliedMeshLod: number;
+	/** A remesh is requested and has not been applied yet. */
+	readonly remeshQueued: boolean;
+	/** A build was superseded while in flight; the re-run is latched. */
+	readonly rerunRemeshAfterInflight: boolean;
+	/** The chunk's mesh does not match its voxel data. */
+	readonly isDirty: boolean;
 	getCachedLODMesh(lod: number): CensusLODMesh | null;
 }
 
@@ -43,8 +49,43 @@ export interface ChunkCensus {
 	lodHigh: number;
 	/** Chunks whose rendered mesh LOD does not match their decided LOD. */
 	staleLod: number;
+	/** Stale chunks that still have a remesh request outstanding. */
+	staleQueued: number;
+	/** Stale chunks with the superseded-build rerun latch set. */
+	staleLatched: number;
+	/** Stale chunks whose mesh is still marked dirty. */
+	staleDirty: number;
+	/** Stale chunks whose rendered mesh is COARSER than the decided LOD. */
+	staleTooCoarse: number;
 	cachedMeshEntries: number;
 	cachedMeshBytes: number;
+}
+
+/** Per-chunk detail for a stale-LOD chunk, for diagnostics. */
+export interface StaleChunkDetail {
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	lodLevel: number;
+	appliedMeshLod: number;
+	remeshQueued: boolean;
+	rerunRemeshAfterInflight: boolean;
+	isDirty: boolean;
+	hasVoxelData: boolean;
+	isLoaded: boolean;
+}
+
+export function collectStaleChunkDetails(
+	chunks: Iterable<CensusChunk & StaleChunkDetail>,
+	limit = 32,
+): StaleChunkDetail[] {
+	const out: StaleChunkDetail[] = [];
+	for (const chunk of chunks) {
+		if (!isStaleLodMesh(chunk)) continue;
+		out.push(chunk);
+		if (out.length >= limit) break;
+	}
+	return out;
 }
 
 export function getChunkCensus(
@@ -57,6 +98,10 @@ export function getChunkCensus(
 	let lodMid = 0;
 	let lodHigh = 0;
 	let staleLod = 0;
+	let staleQueued = 0;
+	let staleLatched = 0;
+	let staleDirty = 0;
+	let staleTooCoarse = 0;
 	let cachedMeshEntries = 0;
 	let cachedMeshBytes = 0;
 
@@ -84,6 +129,10 @@ export function getChunkCensus(
 		 */
 		if (isStaleLodMesh(chunk)) {
 			staleLod++;
+			if (chunk.remeshQueued) staleQueued++;
+			if (chunk.rerunRemeshAfterInflight) staleLatched++;
+			if (chunk.isDirty) staleDirty++;
+			if (chunk.appliedMeshLod > chunk.lodLevel) staleTooCoarse++;
 		}
 
 		for (let l = 0; l < lodCount; l++) {
@@ -114,6 +163,10 @@ export function getChunkCensus(
 		lodMid,
 		lodHigh,
 		staleLod,
+		staleQueued,
+		staleLatched,
+		staleDirty,
+		staleTooCoarse,
 		cachedMeshEntries,
 		cachedMeshBytes,
 	};

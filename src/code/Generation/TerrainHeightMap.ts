@@ -14,6 +14,7 @@ import {
 import { Spline } from "./NoiseAndParameters/Spline";
 import { getPRNGBySeed } from "./NoiseAndParameters/Squirrel13";
 import { RiverGenerator } from "./RiverGeneration";
+import { computeSeedAsInt } from "./WorldSeed";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -200,10 +201,27 @@ let peaksAndValleysInst = _noise.peaksAndValleys.instance;
 let heightNoise = _noise.height;
 
 /**
+ * Integer seed the current terrain was generated from.
+ *
+ * Worldgen features hash against this integer, and so does the streaming
+ * controller's structure-height query (which has to reproduce the same
+ * region hashes the generator used). Kept here because this module is the
+ * one place that owns "the seed the world was generated with" on the main
+ * thread.
+ */
+let terrainSeedAsInt = 0;
+
+export function getTerrainSeedAsInt(): number {
+	return terrainSeedAsInt;
+}
+
+/**
  * Rebuild every noise instance plus the river generator from a new seed string
  * and clear sampled caches so no pre-seed values leak.
  */
 export function setTerrainSeed(seed: string): void {
+	terrainSeedAsInt = computeSeedAsInt(seed);
+
 	_noise = createTerrainNoise(seed);
 
 	riverGenerator = _noise.riverGenerator;

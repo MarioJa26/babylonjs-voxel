@@ -116,6 +116,14 @@ export type ChunkWorkerPoolDebugStats = {
 	meshCachedForOtherLodTotal: number;
 	meshStaleDroppedTotal: number;
 	meshUnknownChunkDroppedTotal: number;
+	/** Remesh heap entries dropped, by reason (see validateDequeuedChunkTask). */
+	remeshDropNotLoaded: number;
+	remeshDropNoVoxels: number;
+	remeshDropEmpty: number;
+	remeshDropLatch: number;
+	remeshDropNotQueued: number;
+	remeshDropSameLodInflight: number;
+	remeshDispatched: number;
 	// Overflow discards whose owner was re-queued for a fresh build instead of
 	// silently missing its update (backpressure drop policy).
 	meshOverflowRequeuedTotal: number;
@@ -365,6 +373,13 @@ export class ChunkWorkerPool {
 		meshCachedForOtherLodTotal: 0,
 		meshStaleDroppedTotal: 0,
 		meshUnknownChunkDroppedTotal: 0,
+		remeshDropNotLoaded: 0,
+		remeshDropNoVoxels: 0,
+		remeshDropEmpty: 0,
+		remeshDropLatch: 0,
+		remeshDropNotQueued: 0,
+		remeshDropSameLodInflight: 0,
+		remeshDispatched: 0,
 		meshOverflowRequeuedTotal: 0,
 		meshRecycledBuffersTotal: 0,
 		meshRecycledBytesTotal: 0,
@@ -1487,10 +1502,7 @@ export class ChunkWorkerPool {
 					 * saturated the remesh queue exactly when the player was
 					 * moving and LOD upgrades mattered most.
 					 */
-					if (
-						!chunk.remeshQueued &&
-						!this.isSameLodRemeshInflight(chunk)
-					) {
+					if (!chunk.remeshQueued && !this.isSameLodRemeshInflight(chunk)) {
 						// Nothing is on its way for the current lod — queue one.
 						// bumpRevision=false: only the LOD changed, the content
 						// did not, so there is nothing to invalidate.
@@ -2476,6 +2488,7 @@ export class ChunkWorkerPool {
 			}
 
 			if (!chunk.isLoaded) {
+				this.debugStats.remeshDropNotLoaded++;
 				this.remeshHeap.deletePriority(chunk);
 				return false;
 			}
@@ -2490,6 +2503,7 @@ export class ChunkWorkerPool {
 			// Dirty + queues dropped) instead of leaving a Queued flag with
 			// no queue behind.
 			if (!chunk.hasVoxelData) {
+				this.debugStats.remeshDropNoVoxels++;
 				this.remeshStaging.delete(chunk);
 				this.remeshHeap.deletePriority(chunk);
 				this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0, false);
@@ -2497,6 +2511,7 @@ export class ChunkWorkerPool {
 			}
 
 			if (isCompletelyEmptyChunk(chunk) || isUniformSolidMeshSkippable(chunk)) {
+				this.debugStats.remeshDropEmpty++;
 				// Delegate to scheduleRemesh's empty path: it owns the rerun
 				// latch, the heap removal, and the flag release.
 				this.remeshStaging.delete(chunk);
@@ -2510,6 +2525,7 @@ export class ChunkWorkerPool {
 			// would log an illegal beginRemesh from Clean/Superseded and waste
 			// a worker build on a chunk whose mesh is already current.
 			if (chunk.rerunRemeshAfterInflight) {
+				this.debugStats.remeshDropLatch++;
 				// The in-flight result's ingest re-queues via
 				// rerunAfterInflight; the heap entry itself is stale.
 				this.remeshStaging.delete(chunk);
@@ -2539,6 +2555,7 @@ export class ChunkWorkerPool {
 				return false;
 			}
 			if (!chunk.remeshQueued) {
+				this.debugStats.remeshDropNotQueued++;
 				this.remeshStaging.delete(chunk);
 				this.remeshHeap.deletePriority(chunk);
 				if (chunk.isDirty) {
@@ -2554,10 +2571,12 @@ export class ChunkWorkerPool {
 			// Building. The in-flight result (or its stale-drop re-queue)
 			// heals; a second concurrent build for the same LOD is pure waste.
 			if (this.isSameLodRemeshInflight(chunk)) {
+				this.debugStats.remeshDropSameLodInflight++;
 				this.remeshStaging.delete(chunk);
 				this.remeshHeap.deletePriority(chunk);
 				return false;
 			}
+			this.debugStats.remeshDispatched++;
 		}
 
 		if (taskType === TaskType.LodPrecompute && taskChunk) {

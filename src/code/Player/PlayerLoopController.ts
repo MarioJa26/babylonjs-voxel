@@ -1554,6 +1554,8 @@ export class PlayerLoopController {
 			`total:${census.total} vox:${census.withVoxels} ` +
 				`lod<=1:${census.lodLow} lod2-3:${census.lodMid} lod4+:${census.lodHigh} ` +
 				`stale:${census.staleLod} ` +
+				`(q:${census.staleQueued} latch:${census.staleLatched} ` +
+				`dirty:${census.staleDirty} coarse:${census.staleTooCoarse}) ` +
 				`meshes:${census.cachedMeshEntries}/${mib(census.cachedMeshBytes)}MiB`,
 			"workers",
 		);
@@ -1592,6 +1594,18 @@ export class PlayerLoopController {
 				`lost:${workerStats.meshUnknownChunkDroppedTotal} ` +
 				`rmsh:${workerStats.totalRemeshDispatches} ` +
 				`lod:${workerStats.totalLodPrecomputeDispatches}`,
+			"workers",
+		);
+
+		PlayerHud.updateDebugInfo(
+			"Remesh Drops",
+			`disp:${workerStats.remeshDispatched} ` +
+				`noload:${workerStats.remeshDropNotLoaded} ` +
+				`novox:${workerStats.remeshDropNoVoxels} ` +
+				`empty:${workerStats.remeshDropEmpty} ` +
+				`latch:${workerStats.remeshDropLatch} ` +
+				`notq:${workerStats.remeshDropNotQueued} ` +
+				`inflight:${workerStats.remeshDropSameLodInflight}`,
 			"workers",
 		);
 

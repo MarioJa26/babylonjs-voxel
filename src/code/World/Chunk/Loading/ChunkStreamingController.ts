@@ -7,6 +7,7 @@ import {
 	columnMinHeight,
 	effectiveColumnTopChunkY,
 	getFinalTerrainHeight,
+	getTerrainSeedAsInt,
 	isOceanFloorBandChunk,
 } from "@/code/Generation/TerrainHeightMap";
 import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
@@ -23,6 +24,7 @@ import {
 	Lod0ChunkCreationRule,
 } from "../LOD/ChunkLodRules";
 import { isStaleLodMesh } from "../LOD/LodCurrency";
+import { structureColumnTopY } from "@/code/Generation/Structure/StructureColumnTops";
 import {
 	maxLodForChunkY,
 	UNDERGROUND_CULL_EXEMPT_RADIUS,
@@ -259,6 +261,8 @@ interface ColumnProfile {
 }
 const COLUMN_PROFILE_CACHE_MAX = 16384;
 const columnProfileCache = new Map<number, ColumnProfile>();
+/** World seed the cached profiles were built for (see columnProfile). */
+let columnProfileSeed = -1;
 
 // Collision-free column key for signed 32-bit chunk coordinates: 26 bits per
 // axis (aliases only beyond Â±33.5M chunks â€” far outside any playable range,
@@ -323,6 +327,19 @@ function columnProfile(x: number, z: number): ColumnProfile {
 		const fc = frameProfileCache.get(key);
 		if (fc !== undefined) return fc;
 	}
+
+	/*
+	 * The profile embeds the world's structure heights, which depend on the
+	 * world seed. A new seed (new world, or an edited seed) invalidates every
+	 * cached profile, so drop them rather than serving stale bounds.
+	 */
+	const seed = getTerrainSeedAsInt();
+	if (seed !== columnProfileSeed) {
+		columnProfileSeed = seed;
+		columnProfileCache.clear();
+		frameProfileCache.clear();
+	}
+
 	const cached = columnProfileCache.get(key);
 	if (cached !== undefined) {
 		if (frameCacheActive) frameProfileCache.set(key, cached);
@@ -336,8 +353,31 @@ function columnProfile(x: number, z: number): ColumnProfile {
 		z * Chunk.SIZE + 16,
 	);
 	const minH = columnMinHeight(x, z);
+
+	/*
+	 * STRUCTURE-AWARE SKY BOUND.
+	 *
+	 * The sky guard below (and in processTargetChunkCoordinate) treats
+	 * `topY` as "the first chunk fully above the surface" — but the surface
+	 * is not only terrain. A tower is a solid cylinder 60-80 blocks of stone
+	 * standing on the ground, so its upper chunks live ABOVE the terrain
+	 * top. With the terrain height as the bound, the movement path never
+	 * created those chunks again and the LOD refresh never re-evaluated
+	 * them, so the tower was truncated and its LOD froze once the player
+	 * moved — while the initial shell (which has no such bound) showed it
+	 * correctly.
+	 *
+	 * Ask the features how high they reach in this column and use the
+	 * higher of the two bounds.
+	 */
+	const structureTop =
+		seed === 0
+			? -1
+			: structureColumnTopY(x * Chunk.SIZE + 16, z * Chunk.SIZE + 16, seed);
+	const surfaceTop = structureTop > centerH ? structureTop : centerH;
+
 	const profile: ColumnProfile = {
-		topY: effectiveColumnTopChunkY(centerH),
+		topY: effectiveColumnTopChunkY(surfaceTop),
 		buriedTopY: Math.floor((minH - BURIED_SAFETY_MARGIN) / Chunk.SIZE),
 	};
 	columnProfileCache.set(key, profile);

@@ -50,6 +50,28 @@ export interface IWorldFeature {
 	 */
 	readonly maxAboveSurface?: number;
 
+	/**
+	 * Highest world Y this feature can place a block at in the given world
+	 * column, or -1 when the column is outside the feature's footprint.
+	 *
+	 * WHY THIS EXISTS. The streaming controller decides which chunk-Y layers
+	 * of a column can be skipped as "provably empty sky", using the terrain
+	 * heightmap as the bound. A structure that reaches above the terrain —
+	 * a tower is 60-80 blocks of solid stone on top of the ground — lives in
+	 * exactly the layers that bound would skip. Without this query the tower's
+	 * upper chunks are never created by the movement path and are never
+	 * re-evaluated by the LOD refresh, so the structure is truncated and its
+	 * LOD never updates.
+	 *
+	 * Optional: features that never rise above the terrain (the vast
+	 * majority) do not implement it and cost nothing.
+	 *
+	 * `seed` is the integer world seed — the same value the generator passes
+	 * to `generate()`, so the footprint test reproduces the generator's
+	 * placement exactly.
+	 */
+	columnTopHeight?(worldX: number, worldZ: number, seed: number): number;
+
 	generate(
 		chunkX: number,
 		chunkY: number,

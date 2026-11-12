@@ -153,10 +153,7 @@ export class MayaTempleFeature implements IWorldFeature {
 				 */
 				if (
 					emitContext !== undefined &&
-					!emitContext.tryClaim(
-						this,
-						`${resolved.centerX}:${resolved.centerZ}`,
-					)
+					!emitContext.tryClaim(this, `${resolved.centerX}:${resolved.centerZ}`)
 				) {
 					continue;
 				}

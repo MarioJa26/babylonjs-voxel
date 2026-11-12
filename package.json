@@ -13,6 +13,8 @@
 		"selftest:temple": "tsx scripts/maya-temple-selftest.ts",
 		"selftest:temple:walk": "tsx scripts/maya-temple-walk-selftest.ts",
 		"selftest:locate": "tsx scripts/locate-selftest.ts",
+		"selftest:emit": "node --import tsx scripts/maya-temple-emit-test.ts",
+		"bench:chunks": "node --import tsx benchmarks/chunk-load-perf.ts",
 		"ts7:version": "tsc --version",
 		"typecheck:ts7": "tsc --noEmit",
 		"build:test-ts7": "tsc --noEmit && \"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js build && \"F:\\NodeJs\\node.exe\" scripts/prune-dist.mjs",
