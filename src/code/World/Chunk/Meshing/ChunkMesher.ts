@@ -261,19 +261,6 @@ function populateMaterialList(): void {
 	materialListDirty = false;
 }
 
-function hasStaticLightingChanged(): boolean {
-	const uniforms = cachedUniforms;
-	const direction = uniforms.lightDirection;
-
-	return (
-		!nearlyEqual(direction.x, lastLX) ||
-		!nearlyEqual(direction.y, lastLY) ||
-		!nearlyEqual(direction.z, lastLZ) ||
-		!nearlyEqual(uniforms.sunLightIntensity, lastSun) ||
-		!nearlyEqual(uniforms.wetness, lastWet)
-	);
-}
-
 function cacheStaticLightingState(): void {
 	const uniforms = cachedUniforms;
 	const direction = uniforms.lightDirection;
@@ -803,44 +790,47 @@ export function initEngineContext(
 }
 
 export function updateGlobalUniforms(frameId: number): void {
-	if (frameId === lastUpdateFrame || engineRef === null || sceneRef === null) {
+	if (frameId === lastUpdateFrame) {
 		return;
 	}
 
 	lastUpdateFrame = frameId;
 
+	const sun = computeSunLightState(sunStateScratch);
 	const uniforms = cachedUniforms;
 	const direction = uniforms.lightDirection;
+	const wetness = Map1.environment?.wetness ?? 0;
 
-	const sun = computeSunLightState(sunStateScratch);
+	const lightingChanged =
+		!nearlyEqual(sun.x, lastLX) ||
+		!nearlyEqual(sun.y, lastLY) ||
+		!nearlyEqual(sun.z, lastLZ) ||
+		!nearlyEqual(sun.intensity, lastSun) ||
+		!nearlyEqual(wetness, lastWet);
 
 	direction.x = sun.x;
 	direction.y = sun.y;
 	direction.z = sun.z;
-
 	uniforms.sunLightIntensity = sun.intensity;
+	uniforms.wetness = wetness;
 
-	uniforms.wetness = Map1.environment?.wetness ?? 0;
-
-	let updateTransparentTime = false;
-
-	if (hasStaticLightingChanged()) {
+	if (lightingChanged) {
 		populateMaterialList();
 		cacheStaticLightingState();
 
-		for (let i = 0, count = materialList.length; i < count; i++) {
+		for (let i = 0; i < materialList.length; i++) {
 			setStaticMaterialUniforms(materialList[i]);
 		}
 
 		timeFrameCounter = 1;
-		updateTransparentTime = transparentMaterial !== null;
-	} else if (transparentMaterial !== null) {
-		if (timeFrameCounter++ % TRANSPARENT_TIME_UPDATE_INTERVAL === 0) {
-			updateTransparentTime = true;
-		}
-	}
 
-	if (updateTransparentTime) {
+		if (transparentMaterial !== null) {
+			setTransparentTimeUniform(performance.now() * 0.001);
+		}
+	} else if (
+		transparentMaterial !== null &&
+		timeFrameCounter++ % TRANSPARENT_TIME_UPDATE_INTERVAL === 0
+	) {
 		setTransparentTimeUniform(performance.now() * 0.001);
 	}
 
