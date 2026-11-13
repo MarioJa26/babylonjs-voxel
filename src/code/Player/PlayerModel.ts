@@ -11,6 +11,10 @@ import {
 	type Texture2D,
 } from "@babylonjs/lite";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
+import {
+	computeSunLightState,
+	type SunLightState,
+} from "@/code/World/Light/SunLightState";
 
 // Rig metrics must precede constants derived from them.
 export const PLAYER_MODEL_HEIGHT = 1.8;
@@ -99,7 +103,10 @@ export function setRigHeldItemTransform(
 
 // ─── Rig shader sources ─────────────────────────────────────────────────────
 //
-// The rig is unlit and textured. Brightness is supplied through a uniform.
+// The rig is textured and lit by the world's sun. Brightness comes from the
+// voxel light the rig stands in (uLightColor) plus a directional term and
+// the per-face shading the world mesher uses.
+//
 // Per-frame animation trigonometry runs on the CPU.
 //
 // uAnim:
@@ -108,15 +115,19 @@ export function setRigHeldItemTransform(
 // uPunch:
 // [sin(punchAngle), cos(punchAngle)]
 //
-// Vertex metadata is stored in the normal attribute:
+// Vertex metadata is stored in the color attribute:
 // x = part ID
 // y = pivot Y
 // z = swing sign
+//
+// The normal attribute carries the real face normal, so the rig can be lit
+// directionally like the terrain.
 
 const RIG_VERTEX_WGSL = /* wgsl */ `
 struct VSOut {
     @builtin(position) pos : vec4<f32>,
     @location(0) vUV : vec2<f32>,
+    @location(1) vNormal : vec3<f32>,
 };
 
 fn animateRig(
@@ -190,13 +201,18 @@ fn mainVertex(input : VertexInput) -> VSOut {
     var out : VSOut;
 
     let animated =
-        animateRig(input.position, input.normal);
+        animateRig(input.position, input.color.xyz);
 
     out.pos =
         shaderSystem.worldViewProjection *
         vec4<f32>(animated, 1.0);
 
     out.vUV = input.uv;
+
+    // w = 0 keeps the translation out of the normal.
+    out.vNormal = normalize(
+        (shaderSystem.world * vec4<f32>(input.normal, 0.0)).xyz
+    );
 
     return out;
 }
@@ -206,6 +222,7 @@ const RIG_FRAGMENT_WGSL = /* wgsl */ `
 struct VSOut {
     @builtin(position) pos : vec4<f32>,
     @location(0) vUV : vec2<f32>,
+    @location(1) vNormal : vec3<f32>,
 };
 
 @fragment
@@ -218,10 +235,32 @@ fn mainFragment(
         in.vUV
     );
 
-    return vec4<f32>(
-        tex.rgb * shaderUniforms.uLightColor,
-        1.0
+    let normal = normalize(in.vNormal);
+
+    let lightDirection = normalize(shaderUniforms.lightDirection);
+
+    // Same face shading the world mesher applies: the top face catches the
+    // most light, the sides are dimmed and the underside is darkest.
+    let topBottom = select(0.58, 1.0, normal.y > 0.0);
+
+    let faceShade = select(0.78, topBottom, abs(normal.y) > 0.5);
+
+    let diffuseTerm = max(
+        0.0,
+        dot(normal, lightDirection)
     );
+
+    let directLight =
+        1.0 +
+        diffuseTerm * shaderUniforms.sunLightIntensity * 0.5;
+
+    let color =
+        tex.rgb *
+        shaderUniforms.uLightColor *
+        faceShade *
+        directLight;
+
+    return vec4<f32>(color, 1.0);
 }
 `;
 
@@ -278,13 +317,33 @@ function createLimbUv(offsetX: number, offsetY: number): UvSet {
 	};
 }
 
-/*
- * Compact sheet: left limbs are directly below their right counterparts in
- * the y=32–48 band rather than Minecraft's default y=48–64 row.
+/**
+ * Samples the centers of the outermost texels in each region.
+ *
+ * This prevents nearest-filter sampling from selecting adjacent transparent
+ * texels, whose black RGB becomes visible because the shader outputs alpha 1.
+ *
+ * A smaller margin still leaves the face's edge close enough to a texel
+ * boundary that the rasteriser's interpolation error can cross it, so this
+ * has to be a full half texel rather than a hair.
  */
-const ARM_L_UV = createLimbUv(40, 32);
+const REGION_MARGIN_TEXELS = 0.5;
+
+/** The block atlas is 16x16 tiles of 25 texels. */
+const ATLAS_TEXEL_SIZE = 400;
+
+/*
+ * Standard Minecraft skin layout.
+ *
+ * The head, torso, right arm and right leg use their classic positions. The
+ * left limbs live in the y=48-64 row, which is where every standard skin
+ * puts them — a remote player's skin is uploaded as-is, so reading the left
+ * limbs from anywhere else leaves those regions empty and the arm and leg
+ * render solid black.
+ */
+const ARM_L_UV = createLimbUv(32, 48);
 const ARM_R_UV = createLimbUv(40, 16);
-const LEG_L_UV = createLimbUv(0, 32);
+const LEG_L_UV = createLimbUv(16, 48);
 const LEG_R_UV = createLimbUv(0, 16);
 
 // ─── Box builder ────────────────────────────────────────────────────────────
@@ -310,6 +369,11 @@ interface MeshData {
 	normals: Float32Array;
 	indices: Uint32Array;
 	uvs?: Float32Array;
+
+	/**
+	 * Per-vertex animation metadata: part id, pivot Y and swing sign.
+	 */
+	colors: Float32Array;
 }
 
 interface MeshBuffers {
@@ -317,6 +381,7 @@ interface MeshBuffers {
 	normals: number[];
 	indices: number[];
 	uvs: number[];
+	colors: number[];
 }
 
 type UvMode = "skin" | "atlas";
@@ -337,21 +402,16 @@ function appendBox(
 	const z0 = part.z - halfDepth;
 	const z1 = part.z + halfDepth;
 
-	const meta = part.meta ?? STATIC_META;
-	const partId = meta[0];
-	const pivotY = meta[1];
-	const swingSign = meta[2];
+	const [partId, pivotY, swingSign] = part.meta ?? STATIC_META;
 
-	const positions = output.positions;
-	const normals = output.normals;
-	const indices = output.indices;
-	const uvs = output.uvs;
+	const { positions, normals, indices, uvs, colors } = output;
 	const uv = part.uv;
 
 	let vertexBase = positions.length / 3;
 
 	const appendFace = (
 		rect: UvRect | undefined,
+		normal: readonly [number, number, number],
 		ax: number,
 		ay: number,
 		az: number,
@@ -367,20 +427,14 @@ function appendBox(
 	): void => {
 		positions.push(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz);
 
-		normals.push(
-			partId,
-			pivotY,
-			swingSign,
-			partId,
-			pivotY,
-			swingSign,
-			partId,
-			pivotY,
-			swingSign,
-			partId,
-			pivotY,
-			swingSign,
-		);
+		const nx = normal[0];
+		const ny = normal[1];
+		const nz = normal[2];
+
+		for (let i = 0; i < 4; i++) {
+			normals.push(nx, ny, nz);
+			colors.push(partId, pivotY, swingSign, 1);
+		}
 
 		if (rect !== undefined) {
 			let u0: number;
@@ -389,15 +443,17 @@ function appendBox(
 			let vTop: number;
 
 			if (uvMode === "atlas") {
-				u0 = rect[0];
-				u1 = rect[2];
-				vBottom = rect[1];
-				vTop = rect[3];
+				const margin = REGION_MARGIN_TEXELS / ATLAS_TEXEL_SIZE;
+
+				u0 = rect[0] + margin;
+				u1 = rect[2] - margin;
+				vBottom = rect[1] + margin;
+				vTop = rect[3] - margin;
 			} else {
-				u0 = rect[0] * INV_SKIN_SIZE;
-				u1 = rect[2] * INV_SKIN_SIZE;
-				vBottom = 1 - rect[3] * INV_SKIN_SIZE;
-				vTop = 1 - rect[1] * INV_SKIN_SIZE;
+				u0 = (rect[0] + REGION_MARGIN_TEXELS) * INV_SKIN_SIZE;
+				u1 = (rect[2] - REGION_MARGIN_TEXELS) * INV_SKIN_SIZE;
+				vBottom = 1 - (rect[3] - REGION_MARGIN_TEXELS) * INV_SKIN_SIZE;
+				vTop = 1 - (rect[1] + REGION_MARGIN_TEXELS) * INV_SKIN_SIZE;
 			}
 
 			uvs.push(u0, vBottom, u1, vBottom, u1, vTop, u0, vTop);
@@ -416,22 +472,112 @@ function appendBox(
 	};
 
 	// +X face, skin "left".
-	appendFace(uv?.left, x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1);
+	appendFace(
+		uv?.left,
+		[1, 0, 0],
+		x1,
+		y0,
+		z1,
+		x1,
+		y0,
+		z0,
+		x1,
+		y1,
+		z0,
+		x1,
+		y1,
+		z1,
+	);
 
 	// -X face, skin "right".
-	appendFace(uv?.right, x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0);
+	appendFace(
+		uv?.right,
+		[-1, 0, 0],
+		x0,
+		y0,
+		z0,
+		x0,
+		y0,
+		z1,
+		x0,
+		y1,
+		z1,
+		x0,
+		y1,
+		z0,
+	);
 
 	// +Y face.
-	appendFace(uv?.top, x0, y1, z1, x1, y1, z1, x1, y1, z0, x0, y1, z0);
+	appendFace(
+		uv?.top,
+		[0, 1, 0],
+		x0,
+		y1,
+		z1,
+		x1,
+		y1,
+		z1,
+		x1,
+		y1,
+		z0,
+		x0,
+		y1,
+		z0,
+	);
 
 	// -Y face.
-	appendFace(uv?.bottom, x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1);
+	appendFace(
+		uv?.bottom,
+		[0, -1, 0],
+		x0,
+		y0,
+		z0,
+		x1,
+		y0,
+		z0,
+		x1,
+		y0,
+		z1,
+		x0,
+		y0,
+		z1,
+	);
 
 	// +Z face.
-	appendFace(uv?.front, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1);
+	appendFace(
+		uv?.front,
+		[0, 0, 1],
+		x0,
+		y0,
+		z1,
+		x1,
+		y0,
+		z1,
+		x1,
+		y1,
+		z1,
+		x0,
+		y1,
+		z1,
+	);
 
 	// -Z face.
-	appendFace(uv?.back, x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0);
+	appendFace(
+		uv?.back,
+		[0, 0, -1],
+		x1,
+		y0,
+		z0,
+		x0,
+		y0,
+		z0,
+		x0,
+		y1,
+		z0,
+		x1,
+		y1,
+		z0,
+	);
 }
 
 function toMeshData(buffers: MeshBuffers): MeshData {
@@ -440,6 +586,7 @@ function toMeshData(buffers: MeshBuffers): MeshData {
 		normals: new Float32Array(buffers.normals),
 		indices: new Uint32Array(buffers.indices),
 		uvs: new Float32Array(buffers.uvs),
+		colors: new Float32Array(buffers.colors),
 	};
 }
 
@@ -475,6 +622,7 @@ function computePlayerRigData(origin: RigOrigin): MeshData {
 		normals: [],
 		indices: [],
 		uvs: [],
+		colors: [],
 	};
 
 	/*
@@ -623,6 +771,7 @@ export function buildFloorSlabData(
 		normals: [],
 		indices: [],
 		uvs: [],
+		colors: [],
 	};
 
 	if (atlasRect !== undefined) {
@@ -678,6 +827,9 @@ export function createPlayerRigMesh(
 		data.normals,
 		data.indices,
 		data.uvs,
+		undefined,
+		undefined,
+		data.colors,
 	);
 }
 
@@ -761,8 +913,11 @@ function alwaysAlive(): boolean {
 }
 
 /**
- * Binds a fallback texture synchronously, initializes rig uniforms, and then
- * replaces the fallback with the loaded skin.
+ * Binds a fallback texture synchronously and then replaces it with the
+ * loaded skin.
+ *
+ * The rig uniforms are seeded by createRigShaderMaterial, which every rig
+ * material comes from.
  */
 export function applyRigSkin(
 	engine: EngineContext,
@@ -771,12 +926,6 @@ export function applyRigSkin(
 	isAlive: () => boolean = alwaysAlive,
 	loadSkin: (engine: EngineContext) => Promise<Texture2D> = loadPlayerSkin,
 ): void {
-	setShaderUniform(material, "uLightColor", WHITE_LIGHT_COLOR);
-
-	setShaderUniform(material, "uAnim", REST_ANIM);
-
-	setShaderUniform(material, "uPunch", REST_PUNCH);
-
 	rigAnimStates.set(material, {
 		phase: 0,
 		amp: 0,
@@ -816,6 +965,13 @@ const lightColorScratch: [number, number, number] = [0, 0, 0];
 const lightColorUniformScratch = [0, 0, 0];
 
 /**
+ * Scratch for the shared sun-light computation.
+ */
+const sunStateScratch: SunLightState = { x: 0, y: 1, z: 0, intensity: 1 };
+
+const rigSunDirectionScratch = [0, 1, 0];
+
+/**
  * Converts packed voxel light, sky << 4 | block, into an RGB light color.
  */
 export function packedLightToLightColor(
@@ -844,15 +1000,16 @@ export function packedLightToLightColor(
 }
 
 /**
- * Creates the unlit textured material used by player rigs.
+ * Creates the textured material used by player rigs.
  */
 export function createRigShaderMaterial(name: string): ShaderMaterial {
-	return createShaderMaterial({
+	const material = createShaderMaterial({
 		name,
 		vertexSource: RIG_VERTEX_WGSL,
 		fragmentSource: RIG_FRAGMENT_WGSL,
-		attributes: ["position", "normal", "uv"],
+		attributes: ["position", "normal", "uv", "color"],
 		uniforms: [
+			"world",
 			"worldViewProjection",
 			{
 				name: "uLightColor",
@@ -866,10 +1023,31 @@ export function createRigShaderMaterial(name: string): ShaderMaterial {
 				name: "uPunch",
 				type: "vec2<f32>",
 			},
+			{
+				name: "lightDirection",
+				type: "vec3<f32>",
+			},
+			{
+				name: "sunLightIntensity",
+				type: "f32",
+			},
 		],
 		samplers: ["diffuseTexture"],
 		backFaceCulling: true,
 	});
+
+	/*
+	 * Seed every uniform the fragment shader reads. The shader normalizes
+	 * the light direction, so an unset (0, 0, 0) vector would produce NaN
+	 * and the material would render black until something pushed the
+	 * lighting.
+	 */
+	setShaderUniform(material, "uLightColor", WHITE_LIGHT_COLOR);
+	setShaderUniform(material, "uAnim", REST_ANIM);
+	setShaderUniform(material, "uPunch", REST_PUNCH);
+	setRigSunUniforms(material);
+
+	return material;
 }
 
 export function bindRigTexture(
@@ -888,6 +1066,31 @@ export function setRigLightColor(
 	lightColorUniformScratch[2] = color[2];
 
 	setShaderUniform(material, "uLightColor", lightColorUniformScratch);
+
+	/*
+	 * The rig is lit by the same sun as the terrain, so the sun state is
+	 * pushed alongside the voxel light colour. Every rig updates its light
+	 * colour whenever the voxel it stands in changes, which is often
+	 * enough for the slowly moving sun.
+	 */
+	setRigSunUniforms(material);
+}
+
+/**
+ * Pushes the world's sun direction and intensity to a rig material.
+ *
+ * The rig uses the same sun as the terrain, so it has to be lit by the same
+ * values the chunk mesher publishes.
+ */
+function setRigSunUniforms(material: ShaderMaterial): void {
+	const sun = computeSunLightState(sunStateScratch);
+
+	rigSunDirectionScratch[0] = sun.x;
+	rigSunDirectionScratch[1] = sun.y;
+	rigSunDirectionScratch[2] = sun.z;
+
+	setShaderUniform(material, "lightDirection", rigSunDirectionScratch);
+	setShaderUniform(material, "sunLightIntensity", sun.intensity);
 }
 
 // ─── Animation ──────────────────────────────────────────────────────────────

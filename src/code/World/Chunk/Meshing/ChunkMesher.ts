@@ -15,7 +15,6 @@ import {
 	type LiquidDefinition,
 	WATER_LIQUID,
 } from "@/code/World/Liquid/LiquidRegistry";
-import { GLOBAL_VALUES } from "../../GLOBAL_VALUES";
 import {
 	createLod2CutoutMaterial,
 	createLod2OpaqueMaterial,
@@ -35,6 +34,10 @@ import {
 	createChunkOpaqueMaterial,
 	createChunkTransparentMaterial,
 } from "../../Light/OpaqueShaderLite";
+import {
+	computeSunLightState,
+	type SunLightState,
+} from "../../Light/SunLightState";
 import { carryMeshCulled } from "../../MeshVisibility";
 import { packAtlas } from "../../Texture/AtlasPacker";
 import {
@@ -69,11 +72,8 @@ const LOD3_BUCKET = 3;
 const LOD4_BUCKET = 4;
 const MAX_LOD_BUCKET = 4;
 
-const LIGHT_QUANTIZATION_SCALE = 256;
-const LIGHT_QUANTIZATION_INVERSE = 1 / LIGHT_QUANTIZATION_SCALE;
 const TRANSPARENT_TIME_UPDATE_INTERVAL = 3;
 const UNIFORM_EPSILON = 0.00001;
-
 let atlasMaterial: ShaderMaterial | null = null;
 let transparentMaterial: ShaderMaterial | null = null;
 let cutoutMaterial: ShaderMaterial | null = null;
@@ -99,6 +99,11 @@ const cachedUniforms = {
 	sunLightIntensity: 1,
 	wetness: 0,
 };
+
+/**
+ * Scratch for the shared sun-light computation.
+ */
+const sunStateScratch: SunLightState = { x: 0, y: 1, z: 0, intensity: 1 };
 
 let lastUpdateFrame = -1;
 
@@ -172,16 +177,6 @@ const packedInput: PackedMeshInput = {
 
 function nearlyEqual(a: number, b: number): boolean {
 	return Math.abs(a - b) <= UNIFORM_EPSILON;
-}
-
-function clampUnit(value: number): number {
-	return value <= 0 ? 0 : value >= 1 ? 1 : value;
-}
-
-function quantizeLightingValue(value: number): number {
-	return (
-		Math.round(value * LIGHT_QUANTIZATION_SCALE) * LIGHT_QUANTIZATION_INVERSE
-	);
 }
 
 function normalizeLodBucket(lod: number): number {
@@ -814,32 +809,16 @@ export function updateGlobalUniforms(frameId: number): void {
 
 	lastUpdateFrame = frameId;
 
-	const sourceDirection = GLOBAL_VALUES.skyLightDirection;
 	const uniforms = cachedUniforms;
 	const direction = uniforms.lightDirection;
 
-	const lightY = sourceDirection.y;
-	const shaderDirectionY = -lightY;
+	const sun = computeSunLightState(sunStateScratch);
 
-	const normalizedHorizon = clampUnit((shaderDirectionY + 0.2) * 2.5);
+	direction.x = sun.x;
+	direction.y = sun.y;
+	direction.z = sun.z;
 
-	const inverseHorizon = 1 - normalizedHorizon;
-	const verticalBlend =
-		inverseHorizon * inverseHorizon * (3 - 2 * inverseHorizon);
-
-	const directionalBlend = 1 - verticalBlend;
-
-	direction.x = quantizeLightingValue(-sourceDirection.x * directionalBlend);
-
-	direction.y = quantizeLightingValue(
-		-lightY * directionalBlend + verticalBlend,
-	);
-
-	direction.z = quantizeLightingValue(-sourceDirection.z * directionalBlend);
-
-	uniforms.sunLightIntensity = quantizeLightingValue(
-		clampUnit((-lightY + 0.1) * 4),
-	);
+	uniforms.sunLightIntensity = sun.intensity;
 
 	uniforms.wetness = Map1.environment?.wetness ?? 0;
 

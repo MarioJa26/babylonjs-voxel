@@ -69,3 +69,4 @@ plans/*
 .opencode/*
 benchmarks/simd-after.json
 benchmarks/simd-baseline.json
+tools/move-skin-left-limbs.mjs

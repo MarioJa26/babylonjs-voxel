@@ -280,6 +280,9 @@ export class PlayerPreview {
 			floorData.normals,
 			floorData.indices,
 			floorData.uvs,
+			undefined,
+			undefined,
+			floorData.colors,
 		);
 
 		const floorMat = createRigShaderMaterial("playerPreviewFloorMat");
