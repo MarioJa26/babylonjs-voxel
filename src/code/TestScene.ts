@@ -28,6 +28,7 @@ import { RemoteMobManager } from "./Network/RemoteMobManager";
 import { findSavedServerByName, getPlayerName } from "./Network/serverList";
 import { initializeBlockBreakingVisuals } from "./Player/Hud/BlockHighlight/BlockBreakingVisuals";
 import { DroppedItem } from "./Player/Inventory/DroppedItem";
+import { applyHeldItemBobSettings } from "./Player/Inventory/HeldItemBob";
 import { Player } from "./Player/Player";
 import { PlayerCamera } from "./Player/PlayerCamera";
 import { PlayerStatePersistence } from "./Player/PlayerStatePersistence";
@@ -123,6 +124,7 @@ export class TestScene {
 
 		applyGameSettingsToEngine(savedSettings);
 		applyAudioSettings(savedSettings);
+		applyHeldItemBobSettings(savedSettings);
 
 		const playerCamera = new PlayerCamera();
 		playerCamera.mouseSensitivity = savedSettings.mouseSensitivity;

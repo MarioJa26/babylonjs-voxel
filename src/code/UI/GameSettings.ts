@@ -34,6 +34,8 @@ export interface GameSettings {
 	crosshairVisible: boolean;
 	/** Whether hits flash the hit marker. */
 	hitmarkerEnabled: boolean;
+	/** First-person held-item walk bob amplitude, 0 (off) .. 1 (full). */
+	heldItemBobAmplitude: number;
 }
 
 const STORAGE_KEY = "b102.settings.v1";
@@ -52,6 +54,7 @@ const DEFAULTS: GameSettings = {
 	crosshairColor: DEFAULT_CROSSHAIR_OPTIONS.crosshairColor,
 	crosshairVisible: DEFAULT_CROSSHAIR_OPTIONS.crosshairVisible,
 	hitmarkerEnabled: DEFAULT_CROSSHAIR_OPTIONS.hitmarkerEnabled,
+	heldItemBobAmplitude: 1,
 };
 
 function clamp(v: number, min: number, fallback: number, max: number): number {
@@ -119,6 +122,12 @@ export function loadGameSettings(): GameSettings {
 				typeof parsed.hitmarkerEnabled === "boolean"
 					? parsed.hitmarkerEnabled
 					: defaults.hitmarkerEnabled,
+			heldItemBobAmplitude: clamp(
+				parsed.heldItemBobAmplitude ?? defaults.heldItemBobAmplitude,
+				0,
+				defaults.heldItemBobAmplitude,
+				1,
+			),
 		};
 	} catch {
 		return defaults;

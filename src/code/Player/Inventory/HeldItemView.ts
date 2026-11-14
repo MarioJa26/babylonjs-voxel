@@ -34,6 +34,7 @@ import {
 	PUNCH_DURATION_S,
 	packedLightToLightColor,
 	setRigHeldItemTransform,
+	WALK_STRIDE_FACTOR,
 } from "../PlayerModel";
 import {
 	getBillboardQuadGeometry,
@@ -41,6 +42,12 @@ import {
 	PLACEHOLDER_ICON_URL,
 } from "./DroppedItem";
 import { getHeldBlockGeometry } from "./HeldBlockGeometry";
+import {
+	advanceHeldItemBobPhase,
+	computeHeldItemBob,
+	getHeldItemBobAmplitude,
+	type HeldItemBobOffset,
+} from "./HeldItemBob";
 import { getRegisteredItemById } from "./ItemRegistry";
 
 /**
@@ -84,14 +91,30 @@ const CUBE_REST_TILT = -0.199;
 /** Forward thrust along the view at the middle of a punch, in meters. */
 const PUNCH_PUSH = 0.16;
 
-/** Upward lift at the middle of a punch, in meters. */
-const PUNCH_RISE = 0.06;
+/**
+ * Downward dip at the middle of a punch, in meters.
+ *
+ * The punch chops down and forward, the way Minecraft's swing does, instead
+ * of lifting the item back towards the player.
+ */
+const PUNCH_DIP = 0.06;
 
-/** Additional pitch at the middle of a punch, in radians. */
+/**
+ * Pull towards the middle of the screen at the middle of a punch, in meters.
+ *
+ * The punch aims at the crosshair: the item leaves its resting corner and
+ * lunges at the centre of the view.
+ */
+const PUNCH_CENTER = 0.06;
+
+/**
+ * Additional pitch at the middle of a punch, in radians.
+ *
+ * A positive pitch tips the top of the item away from the camera, which is
+ * the downward chop. The opposite sign leaned the item back at the player,
+ * which read as the punch tilting upwards.
+ */
 const PUNCH_TILT = 0.7;
-
-/** Yaw twist at the middle of a punch, in radians. */
-const PUNCH_TWIST = 0.35;
 
 /** Maximum number of cached viewmodel meshes. */
 const MAX_ENTRIES = 32;
@@ -145,7 +168,19 @@ function mulQuat(a: QuatTuple, b: QuatTuple, out: QuatTuple): void {
  */
 const _qCam: QuatTuple = [0, 0, 0, 0];
 const _qPunch: QuatTuple = [0, 0, 0, 0];
+const _qBob: QuatTuple = [0, 0, 0, 0];
 const _qMix: QuatTuple = [0, 0, 0, 0];
+
+/**
+ * Reused walk-bob sample, so the per-frame path stays allocation free.
+ */
+const _bobScratch: HeldItemBobOffset = {
+	x: 0,
+	y: 0,
+	forward: 0,
+	pitch: 0,
+	yaw: 0,
+};
 
 /**
  * Fixed rest orientations in camera space.
@@ -772,6 +807,14 @@ export class HeldItemView {
 	private _disposed = false;
 	private _updateFailed = false;
 
+	/**
+	 * Stride phase of the first-person bob.
+	 *
+	 * The viewmodel keeps its own phase with a capped rate, so a sprint
+	 * nudges the rhythm up instead of turning the bob into a fast jitter.
+	 */
+	private _bobPhase = 0;
+
 	constructor() {
 		onSceneDispose(Map1.mainScene, () => {
 			this._dispose();
@@ -1071,9 +1114,35 @@ export class HeldItemView {
 			punch = Math.sin((nextSwingT / PUNCH_DURATION_S) * Math.PI);
 		}
 
-		const forwardDistance = FORWARD_DIST + punch * PUNCH_PUSH;
+		/*
+		 * Walk bob: the viewmodel is pinned to the camera, so without this it
+		 * would sit perfectly still while the player walks. The offsets are
+		 * camera-relative and the amplitude is a player setting.
+		 */
+		const velocity = player.velocity;
 
-		const downDistance = DOWN_DIST - punch * PUNCH_RISE;
+		const speed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+
+		this._bobPhase = advanceHeldItemBobPhase(
+			this._bobPhase,
+			speed,
+			Math.max(0, dt),
+			WALK_STRIDE_FACTOR,
+		);
+
+		const bob = computeHeldItemBob(
+			this._bobPhase,
+			player.walkAmplitude,
+			getHeldItemBobAmplitude(),
+			_bobScratch,
+		);
+
+		const forwardDistance = FORWARD_DIST + punch * PUNCH_PUSH + bob.forward;
+
+		const downDistance = DOWN_DIST + punch * PUNCH_DIP;
+
+		const rightDistance = RIGHT_DIST + bob.x - punch * PUNCH_CENTER;
+		const downOffset = downDistance - bob.y;
 
 		/**
 		 * Camera-relative world position: the engine renders this mesh with
@@ -1081,25 +1150,37 @@ export class HeldItemView {
 		 * position must not include the camera's world position.
 		 */
 		entry.mesh.position.set(
-			forwardX * forwardDistance + rightX * RIGHT_DIST - upX * downDistance,
-			forwardY * forwardDistance - upY * downDistance,
-			forwardZ * forwardDistance + rightZ * RIGHT_DIST - upZ * downDistance,
+			forwardX * forwardDistance + rightX * rightDistance - upX * downOffset,
+			forwardY * forwardDistance - upY * downOffset,
+			forwardZ * forwardDistance + rightZ * rightDistance - upZ * downOffset,
 		);
 
 		syncRelativeViewProjection(entry.material, camera);
 
 		setYawOuter(_qCam, cameraYaw, cameraPitch);
+		setYawOuter(_qBob, bob.yaw, bob.pitch);
 
 		const base = entry.kind === "sprite" ? SPRITE_BASE_Q : CUBE_BASE_Q;
 
-		if (punch > 0) {
-			setYawOuter(_qPunch, punch * PUNCH_TWIST, -punch * PUNCH_TILT);
+		/*
+		 * The bob is a camera-space rotation, so it is applied between the
+		 * camera rotation and the item's rest orientation.
+		 */
+		mulQuat(_qCam, _qBob, _qMix);
 
-			mulQuat(_qCam, _qPunch, _qMix);
-			mulQuat(_qMix, base, _qMix);
-		} else {
-			mulQuat(_qCam, base, _qMix);
+		if (punch > 0) {
+			/*
+			 * No yaw on the punch. Turning a flat sprite swings its near edge
+			 * across the screen and slides the whole silhouette off to the
+			 * left, so the punch used to land beside the crosshair instead
+			 * of on it. The punch now stays centred and aims at the middle.
+			 */
+			setYawOuter(_qPunch, 0, punch * PUNCH_TILT);
+
+			mulQuat(_qMix, _qPunch, _qMix);
 		}
+
+		mulQuat(_qMix, base, _qMix);
 
 		entry.mesh.rotationQuaternion.set(_qMix[0], _qMix[1], _qMix[2], _qMix[3]);
 	}

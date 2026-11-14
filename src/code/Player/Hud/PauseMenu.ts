@@ -7,6 +7,10 @@ import {
 import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
 import {
+	getHeldItemBobAmplitude,
+	setHeldItemBobAmplitude,
+} from "@/code/Player/Inventory/HeldItemBob";
+import {
 	type GameSettings,
 	loadGameSettings,
 	saveGameSettings,
@@ -373,6 +377,17 @@ export class PauseMenu {
 			onInput: (value) => {
 				this.player.playerCamera.fov = value;
 				this.persistSetting("fov", value);
+			},
+		});
+
+		this.createSlider(container, {
+			label: "Held Item Bob",
+			min: 0,
+			max: 100,
+			initialValue: Math.round(getHeldItemBobAmplitude() * 100),
+			format: (value) => `${value}%`,
+			onInput: (value) => {
+				setHeldItemBobAmplitude(value / 100);
 			},
 		});
 

@@ -5,8 +5,7 @@ import type {
 	ShaderMaterial,
 	Vec3,
 } from "@babylonjs/lite";
-import { addToScene } from "@babylonjs/lite";
-import { setMeshVisible } from "@babylonjs/lite";
+import { addToScene, setMeshVisible } from "@babylonjs/lite";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { interactWithGlyph } from "@/code/Entities/MayaTempleGlyphs";
 import { type IMountableUser, Mount } from "@/code/Entities/Mount";
@@ -63,6 +62,9 @@ const BODY_YAW_INTERPOLATION = 0.25;
 const BODY_MOVEMENT_EPSILON_SQUARED = 1e-6;
 const SECONDS_PER_MILLISECOND = 0.001;
 const THROW_VELOCITY = 8;
+
+/** One full walk cycle, in radians. The stride phase wraps to this. */
+const WALK_CYCLE_RADIANS = Math.PI * 2;
 
 interface WorldBlockPosition {
 	x: number;
@@ -162,8 +164,14 @@ export class Player {
 	#bodyLightZ = Number.NaN;
 	#bodyLightSampleMs = Number.NEGATIVE_INFINITY;
 
-	#bodyWalkPhase = 0;
-	#bodyWalkAmp = 0;
+	/**
+	 * Walk-stride phase and swing amplitude.
+	 *
+	 * The Player owns both, so the third-person rig and the first-person
+	 * viewmodel animate from one stride instead of two drifting clocks.
+	 */
+	#walkPhase = 0;
+	#walkAmplitude = 0;
 
 	// Infinity represents the resting punch pose.
 	#punchT = Number.POSITIVE_INFINITY;
@@ -300,15 +308,16 @@ export class Player {
 	}
 
 	#updatePlayerBody(deltaMs: number): void {
+		const deltaSeconds = deltaMs * SECONDS_PER_MILLISECOND;
+
+		this.#advancePunchAnimation(deltaSeconds);
+		this.#updateWalkAnimation(deltaSeconds);
+
 		const body = this.#playerBodyMesh;
 
 		if (body === null) {
 			return;
 		}
-
-		const deltaSeconds = deltaMs * SECONDS_PER_MILLISECOND;
-
-		this.#advancePunchAnimation(deltaSeconds);
 
 		const isVisible = this.#playerCamera.isThirdPerson && this.#bodySkinBound;
 
@@ -323,31 +332,13 @@ export class Player {
 
 		const vehicle = this.#playerVehicle;
 		const position = vehicle.position;
-		const velocity = vehicle.velocity;
 
 		const x = position.x;
 		const y = position.y;
 		const z = position.z;
 
-		const velocityX = velocity.x;
-		const velocityZ = velocity.z;
-
-		const horizontalSpeed = Math.sqrt(
-			velocityX * velocityX + velocityZ * velocityZ,
-		);
-
-		const walkPhase =
-			this.#bodyWalkPhase + horizontalSpeed * deltaSeconds * WALK_STRIDE_FACTOR;
-
-		const targetAmplitude = Math.min(1, horizontalSpeed / WALK_REF_SPEED);
-
-		const smoothing = Math.min(1, deltaSeconds * BODY_WALK_SMOOTHING_RATE);
-
-		const walkAmplitude =
-			this.#bodyWalkAmp + (targetAmplitude - this.#bodyWalkAmp) * smoothing;
-
-		this.#bodyWalkPhase = walkPhase;
-		this.#bodyWalkAmp = walkAmplitude;
+		const walkPhase = this.#walkPhase;
+		const walkAmplitude = this.#walkAmplitude;
 
 		const material = this.#playerBodyMat;
 		const punchT = this.#punchT;
@@ -363,6 +354,34 @@ export class Player {
 		this.#updateBodyLighting(material, x, y, z);
 		this.#updateBodyFacing(body, x, z);
 		this.#updateBodyHeldItem(body, walkPhase, walkAmplitude, punchT);
+	}
+
+	/**
+	 * Advances the walk-stride phase and smooths the swing amplitude.
+	 *
+	 * The phase is driven by the distance covered, so the stride stays in
+	 * step with the ground no matter the frame rate, and it is wrapped to one
+	 * cycle to keep the trigonometry precise over a long session.
+	 */
+	#updateWalkAnimation(deltaSeconds: number): void {
+		const velocity = this.#playerVehicle.velocity;
+
+		const horizontalSpeed = Math.sqrt(
+			velocity.x * velocity.x + velocity.z * velocity.z,
+		);
+
+		const phase =
+			this.#walkPhase + horizontalSpeed * deltaSeconds * WALK_STRIDE_FACTOR;
+
+		const wrapped = phase % WALK_CYCLE_RADIANS;
+
+		this.#walkPhase = wrapped < 0 ? wrapped + WALK_CYCLE_RADIANS : wrapped;
+
+		const targetAmplitude = Math.min(1, horizontalSpeed / WALK_REF_SPEED);
+
+		const smoothing = Math.min(1, deltaSeconds * BODY_WALK_SMOOTHING_RATE);
+
+		this.#walkAmplitude += (targetAmplitude - this.#walkAmplitude) * smoothing;
 	}
 
 	#advancePunchAnimation(deltaSeconds: number): void {
@@ -505,6 +524,16 @@ export class Player {
 	 */
 	public get velocity(): Vec3 {
 		return this.#playerVehicle.velocity;
+	}
+
+	/**
+	 * Current walk-swing amplitude in [0, 1].
+	 *
+	 * It ramps up with the horizontal speed, so standing still produces no
+	 * swing at all.
+	 */
+	public get walkAmplitude(): number {
+		return this.#walkAmplitude;
 	}
 
 	public get playerVehicle(): PlayerVehicleMotor {

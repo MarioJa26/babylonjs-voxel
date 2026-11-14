@@ -140,6 +140,7 @@ export class MainMenu {
 	private optCrosshairSize!: { row: HTMLElement; getValue: () => number };
 	private optCrosshairVisible!: { row: HTMLElement; getValue: () => boolean };
 	private optHitmarker!: { row: HTMLElement; getValue: () => boolean };
+	private optHeldItemBob!: { row: HTMLElement; getValue: () => number };
 	private crosshairId = "179";
 	private crosshairColor = "#ffffff";
 	private crosshairGrid?: CrosshairGrid;
@@ -510,6 +511,14 @@ export class MainMenu {
 			settings.muted,
 			() => "",
 		);
+		this.optHeldItemBob = this.makeOptionSlider(
+			"Held Item Bob",
+			0,
+			100,
+			5,
+			Math.round(settings.heldItemBobAmplitude * 100),
+			(v) => `${v}%`,
+		);
 
 		for (const opt of [
 			this.optFov,
@@ -520,6 +529,7 @@ export class MainMenu {
 			this.optMsaa,
 			this.optVolume,
 			this.optMuted,
+			this.optHeldItemBob,
 		]) {
 			screen.appendChild(opt.row);
 		}
@@ -551,6 +561,7 @@ export class MainMenu {
 			next.crosshairColor = normalizeCrosshairColor(this.crosshairColor);
 			next.crosshairVisible = this.optCrosshairVisible.getValue();
 			next.hitmarkerEnabled = this.optHitmarker.getValue();
+			next.heldItemBobAmplitude = this.optHeldItemBob.getValue() / 100;
 			saveGameSettings(next);
 			setStatus(
 				this.optStatusEl,
