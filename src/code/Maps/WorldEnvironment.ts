@@ -47,6 +47,15 @@ const MOON_CYCLE_DAYS = 8;
 const TWINKLE_WRAP_SEC = Math.PI * 200;
 
 /**
+ * How wet the ground gets from rain alone.
+ *
+ * The terrain shaders darken the diffuse and raise the specular by
+ * `wetness`; a full shower takes the ground to nearly fully wet, which is
+ * what the shader was tuned for.
+ */
+const RAIN_WETNESS = 0.85;
+
+/**
  * Camera-centred unit cube (half-extent 1): 24 verts / 12 tris.
  *
  * The sky fragment shader only computes normalize(vPosition) — the
@@ -118,6 +127,19 @@ export class WorldEnvironment {
 	public timeScale = 0;
 	public isPaused = false;
 	public wetness = 0.1;
+
+	/**
+	 * Rain intensity actually rendered, 0..1.
+	 *
+	 * Written by the map update — from the local weather cycle in
+	 * singleplayer, or from the server in multiplayer. Read by the rain
+	 * renderer, the sky shader and the terrain wetness.
+	 */
+	public rainIntensity = 0;
+
+	// Last value pushed to the sky shader, so the uniform is only written
+	// when the intensity actually changed.
+	private lastRainIntensity = NaN;
 
 	// Per-frame update caches.
 	private lastSunDirX = NaN;
@@ -260,6 +282,14 @@ export class WorldEnvironment {
 			this.elapsedSec = elapsedSec;
 			setShaderUniform(skyMaterial, "time", elapsedSec);
 		}
+
+		/*
+		 * Rain uniform. Pushed here rather than with the sun block below,
+		 * because that block is skipped when the day cycle is frozen
+		 * (timeScale 0) — the weather has to keep changing regardless of
+		 * where the sun is parked.
+		 */
+		this.pushRainUniform(skyMaterial);
 
 		const timeScale = this.timeScale;
 		const serverSyncAt = this.serverSyncAt;
@@ -441,6 +471,29 @@ export class WorldEnvironment {
 	/** Current time of day in milliseconds (0..DAY_DURATION_MS). */
 	public getTimeOfDayMs(): number {
 		return this.timeOfDay;
+	}
+
+	/**
+	 * Wetness the terrain shaders should use.
+	 *
+	 * `wetness` is the base level (the debug slider); rain adds its own
+	 * contribution on top, so the ground darkens and gains a specular sheen
+	 * while it rains and dries out again once the shower passes.
+	 */
+	public get effectiveWetness(): number {
+		const total = this.wetness + this.rainIntensity * RAIN_WETNESS;
+		return Math.min(Math.max(total, 0), 1);
+	}
+
+	/** Push the rain intensity to the sky shader (overcast). */
+	private pushRainUniform(skyMaterial: ShaderMaterial | null): void {
+		if (this.rainIntensity === this.lastRainIntensity) return;
+
+		this.lastRainIntensity = this.rainIntensity;
+
+		if (skyMaterial !== null) {
+			setShaderUniform(skyMaterial, "rainIntensity", this.rainIntensity);
+		}
 	}
 
 	public setTime(time: number): void {

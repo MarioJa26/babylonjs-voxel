@@ -64,6 +64,7 @@ scripts/far-tile-selftest.ts
 scripts/maya-temple-selftest.ts
 scripts/maya-temple-walk-selftest.ts
 scripts/locate-selftest.ts
+scripts/weather-selftest.ts
 tools/generate-bow-arrow-icons.mjs
 plans/*
 .opencode/*

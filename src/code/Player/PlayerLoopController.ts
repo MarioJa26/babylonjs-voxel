@@ -1318,6 +1318,12 @@ export class PlayerLoopController {
 		);
 
 		PlayerHud.updateDebugInfo(
+			"Rain",
+			`${(Map1.rainIntensity * 100).toFixed(0)}%`,
+			"weather",
+		);
+
+		PlayerHud.updateDebugInfo(
 			"Loaded Chunks",
 			Chunk.loadedChunks.size,
 			"chunks",

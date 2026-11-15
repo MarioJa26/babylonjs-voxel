@@ -119,6 +119,9 @@ const HELP_MESSAGES = [
 	"  !time <0-1000> - Set the time of day",
 	"  !time +<amt> - Advance the time of day",
 	"  !time day    - Set to day",
+	"  !weather       - Show the current weather",
+	"  !weather rain  - Start raining",
+	"  !weather clear - Stop the rain",
 	"  !seed       - Show the current world's seed",
 	"  !locate <name> - Find the nearest structure",
 	"  !locate <name> tp - ...and teleport there (keeps current y)",
@@ -359,8 +362,11 @@ export class NetworkManager {
 				console.log(`[${chat.name}]: ${chat.message}`);
 				this.hud.addChatMessage(chat.name, chat.message);
 			},
-			onWorldTime: (timeOfDay) => {
+			onWorldTime: (timeOfDay, rainIntensity, forceRain) => {
 				Map1.environment?.syncWithServer(timeOfDay);
+				// The server owns the weather in multiplayer — this hands
+				// the rain over from the local cycle to the server value.
+				Map1.setServerRain(rainIntensity, forceRain);
 			},
 			onWorldConfig: (config) => {
 				console.log(
@@ -1007,10 +1013,10 @@ export class NetworkManager {
 			const raw = message.slice(1).trim();
 			const cmd = raw.split(/\s+/)[0]?.toLowerCase();
 
-			// Time commands are server-authoritative in multiplayer: forward
-			// the raw text so the server updates the world clock and
-			// broadcasts the new time to every client.
-			if (cmd === "time") {
+			// Time and weather commands are server-authoritative in
+			// multiplayer: forward the raw text so the server updates the
+			// world and broadcasts the new state to every client.
+			if (cmd === "time" || cmd === "weather") {
 				this.client.sendChat(message);
 				return;
 			}
@@ -1064,6 +1070,11 @@ export class NetworkManager {
 			}
 
 			case "time": {
+				// Server-authoritative: forwarded to the server in sendChat().
+				break;
+			}
+
+			case "weather": {
 				// Server-authoritative: forwarded to the server in sendChat().
 				break;
 			}

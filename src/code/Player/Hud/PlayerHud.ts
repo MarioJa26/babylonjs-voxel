@@ -1805,6 +1805,19 @@ export class PlayerHud {
 					}
 				},
 			},
+			{
+				/*
+				 * Caps the rain rather than replacing it, so the weather
+				 * schedule keeps running and the rain comes back on its own
+				 * once the ceiling is raised again. 100 = untouched, 0 = off.
+				 */
+				label: "Rain Ceiling",
+				min: 0,
+				max: 100,
+				value: "100",
+				divider: 100,
+				onValue: (value) => Map1.setRainCeiling(value),
+			},
 		];
 
 		for (let i = 0; i < sliders.length; i++) {

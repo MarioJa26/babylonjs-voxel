@@ -799,7 +799,8 @@ export function updateGlobalUniforms(frameId: number): void {
 	const sun = computeSunLightState(sunStateScratch);
 	const uniforms = cachedUniforms;
 	const direction = uniforms.lightDirection;
-	const wetness = Map1.environment?.wetness ?? 0;
+	// Base wetness (debug slider) plus whatever the rain is contributing.
+	const wetness = Map1.environment?.effectiveWetness ?? 0;
 
 	const lightingChanged =
 		!nearlyEqual(sun.x, lastLX) ||

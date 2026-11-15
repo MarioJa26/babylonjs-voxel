@@ -13,6 +13,7 @@
 		"selftest:temple": "tsx scripts/maya-temple-selftest.ts",
 		"selftest:temple:walk": "tsx scripts/maya-temple-walk-selftest.ts",
 		"selftest:locate": "tsx scripts/locate-selftest.ts",
+		"selftest:weather": "tsx scripts/weather-selftest.ts",
 		"selftest:emit": "node --import tsx scripts/maya-temple-emit-test.ts",
 		"bench:chunks": "node --import tsx benchmarks/chunk-load-perf.ts",
 		"ts7:version": "tsc --version",

@@ -1,5 +1,6 @@
 import { type FogConfig, type SceneContext, setFog } from "@babylonjs/lite";
 import { farTileReachBlocks } from "@/code/World/FarTiles/FarTileLadder";
+import { WorldEnvironment } from "./WorldEnvironment";
 
 export default class MapFog {
 	public static readonly fogStartUnderWater = 1;
@@ -47,8 +48,47 @@ export default class MapFog {
 		0.6, 0.7, 0.9,
 	];
 
+	/**
+	 * Fog colour once the rain takes over.
+	 *
+	 * The sky goes overcast while it rains, so the haze has to follow or the
+	 * horizon shows a bright blue band under a grey sky.
+	 */
+	private static readonly fogColorRain: [number, number, number] = [
+		0.42, 0.45, 0.5,
+	];
+
+	/**
+	 * Scratch for the rain-blended fog colour.
+	 *
+	 * Shared rather than allocated per call: `getFogColor` runs in the
+	 * per-frame fog update for the chunk, far-tile and distant-terrain
+	 * shaders, and all three copy the components out immediately.
+	 */
+	private static readonly fogColorRainScratch: [number, number, number] = [
+		0, 0, 0,
+	];
+
 	public static getFogColor(isUnderWater: boolean): [number, number, number] {
-		return isUnderWater ? MapFog.fogColorUnderWater : MapFog.fogColorAboveWater;
+		if (isUnderWater) {
+			return MapFog.fogColorUnderWater;
+		}
+
+		const rain = WorldEnvironment.instance?.rainIntensity ?? 0;
+
+		if (rain <= 0) {
+			return MapFog.fogColorAboveWater;
+		}
+
+		const base = MapFog.fogColorAboveWater;
+		const rainy = MapFog.fogColorRain;
+		const scratch = MapFog.fogColorRainScratch;
+
+		scratch[0] = base[0] + (rainy[0] - base[0]) * rain;
+		scratch[1] = base[1] + (rainy[1] - base[1]) * rain;
+		scratch[2] = base[2] + (rainy[2] - base[2]) * rain;
+
+		return scratch;
 	}
 
 	public static applyToScene(scene: SceneContext, isUnderWater: boolean): void {

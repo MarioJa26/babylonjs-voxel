@@ -1007,14 +1007,36 @@ export function encodeChatMessage(data: ChatMessageData): Uint8Array {
 }
 
 /**
+ * WorldTime flag: the rain intensity is a deliberate change.
+ *
+ * The server normally broadcasts a point on the weather curve every few
+ * seconds, and the client eases towards it so the cadence does not read
+ * as stepping. A `!weather` command is not a point on that curve — it is
+ * a jump — so it is flagged and the client applies it at once.
+ */
+export const WORLD_TIME_FORCE_RAIN = 1 << 0;
+
+/**
  * World time sync — server → client.
  * timeOfDay: 0..1 fraction of day cycle (0=midnight, 0.5=noon).
- * Format: [type:1][timeOfDay:f32]
+ * rainIntensity: 0..1, the authoritative rain intensity (weather).
+ * flags: WORLD_TIME_* bits; see WORLD_TIME_FORCE_RAIN.
+ * Format: [type:1][timeOfDay:f32][rainIntensity:u8][flags:u8]
+ *
+ * The rain and flags bytes were added after the original 5-byte format.
+ * The client treats both as OPTIONAL so it still talks to an older server
+ * (which sends only the f32) — it then simply never rains in multiplayer.
  */
-export function encodeWorldTime(timeOfDay: number): Uint8Array {
-	const enc = new BinaryEncoder(5);
+export function encodeWorldTime(
+	timeOfDay: number,
+	rainIntensity = 0,
+	flags = 0,
+): Uint8Array {
+	const enc = new BinaryEncoder(7);
 	enc.writeUint8(MessageType.WorldTime);
 	enc.writeFloat32(timeOfDay);
+	enc.writeUint8(Math.round(Math.min(1, Math.max(0, rainIntensity)) * 255));
+	enc.writeUint8(flags & 0xff);
 	return enc.getBytes();
 }
 

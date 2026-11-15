@@ -21,6 +21,7 @@ import { beginFrameClock } from "./Lib/FrameClock";
 import { FRAME_WORK_BUDGET } from "./Lib/FrameWorkBudget";
 import { initBlockBreakParticles } from "./Maps/BlockBreakParticles";
 import { Map1 } from "./Maps/Map1";
+import { initRain } from "./Maps/RainSystem";
 import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
 import { NetworkManager } from "./Network/NetworkManager";
 import { RemoteItemManager } from "./Network/RemoteItemManager";
@@ -285,6 +286,7 @@ export class TestScene {
 		 * no manager lookup, optional chaining, or temporary allocation.
 		 */
 		this.registerFrameUpdate(
+			engine,
 			scene,
 			player,
 			playerCamera,
@@ -366,7 +368,7 @@ export class TestScene {
 			computeSeedAsInt(worldSeed),
 		);
 
-		this.registerFrameUpdate(scene, player, playerCamera, (): void => {
+		this.registerFrameUpdate(engine, scene, player, playerCamera, (): void => {
 			persistence.update();
 		});
 	}
@@ -393,6 +395,7 @@ export class TestScene {
 	}
 
 	private registerFrameUpdate(
+		engine: EngineContext,
 		scene: SceneContext,
 		player: Player,
 		playerCamera: PlayerCamera,
@@ -403,6 +406,14 @@ export class TestScene {
 			playerCamera.playerCamera as unknown as EyeCamera,
 			null,
 		);
+
+		/*
+		 * Rain is registered here, before `registerScene` runs in init().
+		 * addFacingBillboardSystem uses the scene's deferred-renderable
+		 * hook, and registerScene is what builds it — registering the
+		 * system any later leaves it without a GPU renderable.
+		 */
+		initRain(engine, scene);
 
 		/*
 		 * Cache configuration lookups outside the frame loop. These settings

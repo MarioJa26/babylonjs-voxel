@@ -5,6 +5,7 @@ import {
 	currentWorldSeed,
 	runLocateCommand,
 } from "@/code/Player/LocateCommand";
+import { runWeatherCommand } from "@/code/Player/WeatherCommand";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { getWorldNameFromUrl, worldSeedFor } from "@/code/World/WorldContext";
 import type { Player } from "../Player";
@@ -154,6 +155,9 @@ export class Chat {
 			case "time":
 				this.#handleTime(parts.slice(1));
 				break;
+			case "weather":
+				this.#handleWeather(parts.slice(1));
+				break;
 			case "locate":
 			case "find":
 				this.#handleLocate(parts.slice(1));
@@ -174,6 +178,9 @@ export class Chat {
 				this.#addSystem("  !time <0-1000> - Set the time of day");
 				this.#addSystem("  !time +<amt> - Advance the time of day");
 				this.#addSystem("  !time day    - Set to day");
+				this.#addSystem("  !weather       - Show the current weather");
+				this.#addSystem("  !weather rain  - Start raining");
+				this.#addSystem("  !weather clear - Stop the rain");
 				this.#addSystem("  !seed       - Show the current world's seed");
 				this.#addSystem("  !locate <name> - Find the nearest structure");
 				this.#addSystem(
@@ -309,6 +316,27 @@ export class Chat {
 			reply: (text) => this.#addSystem(text),
 		});
 	}
+	/**
+	 * `!weather [rain|clear]` - the current weather, or set it.
+	 *
+	 * Delegates to the shared command so the multiplayer front-end in
+	 * NetworkManager runs identical code; see Player/WeatherCommand.
+	 */
+	#handleWeather(args: string[]): void {
+		const env = Map1.environment;
+
+		if (!env) {
+			this.#addSystem("World environment is not ready");
+			return;
+		}
+
+		runWeatherCommand(args, {
+			currentIntensity: () => Map1.rainIntensity,
+			force: (raining) => Map1.setWeather(raining),
+			reply: (text) => this.#addSystem(text),
+		});
+	}
+
 	#timeLabel(fraction: number): string {
 		if (fraction < 0.25) return "morning";
 		if (fraction < 0.5) return "day";

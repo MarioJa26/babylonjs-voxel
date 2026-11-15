@@ -27,6 +27,7 @@ import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap.ts";
 import { computeSeedAsInt } from "@/code/Generation/WorldSeed.ts";
 import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
 import { CHUNK_SHIFT, CHUNK_SIZE } from "@/code/Lib/VoxelMath.ts";
+import { WeatherCycle, WeatherPhase } from "@/code/Lib/WeatherCycle";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
@@ -77,6 +78,7 @@ import {
 	encodeTntIgnite,
 	encodeWorldConfig,
 	encodeYawByte,
+	WORLD_TIME_FORCE_RAIN,
 	writeItemUpdateBatch,
 	writeMobUpdateBatch,
 	writePlayerStateBatch,
@@ -116,6 +118,7 @@ import {
 	TOOL_KINDS,
 	TOOL_MATERIALS,
 } from "@/code/Player/Inventory/ProceduralTools";
+import { parseWeatherAction, weatherLabel } from "@/code/Player/WeatherCommand";
 import { stationKindForBlock } from "@/code/World/BlockInventory/StationManager.ts";
 import type { StationKind } from "@/code/World/BlockInventory/StationTypes.ts";
 import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding.ts";
@@ -494,6 +497,14 @@ export class VoxelRoom extends Room {
 	private blockEditStart = 0;
 	private blockEditCount = 0;
 	private timeOfDay = 0.2;
+	/**
+	 * Authoritative weather.
+	 *
+	 * The server owns the rain so every player in a world sees the same
+	 * weather. The eased intensity rides along in the WorldTime packet.
+	 */
+	private weather = new WeatherCycle();
+	private rainIntensityByte = 0;
 	private worldStorage!: ServerWorldStorage;
 	private worldName = "default";
 	private seed = "default";
@@ -953,9 +964,8 @@ export class VoxelRoom extends Room {
 				),
 			);
 
-			const timeMsg = new BinaryEncoder(5);
-			timeMsg.writeUint8(MessageType.WorldTime);
-			timeMsg.writeFloat32(this.timeOfDay);
+			const timeMsg = new BinaryEncoder(7);
+			this.writeWorldTime(timeMsg, 0);
 			client.sendBytes("binary", timeMsg.getBytes());
 
 			client.sendBytes(
@@ -1029,7 +1039,7 @@ export class VoxelRoom extends Room {
 	private handleChatCommand(client: Client, raw: string): boolean {
 		const parts = raw.split(/\s+/);
 		const cmd = parts[0]?.toLowerCase();
-		if (cmd !== "time") return false;
+		if (cmd !== "time" && cmd !== "weather") return false;
 
 		const args = parts.slice(1);
 		const reply = (text: string): void => {
@@ -1042,6 +1052,11 @@ export class VoxelRoom extends Room {
 				}),
 			);
 		};
+
+		if (cmd === "weather") {
+			this.handleWeatherCommand(args, reply);
+			return true;
+		}
 
 		if (args.length === 0) {
 			reply(
@@ -1074,15 +1089,71 @@ export class VoxelRoom extends Room {
 		}
 
 		this.timeOfDay = fraction;
-		const timeMsg = new BinaryEncoder(5);
-		timeMsg.writeUint8(MessageType.WorldTime);
-		timeMsg.writeFloat32(this.timeOfDay);
+
+		/*
+		 * The whole world state goes out, not just the clock: the rain
+		 * byte carries the current weather, and dropping it would read as
+		 * "no rain" on every client and stop their rain for a tick.
+		 */
+		const timeMsg = new BinaryEncoder(7);
+		this.writeWorldTime(timeMsg, 0);
 		this.broadcastBytes("binary", timeMsg.getBytes(), {});
 
 		reply(
 			`Time set to ${Math.round(fraction * 1000)} (${timeOfDayLabel(fraction)})`,
 		);
 		return true;
+	}
+
+	/**
+	 * `!weather [rain|clear]` - the current weather, or set it.
+	 *
+	 * The server owns the weather, so the change has to happen here. The
+	 * new state is broadcast straight away rather than waiting for the
+	 * next periodic tick, and it is flagged as forced so every client
+	 * applies it at once instead of easing towards it.
+	 */
+	private handleWeatherCommand(
+		args: string[],
+		reply: (text: string) => void,
+	): void {
+		const action = parseWeatherAction(args);
+
+		if (action === null) {
+			reply("Usage: !weather [rain | clear]");
+			return;
+		}
+
+		if (action === "show") {
+			const intensity = this.weather.intensity;
+			reply(
+				`Weather: ${weatherLabel(intensity)} (${Math.round(intensity * 100)}%)`,
+			);
+			return;
+		}
+
+		const raining = action === "rain";
+		this.weather.force(raining ? WeatherPhase.Raining : WeatherPhase.Clear);
+		this.rainIntensityByte = Math.round(this.weather.intensity * 255);
+
+		const timeMsg = new BinaryEncoder(7);
+		this.writeWorldTime(timeMsg, WORLD_TIME_FORCE_RAIN);
+		this.broadcastBytes("binary", timeMsg.getBytes(), {});
+
+		reply(`Weather set to ${raining ? "rain" : "clear"}`);
+	}
+
+	/**
+	 * Write the world time and weather into a packet.
+	 *
+	 * The rain and flags bytes are both optional on the client side, so
+	 * this stays readable by clients that predate either of them.
+	 */
+	private writeWorldTime(enc: BinaryEncoder, flags: number): void {
+		enc.writeUint8(MessageType.WorldTime);
+		enc.writeFloat32(this.timeOfDay);
+		enc.writeUint8(this.rainIntensityByte);
+		enc.writeUint8(flags & 0xff);
 	}
 
 	async onDispose() {
@@ -1419,6 +1490,14 @@ export class VoxelRoom extends Room {
 	}
 
 	private tick(deltaMs: number): void {
+		/*
+		 * Weather advances on wall-clock time, so it keeps running even while
+		 * the room is empty — a player joining mid-shower sees the weather
+		 * that is actually happening rather than a frozen snapshot.
+		 */
+		this.weather.update(deltaMs * 0.001);
+		this.rainIntensityByte = Math.round(this.weather.intensity * 255);
+
 		if (this.players.size === 0) return;
 
 		if (this.config.dayCycle && this.config.dayDuration > 0) {
@@ -1429,8 +1508,7 @@ export class VoxelRoom extends Room {
 		if (this.timeAccum >= TIME_BROADCAST_INTERVAL) {
 			this.timeAccum = 0;
 			this.timeEncoder.reset();
-			this.timeEncoder.writeUint8(MessageType.WorldTime);
-			this.timeEncoder.writeFloat32(this.timeOfDay);
+			this.writeWorldTime(this.timeEncoder, 0);
 			this.broadcastBytes("binary", this.timeEncoder.getBytes(), {});
 		}
 

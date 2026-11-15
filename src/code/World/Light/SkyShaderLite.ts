@@ -64,6 +64,12 @@ const MOON_BASE_COLOR = vec3<f32>(0.92, 0.93, 0.96);
 const MOON_HALO_COLOR = vec3<f32>(0.55, 0.6, 0.75);
 const STAR_COLOR = vec3<f32>(0.9, 0.93, 1.0);
 
+// Overcast: the flat grey the sky turns into while it rains. The night
+// variant is separate so a downpour DARKENS the sky at night instead of
+// brightening it towards the daytime grey.
+const OVERCAST_DAY_COLOR = vec3<f32>(0.46, 0.49, 0.54);
+const OVERCAST_NIGHT_COLOR = vec3<f32>(0.09, 0.1, 0.13);
+
 const MOON_UV_SCALE = 31.25;
 const HASH_TO_FLOAT = 1.0 / 4294967295.0;
 
@@ -100,6 +106,11 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let sunDirection = shaderUniforms.sunDirection;
   let sunHeight = sunDirection.y;
 
+  // How rainy it is, 0..1. Cloud cover swallows the sun, the moon and the
+  // stars, and flattens the gradient into a uniform overcast grey.
+  let rainAmount = clamp(shaderUniforms.rainIntensity, 0.0, 1.0);
+  let clearSky = 1.0 - rainAmount;
+
   let skyFactor = smoothstep(0.0, 0.4, viewDirection.y);
 
   var finalColor = mix(
@@ -113,8 +124,8 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let sunGlow = smoothstep(0.995, 1.0, sunDot);
   let sunDisc = smoothstep(0.9998875, 0.99995, sunDot);
 
-  finalColor += sunGlow * SUN_GLOW_COLOR * 0.3;
-  finalColor += sunDisc * SUN_DISC_COLOR;
+  finalColor += sunGlow * SUN_GLOW_COLOR * 0.3 * clearSky;
+  finalColor += sunDisc * SUN_DISC_COLOR * clearSky;
 
   if (sunHeight < 0.0) {
     finalColor = mix(
@@ -150,7 +161,8 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
       // A full moon remains faintly visible during the day.
       let moonVisibility =
         moonIllum *
-        (0.2 + 0.8 * night);
+        (0.2 + 0.8 * night) *
+        clearSky;
 
       let moonLight =
         getMoonColor(moonUv) *
@@ -174,7 +186,8 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   // Stars are evaluated only above the horizon and when sufficiently dark.
   let starVisibility =
     night *
-    smoothstep(-0.08, 0.12, viewDirection.y);
+    smoothstep(-0.08, 0.12, viewDirection.y) *
+    clearSky;
 
   if (starVisibility > 0.001) {
     let grid = viewDirection * 140.0;
@@ -230,6 +243,20 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     }
   }
 
+  // Overcast: the gradient collapses into flat grey. The mix is applied
+  // last so it also washes out whatever the sun/moon/stars contributed.
+  let overcastColor = mix(
+    OVERCAST_NIGHT_COLOR,
+    OVERCAST_DAY_COLOR,
+    1.0 - night
+  );
+
+  finalColor = mix(
+    finalColor,
+    overcastColor,
+    rainAmount * 0.85
+  );
+
   return vec4<f32>(
     clamp(
       finalColor,
@@ -253,6 +280,7 @@ export function createSkyMaterial(): ShaderMaterial {
 			{ name: "moonDirection", type: "vec3<f32>" },
 			{ name: "moonIllum", type: "f32" },
 			{ name: "time", type: "f32" },
+			{ name: "rainIntensity", type: "f32" },
 		],
 		// PERF: backFaceCulling:false is required (from inside a convex box
 		// every face shares one orientation, so cullMode "back" would cull all
@@ -278,6 +306,7 @@ export function createSkyMaterial(): ShaderMaterial {
 	setShaderUniform(material, "moonDirection", [0, -1, 0]);
 	setShaderUniform(material, "moonIllum", 1);
 	setShaderUniform(material, "time", 0);
+	setShaderUniform(material, "rainIntensity", 0);
 
 	return material;
 }

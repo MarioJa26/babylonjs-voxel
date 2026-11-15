@@ -1,4 +1,4 @@
-﻿/**
+/**
  * NetClient - connection manager for b102 multiplayer.
  *
  * Wraps the Colyseus SDK to provide:
@@ -43,6 +43,7 @@ import {
 	encodeTntIgnite,
 	encodeYawByte,
 	isSequenceNewer,
+	WORLD_TIME_FORCE_RAIN,
 	type WorldConfigData,
 } from "./protocol/encoder";
 import {
@@ -140,7 +141,21 @@ export interface NetClientCallbacks {
 	/** Fired when another client ignites TNT (spawn a remote primed entity). */
 	onTntIgnite?: (ignite: TntIgniteData) => void;
 	onChatMessage?: (chat: ChatMessageData) => void;
-	onWorldTime?: (timeOfDay: number) => void;
+	/**
+	 * Server-authoritative world state.
+	 *
+	 * `rainIntensity` is the authoritative rain intensity, 0..1. Older
+	 * servers omit it, in which case it arrives as 0 (no rain).
+	 *
+	 * `forceRain` marks the intensity as a deliberate jump — a weather
+	 * command rather than a point on the weather curve. The client snaps
+	 * to it instead of easing, so the command lands at once.
+	 */
+	onWorldTime?: (
+		timeOfDay: number,
+		rainIntensity: number,
+		forceRain: boolean,
+	) => void;
 	onWorldConfig?: (config: WorldConfigData) => void;
 	onSpawnPosition?: (pos: {
 		x: number;
@@ -584,9 +599,31 @@ export class NetClient {
 						break;
 					}
 
-					case MessageType.WorldTime:
-						callbacks.onWorldTime?.(dec.readFloat32());
+					case MessageType.WorldTime: {
+						const timeOfDay = dec.readFloat32();
+						/*
+						 * Rain intensity byte. Optional: the byte was added
+						 * after the original 5-byte format, so an older server
+						 * that sends only the f32 still decodes cleanly (it
+						 * simply never rains in multiplayer).
+						 */
+						const rainIntensity =
+							dec.remaining >= 1 ? dec.readUint8() / 255 : 0;
+						/*
+						 * Flags byte, also optional. WORLD_TIME_FORCE_RAIN
+						 * marks the intensity as a deliberate jump (a
+						 * weather command) rather than a point on the
+						 * weather curve, so the client applies it at once
+						 * instead of easing towards it.
+						 */
+						const flags = dec.remaining >= 1 ? dec.readUint8() : 0;
+						callbacks.onWorldTime?.(
+							timeOfDay,
+							rainIntensity,
+							(flags & WORLD_TIME_FORCE_RAIN) !== 0,
+						);
 						break;
+					}
 
 					case MessageType.WorldConfig: {
 						// Reused scratch â€” safe: NetworkManager.onWorldConfig copies seed string synchronously (NetworkManager:186). Caller must copy if retaining.
