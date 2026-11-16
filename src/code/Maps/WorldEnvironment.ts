@@ -50,9 +50,9 @@ const TWINKLE_WRAP_SEC = Math.PI * 200;
 /**
  * How wet the ground gets from rain alone.
  *
- * The terrain shaders darken the diffuse and raise the specular by
- * `wetness`; a full shower takes the ground to nearly fully wet, which is
- * what the shader was tuned for.
+ * The terrain and held-item shaders darken the diffuse and raise the
+ * specular by `wetness`; a full shower takes the surface to nearly fully
+ * wet, which is what the shaders were tuned for.
  */
 const RAIN_WETNESS = 0.85;
 
@@ -475,11 +475,11 @@ export class WorldEnvironment {
 	}
 
 	/**
-	 * Wetness the terrain shaders should use.
+	 * Wetness the terrain and held-item shaders should use.
 	 *
 	 * `wetness` is the base level (the debug slider); rain adds its own
-	 * contribution on top, so the ground darkens and gains a specular sheen
-	 * while it rains and dries out again once the shower passes.
+	 * contribution on top, so surfaces darken and gain a specular sheen
+	 * while it rains and dry out again once the shower passes.
 	 */
 	public get effectiveWetness(): number {
 		const total = this.wetness + this.rainIntensity * RAIN_WETNESS;

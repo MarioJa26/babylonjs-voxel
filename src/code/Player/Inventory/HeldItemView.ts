@@ -352,6 +352,11 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     discard;
   }
 
+  // Match the terrain's wet look: darken the diffuse and let the wet
+  // surface catch a sharper, stronger sun highlight.
+  let wetness = shaderUniforms.wetness;
+  let diffuseRGB = tex.rgb * (1.0 - wetness * 0.5);
+
   let surfaceNormal = normalize(in.vNormal);
   let lightDirection =
     normalize(shaderUniforms.lightDirection);
@@ -370,13 +375,17 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     0.0
   );
 
+  let shininess = 32.0 + wetness * 96.0;
+
   let specular = exp2(
     clamp(
-      32.0 * 1.4427 * (normalHalfway - 1.0),
+      shininess * 1.4427 * (normalHalfway - 1.0),
       -126.0,
       0.0
     )
   );
+
+  let specularIntensity = 0.25 + wetness * 0.45;
 
   let voxelLight = shaderUniforms.lightColor;
 
@@ -394,8 +403,8 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   );
 
   let color =
-    tex.rgb * lightMix +
-    vec3<f32>(0.25) *
+    diffuseRGB * lightMix +
+    vec3<f32>(specularIntensity) *
       specular *
       localSunIntensity;
 
@@ -537,6 +546,11 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     discard;
   }
 
+  // Same wet treatment as the opaque terrain: the surface darkens and the
+  // specular response tightens into a stronger highlight.
+  let wetness = shaderUniforms.wetness;
+  let diffuseRGB = tex.rgb * (1.0 - wetness * 0.5);
+
   let sampledNormal = textureSampleGrad(
     normalTexture,
     normalTextureSampler,
@@ -567,11 +581,13 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 
   let specularPower = exp2(
     clamp(
-      32.0 * 1.4427 * (normalHalf - 1.0),
+      (32.0 + wetness * 96.0) * 1.4427 * (normalHalf - 1.0),
       -126.0,
       0.0
     )
   );
+
+  let specularIntensity = 0.25 + wetness * 0.45;
 
   let voxelLight = shaderUniforms.lightColor;
 
@@ -593,8 +609,8 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     normalMapDiffuse * localSunIntensity * 0.5;
 
   let color =
-    tex.rgb * lightMix * directLight +
-    vec3<f32>(0.25) *
+    diffuseRGB * lightMix * directLight +
+    vec3<f32>(specularIntensity) *
       specularPower *
       localSunIntensity;
 
@@ -617,6 +633,7 @@ function createHeldItemMaterial(name: string): ShaderMaterial {
 			{ name: "lightDirection", type: "vec3<f32>" },
 			{ name: "sunLightIntensity", type: "f32" },
 			{ name: "skyLightLevel", type: "f32" },
+			{ name: "wetness", type: "f32" },
 		],
 		samplers: ["diffuseTexture"],
 		backFaceCulling: true,
@@ -642,6 +659,7 @@ function createHeldBlockMaterial(name: string): ShaderMaterial {
 			{ name: "lightDirection", type: "vec3<f32>" },
 			{ name: "sunLightIntensity", type: "f32" },
 			{ name: "skyLightLevel", type: "f32" },
+			{ name: "wetness", type: "f32" },
 		],
 		samplers: [
 			{ name: "diffuseTexture", viewDimension: "2d-array" },
@@ -752,6 +770,9 @@ type Entry = {
 
 	/** Version of the sunlight state last written to this material. */
 	sunVersion: number;
+
+	/** Last wetness written to this material. */
+	wetness: number;
 };
 
 function createEntry(
@@ -769,6 +790,7 @@ function createEntry(
 		lightY: Number.NaN,
 		lightZ: Number.NaN,
 		sunVersion: -1,
+		wetness: Number.NaN,
 	};
 }
 
@@ -968,6 +990,24 @@ export class HeldItemView {
 	}
 
 	/**
+	 * Writes the environment's wetness when it differs from the value last
+	 * written to this material.
+	 *
+	 * This includes the base wetness slider and the rain contribution, so a
+	 * held item darkens and dries out in step with the terrain.
+	 */
+	private _writeWetnessUniform(entry: Entry): void {
+		const wetness = Map1.environment?.effectiveWetness ?? 0;
+
+		if (wetness === entry.wetness) {
+			return;
+		}
+
+		entry.wetness = wetness;
+		setShaderUniform(entry.material, "wetness", wetness);
+	}
+
+	/**
 	 * Refreshes the active material's environment lighting only after the
 	 * sampled voxel or sunlight state changes.
 	 */
@@ -979,6 +1019,7 @@ export class HeldItemView {
 	): void {
 		this._refreshSunState();
 		this._writeSunUniforms(entry);
+		this._writeWetnessUniform(entry);
 
 		const sampleY = y + PLAYER_LIGHT_SAMPLE_Y_OFFSET;
 
@@ -1269,6 +1310,7 @@ export class HeldItemView {
 
 		this._refreshSunState();
 		this._writeSunUniforms(entry);
+		this._writeWetnessUniform(entry);
 	}
 
 	/**
