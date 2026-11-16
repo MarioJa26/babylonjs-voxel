@@ -2,6 +2,7 @@ import type { EngineContext, SceneContext } from "@babylonjs/lite";
 import type { MobRegistry } from "../Entities/Mobs/Mob";
 import { preloadMobSkins } from "../Entities/Mobs/MobInstancePool";
 import { XpOrb } from "../Entities/Mobs/XpOrb";
+import { clamp01 } from "../Generation/CaveCarver";
 import { initDistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import { setGameTimeScale } from "../Lib/GameRuntimeState";
 import {
@@ -159,7 +160,7 @@ export class Map1 {
 	 */
 	public static setServerRain(intensity: number, force = false): void {
 		Map1.#rainIsServerDriven = true;
-		Map1.#serverRain = Math.min(Math.max(intensity, 0), 1);
+		Map1.#serverRain = clamp01(intensity);
 
 		if (force) {
 			Map1.#serverRainSmoothed = Map1.#serverRain;
@@ -184,7 +185,7 @@ export class Map1 {
 	 * rain entirely.
 	 */
 	public static setRainCeiling(ceiling: number): void {
-		Map1.#rainCeiling = Math.min(Math.max(ceiling, 0), 1);
+		Map1.#rainCeiling = clamp01(ceiling);
 	}
 
 	/** Current rain intensity, 0..1. */

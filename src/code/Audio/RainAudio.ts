@@ -10,325 +10,420 @@ import {
 	RAIN_RAMP_SECONDS,
 } from "./RainAudioMix";
 
-/**
- * Procedural rain audio.
- *
- * The rain bed is one looping, shaped buffer split into three bands by
- * parallel filters: a low "body" for the rumble of a heavy shower, a
- * band-passed "hiss" for the sheet of falling water, and a high-passed
- * "patter" for sparse individual drops striking the ground. The source is
- * deliberately correlated and contains short impacts; raw white noise made
- * the old effect sound like static even after filtering.
- *
- * Everything is synthesised — there is no rain asset to load, so the
- * effect costs one buffer, one source and four filters.
- *
- * The mix itself lives in `RainAudioMix.ts`, which has no browser
- * dependencies and can therefore be checked headlessly.
- */
+interface RainGraph {
+	context: BaseAudioContext;
+	source: AudioBufferSourceNode;
+	bus: GainNode;
+	muffle: BiquadFilterNode;
+	bodyFilter: BiquadFilterNode;
+	bodyGain: GainNode;
+	hissFilter: BiquadFilterNode;
+	hissGain: GainNode;
+	patterFilter: BiquadFilterNode;
+	patterGain: GainNode;
+}
 
-let audioCtx: BaseAudioContext | null = null;
-let source: AudioBufferSourceNode | null = null;
-let busGain: GainNode | null = null;
-let muffle: BiquadFilterNode | null = null;
-let bodyGain: GainNode | null = null;
-let hissGain: GainNode | null = null;
-let patterGain: GainNode | null = null;
+interface ScheduledValues {
+	bodyGain: number;
+	hissGain: number;
+	patterGain: number;
+	exposureGain: number;
+	cutoff: number;
+}
 
-/*
- * The last value scheduled on each parameter.
- *
- * -1 means "never scheduled", which forces the first update through even
- * when the target happens to be the default.
- */
-let lastBodyGain = -1;
-let lastHissGain = -1;
-let lastPatterGain = -1;
-let lastExposureGain = -1;
-let lastCutoff = -1;
+let graph: RainGraph | null = null;
+let failedContext: BaseAudioContext | null = null;
 
-/**
- * How far a target has to move before it is worth rescheduling.
- *
- * Small enough to be inaudible as a level change, large enough to stop
- * the automation timeline being refilled with near-identical events.
- */
+const scheduled: ScheduledValues = {
+	bodyGain: -1,
+	hissGain: -1,
+	patterGain: -1,
+	exposureGain: -1,
+	cutoff: -1,
+};
+
 const PARAM_EPSILON = 0.002;
+const RANDOM_SCALE = 1 / 0x100000000;
+const TWO_PI = Math.PI * 2;
 
-/**
- * Build a noise buffer that loops without a click.
- *
- * The tail is crossfaded into the head with the pairing reversed, so the
- * last sample ends up equal to the first one. The loop point is then
- * continuous and the repeat is inaudible.
- */
-function buildSeamlessNoise(ctx: BaseAudioContext): AudioBuffer {
-	const sampleRate = ctx.sampleRate;
+function resetScheduledValues(): void {
+	scheduled.bodyGain = -1;
+	scheduled.hissGain = -1;
+	scheduled.patterGain = -1;
+	scheduled.exposureGain = -1;
+	scheduled.cutoff = -1;
+}
+
+function buildSeamlessNoise(context: BaseAudioContext): AudioBuffer {
+	const sampleRate = context.sampleRate;
 	const length = Math.max(1, Math.floor(sampleRate * RAIN_NOISE_SECONDS));
-	const fade = Math.min(
+
+	const crossfadeLength = Math.min(
 		Math.floor(sampleRate * RAIN_CROSSFADE_SECONDS),
-		Math.floor(length / 2),
+		length >>> 1,
 	);
 
-	const buffer = ctx.createBuffer(1, length, sampleRate);
+	const buffer = context.createBuffer(1, length, sampleRate);
 	const data = buffer.getChannelData(0);
 
-	// A local deterministic generator keeps the buffer repeatable without
-	// touching the game's random streams.
+	// Deterministic Mulberry32-style generator, isolated from game RNG state.
 	let rng = 0x6d2b79f5;
+
 	const random = (): number => {
-		rng |= 0;
 		rng = (rng + 0x6d2b79f5) | 0;
-		let t = Math.imul(rng ^ (rng >>> 15), 1 | rng);
-		t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
-		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+
+		let value = Math.imul(rng ^ (rng >>> 15), 1 | rng);
+		value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+
+		return ((value ^ (value >>> 14)) >>> 0) * RANDOM_SCALE;
 	};
 
-	// Correlated noise makes the continuous sheet read as water rather than
-	// an unbroken white-noise hiss. The slow component supplies natural gusts.
+	/*
+	 * Continuous rain bed.
+	 *
+	 * Separate random samples keep the low and mid components decorrelated,
+	 * preventing synchronized transients from emphasizing clicks.
+	 */
 	let low = 0;
 	let mid = 0;
 	let gust = 0;
+
 	for (let i = 0; i < length; i++) {
-		const white = random() * 2 - 1;
-		low += (white - low) * 0.006;
-		mid += (white - mid) * 0.12;
-		gust += (random() * 2 - 1 - gust) * 0.0015;
-		const envelope = 0.72 + Math.min(0.28, Math.max(-0.18, gust));
-		data[i] = (low * 0.8 + mid * 0.65) * envelope;
+		low += (random() * 2 - 1 - low) * 0.005;
+		mid += (random() * 2 - 1 - mid) * 0.09;
+		gust += (random() * 2 - 1 - gust) * 0.0012;
+
+		const limitedGust = Math.max(-0.18, Math.min(0.28, gust));
+
+		data[i] = (low * 0.72 + mid * 0.52) * (0.78 + limitedGust);
 	}
 
-	// Add discrete drops. They are short, decaying noise grains with a small
-	// tonal component, which gives the high band recognizable impacts instead
-	// of leaving it as a constant static layer.
-	const dropCount = Math.floor(RAIN_NOISE_SECONDS * 115);
-	for (let drop = 0; drop < dropCount; drop++) {
-		const start = Math.floor(random() * Math.max(1, length - 1));
-		const grainLength = Math.max(
-			1,
-			Math.floor(sampleRate * (0.008 + random() * 0.035)),
-		);
-		const amplitude = 0.2 + random() * 0.55;
-		const frequency = 900 + random() * 4200;
-		const phase = random() * Math.PI * 2;
-		const decay = Math.max(1, grainLength * (0.2 + random() * 0.18));
+	/*
+	 * Add diffuse, filtered surface splashes.
+	 */
+	const dropCount = Math.floor(RAIN_NOISE_SECONDS * 80);
+	const startRange = Math.max(1, length - 1);
 
-		for (let j = 0; j < grainLength && start + j < length; j++) {
-			const t = j / grainLength;
-			const fade = Math.exp(-j / decay) * (1 - t * 0.55);
-			const tonal = Math.sin(
-				phase + (j / sampleRate) * frequency * Math.PI * 2,
-			);
-			const noisy = random() * 2 - 1;
-			data[start + j] += (tonal * 0.35 + noisy * 0.65) * fade * amplitude;
+	for (let drop = 0; drop < dropCount; drop++) {
+		const start = Math.floor(random() * startRange);
+		const durationSeconds = 0.045 + random() * 0.095;
+		const grainLength = Math.max(1, Math.floor(sampleRate * durationSeconds));
+
+		const attackLength = Math.max(
+			1,
+			Math.floor(sampleRate * (0.003 + random() * 0.005)),
+		);
+
+		const levelRandom = random();
+		const amplitude = 0.07 + levelRandom * levelRandom * 0.2;
+
+		const cutoff = 900 + random() * 1700;
+		const filterCoefficient = 1 - Math.exp((-TWO_PI * cutoff) / sampleRate);
+
+		const bodyFrequency = 250 + random() * 500;
+		const bodyCoefficient =
+			1 - Math.exp((-TWO_PI * bodyFrequency) / sampleRate);
+
+		const decaySeconds = 0.018 + random() * 0.045;
+		const decayCoefficient = Math.exp(
+			-1 / Math.max(1, sampleRate * decaySeconds),
+		);
+
+		const attackPhaseStep = (Math.PI * 0.5) / attackLength;
+
+		let filteredNoise = 0;
+		let splashBody = 0;
+		let envelope = 1;
+
+		for (let sample = 0; sample < grainLength; sample++) {
+			const index = (start + sample) % length;
+			const noise = random() * 2 - 1;
+
+			filteredNoise += (noise - filteredNoise) * filterCoefficient;
+
+			splashBody += (filteredNoise - splashBody) * bodyCoefficient;
+
+			const attack =
+				sample < attackLength ? Math.sin(sample * attackPhaseStep) : 1;
+
+			const texture = 0.82 + random() * 0.18;
+			const splash = filteredNoise * 0.68 + splashBody * 0.32;
+
+			data[index] += splash * attack * envelope * amplitude * texture;
+
+			envelope *= decayCoefficient;
 		}
 	}
 
-	for (let i = 0; i < fade; i++) {
-		const t = fade > 1 ? i / (fade - 1) : 1;
-		const tail = length - fade + i;
+	// Soft limiting avoids sharp high-frequency edges from hard clipping.
+	for (let i = 0; i < length; i++) {
+		data[i] = Math.tanh(data[i] * 1.15) / 1.15;
+	}
 
-		// The head region is still untouched here — only the tail is written.
-		// Crossfade the end into the beginning so the loop point is not a
-		// repeated click or a static reset.
-		data[tail] = data[tail] * (1 - t) + data[i] * t;
+	if (crossfadeLength > 0) {
+		const tailStart = length - crossfadeLength;
+		const inverseFadeLength =
+			crossfadeLength > 1 ? 1 / (crossfadeLength - 1) : 1;
+
+		for (let i = 0; i < crossfadeLength; i++) {
+			const mix = i * inverseFadeLength;
+			const tailIndex = tailStart + i;
+			const headSample = data[crossfadeLength - 1 - i];
+
+			data[tailIndex] += (headSample - data[tailIndex]) * mix;
+		}
 	}
 
 	return buffer;
 }
 
-/**
- * Create the rain graph if it does not exist yet.
- *
- * The graph is built lazily, on the first rain, so a session that never
- * rains never creates an AudioContext.
- */
-function ensureGraph(): boolean {
-	const output = getAudioOutput();
-	if (!output) return false;
+function safeDisconnect(node: AudioNode): void {
+	try {
+		node.disconnect();
+	} catch {
+		// Best-effort cleanup.
+	}
+}
 
-	const ctx = output.context;
+function destroyGraph(currentGraph: RainGraph): void {
+	try {
+		currentGraph.source.stop();
+	} catch {
+		// The source may not have started or may already be stopped.
+	}
 
-	if (audioCtx === ctx && source !== null) return true;
+	safeDisconnect(currentGraph.source);
+	safeDisconnect(currentGraph.bodyFilter);
+	safeDisconnect(currentGraph.bodyGain);
+	safeDisconnect(currentGraph.hissFilter);
+	safeDisconnect(currentGraph.hissGain);
+	safeDisconnect(currentGraph.patterFilter);
+	safeDisconnect(currentGraph.patterGain);
+	safeDisconnect(currentGraph.bus);
+	safeDisconnect(currentGraph.muffle);
+}
+
+function clearGraph(): void {
+	if (graph !== null) {
+		destroyGraph(graph);
+		graph = null;
+	}
+
+	resetScheduledValues();
+}
+
+function createGraph(
+	context: BaseAudioContext,
+	output: AudioNode,
+): RainGraph | null {
+	const createdNodes: AudioNode[] = [];
+	let source: AudioBufferSourceNode | null = null;
 
 	try {
-		const buffer = buildSeamlessNoise(ctx);
+		const buffer = buildSeamlessNoise(context);
 
-		const src = ctx.createBufferSource();
-		src.buffer = buffer;
-		src.loop = true;
+		source = context.createBufferSource();
+		source.buffer = buffer;
+		source.loop = true;
+		createdNodes.push(source);
 
-		const bus = ctx.createGain();
-		bus.gain.value = 0;
-
-		const muffleFilter = ctx.createBiquadFilter();
-		muffleFilter.type = "lowpass";
-		muffleFilter.frequency.value = RAIN_OPEN_CUTOFF;
-		muffleFilter.Q.value = 0.7;
-
-		const bodyFilter = ctx.createBiquadFilter();
+		const bodyFilter = context.createBiquadFilter();
 		bodyFilter.type = "lowpass";
 		bodyFilter.frequency.value = RAIN_BODY_FREQ;
+		createdNodes.push(bodyFilter);
 
-		const body = ctx.createGain();
-		body.gain.value = 0;
+		const bodyGain = context.createGain();
+		bodyGain.gain.value = 0;
+		createdNodes.push(bodyGain);
 
-		const hissFilter = ctx.createBiquadFilter();
+		const hissFilter = context.createBiquadFilter();
 		hissFilter.type = "bandpass";
 		hissFilter.frequency.value = RAIN_HISS_FREQ;
 		hissFilter.Q.value = 0.6;
+		createdNodes.push(hissFilter);
 
-		const hiss = ctx.createGain();
-		hiss.gain.value = 0;
+		const hissGain = context.createGain();
+		hissGain.gain.value = 0;
+		createdNodes.push(hissGain);
 
-		const patterFilter = ctx.createBiquadFilter();
+		const patterFilter = context.createBiquadFilter();
 		patterFilter.type = "highpass";
 		patterFilter.frequency.value = RAIN_PATTER_FREQ;
+		createdNodes.push(patterFilter);
 
-		const patter = ctx.createGain();
-		patter.gain.value = 0;
+		const patterGain = context.createGain();
+		patterGain.gain.value = 0;
+		createdNodes.push(patterGain);
 
-		src.connect(bodyFilter);
-		bodyFilter.connect(body);
-		body.connect(bus);
+		const bus = context.createGain();
+		bus.gain.value = 0;
+		createdNodes.push(bus);
 
-		src.connect(hissFilter);
-		hissFilter.connect(hiss);
-		hiss.connect(bus);
+		const muffle = context.createBiquadFilter();
+		muffle.type = "lowpass";
+		muffle.frequency.value = RAIN_OPEN_CUTOFF;
+		muffle.Q.value = 0.7;
+		createdNodes.push(muffle);
 
-		src.connect(patterFilter);
-		patterFilter.connect(patter);
-		patter.connect(bus);
+		source.connect(bodyFilter);
+		bodyFilter.connect(bodyGain);
+		bodyGain.connect(bus);
 
-		bus.connect(muffleFilter);
-		muffleFilter.connect(output);
+		source.connect(hissFilter);
+		hissFilter.connect(hissGain);
+		hissGain.connect(bus);
 
-		src.start();
+		source.connect(patterFilter);
+		patterFilter.connect(patterGain);
+		patterGain.connect(bus);
 
-		audioCtx = ctx;
-		source = src;
-		busGain = bus;
-		muffle = muffleFilter;
-		bodyGain = body;
-		hissGain = hiss;
-		patterGain = patter;
+		bus.connect(muffle);
+		muffle.connect(output);
 
-		// The new nodes start silent: force every target through once.
-		lastBodyGain = -1;
-		lastHissGain = -1;
-		lastPatterGain = -1;
-		lastExposureGain = -1;
-		lastCutoff = -1;
+		source.start();
 
-		return true;
+		return {
+			context,
+			source,
+			bus,
+			muffle,
+			bodyFilter,
+			bodyGain,
+			hissFilter,
+			hissGain,
+			patterFilter,
+			patterGain,
+		};
 	} catch {
-		// Audio must never break gameplay.
-		return false;
+		try {
+			source?.stop();
+		} catch {
+			// The source may not have started.
+		}
+
+		for (const node of createdNodes) {
+			safeDisconnect(node);
+		}
+
+		return null;
 	}
 }
 
-/**
- * Drive the rain bed.
- *
- * Called once per frame from the rain system, which owns the decision
- * about whether the player is out in the rain, under cover, or under
- * water — the visuals and the sound follow the same rule.
- *
- * @param intensity - Rain intensity, 0..1.
- * @param exposure - How much of the rain reaches the listener, 0..1.
- */
-export function updateRainAudio(intensity: number, exposure: number): void {
-	const mix = computeRainMix(intensity, exposure);
+function ensureGraph(): RainGraph | null {
+	const output = getAudioOutput();
 
-	/*
-	 * Nothing to hear and nothing built yet: leave the graph alone, so a
-	 * session that never rains never creates an AudioContext.
-	 */
-	const audible =
-		mix.exposureGain > 0 &&
-		(mix.bodyGain > 0 || mix.hissGain > 0 || mix.patterGain > 0);
-
-	if (!audible && busGain === null) return;
-
-	if (!ensureGraph()) return;
-
-	const ctx = audioCtx;
-	if (!ctx || !busGain || !muffle || !bodyGain || !hissGain || !patterGain) {
-		return;
+	if (!output) {
+		return null;
 	}
 
-	const now = ctx.currentTime;
+	const context = output.context;
 
-	/*
-	 * Only reschedule a parameter when its target actually moved. The
-	 * rain is updated every frame, and refilling the automation timeline
-	 * with identical events sixty times a second is pure overhead — the
-	 * values only change when the weather or the shelter does.
-	 */
-	lastBodyGain = scheduleTarget(bodyGain.gain, mix.bodyGain, lastBodyGain, now);
-	lastHissGain = scheduleTarget(hissGain.gain, mix.hissGain, lastHissGain, now);
-	lastPatterGain = scheduleTarget(
-		patterGain.gain,
-		mix.patterGain,
-		lastPatterGain,
-		now,
-	);
-	lastExposureGain = scheduleTarget(
-		busGain.gain,
-		mix.exposureGain,
-		lastExposureGain,
-		now,
-	);
-	lastCutoff = scheduleTarget(muffle.frequency, mix.cutoff, lastCutoff, now);
+	if (graph?.context === context) {
+		return graph;
+	}
+
+	if (failedContext === context) {
+		return null;
+	}
+
+	clearGraph();
+
+	const nextGraph = createGraph(context, output);
+
+	if (nextGraph === null) {
+		failedContext = context;
+		return null;
+	}
+
+	graph = nextGraph;
+	failedContext = null;
+	resetScheduledValues();
+
+	return nextGraph;
 }
 
-/**
- * Schedule a parameter change, but only when the target actually moved.
- *
- * Returns the value to remember for the next call.
- */
 function scheduleTarget(
 	param: AudioParam,
 	value: number,
-	last: number,
+	previousValue: number,
 	now: number,
 ): number {
-	if (Math.abs(value - last) < PARAM_EPSILON) return last;
+	if (Math.abs(value - previousValue) < PARAM_EPSILON) {
+		return previousValue;
+	}
 
 	param.setTargetAtTime(value, now, RAIN_RAMP_SECONDS);
 	return value;
 }
 
-/** Stop the rain bed and release its nodes. */
+/**
+ * Update the procedural rain bed.
+ *
+ * @param intensity Rain intensity in the range 0..1.
+ * @param exposure Amount of rain reaching the listener in the range 0..1.
+ */
+export function updateRainAudio(intensity: number, exposure: number): void {
+	const mix = computeRainMix(intensity, exposure);
+
+	const audible =
+		mix.exposureGain > 0 &&
+		(mix.bodyGain > 0 || mix.hissGain > 0 || mix.patterGain > 0);
+
+	// Do not allocate the buffer until rain first becomes audible.
+	if (!audible && graph === null) {
+		return;
+	}
+
+	const currentGraph = ensureGraph();
+
+	if (currentGraph === null) {
+		return;
+	}
+
+	const now = currentGraph.context.currentTime;
+
+	scheduled.bodyGain = scheduleTarget(
+		currentGraph.bodyGain.gain,
+		mix.bodyGain,
+		scheduled.bodyGain,
+		now,
+	);
+
+	scheduled.hissGain = scheduleTarget(
+		currentGraph.hissGain.gain,
+		mix.hissGain,
+		scheduled.hissGain,
+		now,
+	);
+
+	scheduled.patterGain = scheduleTarget(
+		currentGraph.patterGain.gain,
+		mix.patterGain,
+		scheduled.patterGain,
+		now,
+	);
+
+	scheduled.exposureGain = scheduleTarget(
+		currentGraph.bus.gain,
+		mix.exposureGain,
+		scheduled.exposureGain,
+		now,
+	);
+
+	scheduled.cutoff = scheduleTarget(
+		currentGraph.muffle.frequency,
+		mix.cutoff,
+		scheduled.cutoff,
+		now,
+	);
+}
+
+/**
+ * Stop the rain bed and release all associated audio nodes.
+ */
 export function disposeRainAudio(): void {
-	try {
-		source?.stop();
-	} catch {
-		// The source may already have been stopped.
-	}
+	clearGraph();
 
-	try {
-		source?.disconnect();
-		busGain?.disconnect();
-		muffle?.disconnect();
-		bodyGain?.disconnect();
-		hissGain?.disconnect();
-		patterGain?.disconnect();
-	} catch {
-		// Disconnecting a node that was never connected is harmless.
-	}
-
-	audioCtx = null;
-	source = null;
-	busGain = null;
-	muffle = null;
-	bodyGain = null;
-	hissGain = null;
-	patterGain = null;
-
-	lastBodyGain = -1;
-	lastHissGain = -1;
-	lastPatterGain = -1;
-	lastExposureGain = -1;
-	lastCutoff = -1;
+	// Explicit disposal permits a retry using the same context.
+	failedContext = null;
 }

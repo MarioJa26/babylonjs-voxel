@@ -21,6 +21,7 @@ import {
 	type ShaderMaterial,
 	setShaderUniform,
 } from "@babylonjs/lite";
+import { clamp01 } from "../Generation/CaveCarver";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { createSkyMaterial } from "../World/Light/SkyShaderLite";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
@@ -482,7 +483,7 @@ export class WorldEnvironment {
 	 */
 	public get effectiveWetness(): number {
 		const total = this.wetness + this.rainIntensity * RAIN_WETNESS;
-		return Math.min(Math.max(total, 0), 1);
+		return clamp01(total);
 	}
 
 	/** Push the rain intensity to the sky shader (overcast). */

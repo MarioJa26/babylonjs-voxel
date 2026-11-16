@@ -2,16 +2,22 @@
  * Shared rain-intensity cycle.
  *
  * The client runs this locally in singleplayer; in multiplayer the server
- * runs the SAME class and ships the resulting intensity in its WorldTime
- * packet, so every player in a world shares one weather state.
+ * runs the same class and sends the resulting intensity in its WorldTime
+ * packet, keeping every player in the world on one weather state.
  *
  * Deliberately free of engine imports so the server can bundle it unchanged.
+ * The only imports are the shared `clamp01` and the Squirrel13 hash, both of
+ * which are plain TypeScript.
  */
+
+import { clamp01 } from "../Generation/CaveCarver";
+import { getPRNGBySeed } from "../Generation/NoiseAndParameters/Squirrel13";
 
 /** Current phase of the weather cycle. */
 export const enum WeatherPhase {
 	/** No rain. */
 	Clear,
+
 	/** Rain is falling. */
 	Raining,
 }
@@ -25,19 +31,35 @@ const RAIN_MIN_SEC = 60;
 const RAIN_MAX_SEC = 210;
 
 /**
- * Seconds for the intensity to travel the whole 0..1 range.
- *
- * Also the rate the client eases toward a server-sent intensity, so the
- * server's 5-second broadcast cadence does not show up as stepping.
+ * Seconds required for intensity to travel through the complete 0..1 range.
  */
 export const WEATHER_RAMP_SEC = 14;
+
+// ---------------------------------------------------------------------------
+// Derived constants
+// ---------------------------------------------------------------------------
+
+const DEFAULT_SEED = 0x02f6e2b1;
+
+/**
+ * Scale that turns a Squirrel13 hash into a unit value.
+ *
+ * The hash ends with `mangled ^ (mangled >> 8)`, and the shift sign-extends,
+ * so bit 31 of the result is always 0: the output is uniform over
+ * [0, 2^31), not [0, 2^32).
+ */
+const PRNG_UNIT_SCALE = 1 / 2147483648;
+
+const INVERSE_WEATHER_RAMP_SEC = 1 / WEATHER_RAMP_SEC;
+
+const CLEAR_DURATION_RANGE_SEC = CLEAR_MAX_SEC - CLEAR_MIN_SEC;
+const RAIN_DURATION_RANGE_SEC = RAIN_MAX_SEC - RAIN_MIN_SEC;
 
 /**
  * Rain intensity over time.
  *
- * The phase machine picks how long each spell lasts; `intensity` is the
- * eased 0..1 value that drives the visuals. Easing lives here (rather than
- * in the renderer) so the server can broadcast an already-smooth value.
+ * The phase machine controls spell duration. `intensity` is the eased value
+ * used by rendering and audio and, on the server, sent to clients.
  */
 export class WeatherCycle {
 	public phase: WeatherPhase = WeatherPhase.Clear;
@@ -45,89 +67,103 @@ export class WeatherCycle {
 	/** Eased rain intensity, 0..1. */
 	public intensity = 0;
 
-	/** Target for the current phase: 0 while clear, 1 while raining. */
+	/** Current phase target: zero while clear and one while raining. */
 	public target = 0;
 
-	#phaseTimerSec = 0;
-	#rngState: number;
+	#phaseTimerSec: number;
 
-	constructor(seed = 0x2f6e2b1) {
-		this.#rngState = seed >>> 0 || 0x2f6e2b1;
-		this.#phaseTimerSec = this.#nextDuration(CLEAR_MIN_SEC, CLEAR_MAX_SEC);
+	/** Seed for the Squirrel13 hash that draws the spell durations. */
+	#seed: number;
+
+	/** Monotonic draw counter; the hash turns it into a value. */
+	#rngCounter = 0;
+
+	public constructor(seed = DEFAULT_SEED) {
+		this.#seed = seed >>> 0 || DEFAULT_SEED;
+		this.#phaseTimerSec = this.#nextClearDuration();
 	}
 
 	/**
-	 * Advance the cycle.
+	 * Advance the weather cycle using real elapsed seconds.
 	 *
-	 * `dtSec` is REAL elapsed time, not game time: the weather runs on
-	 * wall-clock seconds so it does not speed up when the day/night time
-	 * scale is raised.
+	 * At most one phase transition is processed per call, preserving the
+	 * original behavior when an unusually large frame delta is supplied.
 	 */
 	public update(dtSec: number): void {
-		if (!(dtSec > 0)) return;
-
-		this.#phaseTimerSec -= dtSec;
-		if (this.#phaseTimerSec <= 0) {
-			this.#advancePhase();
+		if (!(dtSec > 0)) {
+			return;
 		}
 
-		const step = dtSec / WEATHER_RAMP_SEC;
-		if (this.intensity < this.target) {
-			this.intensity = Math.min(this.target, this.intensity + step);
-		} else if (this.intensity > this.target) {
-			this.intensity = Math.max(this.target, this.intensity - step);
+		const remaining = this.#phaseTimerSec - dtSec;
+
+		if (remaining <= 0) {
+			this.#advancePhase();
+		} else {
+			this.#phaseTimerSec = remaining;
+		}
+
+		const intensity = this.intensity;
+		const target = this.target;
+		const step = dtSec * INVERSE_WEATHER_RAMP_SEC;
+
+		/*
+		 * The target is always 0 or 1, so clamping to 0..1 is the same as
+		 * clamping to the target: the ramp lands on the target and stops,
+		 * never crossing it.
+		 */
+		if (intensity < target) {
+			this.intensity = clamp01(intensity + step);
+		} else if (intensity > target) {
+			this.intensity = clamp01(intensity - step);
 		}
 	}
 
 	/**
-	 * Force the cycle into a phase right now.
+	 * Immediately force a weather phase.
 	 *
-	 * The ordinary cycle eases between phases over WEATHER_RAMP_SEC, which
-	 * is right for weather that drifts on its own. A command that sets the
-	 * weather has to take effect at once, so this jumps the phase, the
-	 * target and the eased intensity straight to the new state.
-	 *
-	 * The spell still ends on its own: the phase timer is re-armed, so a
-	 * forced shower lasts for a normal-length spell and then eases away
-	 * like any other.
+	 * The phase, target, and intensity change immediately. The phase timer is
+	 * re-armed with a normal randomized duration, so automatic cycling resumes.
 	 */
 	public force(phase: WeatherPhase): void {
-		this.phase = phase;
-		this.target = phase === WeatherPhase.Raining ? 1 : 0;
-		this.intensity = this.target;
+		const raining = phase === WeatherPhase.Raining;
+		const target = raining ? 1 : 0;
 
-		this.#phaseTimerSec = this.#nextDuration(
-			phase === WeatherPhase.Raining ? RAIN_MIN_SEC : CLEAR_MIN_SEC,
-			phase === WeatherPhase.Raining ? RAIN_MAX_SEC : CLEAR_MAX_SEC,
-		);
+		this.phase = phase;
+		this.target = target;
+		this.intensity = target;
+		this.#phaseTimerSec = raining
+			? this.#nextRainDuration()
+			: this.#nextClearDuration();
 	}
 
 	#advancePhase(): void {
 		if (this.phase === WeatherPhase.Raining) {
 			this.phase = WeatherPhase.Clear;
 			this.target = 0;
-			this.#phaseTimerSec = this.#nextDuration(CLEAR_MIN_SEC, CLEAR_MAX_SEC);
-			return;
+			this.#phaseTimerSec = this.#nextClearDuration();
+		} else {
+			this.phase = WeatherPhase.Raining;
+			this.target = 1;
+			this.#phaseTimerSec = this.#nextRainDuration();
 		}
-
-		this.phase = WeatherPhase.Raining;
-		this.target = 1;
-		this.#phaseTimerSec = this.#nextDuration(RAIN_MIN_SEC, RAIN_MAX_SEC);
 	}
 
-	/** xorshift32 — self-contained so rain never perturbs the terrain PRNG. */
+	/**
+	 * Next random unit value, drawn from the Squirrel13 hash.
+	 *
+	 * The hash is pure, so the spell schedule is reproducible from the seed
+	 * on any machine — the server and the client build the same one — and it
+	 * leaves the shared terrain PRNG state alone.
+	 */
 	#nextRandom(): number {
-		let x = this.#rngState;
-		x ^= x << 13;
-		x >>>= 0;
-		x ^= x >> 17;
-		x ^= x << 5;
-		x >>>= 0;
-		this.#rngState = x;
-		return x / 4294967296;
+		return getPRNGBySeed(this.#rngCounter++, this.#seed) * PRNG_UNIT_SCALE;
 	}
 
-	#nextDuration(minSec: number, maxSec: number): number {
-		return minSec + this.#nextRandom() * (maxSec - minSec);
+	#nextClearDuration(): number {
+		return CLEAR_MIN_SEC + this.#nextRandom() * CLEAR_DURATION_RANGE_SEC;
+	}
+
+	#nextRainDuration(): number {
+		return RAIN_MIN_SEC + this.#nextRandom() * RAIN_DURATION_RANGE_SEC;
 	}
 }
