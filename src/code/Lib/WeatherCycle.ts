@@ -23,12 +23,12 @@ export const enum WeatherPhase {
 }
 
 /** Seconds of clear weather before the next downpour. */
-const CLEAR_MIN_SEC = 150;
-const CLEAR_MAX_SEC = 480;
+const CLEAR_MIN_SEC = 240;
+const CLEAR_MAX_SEC = 600;
 
 /** Seconds of rain before the weather clears again. */
-const RAIN_MIN_SEC = 60;
-const RAIN_MAX_SEC = 210;
+const RAIN_MIN_SEC = 120;
+const RAIN_MAX_SEC = 360;
 
 /**
  * Seconds required for intensity to travel through the complete 0..1 range.
