@@ -14,8 +14,8 @@ export default class MapFog {
 	}
 
 	public static readonly fogStartAboveWater = 1;
-	private static fogStartOverride: number | null = null;
-	private static fogEndOverride: number | null = null;
+	private static fogStartOverride: number | null = 300;
+	private static fogEndOverride: number | null = 1750;
 
 	private static readonly fogColor: [number, number, number] = [1.0, 0.0, 0.1];
 	private static readonly fogDensity = 0.8;

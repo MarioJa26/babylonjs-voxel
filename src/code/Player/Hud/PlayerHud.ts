@@ -1789,7 +1789,10 @@ export class PlayerHud {
 			{
 				label: "Fog End",
 				min: 0,
-				max: 3000,
+				// The above-water fog end tracks the far-tile horizon (~8600 blocks
+				// with FAR_TILE_DISTANCE 256), so the slider range must cover it or
+				// the initial value clamps down the moment the slider is built.
+				max: Math.ceil(Math.max(3000, MapFog.getFogEnd(false))),
 				value: MapFog.getFogEnd(false).toString(),
 				onValue: (value) => MapFog.setFogEndOverride(value),
 			},

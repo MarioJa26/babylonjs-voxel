@@ -410,8 +410,7 @@ export function updateRain(deltaMs: number): void {
 	const sunIntensity =
 		sunElevation <= 0 ? 0 : sunElevation >= 0.25 ? 1 : sunElevation * 4;
 
-	const brightnessInput = sunIntensity + 0.3;
-	const brightness = 0.22 + 0.78 * (brightnessInput < 1 ? brightnessInput : 1);
+	const brightness = 0.8 * (sunIntensity + 0.2);
 
 	const baseAlpha = Math.min(0.62, 0.18 + intensity * 0.44);
 

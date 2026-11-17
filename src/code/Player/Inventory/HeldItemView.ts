@@ -352,26 +352,30 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     discard;
   }
 
-  // Match the terrain's wet look: darken the diffuse and let the wet
-  // surface catch a sharper, stronger sun highlight.
   let wetness = shaderUniforms.wetness;
-  let diffuseRGB = tex.rgb * (1.0 - wetness * 0.5);
+  let localSunIntensity =
+    shaderUniforms.sunLightIntensity *
+    shaderUniforms.skyLightLevel;
 
   let surfaceNormal = normalize(in.vNormal);
   let lightDirection =
     normalize(shaderUniforms.lightDirection);
 
   let diffuseIntensity = max(
-    0.0,
-    dot(surfaceNormal, lightDirection)
+    dot(surfaceNormal, lightDirection),
+    0.0
   );
 
-  let halfwayDir = normalize(
-    surfaceNormal + lightDirection
+  // Correct Blinn-Phong halfway vector. The billboard faces the camera, so
+  // the camera-relative view direction is +Z; this is a visible lighting
+  // correction, not a behavior-identical optimization.
+  let viewDirection = vec3<f32>(0.0, 0.0, 1.0);
+  let halfwayDirection = normalize(
+    viewDirection + lightDirection
   );
 
   let normalHalfway = max(
-    dot(surfaceNormal, halfwayDir),
+    dot(surfaceNormal, halfwayDirection),
     0.0
   );
 
@@ -385,30 +389,26 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     )
   );
 
-  let specularIntensity = 0.25 + wetness * 0.45;
-
-  let voxelLight = shaderUniforms.lightColor;
-
-  // Time-of-day intensity multiplied by local voxel skylight. This becomes
-  // zero in fully enclosed caves and fades through partially lit entrances.
-  let localSunIntensity =
-    shaderUniforms.sunLightIntensity *
-    shaderUniforms.skyLightLevel;
+  let diffuseRGB =
+    tex.rgb * (1.0 - wetness * 0.5);
 
   let lightMix = clamp(
-    voxelLight +
+    shaderUniforms.lightColor +
       diffuseIntensity * localSunIntensity * 0.5,
     vec3<f32>(0.06),
     vec3<f32>(1.0)
   );
 
-  let color =
+  let specularIntensity =
+    0.25 + wetness * 0.45;
+
+  return vec4<f32>(
     diffuseRGB * lightMix +
     vec3<f32>(specularIntensity) *
       specular *
-      localSunIntensity;
-
-  return vec4<f32>(color, tex.a);
+      localSunIntensity,
+    tex.a
+  );
 }
 `;
 
@@ -433,12 +433,8 @@ struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
   @location(1) @interpolate(flat) vTileLayer : u32,
-  @location(2) vNormal : vec3<f32>,
-  @location(3) vTangent : vec3<f32>,
-  @location(4) vBitangent : vec3<f32>,
-  @location(5) vViewDirTS : vec3<f32>,
-  @location(6) @interpolate(flat) vLightDirTS : vec3<f32>,
-  @location(7) @interpolate(flat) vDiffuse : f32,
+  @location(2) vViewDirTS : vec3<f32>,
+  @location(3) @interpolate(flat) vLightDirTS : vec3<f32>,
 };
 
 @vertex
@@ -460,8 +456,6 @@ fn mainVertex(input : VertexInput) -> VSOut {
   let worldNormal = normalize(
     (world * vec4<f32>(input.normal, 0.0)).xyz
   );
-
-  out.vNormal = worldNormal;
 
   // Tangent frame of the world mesher: the +X faces use the Y axis, the
   // +Y faces the Z axis and the +Z faces the X axis, flipped for the
@@ -485,9 +479,6 @@ fn mainVertex(input : VertexInput) -> VSOut {
 
   let worldBitangent = cross(worldNormal, worldTangent);
 
-  out.vTangent = worldTangent;
-  out.vBitangent = worldBitangent;
-
   // The viewmodel lives in camera-relative space, so the camera sits at
   // the origin of that space.
   let viewDirection = normalize(-relativeWorldPosition.xyz);
@@ -506,8 +497,6 @@ fn mainVertex(input : VertexInput) -> VSOut {
     dot(lightDirection, worldNormal)
   ));
 
-  out.vDiffuse = max(0.0, dot(lightDirection, worldNormal));
-
   return out;
 }
 `;
@@ -517,12 +506,8 @@ struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
   @location(1) @interpolate(flat) vTileLayer : u32,
-  @location(2) vNormal : vec3<f32>,
-  @location(3) vTangent : vec3<f32>,
-  @location(4) vBitangent : vec3<f32>,
-  @location(5) vViewDirTS : vec3<f32>,
-  @location(6) @interpolate(flat) vLightDirTS : vec3<f32>,
-  @location(7) @interpolate(flat) vDiffuse : f32,
+  @location(2) vViewDirTS : vec3<f32>,
+  @location(3) @interpolate(flat) vLightDirTS : vec3<f32>,
 };
 
 @fragment
@@ -541,15 +526,16 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     dy
   );
 
-  // Cutout blocks (leaves, grass) keep their alpha cutout.
+  // Cutout blocks (leaves, grass) keep their alpha cutout. Discarding before
+  // the normal-map sample skips the second texture fetch for dropped pixels.
   if (tex.a < 0.5) {
     discard;
   }
 
-  // Same wet treatment as the opaque terrain: the surface darkens and the
-  // specular response tightens into a stronger highlight.
   let wetness = shaderUniforms.wetness;
-  let diffuseRGB = tex.rgb * (1.0 - wetness * 0.5);
+  let localSunIntensity =
+    shaderUniforms.sunLightIntensity *
+    shaderUniforms.skyLightLevel;
 
   let sampledNormal = textureSampleGrad(
     normalTexture,
@@ -566,8 +552,8 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let viewDirectionTS = normalize(in.vViewDirTS);
 
   let normalMapDiffuse = max(
-    0.0,
-    dot(normalTS, lightDirectionTS)
+    dot(normalTS, lightDirectionTS),
+    0.0
   );
 
   let halfwayDirectionTS = normalize(
@@ -579,42 +565,42 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     0.0
   );
 
+  let shininess = 32.0 + wetness * 96.0;
+
   let specularPower = exp2(
     clamp(
-      (32.0 + wetness * 96.0) * 1.4427 * (normalHalf - 1.0),
+      shininess * 1.4427 * (normalHalf - 1.0),
       -126.0,
       0.0
     )
   );
 
-  let specularIntensity = 0.25 + wetness * 0.45;
+  let diffuseRGB =
+    tex.rgb * (1.0 - wetness * 0.5);
 
-  let voxelLight = shaderUniforms.lightColor;
-
-  let localSunIntensity =
-    shaderUniforms.sunLightIntensity *
-    shaderUniforms.skyLightLevel;
-
+  // The flat-face N.L term the vertex stage used to export: after the
+  // tangent-space normalization it is exactly max(vLightDirTS.z, 0).
   let lightMix = clamp(
-    voxelLight +
-      in.vDiffuse * localSunIntensity * 0.5,
+    shaderUniforms.lightColor +
+      max(lightDirectionTS.z, 0.0) * localSunIntensity * 0.5,
     vec3<f32>(0.06),
     vec3<f32>(1.0)
   );
 
-  // The normal map adds the surface relief the flat diffuse term cannot
-  // show. The world shader uses the same 1 + N.L * sun * sky shape.
   let directLight =
     1.0 +
     normalMapDiffuse * localSunIntensity * 0.5;
 
-  let color =
+  let specularIntensity =
+    0.25 + wetness * 0.45;
+
+  return vec4<f32>(
     diffuseRGB * lightMix * directLight +
     vec3<f32>(specularIntensity) *
       specularPower *
-      localSunIntensity;
-
-  return vec4<f32>(color, tex.a);
+      localSunIntensity,
+    tex.a
+  );
 }
 `;
 
