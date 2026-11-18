@@ -304,6 +304,18 @@ function setTransparentTimeUniform(time: number): void {
 	if (transparentMaterial) {
 		setShaderUniform(transparentMaterial, "time", time);
 	}
+	if (cutoutMaterial) {
+		setShaderUniform(cutoutMaterial, "time", time);
+	}
+	if (lod2CutoutMaterial) {
+		setShaderUniform(lod2CutoutMaterial, "time", time);
+	}
+	if (lod3CutoutMaterial) {
+		setShaderUniform(lod3CutoutMaterial, "time", time);
+	}
+	if (lod4TransparentMaterial) {
+		setShaderUniform(lod4TransparentMaterial, "time", time);
+	}
 }
 
 function materialUsesFog(material: ShaderMaterial): boolean {
@@ -825,11 +837,21 @@ export function updateGlobalUniforms(frameId: number): void {
 
 		timeFrameCounter = 1;
 
-		if (transparentMaterial !== null) {
+		if (
+			transparentMaterial !== null ||
+			cutoutMaterial !== null ||
+			lod2CutoutMaterial !== null ||
+			lod3CutoutMaterial !== null ||
+			lod4TransparentMaterial !== null
+		) {
 			setTransparentTimeUniform(performance.now() * 0.001);
 		}
 	} else if (
-		transparentMaterial !== null &&
+		(transparentMaterial !== null ||
+			cutoutMaterial !== null ||
+			lod2CutoutMaterial !== null ||
+			lod3CutoutMaterial !== null ||
+			lod4TransparentMaterial !== null) &&
 		timeFrameCounter++ % TRANSPARENT_TIME_UPDATE_INTERVAL === 0
 	) {
 		setTransparentTimeUniform(performance.now() * 0.001);

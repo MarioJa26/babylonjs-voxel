@@ -64,6 +64,7 @@ export const VIRTUAL_BLOCK_ID_END =
 export const GLASS_01_BLOCK_ID = 60;
 export const GLASS_02_BLOCK_ID = 61;
 export const WATER_SOURCE_BLOCK_ID = 30;
+export const FIRE_BLOCK_ID = 165;
 
 /**
  * Returns true only for IDs that belong to the generated virtual block range.
@@ -134,6 +135,7 @@ export function isTransparentSourceId(sourceId: number): boolean {
 		case GLASS_02_BLOCK_ID:
 		case 64:
 		case 66:
+		case FIRE_BLOCK_ID:
 			return true;
 
 		default:

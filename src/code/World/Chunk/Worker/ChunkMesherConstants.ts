@@ -17,10 +17,11 @@ export const BLOCK_TYPE_TRANSPARENT = 1;
 export const WATER_BLOCK_ID = 30;
 export const LAVA_BLOCK_ID = 163;
 export const OIL_BLOCK_ID = 164;
+export const FIRE_BLOCK_ID = 165;
 /** All liquid source ids (see World/Liquid/LiquidRegistry.ts). */
 export const LIQUID_BLOCK_IDS = [WATER_BLOCK_ID, LAVA_BLOCK_ID, OIL_BLOCK_ID];
 // 0 = opaque / air
-for (const id of [...LIQUID_BLOCK_IDS, 60, 61, 64, 66]) {
+for (const id of [...LIQUID_BLOCK_IDS, FIRE_BLOCK_ID, 60, 61, 64, 66]) {
 	BLOCK_TYPE[id] = BLOCK_TYPE_TRANSPARENT;
 }
 

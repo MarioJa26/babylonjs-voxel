@@ -129,7 +129,9 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 
 				let out: QuadBuffer;
 
-				if ((flags & FLAG_WATER_GLASS) === 0) {
+				if (materialType === MaterialType.Cutout) {
+					out = cutoutOut;
+				} else if ((flags & FLAG_WATER_GLASS) === 0) {
 					out = opaqueOut;
 				} else {
 					const liquidDef = getLiquidDefinitionBySourceId(sourceBlockId);

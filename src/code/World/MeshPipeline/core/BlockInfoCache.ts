@@ -27,6 +27,7 @@ import {
 	BLOCK_TYPE,
 	LAVA_BLOCK_ID,
 	OIL_BLOCK_ID,
+	FIRE_BLOCK_ID,
 	WATER_BLOCK_ID,
 } from "../../Chunk/Worker/ChunkMesherConstants";
 import {
@@ -206,6 +207,7 @@ for (const id of [WATER_BLOCK_ID, LAVA_BLOCK_ID, OIL_BLOCK_ID, 60, 61]) {
 		}
 	}
 }
+MATERIAL_TYPE_LUT[FIRE_BLOCK_ID] = MaterialType.Cutout;
 
 /**
  * Transparent/water bucket selection.
@@ -232,6 +234,7 @@ export function getMaterialType(blockId: number): MaterialType {
 	) {
 		return MaterialType.WaterOrGlass;
 	}
+	if (source === FIRE_BLOCK_ID) return MaterialType.Cutout;
 	return MaterialType.Default;
 }
 

@@ -448,6 +448,7 @@ export abstract class AquaticMob extends BaseMob {
 			}
 		}
 
+		if (this.tickFireAndLava(dt)) return;
 		Map1.mobRegistry?.updateMobPosition(this);
 		this.#updateAnimationPhase(dt, pos);
 		this.syncToInstances();

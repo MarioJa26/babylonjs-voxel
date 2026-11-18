@@ -90,6 +90,18 @@ struct VSOut {
   @location(15) @interpolate(flat) vShade : vec3<f32>,
 };
 
+fn animatedFireLayer(baseLayer : u32) -> u32 {
+  if (baseLayer != 164u) {
+    return baseLayer;
+  }
+
+  let frame = u32(shaderUniforms.time * 8.0) % 4u;
+  if (frame == 1u) { return 246u; }
+  if (frame == 2u) { return 247u; }
+  if (frame == 3u) { return 252u; }
+  return baseLayer;
+}
+
 fn applyTintBucket(color : vec3<f32>, bucket : u32) -> vec3<f32> {
   let idx = i32(min(bucket, 5u));
   let lum = dot(color, vec3<f32>(0.299, 0.587, 0.114));
@@ -102,7 +114,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     diffuseTexture,
     diffuseTextureSampler,
     fract(in.vUV),
-    in.vTileLayer,
+    animatedFireLayer(in.vTileLayer),
     3.0
   );
 
@@ -284,6 +296,7 @@ function createLod2Material(
 	// uniforms, so the member only exists if declared here.
 	if (extra.needAlphaTesting) {
 		uniforms.push("alphaCutoff");
+		uniforms.push({ name: "time", type: "f32" });
 	}
 	const material = createShaderMaterial({
 		name,
@@ -308,6 +321,7 @@ function createLod2Material(
 	setShaderTexture(material, "diffuseTexture", texture);
 	if (extra.needAlphaTesting) {
 		setShaderUniform(material, "alphaCutoff", 0.5);
+		setShaderUniform(material, "time", 0);
 	}
 	setShaderUniform(material, "atlasTileSize", opts.atlasTileSize);
 	setShaderUniform(material, "atlasMaxTiles", opts.atlasMaxTiles);

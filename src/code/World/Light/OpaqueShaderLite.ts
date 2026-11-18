@@ -275,7 +275,8 @@ return vec4<f32>(finalColor, alpha);
  * Cheap alpha-test cutout shader for glass, grass leaves and other fully-
  * transparent-texel materials. One diffuse sample, alpha-test, simple world-
  * space lighting; wetness is cheap diffuse darkening only (no normal map, no
- * specular). Deliberately does NOT declare `time`, waves, fog or
+ * specular). The cutout `time` uniform only advances animated atlas tiles;
+ * waves and water-specific fog costs are absent here.
  * vWorldPosition — the water shader's per-fragment costs are all absent here.
  * The surface is drawn in the opaque pass (no blending, no deferred sort);
  * fragments below the alphaCutoff system uniform are discarded and survivors
@@ -291,10 +292,22 @@ struct VSOut {
   @location(15) @interpolate(flat) vDiffuse : f32,
 };
 
+fn animatedFireLayer(baseLayer : u32) -> u32 {
+  if (baseLayer != 164u) {
+    return baseLayer;
+  }
+
+  let frame = u32(shaderUniforms.time * 8.0) % 4u;
+  if (frame == 1u) { return 246u; }
+  if (frame == 2u) { return 247u; }
+  if (frame == 3u) { return 252u; }
+  return baseLayer;
+}
+
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let singleTileUV = fract(in.vUV);
-  let layer = in.vTileLayer;
+  let layer = animatedFireLayer(in.vTileLayer);
   let dx = dpdx(in.vUV);
   let dy = dpdy(in.vUV);
 
@@ -432,6 +445,10 @@ function buildMaterialUniforms(
 				name: "cutoutWetDiffuseMul",
 				type: "f32",
 			},
+			{
+				name: "time",
+				type: "f32",
+			},
 		);
 	}
 
@@ -550,6 +567,7 @@ function buildChunkMaterial(
 	if (isCutout) {
 		setShaderUniform(material, "alphaCutoff", 0.5);
 		setShaderUniform(material, "cutoutWetDiffuseMul", 1);
+		setShaderUniform(material, "time", 0);
 	}
 
 	if (useFog) {

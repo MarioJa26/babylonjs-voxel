@@ -708,6 +708,49 @@ export function playMobDamage(
 	spawnBloodBurst(x, y, z, damage, 0, 0, false);
 }
 
+const FIRE_PARTICLE_FRAMES = [164, 246, 247, 252] as const;
+
+/** Small animated flame tongues used to show that a mob is burning. */
+export function playMobFire(
+	x: number,
+	y: number,
+	z: number,
+	height: number,
+): void {
+	if (!billboard) return;
+
+	const light = computeLight(getLightByWorldCoords(x, y, z));
+	const safeHeight = Math.max(0.5, height);
+	const count = Math.max(2, Math.min(4, Math.ceil(safeHeight * 1.5)));
+
+	for (let i = 0; i < count; i++) {
+		const frame = FIRE_PARTICLE_FRAMES[
+			Math.floor(getPRNGUnit2() * FIRE_PARTICLE_FRAMES.length)
+		]!;
+		const angle = getPRNGUnit2() * Math.PI * 2;
+		const radius = 0.12 + getPRNGUnit2() * 0.18;
+
+		addParticle(
+			x + Math.cos(angle) * radius,
+			y - safeHeight * 0.45 + getPRNGUnit2() * safeHeight * 0.9,
+			z + Math.sin(angle) * radius,
+			(Math.cos(angle) * 0.25 + (getPRNGUnit2() - 0.5) * 0.2),
+			0.35 + getPRNGUnit2() * 0.55,
+			(Math.sin(angle) * 0.25 + (getPRNGUnit2() - 0.5) * 0.2),
+			0.24 + getPRNGUnit2() * 0.16,
+			0.16 + getPRNGUnit2() * 0.16,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 3,
+			frame,
+			light.r,
+			light.g,
+			light.b,
+			1,
+			0,
+		);
+	}
+}
+
 /**
  * Directional blood burst for when the PLAYER takes a melee hit: the spray
  * travels along (dirX, dirZ) with a small random spread, so the hit reads

@@ -502,6 +502,9 @@ export class Chunk {
 		lut[10] = 15;
 		lut[11] = 15;
 		lut[24] = 15;
+		lut[94] = 15;
+		lut[163] = 15;
+		lut[165] = 15;
 		return lut;
 	})();
 	public static getLightEmission(blockId: number): number {

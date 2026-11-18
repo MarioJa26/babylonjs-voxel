@@ -1101,5 +1101,12 @@
 		"name": "oil",
 		"path": "/texture/oil/oil_1k",
 		"hardness": 1
+	},
+	{
+		"id": "Fire",
+		"name": "fire",
+		"path": "/texture/fire/fire_1k",
+		"shape": "cross_diagonal",
+		"hardness": 0
 	}
 ]

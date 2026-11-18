@@ -2,6 +2,7 @@
 	filtersFullSunlight,
 	LAVA_BLOCK_ID,
 	OIL_BLOCK_ID,
+	FIRE_BLOCK_ID,
 	WATER_BLOCK_ID,
 } from "../World/Chunk/Worker/ChunkMesherConstants";
 import {
@@ -48,6 +49,7 @@ export class LightGenerator {
 		lut[WATER_BLOCK_ID] = 1;
 		lut[LAVA_BLOCK_ID] = 1;
 		lut[OIL_BLOCK_ID] = 1;
+		lut[FIRE_BLOCK_ID] = 1;
 		lut[60] = 1;
 		lut[61] = 1;
 		lut[64] = 1;
@@ -59,6 +61,7 @@ export class LightGenerator {
 			WATER_BLOCK_ID,
 			LAVA_BLOCK_ID,
 			OIL_BLOCK_ID,
+			FIRE_BLOCK_ID,
 			60,
 			61,
 			64,
@@ -91,6 +94,7 @@ export class LightGenerator {
 		lut[24] = 15;
 		lut[94] = 15;
 		lut[LAVA_BLOCK_ID] = 15;
+		lut[FIRE_BLOCK_ID] = 15;
 		return lut;
 	})();
 
@@ -775,6 +779,7 @@ export class LightGenerator {
 				source === WATER_BLOCK_ID ||
 				source === LAVA_BLOCK_ID ||
 				source === OIL_BLOCK_ID ||
+				source === FIRE_BLOCK_ID ||
 				source === 60 ||
 				source === 61 ||
 				source === 64 ||

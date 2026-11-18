@@ -38,6 +38,7 @@ import {
 	filtersFullSunlight,
 	LAVA_BLOCK_ID,
 	OIL_BLOCK_ID,
+	FIRE_BLOCK_ID,
 	WATER_BLOCK_ID,
 } from "./ChunkMesherConstants";
 
@@ -259,6 +260,7 @@ const _lightEmissionLUT = (() => {
 	lut[24] = 15;
 	lut[94] = 15;
 	lut[LAVA_BLOCK_ID] = 15;
+	lut[FIRE_BLOCK_ID] = 15;
 	return lut;
 })();
 
@@ -302,6 +304,7 @@ QUICK_CLOSED_MASK[64] = 0; // GrassCross
 QUICK_CLOSED_MASK[66] = 0; // SavannahGrassCross
 QUICK_CLOSED_MASK[91] = 0; // Grass006Cross
 QUICK_CLOSED_MASK[94] = 0; // Torch
+QUICK_CLOSED_MASK[FIRE_BLOCK_ID] = 0; // Fire
 
 /**
  * Conservative approximation of the original Chunk.getClosedFaceMaskForPacked
@@ -334,6 +337,7 @@ function getClosedFaceMaskForPacked(packed: number): number {
 			source === WATER_BLOCK_ID ||
 			source === LAVA_BLOCK_ID ||
 			source === OIL_BLOCK_ID ||
+			source === FIRE_BLOCK_ID ||
 			source === 60 ||
 			source === 61
 		) {

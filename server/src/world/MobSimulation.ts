@@ -669,6 +669,12 @@ export class ServerMobSimulation {
 	): boolean {
 		const stats = MOB_STATS[mob.typeId];
 
+		// Fire and lava are contact hazards for every mob family. Water has
+		// priority, so a mob entering water is extinguished immediately.
+		if (this.updateFireAndLavaHazard(mob, deltaMs, stats.feetHeight, stats.halfHeight)) {
+			return true;
+		}
+
 		// Aquatic mobs use water swimming AI instead of land pathfinding.
 		if (stats.aquatic) {
 			return this.updateAquaticMob(mob, deltaMs, players, events);
@@ -766,6 +772,35 @@ export class ServerMobSimulation {
 		}
 
 		return this.settleHeight(mob, stats.feetHeight, deltaMs, events);
+	}
+
+	private updateFireAndLavaHazard(
+		mob: ServerMob,
+		deltaMs: number,
+		feetHeight: number,
+		halfHeight: number,
+	): boolean {
+		const x = Math.floor(mob.x);
+		const z = Math.floor(mob.z);
+		const feetY = Math.floor(mob.y - feetHeight + 0.05);
+		const centerY = Math.floor(mob.y);
+		const headY = Math.floor(mob.y + halfHeight - 0.05);
+		const feet = this.sampler.sample(x, feetY, z);
+		const center = this.sampler.sample(x, centerY, z);
+		const head = this.sampler.sample(x, headY, z);
+
+		if (feet === null || center === null || head === null) return false;
+		if (feet === BlockType.Water || center === BlockType.Water || head === BlockType.Water) {
+			return false;
+		}
+
+		const inLava =
+			feet === BlockType.Lava || center === BlockType.Lava || head === BlockType.Lava;
+		const inFire =
+			feet === BlockType.Fire || center === BlockType.Fire || head === BlockType.Fire;
+		if (!inLava && !inFire) return false;
+
+		return this.damageMob(mob.id, (inLava ? 4 : 2) * deltaMs * MS_TO_SECONDS);
 	}
 
 	/**

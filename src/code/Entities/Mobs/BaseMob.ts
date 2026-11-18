@@ -1,6 +1,6 @@
 import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
-import { playMobDamage } from "@/code/Maps/BlockBreakParticles";
+import { playMobDamage, playMobFire } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
 import {
@@ -23,7 +23,7 @@ import {
 	getFenceDynamicShape,
 	isFenceBlockId,
 } from "@/code/World/Shape/FenceConnect";
-import { isCollidableBlock } from "@/code/World/Texture/BlockType";
+import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import type { SavedChunkEntityData } from "@/code/World/WorldStorage";
 import type { Mob } from "./Mob";
 
@@ -135,6 +135,7 @@ export abstract class BaseMob implements Mob {
 	#maxHp: number;
 	#scene: SceneContext;
 	#isDisposed = false;
+	#fireParticleTimer = 0;
 	#chunkBindingHandle?: symbol;
 
 	protected bodyPosition = vec3Zero();
@@ -350,13 +351,61 @@ export abstract class BaseMob implements Mob {
 	}
 
 	/**
-	 * End-of-tick bookkeeping shared by walkers and flyers: refresh the
-	 * registry spatial cell, then push the transform to the instance pool.
-	 * Swimmers call the same two steps around their animation update.
+	 * Apply contact damage from fire and lava. Water wins over the hazard so
+	 * entering water immediately extinguishes the mob, matching the block-side
+	 * fire extinguishing rule.
 	 */
-	protected commitTick(): void {
+	protected tickFireAndLava(dt: number): boolean {
+		if (dt <= 0 || this.#isDisposed) return this.#isDisposed;
+		this.#fireParticleTimer -= dt;
+
+		const pos = this.bodyPosition;
+		const x = Math.floor(pos.x);
+		const z = Math.floor(pos.z);
+		const feetY = Math.floor(pos.y - this.feetHeight + 0.05);
+		const centerY = Math.floor(pos.y);
+		const headY = Math.floor(pos.y + this.halfHeight - 0.05);
+
+		let inWater = false;
+		let inLava = false;
+		let inFire = false;
+
+		const feetBlock = getBlockByWorldCoords(x, feetY, z);
+		const centerBlock = getBlockByWorldCoords(x, centerY, z);
+		const headBlock = getBlockByWorldCoords(x, headY, z);
+		inWater =
+			feetBlock === BlockType.Water ||
+			centerBlock === BlockType.Water ||
+			headBlock === BlockType.Water;
+		inLava =
+			feetBlock === BlockType.Lava ||
+			centerBlock === BlockType.Lava ||
+			headBlock === BlockType.Lava;
+		inFire =
+			feetBlock === BlockType.Fire ||
+			centerBlock === BlockType.Fire ||
+			headBlock === BlockType.Fire;
+
+		if (inWater || (!inLava && !inFire)) {
+			this.#fireParticleTimer = 0;
+			return false;
+		}
+
+		if (this.#fireParticleTimer <= 0) {
+			playMobFire(pos.x, pos.y, pos.z, this.halfHeight * 2);
+			this.#fireParticleTimer = 0.12;
+		}
+
+		this.takeDamage((inLava ? 4 : 2) * dt);
+		return this.#isDisposed;
+	}
+
+	/** Finish a family tick after applying environmental contact damage. */
+	protected commitTick(dt: number): boolean {
+		if (this.tickFireAndLava(dt)) return true;
 		Map1.mobRegistry?.updateMobPosition(this);
 		this.syncToInstances();
+		return false;
 	}
 
 	protected moveAxis(

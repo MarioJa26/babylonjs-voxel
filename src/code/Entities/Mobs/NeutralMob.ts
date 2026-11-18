@@ -637,7 +637,7 @@ export abstract class NeutralMob extends BaseMob {
 			}
 		}
 
-		this.commitTick();
+		if (this.commitTick(dt)) return;
 	}
 
 	/**

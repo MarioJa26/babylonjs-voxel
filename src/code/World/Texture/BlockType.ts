@@ -150,6 +150,8 @@ export enum BlockType {
 	Lava = 163,
 	/** Dark, harmless liquid. Atlas tile = id - 1 = 163. */
 	Oil = 164,
+	/** Minecraft-style non-solid flame block. Atlas tile = id - 1 = 164. */
+	Fire = 165,
 }
 
 export const Hardness = {
@@ -172,6 +174,7 @@ export function isPassThroughBlock(blockId: number): boolean {
 		blockId === BlockType.Water ||
 		blockId === BlockType.Lava ||
 		blockId === BlockType.Oil ||
+		blockId === BlockType.Fire ||
 		blockId === BlockType.GrassCross ||
 		blockId === BlockType.SavannahGrassCross ||
 		blockId === BlockType.Grass006Cross ||

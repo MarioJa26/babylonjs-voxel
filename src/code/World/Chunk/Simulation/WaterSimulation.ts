@@ -289,7 +289,8 @@ export class WaterSimulation {
 			blockId === BlockType.Air ||
 			blockId === BlockType.GrassCross ||
 			blockId === BlockType.SavannahGrassCross ||
-			blockId === BlockType.Grass006Cross
+			blockId === BlockType.Grass006Cross ||
+			blockId === BlockType.Fire
 		);
 	}
 
@@ -300,7 +301,8 @@ export class WaterSimulation {
 			blockId !== BlockType.GrassCross &&
 			blockId !== BlockType.SavannahGrassCross &&
 			blockId !== BlockType.Grass006Cross &&
-			blockId !== BlockType.Torch
+			blockId !== BlockType.Torch &&
+			blockId !== BlockType.Fire
 		);
 	}
 

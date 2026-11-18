@@ -493,7 +493,7 @@ export abstract class HostileMob extends BaseMob {
 			}
 		}
 
-		this.commitTick();
+		if (this.commitTick(dt)) return;
 	}
 
 	/** One melee swing against the tracked player. */

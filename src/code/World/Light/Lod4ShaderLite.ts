@@ -185,18 +185,41 @@ struct VSOut {
   @location(15) @interpolate(flat) vShade : vec3<f32>,
 };
 
+fn animatedFireLayer(baseLayer : u32) -> u32 {
+  if (baseLayer != 164u) {
+    return baseLayer;
+  }
+
+  let frame = u32(shaderUniforms.time * 8.0) % 4u;
+  if (frame == 1u) { return 246u; }
+  if (frame == 2u) { return 247u; }
+  if (frame == 3u) { return 252u; }
+  return baseLayer;
+}
+
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-  let diffuseAlpha = textureSampleLevel(
+  let layer = animatedFireLayer(in.vTileLayer);
+  let diffuseColor = textureSampleLevel(
     diffuseTexture,
     diffuseTextureSampler,
     fract(in.vUV),
-    in.vTileLayer,
+    layer,
     4.0
-  ).a;
+  );
+
+  let diffuseAlpha = diffuseColor.a;
 
   if (diffuseAlpha < 0.01) {
     discard;
+  }
+
+  if (in.vTileLayer == 164u) {
+    let fireColor = diffuseColor.rgb * min(in.vShade, vec3<f32>(1.0));
+    return vec4<f32>(
+      mix(fireColor, in.vFogColor, in.vFogFactor),
+      diffuseAlpha
+    );
   }
 
   let waterColor =
@@ -293,6 +316,10 @@ function buildCommonMaterial(
 				type: "f32",
 			},
 			{
+				name: "time",
+				type: "f32",
+			},
+			{
 				name: "wetness",
 				type: "f32",
 			},
@@ -322,6 +349,7 @@ function buildCommonMaterial(
 	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles | 0);
 
 	setShaderUniform(material, "sunLightIntensity", 1);
+	setShaderUniform(material, "time", 0);
 	setShaderUniform(material, "wetness", 0);
 	setShaderUniform(material, "fogInfos", [0, 0, 1000, 0]);
 	setShaderUniform(material, "fogColor", [0.6, 0.7, 0.9]);

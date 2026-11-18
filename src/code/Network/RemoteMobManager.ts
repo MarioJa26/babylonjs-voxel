@@ -67,9 +67,12 @@ import {
 	playMobDamage,
 	playMobDamageDirected,
 	playMobDeath,
+	playMobFire,
 } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import { Gamemodes } from "@/code/Player/PlayerStats";
+import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { BlockType } from "@/code/World/Texture/BlockType";
 import { isHostileTypeId, MobTypeId } from "../Entities/MobConfig";
 import type { NetClient } from "./NetClient";
 import { ClientHandlerBinding } from "./PendingOpenBroker";
@@ -158,6 +161,9 @@ interface RemoteMobInstance {
 
 	/** True while this zombie renders through the attack-pose pool. */
 	inAttackPool: boolean;
+
+	/** Seconds until the next visible flame burst. */
+	fireParticleTimer: number;
 }
 
 export class RemoteMobManager {
@@ -623,6 +629,7 @@ export class RemoteMobManager {
 			getLightPosition: () => lightPosition,
 			strikeCooldown: 0,
 			inAttackPool: false,
+			fireParticleTimer: 0,
 		};
 
 		this.mobs.set(id, entry);
@@ -790,6 +797,45 @@ export class RemoteMobManager {
 			mob.currentY = currentY;
 			mob.currentZ = currentZ;
 			mob.currentYawRad = currentYawRad;
+
+			mob.fireParticleTimer -= dt;
+			const blockX = Math.floor(currentX);
+			const blockZ = Math.floor(currentZ);
+			const feetBlock = getBlockByWorldCoords(
+				blockX,
+				Math.floor(currentY - mob.halfY + 0.05),
+				blockZ,
+			);
+			const centerBlock = getBlockByWorldCoords(
+				blockX,
+				Math.floor(currentY),
+				blockZ,
+			);
+			const headBlock = getBlockByWorldCoords(
+				blockX,
+				Math.floor(currentY + mob.halfY - 0.05),
+				blockZ,
+			);
+			const inWater =
+				feetBlock === BlockType.Water ||
+				centerBlock === BlockType.Water ||
+				headBlock === BlockType.Water;
+			const inHazard =
+				!inWater &&
+				(feetBlock === BlockType.Fire ||
+					centerBlock === BlockType.Fire ||
+					headBlock === BlockType.Fire ||
+					feetBlock === BlockType.Lava ||
+					centerBlock === BlockType.Lava ||
+					headBlock === BlockType.Lava);
+			if (inHazard) {
+				if (mob.fireParticleTimer <= 0) {
+					playMobFire(currentX, currentY, currentZ, mob.halfY * 2);
+					mob.fireParticleTimer = 0.12;
+				}
+			} else {
+				mob.fireParticleTimer = 0;
+			}
 
 			mob.prevX = currentX;
 			mob.prevZ = currentZ;

@@ -389,6 +389,6 @@ export abstract class FlyingMob extends BaseMob {
 			this.prevZ = pos.z;
 		}
 
-		this.commitTick();
+		if (this.commitTick(dt)) return;
 	}
 }
