@@ -2431,6 +2431,19 @@ export class ServerMobSimulation {
 
 					const wy = chunkBaseY + localY;
 
+					// Surface animals must never be selected from the underground
+					// scan. Keep this guard on the candidate itself so a future
+					// change to the scan range cannot reintroduce below-zero
+					// sheep, chickens, or cows.
+					if (
+						wy < 0 &&
+						(typeId === MobTypeId.Sheep ||
+							typeId === MobTypeId.Chicken ||
+							typeId === MobTypeId.Cow)
+					) {
+						continue;
+					}
+
 					// Preserve the original air-above rule. This intentionally uses
 					// the sampler because wy + 1 may cross into the next chunk section.
 					// Air is always packed 0, so the raw comparison stays valid.

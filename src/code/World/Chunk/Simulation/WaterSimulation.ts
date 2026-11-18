@@ -1,3 +1,4 @@
+import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import {
 	getLiquidDefinitionByBlockId,
 	getLiquidLevel,
@@ -30,6 +31,15 @@ export interface WaterBlockAccess {
 export interface WaterScheduler {
 	schedule(x: number, y: number, z: number, delay: number): void;
 	processFrame(): void;
+}
+
+/** Minimal chunk view needed to seed liquid ticks after a chunk load. */
+export interface WaterChunkAccess {
+	readonly chunkX: number;
+	readonly chunkY: number;
+	readonly chunkZ: number;
+	readonly isLoaded: boolean;
+	getBlock(localX: number, localY: number, localZ: number): number;
 }
 
 export type BlockAndStateOut = {
@@ -103,6 +113,177 @@ export class WaterSimulation {
 		private readonly scheduler: WaterScheduler,
 	) {}
 
+	/**
+	 * Seed the scheduler from a newly available chunk. Generated water is
+	 * written directly into the chunk buffer, so it does not pass through the
+	 * normal block-placement hook that schedules a liquid tick.
+	 *
+	 * Only water cells that can actually flow are scheduled. In particular,
+	 * solidly surrounded ocean cells do not need a tick. Replaceable cells on a
+	 * chunk face also probe the adjacent chunk, so a neighbouring source gets a
+	 * retry when its previously-missing destination becomes available.
+	 */
+	scheduleChunkWaterUpdates(chunk: WaterChunkAccess): void {
+		if (!chunk.isLoaded) {
+			return;
+		}
+
+		const originX = chunk.chunkX * CHUNK_SIZE;
+		const originY = chunk.chunkY * CHUNK_SIZE;
+		const originZ = chunk.chunkZ * CHUNK_SIZE;
+		const last = CHUNK_SIZE - 1;
+		const delay = WATER_LIQUID.flowDelay;
+
+		const schedule = (worldX: number, worldY: number, worldZ: number): void => {
+			this.scheduler.schedule(worldX, worldY, worldZ, delay);
+		};
+
+		for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
+			const worldZ = originZ + localZ;
+			const isMinZ = localZ === 0;
+			const isMaxZ = localZ === last;
+
+			for (let localY = 0; localY < CHUNK_SIZE; localY++) {
+				const worldY = originY + localY;
+				const isMinY = localY === 0;
+				const isMaxY = localY === last;
+
+				for (let localX = 0; localX < CHUNK_SIZE; localX++) {
+					const blockId = chunk.getBlock(localX, localY, localZ);
+
+					const isWater = blockId === BlockType.Water;
+					const isReplaceable = this.isReplaceableBlock(blockId);
+
+					if (!isWater && !isReplaceable) {
+						continue;
+					}
+
+					const worldX = originX + localX;
+					const isMinX = localX === 0;
+					const isMaxX = localX === last;
+
+					if (isWater) {
+						let canFlow = false;
+
+						// Check local neighbours first. Usually this resolves the
+						// result without requiring slower cross-chunk lookups.
+						if (
+							(!isMinX &&
+								this.isReplaceableBlock(
+									chunk.getBlock(localX - 1, localY, localZ),
+								)) ||
+							(!isMaxX &&
+								this.isReplaceableBlock(
+									chunk.getBlock(localX + 1, localY, localZ),
+								)) ||
+							(!isMinY &&
+								this.isReplaceableBlock(
+									chunk.getBlock(localX, localY - 1, localZ),
+								)) ||
+							(!isMaxY &&
+								this.isReplaceableBlock(
+									chunk.getBlock(localX, localY + 1, localZ),
+								)) ||
+							(!isMinZ &&
+								this.isReplaceableBlock(
+									chunk.getBlock(localX, localY, localZ - 1),
+								)) ||
+							(!isMaxZ &&
+								this.isReplaceableBlock(
+									chunk.getBlock(localX, localY, localZ + 1),
+								))
+						) {
+							canFlow = true;
+						}
+
+						// Only query the world outside the chunk when no local
+						// replaceable destination has already been found.
+						if (
+							!canFlow &&
+							((isMinX &&
+								this.isReplaceableBlock(
+									this.blocks.getBlock(worldX - 1, worldY, worldZ),
+								)) ||
+								(isMaxX &&
+									this.isReplaceableBlock(
+										this.blocks.getBlock(worldX + 1, worldY, worldZ),
+									)) ||
+								(isMinY &&
+									this.isReplaceableBlock(
+										this.blocks.getBlock(worldX, worldY - 1, worldZ),
+									)) ||
+								(isMaxY &&
+									this.isReplaceableBlock(
+										this.blocks.getBlock(worldX, worldY + 1, worldZ),
+									)) ||
+								(isMinZ &&
+									this.isReplaceableBlock(
+										this.blocks.getBlock(worldX, worldY, worldZ - 1),
+									)) ||
+								(isMaxZ &&
+									this.isReplaceableBlock(
+										this.blocks.getBlock(worldX, worldY, worldZ + 1),
+									)))
+						) {
+							canFlow = true;
+						}
+
+						if (canFlow) {
+							schedule(worldX, worldY, worldZ);
+						}
+
+						continue;
+					}
+
+					// At this point the cell is replaceable. Retry water in an
+					// already-loaded neighbouring chunk when this boundary cell
+					// becomes available.
+					if (
+						isMinX &&
+						this.blocks.getBlock(worldX - 1, worldY, worldZ) === BlockType.Water
+					) {
+						schedule(worldX - 1, worldY, worldZ);
+					}
+
+					if (
+						isMaxX &&
+						this.blocks.getBlock(worldX + 1, worldY, worldZ) === BlockType.Water
+					) {
+						schedule(worldX + 1, worldY, worldZ);
+					}
+
+					if (
+						isMinY &&
+						this.blocks.getBlock(worldX, worldY - 1, worldZ) === BlockType.Water
+					) {
+						schedule(worldX, worldY - 1, worldZ);
+					}
+
+					if (
+						isMaxY &&
+						this.blocks.getBlock(worldX, worldY + 1, worldZ) === BlockType.Water
+					) {
+						schedule(worldX, worldY + 1, worldZ);
+					}
+
+					if (
+						isMinZ &&
+						this.blocks.getBlock(worldX, worldY, worldZ - 1) === BlockType.Water
+					) {
+						schedule(worldX, worldY, worldZ - 1);
+					}
+
+					if (
+						isMaxZ &&
+						this.blocks.getBlock(worldX, worldY, worldZ + 1) === BlockType.Water
+					) {
+						schedule(worldX, worldY, worldZ + 1);
+					}
+				}
+			}
+		}
+	}
+
 	private isReplaceableBlock(blockId: number): boolean {
 		return (
 			blockId === BlockType.Air ||
@@ -141,7 +322,20 @@ export class WaterSimulation {
 				continue;
 			}
 
-			this.scheduler.schedule(worldX + dx, worldY + dy, worldZ + dz, delay);
+			const neighborX = worldX + dx;
+			const neighborY = worldY + dy;
+			const neighborZ = worldZ + dz;
+
+			// Empty cells do nothing in processWaterUpdate. Queueing them here
+			// lets a newly placed flow cell inherit an already-due neighbor tick,
+			// so it can flow again immediately in the same scheduler pass.
+			if (
+				!isLiquidBlockId(this.blocks.getBlock(neighborX, neighborY, neighborZ))
+			) {
+				continue;
+			}
+
+			this.scheduler.schedule(neighborX, neighborY, neighborZ, delay);
 		}
 	}
 
@@ -957,7 +1151,11 @@ export function ensureDefaultInstance(): Promise<WaterSimulation> {
 		return Promise.resolve(defaultInstance);
 	}
 
-	return (initPromise ??= createDefaultInstance());
+	if (initPromise === null) {
+		initPromise = createDefaultInstance();
+	}
+
+	return initPromise;
 }
 
 function getDefaultInstance(): WaterSimulation {
@@ -988,6 +1186,31 @@ export function scheduleWaterNeighborUpdate(
 	worldZ: number,
 ): void {
 	getDefaultInstance().scheduleWaterNeighborUpdate(worldX, worldY, worldZ);
+}
+
+export function scheduleChunkWaterUpdates(chunk: WaterChunkAccess): void {
+	const instance = defaultInstance;
+
+	if (instance) {
+		instance.scheduleChunkWaterUpdates(chunk);
+		return;
+	}
+
+	// Player startup initializes the default instance before streaming starts,
+	// but keep the load hook safe if a chunk arrives during that async import.
+	const chunkX = chunk.chunkX;
+	const chunkY = chunk.chunkY;
+	const chunkZ = chunk.chunkZ;
+	void ensureDefaultInstance().then((simulation) => {
+		if (
+			chunk.isLoaded &&
+			chunk.chunkX === chunkX &&
+			chunk.chunkY === chunkY &&
+			chunk.chunkZ === chunkZ
+		) {
+			simulation.scheduleChunkWaterUpdates(chunk);
+		}
+	});
 }
 
 export function scheduleBlockBreakWaterUpdates(

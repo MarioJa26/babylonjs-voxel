@@ -52,6 +52,7 @@ import { BlockTickScheduler } from "../World/Chunk/Simulation/BlockTickScheduler
 import {
 	ensureDefaultInstance,
 	processWaterUpdate,
+	scheduleChunkWaterUpdates,
 } from "../World/Chunk/Simulation/WaterSimulation";
 import { FarTileManager } from "../World/FarTiles/FarTileManager";
 import {
@@ -347,6 +348,11 @@ export class PlayerLoopController {
 		Chunk.onChunkLoaded = (chunk: Chunk) => {
 			this.#previousOnChunkLoaded?.(chunk);
 			this.#occlusionCuller.incrementalAdd(chunk);
+			// In multiplayer the server owns liquid ticks and broadcasts the
+			// resulting edits. Do not seed a second client-side simulation.
+			if (!ChunkWorkerPool.getInstance().isRemoteGenerationEnabled()) {
+				scheduleChunkWaterUpdates(chunk);
+			}
 		};
 
 		// Step-up sounds share the stride cooldown: any audible step-up
@@ -496,8 +502,10 @@ export class PlayerLoopController {
 		frameProfiler.begin("blockTicks");
 		Chunk.beginBlockEditBatch();
 		try {
-			for (let i = 0; i < blockTicks; i++) {
-				this.#blockTickScheduler.processFrame();
+			if (!ChunkWorkerPool.getInstance().isRemoteGenerationEnabled()) {
+				for (let i = 0; i < blockTicks; i++) {
+					this.#blockTickScheduler.processFrame();
+				}
 			}
 			// Stations tick here rather than on BlockTickScheduler: that ring is
 			// built for sparse one-shots (max 63 ticks of delay, a 4096-entry

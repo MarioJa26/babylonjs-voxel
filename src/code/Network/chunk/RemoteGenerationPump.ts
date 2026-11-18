@@ -325,33 +325,146 @@ export class RemoteGenerationPump {
 		}
 
 		this.cancelBackpressureRetry();
-		this.remotePumpScheduled = true;
 
 		const toCheck = this.selectColumnBatch(
 			Math.min(REMOTE_BATCH_SIZE, available),
 		);
 
-		if (toCheck.length === 0) {
-			this.remotePumpScheduled = false;
-			return;
-		}
+		if (toCheck.length === 0) return;
+
+		this.remotePumpScheduled = true;
+		const generation = this.providerGeneration;
+
+		const finish = (): void => {
+			/*
+			 * Never allow work selected for an earlier provider/session to be
+			 * dispatched through the current provider.
+			 */
+			if (
+				generation !== this.providerGeneration ||
+				provider !== this.remoteChunkProvider
+			) {
+				this.remotePumpScheduled = false;
+
+				for (let i = 0; i < toCheck.length; i++) {
+					this.requeueRemoteChunk(toCheck[i], false);
+				}
+
+				if (this.remoteChunkProvider !== null) {
+					this.pumpRemoteGeneration();
+				}
+
+				return;
+			}
+
+			this.finishRemotePumpCycle(toCheck);
+		};
 
 		let cacheRequest: unknown;
 
 		try {
 			cacheRequest = provider.getCachedChunks(toCheck);
 		} catch {
-			this.finishRemotePumpCycle(toCheck);
+			finish();
 			return;
 		}
 
 		/*
-		 * Cache warming is advisory. Both success and failure continue into the
-		 * actual remote request cycle.
+		 * Avoid Promise.resolve(): PromiseLike assimilation already happens
+		 * through then(), and cache warming remains advisory.
 		 */
-		void Promise.resolve(cacheRequest).then(
-			() => this.finishRemotePumpCycle(toCheck),
-			() => this.finishRemotePumpCycle(toCheck),
+		if (this.isPromiseLike<unknown>(cacheRequest)) {
+			void cacheRequest.then(finish, finish);
+		} else {
+			/*
+			 * Preserve the existing behavior for synchronous or invalid cache
+			 * warmers: continue with the actual remote requests.
+			 */
+			finish();
+		}
+	}
+
+	setRemoteChunkProvider(provider: RemoteChunkProvider | null): void {
+		const previousProvider = this.remoteChunkProvider;
+
+		if (provider === previousProvider) {
+			return;
+		}
+
+		/*
+		 * Invalidate all callbacks belonging to the previous provider.
+		 */
+		this.providerGeneration++;
+
+		this.cancelRemotePendingReap();
+		this.cancelBackpressureRetry();
+
+		/*
+		 * Clear flags before rebuilding the queue. Keeping the old queue/set here
+		 * can prevent chunks from being enqueued for the replacement provider.
+		 */
+		this.releaseRemoteScheduledFlags();
+
+		this.remotePendingChunks.clear();
+		this.remoteRetryCount.clear();
+		this.remoteNoBlobRetries.clear();
+
+		this.remoteTaskQueue.length = 0;
+		this.remoteTaskQueueSet.clear();
+
+		this.remotePumpScheduled = false;
+		this.remoteChunkProvider = provider;
+		this.remoteGenerationEnabled = provider !== null;
+		this.expectingRemoteProvider = provider !== null;
+
+		if (provider === null) {
+			this.remoteDeferredChunks.clear();
+			this.clearDeferredRemoteChunkRetries();
+
+			this.pendingRemoteChunks.clear();
+			this.pendingRemeshScheduled = false;
+
+			console.log("[RemoteGen] setRemoteChunkProvider enabled=false");
+			return;
+		}
+
+		let flushed = 0;
+
+		for (const chunk of this.remoteDeferredChunks) {
+			this.remoteRetryParked.delete(chunk);
+
+			if (this.requeueRemoteChunk(chunk, false)) {
+				flushed++;
+			}
+		}
+
+		this.remoteDeferredChunks.clear();
+		this.clearDeferredRemoteChunkRetries();
+
+		let requeued = 0;
+
+		for (const chunk of Chunk.chunkInstances.values()) {
+			if (chunk.isBoatChunk) continue;
+
+			/*
+			 * Preserve the existing authoritative replacement behavior:
+			 * loaded chunks and chunks with voxel data may be refreshed remotely.
+			 */
+			if (!chunk.isLoaded && !chunk.hasVoxelData) continue;
+
+			if (this.requeueRemoteChunk(chunk, false)) {
+				requeued++;
+			}
+		}
+
+		if (this.remoteTaskQueueSet.size > 0) {
+			this.pumpRemoteGeneration();
+		}
+
+		console.log(
+			"[RemoteGen] setRemoteChunkProvider enabled=true " +
+				`(requeued ${requeued} loaded chunks, ` +
+				`flushed ${flushed} deferred)`,
 		);
 	}
 
@@ -868,97 +981,6 @@ export class RemoteGenerationPump {
 
 		if (pumpAfter) this.pumpRemoteGeneration();
 		return true;
-	}
-
-	setRemoteChunkProvider(provider: RemoteChunkProvider | null): void {
-		const previousProvider = this.remoteChunkProvider;
-
-		/*
-		 * Invalidate every asynchronous operation created by the preceding
-		 * provider, including direct non-null to non-null switches.
-		 */
-		if (provider !== previousProvider) {
-			this.providerGeneration++;
-			this.cancelRemotePendingReap();
-		}
-
-		if (previousProvider !== null) {
-			this.releaseRemoteScheduledFlags();
-			this.remotePendingChunks.clear();
-			this.remoteRetryCount.clear();
-			this.remoteNoBlobRetries.clear();
-		}
-
-		this.remoteChunkProvider = provider;
-		this.remoteGenerationEnabled = provider !== null;
-		this.expectingRemoteProvider = provider !== null;
-		this.remotePumpScheduled = false;
-
-		this.cancelBackpressureRetry();
-
-		if (provider !== null) {
-			let flushed = 0;
-
-			for (const chunk of this.remoteDeferredChunks) {
-				this.remoteRetryParked.delete(chunk);
-				this.enqueueRemoteGeneration(chunk);
-				flushed++;
-			}
-
-			this.remoteDeferredChunks.clear();
-			this.clearDeferredRemoteChunkRetries();
-
-			let requeued = 0;
-
-			for (const chunk of Chunk.chunkInstances.values()) {
-				if (chunk.isBoatChunk) continue;
-
-				if (!chunk.isLoaded && !chunk.hasVoxelData) {
-					continue;
-				}
-
-				/*
-				 * Loaded authoritative replacement requests are valid here, so
-				 * enqueue directly instead of using enqueueRemoteGeneration().
-				 */
-				const key = chunk.id;
-
-				if (
-					!this.remotePendingChunks.has(key) &&
-					!this.remoteTaskQueueSet.has(chunk)
-				) {
-					this.remoteTaskQueue.push(chunk);
-					this.remoteTaskQueueSet.add(chunk);
-					chunk.isTerrainScheduled = true;
-					requeued++;
-				}
-			}
-
-			if (flushed > 0 || requeued > 0) {
-				this.pumpRemoteGeneration();
-			}
-
-			console.log(
-				"[RemoteGen] setRemoteChunkProvider enabled=true " +
-					`(requeued ${requeued} loaded chunks, ` +
-					`flushed ${flushed} deferred)`,
-			);
-
-			return;
-		}
-
-		this.remoteDeferredChunks.clear();
-		this.remoteTaskQueue.length = 0;
-		this.remoteTaskQueueSet.clear();
-
-		this.clearDeferredRemoteChunkRetries();
-
-		this.pendingRemoteChunks.clear();
-		this.pendingRemeshScheduled = false;
-
-		this.cancelRemotePendingReap();
-
-		console.log("[RemoteGen] setRemoteChunkProvider enabled=false");
 	}
 
 	private releaseRemoteScheduledFlags(): void {

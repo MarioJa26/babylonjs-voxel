@@ -889,14 +889,24 @@ function applyLoadedChunkFromSavedData(
 	loadNearLodChunk(chunk, savedData);
 }
 
-export function deleteBlock(worldX: number, worldY: number, worldZ: number) {
+export function deleteBlock(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+	scheduleLiquidUpdates = true,
+) {
 	if (tryMutateDynamicBlock(worldX, worldY, worldZ, 0, 0)) {
 		return;
 	}
 
 	worldMutations.deleteBlock(worldX, worldY, worldZ);
-	scheduleBlockBreakWaterUpdates(worldX, worldY, worldZ);
-	checkNewInfiniteSource(worldX, worldY, worldZ);
+	if (
+		scheduleLiquidUpdates &&
+		!ChunkWorkerPool.getInstance().isRemoteGenerationEnabled()
+	) {
+		scheduleBlockBreakWaterUpdates(worldX, worldY, worldZ);
+		checkNewInfiniteSource(worldX, worldY, worldZ);
+	}
 }
 
 export function setBlock(
@@ -905,13 +915,19 @@ export function setBlock(
 	worldZ: number,
 	blockId: number,
 	state = 0,
+	scheduleLiquidUpdates = true,
 ) {
 	if (tryMutateDynamicBlock(worldX, worldY, worldZ, blockId, state)) {
 		return;
 	}
 
 	worldMutations.setBlock(worldX, worldY, worldZ, blockId, state);
-	scheduleBlockPlaceWaterUpdates(worldX, worldY, worldZ, blockId);
+	if (
+		scheduleLiquidUpdates &&
+		!ChunkWorkerPool.getInstance().isRemoteGenerationEnabled()
+	) {
+		scheduleBlockPlaceWaterUpdates(worldX, worldY, worldZ, blockId);
+	}
 }
 
 export function getBlockByWorldCoords(

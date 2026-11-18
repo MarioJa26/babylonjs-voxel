@@ -58,6 +58,7 @@ import {
 	resetExplosionDedup,
 } from "@/code/World/ExplosionEvents";
 import { FarTileManager } from "@/code/World/FarTiles/FarTileManager";
+import { isLiquidBlockId } from "@/code/World/Liquid/LiquidRegistry";
 import { setSpawnPosition } from "@/code/World/SpawnPoint";
 import { getWorldNameFromUrl, worldSeedFor } from "@/code/World/WorldContext";
 import { WorldStorage } from "@/code/World/WorldStorage";
@@ -79,6 +80,10 @@ const SEND_RATE = 20;
 const SEND_INTERVAL_MS = 1000 / SEND_RATE;
 
 const NET_DEBUG = false;
+
+// Server-generated liquid changes use this reserved edit origin so clients do
+// not enqueue a second, non-authoritative liquid simulation.
+const WATER_EDIT_SESSION_ID = "water";
 
 /**
  * Loudness for a remote explosion, from distance.
@@ -338,6 +343,7 @@ export class NetworkManager {
 					edit.blockId,
 					edit.action,
 					edit.blockState,
+					edit.sessionId,
 				);
 			},
 			onBlockEditBatch: (view) => {
@@ -712,9 +718,16 @@ export class NetworkManager {
 				const action = actions[i];
 
 				if (action === BlockActionType.Place) {
-					setBlock(xs[i], ys[i], zs[i], blockIds[i], blockStates[i]);
+					setBlock(
+						xs[i],
+						ys[i],
+						zs[i],
+						blockIds[i],
+						blockStates[i],
+						!isLiquidBlockId(blockIds[i]),
+					);
 				} else if (action === BlockActionType.Break) {
-					deleteBlock(xs[i], ys[i], zs[i]);
+					deleteBlock(xs[i], ys[i], zs[i], !isLiquidBlockId(visualBlockIds[i]));
 				}
 			}
 		} finally {
@@ -902,7 +915,11 @@ export class NetworkManager {
 		blockId: number,
 		action: number,
 		blockState = 0,
+		sessionId = "",
 	): void {
+		const isLiquidEdit =
+			sessionId === WATER_EDIT_SESSION_ID || isLiquidBlockId(blockId);
+
 		if (NET_DEBUG) {
 			debugLog(
 				`[NetworkManager] applyRemoteBlockEdit: ${
@@ -920,7 +937,7 @@ export class NetworkManager {
 			const py = y + 0.5;
 			const pz = z + 0.5;
 			const packedLight = this.sampleBreakLight(px, py, pz);
-			setBlock(x, y, z, blockId, blockState);
+			setBlock(x, y, z, blockId, blockState, !isLiquidEdit);
 			playPlace(px, py, pz, blockId, packedLight);
 			return;
 		}
@@ -940,7 +957,7 @@ export class NetworkManager {
 		const pz = z + 0.5;
 		const packedLight = this.sampleBreakLight(px, py, pz);
 
-		deleteBlock(x, y, z);
+		deleteBlock(x, y, z, !isLiquidEdit && !isLiquidBlockId(visualBlockId));
 
 		play(setVec3(this._scratchVec, px, py, pz), visualBlockId, packedLight);
 		playDebris(px, py, pz, visualBlockId, packedLight);
@@ -1189,7 +1206,9 @@ export class NetworkManager {
 		this._canvasWidth = 0;
 		this._canvasHeight = 0;
 
-		ChunkWorkerPool.getInstance()?.setRemoteChunkProvider(null);
+		const workerPool = ChunkWorkerPool.getInstance();
+		workerPool.setRemoteChunkProvider(null);
+		workerPool.disableRemoteMode();
 
 		this.client.disconnect();
 		this.containers.dispose();
