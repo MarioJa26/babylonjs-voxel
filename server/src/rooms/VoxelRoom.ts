@@ -123,6 +123,11 @@ import { stationKindForBlock } from "@/code/World/BlockInventory/StationManager.
 import type { StationKind } from "@/code/World/BlockInventory/StationTypes.ts";
 import { unpackBlockId } from "@/code/World/Chunk/DataStructures/BlockEncoding.ts";
 import { BlockTickScheduler } from "@/code/World/Chunk/Simulation/BlockTickScheduler.ts";
+import { shouldExtinguishFireOnRandomTick } from "@/code/World/Chunk/Simulation/FireRandomTick.ts";
+import {
+	type RandomTickChunkAccess,
+	RandomTickEngine,
+} from "@/code/World/Chunk/Simulation/RandomTickEngine.ts";
 import { WaterSimulation } from "@/code/World/Chunk/Simulation/WaterSimulation.ts";
 import {
 	blastMobDamages,
@@ -245,6 +250,29 @@ interface ServerPlayerState {
 	dirty: boolean;
 	saveDirty: boolean;
 	lastSaveTime: number;
+}
+
+type DenseRandomTickChunk = Omit<
+	RandomTickChunkAccess,
+	"chunkX" | "chunkY" | "chunkZ"
+> & {
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	blocks: Uint8Array | Uint16Array;
+};
+
+function getDenseRandomTickBlock(
+	this: DenseRandomTickChunk,
+	localX: number,
+	localY: number,
+	localZ: number,
+): number {
+	return unpackBlockId(
+		this.blocks[
+			localX + (localY << CHUNK_SHIFT) + (localZ << (CHUNK_SHIFT * 2))
+		]!,
+	);
 }
 
 const MAX_STORED_EDITS = 2048;
@@ -489,6 +517,10 @@ export class VoxelRoom extends Room {
 	private waterSim!: WaterSimulation;
 	private waterScheduler!: BlockTickScheduler;
 	private waterBlockAccess!: ServerWaterBlockAccess;
+	private randomTickEngine!: RandomTickEngine;
+	private readonly randomTickChunkPool: DenseRandomTickChunk[] = [];
+	private readonly randomTickChunkScratch: DenseRandomTickChunk[] = [];
+	private readonly randomTickChunkKeys = new Set<number>();
 	private playerPosPool: Array<{ x: number; y: number; z: number }> = [];
 	private playerPosScratch: Array<{ x: number; y: number; z: number }> = [];
 	private readonly blockEdits: Array<BlockEditData | undefined> = new Array(
@@ -809,6 +841,11 @@ export class VoxelRoom extends Room {
 		this.waterScheduler.setProcessCallback((x, y, z) =>
 			this.waterSim.processWaterUpdate(x, y, z),
 		);
+		this.randomTickEngine = new RandomTickEngine((x, y, z, blockId) => {
+			if (shouldExtinguishFireOnRandomTick(blockId)) {
+				this.waterBlockAccess.setBlock(x, y, z, BlockType.Air, 0);
+			}
+		});
 
 		void this.ensureWorldSpawn();
 		this.startTickLoop();
@@ -1615,6 +1652,7 @@ export class VoxelRoom extends Room {
 		// water and reschedules neighbors. Block changes are written to the world
 		// cache synchronously and broadcast to clients so their meshes update.
 		this.waterScheduler.processFrame();
+		this.randomTickEngine.tick(this.collectRandomTickChunks());
 		this.broadcastWaterEdits();
 
 		// Authoritative smelting. Runs on a fixed 20 Hz step rather than the frame
@@ -2116,6 +2154,58 @@ export class VoxelRoom extends Room {
 		}
 
 		return storedEdit;
+	}
+
+	/** Build the server's simulation-distance chunk view for random ticks. */
+	private collectRandomTickChunks(): DenseRandomTickChunk[] {
+		const chunks = this.randomTickChunkScratch;
+		const pool = this.randomTickChunkPool;
+		const seen = this.randomTickChunkKeys;
+		chunks.length = 0;
+		seen.clear();
+
+		for (const player of this.players.values()) {
+			const centerX = Math.floor(player.x / CHUNK_SIZE);
+			const centerY = Math.floor(player.y / CHUNK_SIZE);
+			const centerZ = Math.floor(player.z / CHUNK_SIZE);
+
+			for (let cy = centerY - 2; cy <= centerY + 2; cy++) {
+				for (let cz = centerZ - 2; cz <= centerZ + 2; cz++) {
+					for (let cx = centerX - 2; cx <= centerX + 2; cx++) {
+						const key = packChunkKeyFast(cx, cy, cz);
+						if (seen.has(key)) continue;
+
+						const blocks = this.worldStorage.getCachedChunkBlocks(cx, cy, cz);
+						if (!blocks) continue;
+
+						seen.add(key);
+						const index = chunks.length;
+						let chunk = pool[index];
+						if (!chunk) {
+							chunk = {
+								chunkX: cx,
+								chunkY: cy,
+								chunkZ: cz,
+								isLoaded: true,
+								hasVoxelData: true,
+								blocks,
+								getBlock: getDenseRandomTickBlock,
+							};
+							pool[index] = chunk;
+						} else {
+							chunk.chunkX = cx;
+							chunk.chunkY = cy;
+							chunk.chunkZ = cz;
+							chunk.blocks = blocks;
+						}
+
+						chunks[index] = chunk;
+					}
+				}
+			}
+		}
+
+		return chunks;
 	}
 
 	/**

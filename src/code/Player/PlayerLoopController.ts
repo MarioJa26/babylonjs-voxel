@@ -27,6 +27,7 @@ import {
 	getChunkIoTimeoutCount,
 	getDebugStats,
 	processFrameBudgetedStreamingWork,
+	setBlock,
 	updateChunksAround,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
@@ -49,6 +50,8 @@ import {
 	setChunkMeshesVisible,
 } from "../World/Chunk/Meshing/PackedChunkMesh";
 import { BlockTickScheduler } from "../World/Chunk/Simulation/BlockTickScheduler";
+import { shouldExtinguishFireOnRandomTick } from "../World/Chunk/Simulation/FireRandomTick";
+import { RandomTickEngine } from "../World/Chunk/Simulation/RandomTickEngine";
 import {
 	ensureDefaultInstance,
 	processWaterUpdate,
@@ -77,7 +80,7 @@ import {
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import { onSpawnPrepared } from "../World/SpawnPoint";
-import { isCollidableBlock } from "../World/Texture/BlockType";
+import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import {
 	type BlockRaycastHit,
 	pickTarget,
@@ -277,6 +280,11 @@ export class PlayerLoopController {
 
 	// Cache singleton instead of resolving it multiple times in hot paths.
 	#blockTickScheduler = BlockTickScheduler.getInstance();
+	#randomTickEngine = new RandomTickEngine((x, y, z, blockId) => {
+		if (shouldExtinguishFireOnRandomTick(blockId)) {
+			setBlock(x, y, z, BlockType.Air, 0);
+		}
+	});
 
 	/*
 	 * The water scheduler is tick-based, and a tick is 50 ms — the same
@@ -503,8 +511,19 @@ export class PlayerLoopController {
 		Chunk.beginBlockEditBatch();
 		try {
 			if (!ChunkWorkerPool.getInstance().isRemoteGenerationEnabled()) {
+				const randomTickPosition = this.getPlayerPosition();
+				const randomTickChunkX = Math.floor(randomTickPosition.x / Chunk.SIZE);
+				const randomTickChunkY = Math.floor(randomTickPosition.y / Chunk.SIZE);
+				const randomTickChunkZ = Math.floor(randomTickPosition.z / Chunk.SIZE);
 				for (let i = 0; i < blockTicks; i++) {
 					this.#blockTickScheduler.processFrame();
+					this.#randomTickEngine.tick(
+						Chunk.loadedChunks,
+						randomTickChunkX,
+						randomTickChunkY,
+						randomTickChunkZ,
+						2,
+					);
 				}
 			}
 			// Stations tick here rather than on BlockTickScheduler: that ring is

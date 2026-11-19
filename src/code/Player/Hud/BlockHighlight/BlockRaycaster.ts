@@ -232,6 +232,7 @@ function isTargetableBlock(blockId: number): boolean {
 		case BlockType.SavannahGrassCross:
 		case BlockType.Grass006Cross:
 		case BlockType.Torch:
+		case BlockType.Fire:
 			return true;
 		default:
 			return false;

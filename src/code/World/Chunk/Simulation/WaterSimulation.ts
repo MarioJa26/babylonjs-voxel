@@ -107,7 +107,6 @@ export class WaterSimulation {
 
 	private readonly flowGridPacked = new Int32Array(FLOW_GRID_CELLS);
 	private readonly flowHoleGridPacked = new Int32Array(FLOW_GRID_CELLS);
-
 	constructor(
 		private readonly blocks: WaterBlockAccess,
 		private readonly scheduler: WaterScheduler,
