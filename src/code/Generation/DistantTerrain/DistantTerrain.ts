@@ -19,6 +19,7 @@ import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
 import MapFog from "@/code/Maps/MapFog";
 import { getEyeLiquid } from "@/code/Maps/UnderWaterEffect";
+import { WorldEnvironment } from "@/code/Maps/WorldEnvironment";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
@@ -363,6 +364,7 @@ let lastFogColorR = Number.NaN;
 let lastFogColorG = Number.NaN;
 let lastFogColorB = Number.NaN;
 let lastFogInvRange = Number.NaN;
+let lastFogRainAmount = Number.NaN;
 
 function updateUniforms() {
 	if (!material || !waterMaterial) return;
@@ -415,6 +417,7 @@ function updateUniforms() {
 		? liquidFog.fogColor
 		: MapFog.getFogColor(isUnderWater);
 	const fogInvRange = 1.0 / Math.max(end - start, 1e-4);
+	const rainAmount = q(WorldEnvironment.instance?.rainIntensity ?? 0);
 
 	const staticChanged =
 		lxQ !== lastLx ||
@@ -429,7 +432,8 @@ function updateUniforms() {
 		fogColor[0] !== lastFogColorR ||
 		fogColor[1] !== lastFogColorG ||
 		fogColor[2] !== lastFogColorB ||
-		fogInvRange !== lastFogInvRange;
+		fogInvRange !== lastFogInvRange ||
+		rainAmount !== lastFogRainAmount;
 
 	if (!staticChanged && !fogChanged) return;
 
@@ -463,10 +467,12 @@ function updateUniforms() {
 		lastFogColorG = fogColor[1];
 		lastFogColorB = fogColor[2];
 		lastFogInvRange = fogInvRange;
+		lastFogRainAmount = rainAmount;
 
 		setUniformBoth("fogInfos", fogInfosScratch);
 		setUniformBoth("fogColor", fogColorScratch);
 		setUniformBoth("fogInvRange", fogInvRange);
+		setUniformBoth("rainAmount", rainAmount);
 	}
 }
 

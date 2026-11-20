@@ -124,9 +124,6 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let sunGlow = smoothstep(0.995, 1.0, sunDot);
   let sunDisc = smoothstep(0.9998875, 0.99995, sunDot);
 
-  finalColor += sunGlow * SUN_GLOW_COLOR * 0.3 * clearSky;
-  finalColor += sunDisc * SUN_DISC_COLOR * clearSky;
-
   if (sunHeight < 0.0) {
     finalColor = mix(
       finalColor,
@@ -244,7 +241,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   }
 
   // Overcast: the gradient collapses into flat grey. The mix is applied
-  // last so it also washes out whatever the sun/moon/stars contributed.
+  // last so it also washes out whatever the moon and stars contributed.
   let overcastColor = mix(
     OVERCAST_NIGHT_COLOR,
     OVERCAST_DAY_COLOR,
@@ -256,6 +253,13 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     overcastColor,
     rainAmount * 0.85
   );
+
+  // The sun shines through the overcast: fully visible when the sky is
+  // clear, faintly visible through the grey sky while it rains.
+  let sunVis = mix(1.0, 0.2, rainAmount);
+
+  finalColor += sunGlow * SUN_GLOW_COLOR * 0.3 * sunVis;
+  finalColor += sunDisc * SUN_DISC_COLOR * sunVis;
 
   return vec4<f32>(
     clamp(

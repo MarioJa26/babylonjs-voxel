@@ -40,7 +40,7 @@ const BOX_TOP = 8;
 const BOX_BOTTOM = -6;
 
 const EDGE_FADE = 0.12;
-const FADE_DISTANCE = 14;
+const FADE_DISTANCE = 15;
 
 const MAX_DT = 0.1;
 
@@ -362,11 +362,23 @@ export function updateRain(deltaMs: number): void {
 	}
 
 	const intensity = WorldEnvironment.instance?.rainIntensity ?? 0;
-	const visibleBudget = Math.round(MAX_DROPS * intensity);
+	const visibleBudget = Math.min(
+		MAX_DROPS,
+		Math.max(0, Math.round(MAX_DROPS * intensity)),
+	);
 
 	const dt = Math.min(MAX_DT, deltaMs * MS_TO_SECONDS);
+	const pauseMenuOpen = isUiOpen(UiFocus.pauseMenu);
 
-	if (dt <= 0 || visibleBudget <= 0 || isUiOpen(UiFocus.pauseMenu)) {
+	/*
+	 * Inventory is a non-blocking overlay. Only query its state when the
+	 * pause menu is actually open, avoiding a second UI lookup normally.
+	 */
+	if (
+		dt <= 0 ||
+		visibleBudget === 0 ||
+		(pauseMenuOpen && !isUiOpen(UiFocus.inventory))
+	) {
 		stopVisibleRain(system, true);
 		updateRainAudio(0, 0);
 		return;
@@ -374,21 +386,20 @@ export function updateRain(deltaMs: number): void {
 
 	const camera = sceneRef?.camera;
 
-	if (!camera) {
+	if (camera === undefined || camera === null) {
 		stopVisibleRain(system, false);
 		updateRainAudio(0, 0);
 		return;
 	}
 
 	const cameraPosition = getCameraPosition(camera);
+	const cameraX = cameraPosition.x;
+	const cameraY = cameraPosition.y;
+	const cameraZ = cameraPosition.z;
 
-	camX = cameraPosition.x;
-	camY = cameraPosition.y;
-	camZ = cameraPosition.z;
-
-	const cameraX = camX;
-	const cameraY = camY;
-	const cameraZ = camZ;
+	camX = cameraX;
+	camY = cameraY;
+	camZ = cameraZ;
 
 	const skyLight = getSkyLight(cameraX, cameraY, cameraZ);
 	const underwater = getEyeLiquid(cameraX, cameraY, cameraZ) !== null;
@@ -406,16 +417,13 @@ export function updateRain(deltaMs: number): void {
 	}
 
 	const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
-
 	const sunIntensity =
 		sunElevation <= 0 ? 0 : sunElevation >= 0.25 ? 1 : sunElevation * 4;
 
 	const brightness = 0.8 * (sunIntensity + 0.2);
-
 	const baseAlpha = Math.min(0.62, 0.18 + intensity * 0.44);
 
 	const color = scratchColor;
-
 	color[0] = DROP_RGB_R * brightness;
 	color[1] = DROP_RGB_G * brightness;
 	color[2] = DROP_RGB_B * brightness;
@@ -423,8 +431,7 @@ export function updateRain(deltaMs: number): void {
 	clearBillboardSprites(system);
 	system.visible = true;
 
-	// Stable local references reduce repeated module/property resolution in
-	// the hot loop and make the data-oriented layout explicit.
+	// Cache typed arrays and reusable billboard structures for the hot loop.
 	const positionsX = px;
 	const positionsY = py;
 	const positionsZ = pz;
@@ -447,6 +454,7 @@ export function updateRain(deltaMs: number): void {
 	let drawn = 0;
 
 	for (let index = 0; index < count; index++) {
+		const velocityY = velocitiesY[index];
 		const age = ages[index] + dt;
 		const life = lifetimes[index];
 
@@ -455,7 +463,7 @@ export function updateRain(deltaMs: number): void {
 			continue;
 		}
 
-		const y = positionsY[index] - velocitiesY[index] * dt;
+		const y = positionsY[index] - velocityY * dt;
 
 		ages[index] = age;
 		positionsY[index] = y;
@@ -464,10 +472,16 @@ export function updateRain(deltaMs: number): void {
 			continue;
 		}
 
+		const blockY = Math.floor(y);
+
+		/*
+		 * Collision processing is retained even after the rendering budget
+		 * has been reached so hidden drops remain correctly simulated.
+		 */
 		if (
 			y < lowerBoundary ||
 			isCollidableBlock(
-				getBlockByWorldCoords(blockXs[index], Math.floor(y), blockZs[index]),
+				getBlockByWorldCoords(blockXs[index], blockY, blockZs[index]),
 			)
 		) {
 			respawnDrop(index);
@@ -487,30 +501,33 @@ export function updateRain(deltaMs: number): void {
 			alpha *= (1 - normalizedAge) * INVERSE_EDGE_FADE;
 		}
 
+		if (alpha <= MIN_VISIBLE_ALPHA) {
+			continue;
+		}
+
 		const x = positionsX[index];
 		const z = positionsZ[index];
 
 		const dx = x - cameraX;
 		const dy = y - cameraY;
 		const dz = z - cameraZ;
-
 		const distanceSquared = dx * dx + dy * dy + dz * dz;
 
 		if (distanceSquared > FADE_DISTANCE_SQ) {
-			const distance = Math.sqrt(distanceSquared);
-
 			const distanceAlpha =
-				1 - (distance - FADE_DISTANCE) * INVERSE_DISTANCE_FADE_RANGE;
+				1 -
+				(Math.sqrt(distanceSquared) - FADE_DISTANCE) *
+					INVERSE_DISTANCE_FADE_RANGE;
 
 			if (distanceAlpha <= 0) {
 				continue;
 			}
 
 			alpha *= distanceAlpha;
-		}
 
-		if (alpha <= MIN_VISIBLE_ALPHA) {
-			continue;
+			if (alpha <= MIN_VISIBLE_ALPHA) {
+				continue;
+			}
 		}
 
 		position[0] = x;
