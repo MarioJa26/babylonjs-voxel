@@ -21,9 +21,10 @@ import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { debugLog } from "@/code/Lib/debugLog";
 import { setIsPaused } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
+import { Map1 } from "@/code/Maps/Map1";
+import { getAliveParticleCount } from "@/code/Maps/Particles";
 import {
 	chooseBlockEditParticleQuality,
-	getAliveParticleCount,
 	ParticleQuality,
 	play,
 	playDebris,
@@ -32,8 +33,7 @@ import {
 	playPlace,
 	playPlaceScaled,
 	playScaled,
-} from "@/code/Maps/BlockBreakParticles";
-import { Map1 } from "@/code/Maps/Map1";
+} from "@/code/Maps/PlayParticles";
 import {
 	currentWorldSeed,
 	runLocateCommand,

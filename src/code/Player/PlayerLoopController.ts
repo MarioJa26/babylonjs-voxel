@@ -14,11 +14,8 @@ import { FRAME_WORK_BUDGET, FrameWorkKind } from "../Lib/FrameWorkBudget";
 import { getIsPaused, isUiOpen, setInCave } from "../Lib/GameRuntimeState";
 import { getPipelineStats } from "../Lib/PipelineStats";
 import { worldToChunkCoord } from "../Lib/VoxelMath";
-import {
-	makeSprintEmitterState,
-	playSprint,
-} from "../Maps/BlockBreakParticles";
 import { Map1 } from "../Maps/Map1";
+import { makeSprintEmitterState, playSprint } from "../Maps/PlayParticles";
 import { isEyeUnderwater } from "../Maps/UnderWaterEffect";
 import { tickStationRuntime } from "../World/BlockInventory/StationRuntime";
 import { Chunk } from "../World/Chunk/Chunk";

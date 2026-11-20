@@ -5,9 +5,9 @@ import {
 	type Mesh,
 	type SceneContext,
 	type ShaderMaterial,
-	setMeshVisible,
 	scaleVec3InPlace,
 	scaleVec3ToRef,
+	setMeshVisible,
 	type Vec3,
 	vec3,
 } from "@babylonjs/lite";
@@ -28,7 +28,7 @@ import {
 	FALL_DAMAGE_THRESHOLD,
 } from "../Entities/MobConfig";
 import type { Mount } from "../Entities/Mount";
-import { playLandingDust } from "../Maps/BlockBreakParticles";
+import { playLandingDust } from "../Maps/PlayParticles";
 import type { BoatChunk } from "../World/Boat/BoatChunk";
 import {
 	getBlockAndStateByWorldCoordsInto,

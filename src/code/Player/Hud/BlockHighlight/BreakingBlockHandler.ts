@@ -1,7 +1,6 @@
-import type { Mesh, Vec3 } from "@babylonjs/lite";
 import { playBlockBreak, playMineHit } from "@/code/Audio/SurfaceAudio";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
-import { play, playDebris, playMining } from "@/code/Maps/BlockBreakParticles";
+import { play, playDebris, playMining } from "@/code/Maps/PlayParticles";
 import {
 	createEmptyInventory,
 	getBlockInventory,

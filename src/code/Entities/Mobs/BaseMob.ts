@@ -1,7 +1,7 @@
 import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
-import { playMobDamage, playMobFire } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
+import { playMobDamage, playMobFire } from "@/code/Maps/PlayParticles";
 import type { Player } from "@/code/Player/Player";
 import {
 	getBlockByWorldCoords,

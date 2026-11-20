@@ -1,7 +1,7 @@
 import type { ShaderMaterial } from "@babylonjs/lite";
 import { playBlockPlace } from "@/code/Audio/SurfaceAudio";
 import type { IUsable } from "@/code/Interface/IUsable";
-import { playPlace } from "@/code/Maps/BlockBreakParticles";
+import { playPlace } from "@/code/Maps/PlayParticles";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import {
 	getLightByWorldCoords,

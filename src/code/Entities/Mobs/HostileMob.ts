@@ -1,12 +1,12 @@
 ﻿import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
+import { Map1 } from "@/code/Maps/Map1";
 import {
 	playLandingDust,
 	playMobDamageDirected,
 	playMobDeath,
-} from "@/code/Maps/BlockBreakParticles";
-import { Map1 } from "@/code/Maps/Map1";
+} from "@/code/Maps/PlayParticles";
 import { Gamemodes } from "@/code/Player/PlayerStats";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import {

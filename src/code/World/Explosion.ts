@@ -1,12 +1,12 @@
 import { playExplosionSound } from "@/code/Audio/TntAudio";
 import type { Mob } from "@/code/Entities/Mobs/Mob";
+import { Map1 } from "@/code/Maps/Map1";
 import {
 	playExplosion,
 	playExplosionDebris,
 	playLandingDust,
 	playMobDeath,
-} from "@/code/Maps/BlockBreakParticles";
-import { Map1 } from "@/code/Maps/Map1";
+} from "@/code/Maps/PlayParticles";
 import { getOnExplosion } from "@/code/Player/Hud/BlockHighlight/BreakingBlockHandler";
 import type { Player } from "@/code/Player/Player";
 import { Gamemodes } from "@/code/Player/PlayerStats";

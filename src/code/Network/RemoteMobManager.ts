@@ -62,14 +62,14 @@ import {
 	getMeleeRange,
 	getMobWeaponIdByTypeId,
 } from "@/code/Entities/WeaponStats";
+import { Map1 } from "@/code/Maps/Map1";
 import {
 	playLandingDust,
 	playMobDamage,
 	playMobDamageDirected,
 	playMobDeath,
 	playMobFire,
-} from "@/code/Maps/BlockBreakParticles";
-import { Map1 } from "@/code/Maps/Map1";
+} from "@/code/Maps/PlayParticles";
 import { Gamemodes } from "@/code/Player/PlayerStats";
 import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "@/code/World/Texture/BlockType";

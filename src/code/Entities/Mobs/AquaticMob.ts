@@ -2,8 +2,8 @@
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
-import { playLandingDust } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
+import { playLandingDust } from "@/code/Maps/PlayParticles";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import {
 	getBlockByWorldCoords,

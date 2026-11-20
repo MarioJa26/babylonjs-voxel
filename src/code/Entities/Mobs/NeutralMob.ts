@@ -1,7 +1,7 @@
 ﻿import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { frameProfiler } from "@/code/Lib/FrameProfiler";
 import { isUiOpen } from "@/code/Lib/GameRuntimeState";
-import { playLandingDust } from "@/code/Maps/BlockBreakParticles";
+import { playLandingDust } from "@/code/Maps/PlayParticles";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import {
 	getBlockByWorldCoords,

@@ -3,8 +3,8 @@ import type { Mob } from "@/code/Entities/Mobs/Mob";
 import { segmentMobHit } from "@/code/Entities/Mobs/MobHitTest";
 import { getMeleeDamage, getMeleeRange } from "@/code/Entities/WeaponStats";
 import type { IControls } from "@/code/Interface/IControls";
-import { playMobDamage } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
+import { playMobDamage } from "@/code/Maps/PlayParticles";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import {
 	dumpStreamingDiagnostics,

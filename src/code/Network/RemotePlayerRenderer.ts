@@ -41,7 +41,7 @@ import {
 	SPRINT_FEET_OFFSET,
 	SPRINT_MIN_SPEED_SQ,
 	type SprintEmitterState,
-} from "@/code/Maps/BlockBreakParticles";
+} from "@/code/Maps/PlayParticles";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
 import { HeldItemView } from "../Player/Inventory/HeldItemView";

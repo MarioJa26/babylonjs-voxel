@@ -14,13 +14,13 @@ import { igniteChainedTnt } from "@/code/Entities/PrimedTnt";
 import { getPRNGUnit2 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
 import type { Color3 } from "@/code/Lib/Math";
+import { Map1 } from "@/code/Maps/Map1";
 import {
 	MOB_DRIP_INTERVAL_MS,
 	playArrowHit,
 	playMobDamage,
 	playMobDrip,
-} from "@/code/Maps/BlockBreakParticles";
-import { Map1 } from "@/code/Maps/Map1";
+} from "@/code/Maps/PlayParticles";
 import type { NetClient } from "@/code/Network/NetClient";
 import {
 	BinaryDecoder,
