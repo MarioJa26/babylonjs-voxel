@@ -33,69 +33,58 @@ const POOL_SIZE = 8192;
 
 const GRAVITY = -16;
 const MAX_DT = 0.1;
+
 const FADE_START = 0.85;
-const FADE_RANGE = 1 - FADE_START;
+const FADE_INV_RANGE = 1 / (1 - FADE_START);
 
 const DEBRIS_RESTITUTION = 0.35;
-// 0.25 stays below the thinnest collidable (fence arms/posts 0.25 wide,
-// effective width larger with particle radius) so sweeps cannot tunnel,
-// while needing ~40% fewer substeps than 0.15 for fast explosion debris.
 const DEBRIS_COLLIDE_STEP = 0.25;
 const DEBRIS_SETTLE_SPEED = 1.0;
+const DEBRIS_SIDE_BOUNCE_SPEED = DEBRIS_SETTLE_SPEED * 1.4;
 const DEBRIS_RADIUS_SCALE = 0.4;
-// Initial GPU billboard capacity. POOL_SIZE (particle pool) is unchanged —
-// this only sizes the preallocated instance buffer. 16k holds 10k+ alive
-// with headroom; the lite system grows (doubles) if chained blasts exceed it.
+
 const BILLBOARD_INITIAL_CAPACITY = 16384;
 
-// ---------------------------------------------------------------------------
-// Particle pool (SoA / typed-array layout).
-//
-// Particles live densely packed in [0, aliveCount). Removal is a swap with
-// the last live particle followed by aliveCount--, so there is no separate
-// free-list to maintain — the tail past aliveCount *is* the free capacity.
-// This keeps every per-frame scan cache-dense and GC-transparent (no object
-// pointers for the collector to trace), matching the typed-array-LUT /
-// scratch-buffer conventions used elsewhere in the engine.
-// ---------------------------------------------------------------------------
+const COLLIDE_BIT = 1;
+const SETTLED_BIT = 2;
 
 const px = new Float32Array(POOL_SIZE);
 const py = new Float32Array(POOL_SIZE);
 const pz = new Float32Array(POOL_SIZE);
+
 const pvx = new Float32Array(POOL_SIZE);
 const pvy = new Float32Array(POOL_SIZE);
 const pvz = new Float32Array(POOL_SIZE);
+
 const page = new Float32Array(POOL_SIZE);
 const plife = new Float32Array(POOL_SIZE);
 const psize = new Float32Array(POOL_SIZE);
 const pangle = new Float32Array(POOL_SIZE);
 const pspin = new Float32Array(POOL_SIZE);
+
 const pr = new Float32Array(POOL_SIZE);
 const pg = new Float32Array(POOL_SIZE);
 const pb = new Float32Array(POOL_SIZE);
 const pa = new Float32Array(POOL_SIZE);
+
 const pgrav = new Float32Array(POOL_SIZE);
-// Precomputed fade curve per particle: fadeStartAge = life * FADE_START,
-// fadeInv = 1 / (life - fadeStartAge). Avoids a multiply per particle per
-// frame (and a divide while fading) in tick.
 const pFadeStart = new Float32Array(POOL_SIZE);
 const pFadeInv = new Float32Array(POOL_SIZE);
+
 const pframe = new Uint16Array(POOL_SIZE);
-/** bit0 = collide (routes through voxel collision in tick), bit1 = settled. */
 const pflags = new Uint8Array(POOL_SIZE);
-const COLLIDE_BIT = 1;
-const SETTLED_BIT = 2;
 
 let aliveCount = 0;
-
-/** Voxel collision sweeps performed during the most recent tick. */
 let collisionQueries = 0;
 
-// Scratch props reused across every `addBillboardSpriteIndex` call so the
-// per-frame billboard rebuild allocates nothing.
+let billboard: FacingBillboardSpriteSystem | null = null;
+let initialization: Promise<void> | null = null;
+let tickRegistered = false;
+
 const scratchPos: [number, number, number] = [0, 0, 0];
 const scratchSize: [number, number] = [0, 0];
 const scratchColor: [number, number, number, number] = [0, 0, 0, 0];
+
 const scratchProps = {
 	position: scratchPos,
 	sizeWorld: scratchSize,
@@ -104,20 +93,17 @@ const scratchProps = {
 	frame: 0,
 };
 
-// Scratch objects for debris collision sweeps (allocation-free).
 const scratchDebrisPos: Vec3 = { x: 0, y: 0, z: 0 };
 const scratchDebrisHalf: Vec3 = { x: 0, y: 0, z: 0 };
 
-// Shared shape-aware voxel sampler + stateless collider (DroppedItem pattern).
-// The collider's fixed half-extents are never used; debris sweeps call
-// `overlapsBox` with per-particle radii instead.
-//
-// Single-fetch: one chunk resolve for id+state instead of two
-// (getBlock + getState each resolved the chunk). Identical shape/fence logic.
 const DEBRIS_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
 	(x, y, z) => {
 		getBlockAndStateByWorldCoordsInto(x, y, z, _voxelResolveScratch);
-		if (!isCollidableBlock(_voxelResolveScratch.blockId)) return null;
+
+		if (!isCollidableBlock(_voxelResolveScratch.blockId)) {
+			return null;
+		}
+
 		return _voxelResolveScratch;
 	},
 	{
@@ -134,44 +120,24 @@ const debrisCollider = new VoxelAabbCollider(
 	0.001,
 );
 
-let billboard: FacingBillboardSpriteSystem | null = null;
-
-/**
- * Whether the billboard system has finished initialising. Until
- * `initBlockBreakParticles` resolves this is false and every emission path
- * (see PlayParticles) is a no-op.
- */
-export function isParticlesReady(): boolean {
-	return billboard !== null;
-}
-
-/** Unpacked colour triple, used by every emission path. */
 export interface Rgb {
 	r: number;
 	g: number;
 	b: number;
 }
 
-/** Live particle count, for budget decisions made by other systems. */
+export function isParticlesReady(): boolean {
+	return billboard !== null;
+}
+
 export function getAliveParticleCount(): number {
 	return aliveCount;
 }
 
-/**
- * Voxel collision sweeps actually performed this frame.
- *
- * Kept distinct from `aliveParticleCount` because a saturated pool is a
- * different problem from expensive collision: the first is emission volume, the
- * second is simulation cost. HUD diagnostics read both.
- */
 export function getParticleCollisionQueryCount(): number {
 	return collisionQueries;
 }
 
-/**
- * Low-level pool push: insert one particle with explicit properties. All
- * higher-level emission paths (see PlayParticles) funnel through this.
- */
 export function addParticle(
 	x: number,
 	y: number,
@@ -191,18 +157,12 @@ export function addParticle(
 	gravityScale: number,
 	collide: 0 | 1 = 0,
 ): void {
-	if (aliveCount >= POOL_SIZE) return;
-
-	/*
-	 * Reject malformed particles before they enter the dense pool. A NaN life
-	 * never satisfies `age >= life`, so without this guard it would occupy a
-	 * pool slot permanently and send invalid values to the billboard system.
-	 */
 	if (
-		!Number.isFinite(life) ||
+		aliveCount >= POOL_SIZE ||
 		life <= 0 ||
-		!Number.isFinite(size) ||
-		size <= 0
+		size <= 0 ||
+		!Number.isFinite(life) ||
+		!Number.isFinite(size)
 	) {
 		return;
 	}
@@ -220,9 +180,9 @@ export function addParticle(
 	page[i] = 0;
 	plife[i] = life;
 
-	const fadeDuration = life * FADE_RANGE;
-	pFadeStart[i] = life - fadeDuration;
-	pFadeInv[i] = 1 / fadeDuration;
+	const fadeDuration = life * (1 - FADE_START);
+	pFadeStart[i] = life * FADE_START;
+	pFadeInv[i] = FADE_INV_RANGE / life;
 
 	psize[i] = size;
 	pangle[i] = angle;
@@ -236,44 +196,76 @@ export function addParticle(
 
 	pgrav[i] = gravityScale;
 	pflags[i] = collide === 1 ? COLLIDE_BIT : 0;
+
+	// Retain the explicit value to make the fade relationship clear and guard
+	// against accidental constant changes that produce a zero duration.
+	if (fadeDuration <= 0) {
+		pFadeInv[i] = 0;
+	}
 }
 
-/** Swap-remove: overwrites slot `i` with the last live particle and shrinks aliveCount. */
 function removeParticle(i: number): void {
-	const last = --aliveCount;
-	if (i === last) return;
+	const last = aliveCount - 1;
+	aliveCount = last;
+
+	if (i === last) {
+		return;
+	}
+
 	px[i] = px[last];
 	py[i] = py[last];
 	pz[i] = pz[last];
+
 	pvx[i] = pvx[last];
 	pvy[i] = pvy[last];
 	pvz[i] = pvz[last];
+
 	page[i] = page[last];
 	plife[i] = plife[last];
+
 	pFadeStart[i] = pFadeStart[last];
 	pFadeInv[i] = pFadeInv[last];
+
 	psize[i] = psize[last];
 	pangle[i] = pangle[last];
 	pspin[i] = pspin[last];
 	pframe[i] = pframe[last];
+
 	pr[i] = pr[last];
 	pg[i] = pg[last];
 	pb[i] = pb[last];
 	pa[i] = pa[last];
+
 	pgrav[i] = pgrav[last];
 	pflags[i] = pflags[last];
 }
 
-/**
- * Explicit one-time init, awaited by TestScene after scene registration.
- * Registers the per-frame tick, loads the block atlas, and builds the
- * billboard system. Until this resolves, every play* call is a no-op.
- */
-export async function initBlockBreakParticles(
-	scene: SceneContext,
-): Promise<void> {
-	onBeforeRender(scene, tick);
+export function initBlockBreakParticles(scene: SceneContext): Promise<void> {
+	if (billboard !== null) {
+		return Promise.resolve();
+	}
 
+	if (initialization !== null) {
+		return initialization;
+	}
+
+	if (!tickRegistered) {
+		tickRegistered = true;
+		onBeforeRender(scene, tick);
+	}
+
+	initialization = initializeBillboard(scene).finally(() => {
+		/*
+		 * Permit a retry after failure. Once successful, billboard itself
+		 * prevents subsequent initialization.
+		 */
+		initialization = null;
+	});
+
+	return initialization;
+}
+
+async function initializeBillboard(scene: SceneContext): Promise<void> {
 	try {
 		const texture = await loadTexture2D(scene.surface.engine, ATLAS_URL, {
 			mipMaps: false,
@@ -283,22 +275,22 @@ export async function initBlockBreakParticles(
 			addressModeU: "clamp-to-edge",
 			addressModeV: "clamp-to-edge",
 		});
-		if (!texture) return;
+
+		if (!texture) {
+			return;
+		}
 
 		const atlas = createGridSpriteAtlas(texture, {
 			cellWidthPx: tileSize,
 			cellHeightPx: tileSize,
 		});
+
 		const system = createFacingBillboardSystem(atlas, {
 			capacity: BILLBOARD_INITIAL_CAPACITY,
 			blendMode: billboardBlendAlpha,
 		});
-		addFacingBillboardSystem(scene, system);
 
-		// `addFacingBillboardSystem` registers a deferred renderable builder
-		// that Lite only flushes during `buildScene` (at scene registration).
-		// Init runs right after `registerScene`, so flush the builder here or
-		// the billboard never gets a GPU renderable.
+		addFacingBillboardSystem(scene, system);
 		await flushDeferredRenderables(scene);
 
 		billboard = system;
@@ -308,220 +300,250 @@ export async function initBlockBreakParticles(
 }
 
 function flushDeferredRenderables(scene: SceneContext): Promise<void> {
-	const ctx = scene as unknown as {
+	const context = scene as unknown as {
 		_deferredBuilders?: Array<() => Promise<void>>;
 		_renderables?: Array<{ order: number }>;
 		_renderableVersion?: number;
 	};
-	const builders = ctx._deferredBuilders?.splice(0) ?? [];
-	return Promise.all(builders.map((build) => build())).then(() => {
-		ctx._renderables?.sort((a, b) => a.order - b.order);
-		if (ctx._renderableVersion !== undefined) ctx._renderableVersion++;
+
+	const builders = context._deferredBuilders;
+
+	if (!builders || builders.length === 0) {
+		return Promise.resolve();
+	}
+
+	const pending = builders.splice(0, builders.length);
+
+	return Promise.all(pending.map(runDeferredBuilder)).then(() => {
+		const renderables = context._renderables;
+
+		if (renderables && renderables.length > 1) {
+			renderables.sort(compareRenderableOrder);
+		}
+
+		if (context._renderableVersion !== undefined) {
+			context._renderableVersion++;
+		}
 	});
 }
 
-function tick(deltaMs: number): void {
-	const system = billboard;
+function runDeferredBuilder(builder: () => Promise<void>): Promise<void> {
+	return builder();
+}
 
-	// Reset before the early returns so the diagnostic always reflects the last
-	// completed tick rather than a stale count from whenever one last ran.
+function compareRenderableOrder(
+	a: { order: number },
+	b: { order: number },
+): number {
+	return a.order - b.order;
+}
+
+function tick(deltaMs: number): void {
 	collisionQueries = 0;
 
-	if (system === null || aliveCount === 0) return;
+	const system = billboard;
+
+	if (system === null || aliveCount === 0) {
+		return;
+	}
 
 	const dt = Math.min(MAX_DT, deltaMs * 0.001);
-	if (!(dt > 0) || isUiOpen(UiFocus.pauseMenu)) return;
+
+	if (dt <= 0 || !Number.isFinite(dt) || isUiOpen(UiFocus.pauseMenu)) {
+		return;
+	}
 
 	clearBillboardSprites(system);
 
 	const gravityDt = GRAVITY * dt;
 
-	// Cache frequently used references and scratch values for the hot loop.
-	const lpx = px;
-	const lpy = py;
-	const lpz = pz;
-	const lpvx = pvx;
-	const lpvy = pvy;
-	const lpvz = pvz;
-	const lpage = page;
-	const lplife = plife;
-	const lpsize = psize;
-	const lpangle = pangle;
-	const lpspin = pspin;
-	const lpr = pr;
-	const lpg = pg;
-	const lpb = pb;
-	const lpa = pa;
-	const lpgrav = pgrav;
-	const lFadeStart = pFadeStart;
-	const lFadeInv = pFadeInv;
-	const lframe = pframe;
-	const lflags = pflags;
-
-	const position = scratchPos;
-	const sizeWorld = scratchSize;
-	const color = scratchColor;
-	const props = scratchProps;
-
 	let i = 0;
 
 	while (i < aliveCount) {
-		const life = lplife[i];
-		const age = lpage[i] + dt;
+		const life = plife[i];
+		const age = page[i] + dt;
 
 		if (age >= life) {
-			/*
-			 * Swap-removal puts an unprocessed particle into slot i, so do not
-			 * increment i here.
-			 */
 			removeParticle(i);
 			continue;
 		}
 
-		lpage[i] = age;
+		page[i] = age;
 
-		let flags = lflags[i];
+		let flags = pflags[i];
 
-		if ((flags & COLLIDE_BIT) !== 0) {
-			if ((flags & SETTLED_BIT) === 0) {
-				if (FRAME_WORK_BUDGET.takeCollisionChecks()) {
-					collideParticle(i, dt);
-					collisionQueries++;
-
-					// Collision may have settled the particle.
-					flags = lflags[i];
-				} else {
-					// Budget exhausted: integrate without sweeping so the
-					// particle still falls instead of hanging. Slightly wrong
-					// for this one frame, which is far cheaper than the voxel
-					// sweeps. The next frame retries and corrects.
-					const vy = lpvy[i] + gravityDt * lpgrav[i];
-					lpvy[i] = vy;
-					lpx[i] += lpvx[i] * dt;
-					lpy[i] += vy * dt;
-					lpz[i] += lpvz[i] * dt;
-				}
+		if ((flags & COLLIDE_BIT) !== 0 && (flags & SETTLED_BIT) === 0) {
+			if (FRAME_WORK_BUDGET.takeCollisionChecks()) {
+				collideParticle(i, dt);
+				collisionQueries++;
+				flags = pflags[i];
+			} else {
+				integrateParticle(i, dt, gravityDt);
 			}
-		} else {
-			const vy = lpvy[i] + gravityDt * lpgrav[i];
-
-			lpvy[i] = vy;
-			lpx[i] += lpvx[i] * dt;
-			lpy[i] += vy * dt;
-			lpz[i] += lpvz[i] * dt;
+		} else if ((flags & COLLIDE_BIT) === 0) {
+			integrateParticle(i, dt, gravityDt);
 		}
 
 		if ((flags & SETTLED_BIT) === 0) {
-			const spin = lpspin[i];
+			const spin = pspin[i];
 
 			if (spin !== 0) {
-				lpangle[i] += spin * dt;
+				pangle[i] += spin * dt;
 			}
 		}
 
-		let alpha = lpa[i];
-		const fadeStart = lFadeStart[i];
+		let alpha = pa[i];
 
-		if (age > fadeStart) {
-			alpha *= (life - age) * lFadeInv[i];
+		if (age > pFadeStart[i]) {
+			alpha *= (life - age) * pFadeInv[i];
 
-			// Protect the renderer from minor floating-point undershoot.
 			if (alpha <= 0) {
 				i++;
 				continue;
 			}
 		}
 
-		position[0] = lpx[i];
-		position[1] = lpy[i];
-		position[2] = lpz[i];
+		scratchPos[0] = px[i];
+		scratchPos[1] = py[i];
+		scratchPos[2] = pz[i];
 
-		const particleSize = lpsize[i];
-		sizeWorld[0] = particleSize;
-		sizeWorld[1] = particleSize;
+		const size = psize[i];
+		scratchSize[0] = size;
+		scratchSize[1] = size;
 
-		color[0] = lpr[i];
-		color[1] = lpg[i];
-		color[2] = lpb[i];
-		color[3] = alpha;
+		scratchColor[0] = pr[i];
+		scratchColor[1] = pg[i];
+		scratchColor[2] = pb[i];
+		scratchColor[3] = alpha;
 
-		props.rotation = lpangle[i];
-		props.frame = lframe[i];
+		scratchProps.rotation = pangle[i];
+		scratchProps.frame = pframe[i];
 
-		addBillboardSpriteIndex(system, props);
+		addBillboardSpriteIndex(system, scratchProps);
 		i++;
 	}
 }
 
-/** Integrates a colliding particle through voxel collision, axis by axis. */
+function integrateParticle(i: number, dt: number, gravityDt: number): void {
+	const vy = pvy[i] + gravityDt * pgrav[i];
+
+	pvy[i] = vy;
+
+	px[i] += pvx[i] * dt;
+	py[i] += vy * dt;
+	pz[i] += pvz[i] * dt;
+}
+
 function collideParticle(i: number, dt: number): void {
-	pvy[i] += GRAVITY * dt * pgrav[i];
+	const vy = pvy[i] + GRAVITY * dt * pgrav[i];
+	pvy[i] = vy;
 
 	const half = psize[i] * DEBRIS_RADIUS_SCALE;
+
 	scratchDebrisHalf.x = half;
 	scratchDebrisHalf.y = half;
 	scratchDebrisHalf.z = half;
 
-	moveDebrisAxis(i, 0, pvx[i] * dt);
-	moveDebrisAxis(i, 1, pvy[i] * dt);
-	moveDebrisAxis(i, 2, pvz[i] * dt);
+	const dx = pvx[i] * dt;
+	const dy = vy * dt;
+	const dz = pvz[i] * dt;
+
+	if (dx !== 0) {
+		moveDebrisAxis(i, 0, dx);
+	}
+
+	if (dy !== 0) {
+		moveDebrisAxis(i, 1, dy);
+	}
+
+	/*
+	 * A downward Y collision may settle the particle. Horizontal movement is
+	 * intentionally still processed to preserve the original axis ordering
+	 * and final position.
+	 */
+	if (dz !== 0) {
+		moveDebrisAxis(i, 2, dz);
+	}
 }
 
-/**
- * Sweep one axis for a colliding particle. On hit, the particle is left at the
- * contact point and `onDebrisHit` bounces or settles velocity along that axis.
- */
-function moveDebrisAxis(i: number, axis: number, delta: number): void {
-	if (delta === 0) return;
-
-	const dir = delta > 0 ? 1 : -1;
-	let remaining = Math.abs(delta);
+function moveDebrisAxis(i: number, axis: 0 | 1 | 2, delta: number): void {
+	const direction = delta > 0 ? 1 : -1;
+	let remaining = delta * direction;
 
 	const pos = scratchDebrisPos;
+	const half = scratchDebrisHalf;
+
 	while (remaining > 1e-8) {
 		const step =
 			remaining > DEBRIS_COLLIDE_STEP ? DEBRIS_COLLIDE_STEP : remaining;
-		const move = step * dir;
 
-		pos.x = px[i];
-		pos.y = py[i];
-		pos.z = pz[i];
-		if (axis === 0) pos.x += move;
-		else if (axis === 1) pos.y += move;
-		else pos.z += move;
+		const movement = step * direction;
 
-		if (debrisCollider.overlapsBox(pos, scratchDebrisHalf)) {
-			onDebrisHit(i, axis, dir);
+		const currentX = px[i];
+		const currentY = py[i];
+		const currentZ = pz[i];
+
+		pos.x = currentX;
+		pos.y = currentY;
+		pos.z = currentZ;
+
+		if (axis === 0) {
+			pos.x = currentX + movement;
+		} else if (axis === 1) {
+			pos.y = currentY + movement;
+		} else {
+			pos.z = currentZ + movement;
+		}
+
+		if (debrisCollider.overlapsBox(pos, half)) {
+			onDebrisHit(i, axis, direction);
 			return;
 		}
 
-		if (axis === 0) px[i] = pos.x;
-		else if (axis === 1) py[i] = pos.y;
-		else pz[i] = pos.z;
+		if (axis === 0) {
+			px[i] = pos.x;
+		} else if (axis === 1) {
+			py[i] = pos.y;
+		} else {
+			pz[i] = pos.z;
+		}
 
 		remaining -= step;
 	}
 }
 
-/** Reflect or zero velocity on the axis that just hit a block. */
-function onDebrisHit(i: number, axis: number, dir: number): void {
+function onDebrisHit(i: number, axis: 0 | 1 | 2, direction: number): void {
 	if (axis === 1) {
-		if (dir < 0 && -pvy[i] > DEBRIS_SETTLE_SPEED) {
-			pvy[i] = -pvy[i] * DEBRIS_RESTITUTION;
+		const velocity = pvy[i];
+
+		if (direction < 0 && -velocity > DEBRIS_SETTLE_SPEED) {
+			pvy[i] = -velocity * DEBRIS_RESTITUTION;
 		} else {
 			pvy[i] = 0;
-			if (dir < 0) pflags[i] |= SETTLED_BIT;
+
+			if (direction < 0) {
+				pflags[i] |= SETTLED_BIT;
+			}
 		}
+
 		return;
 	}
 
-	const v = axis === 0 ? pvx[i] : pvz[i];
-	if (Math.abs(v) > DEBRIS_SETTLE_SPEED * 1.4) {
-		const bounced = -v * DEBRIS_RESTITUTION;
-		if (axis === 0) pvx[i] = bounced;
-		else pvz[i] = bounced;
-	} else {
-		if (axis === 0) pvx[i] = 0;
-		else pvz[i] = 0;
+	if (axis === 0) {
+		const velocity = pvx[i];
+
+		pvx[i] =
+			Math.abs(velocity) > DEBRIS_SIDE_BOUNCE_SPEED
+				? -velocity * DEBRIS_RESTITUTION
+				: 0;
+
+		return;
 	}
+
+	const velocity = pvz[i];
+
+	pvz[i] =
+		Math.abs(velocity) > DEBRIS_SIDE_BOUNCE_SPEED
+			? -velocity * DEBRIS_RESTITUTION
+			: 0;
 }

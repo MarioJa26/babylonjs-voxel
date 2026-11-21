@@ -112,7 +112,10 @@ type CrackBlockPosition = { x: number; y: number; z: number };
  * Multiplayer note: `dropWorldItem` is server-authoritative, so this must
  * resolve identically on both sides or MP will desync the drop.
  */
-function getDroppedBlockId(blockId: number, toolLookupId: number): number {
+export function getDroppedBlockId(
+	blockId: number,
+	toolLookupId: number,
+): number {
 	if (toolLookupId !== 0 && !canHarvestBlock(blockId, toolLookupId)) {
 		return 0;
 	}
@@ -139,6 +142,10 @@ function getDroppedBlockId(blockId: number, toolLookupId: number): number {
 
 	if (blockId === BlockType.EmeraldOre) {
 		return 1048;
+	}
+
+	if (blockId === BlockType.Cobblecoal) {
+		return 1019;
 	}
 
 	return blockId;

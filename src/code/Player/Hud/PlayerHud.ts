@@ -263,6 +263,11 @@ export class PlayerHud {
 			if (this.#inventoryOpen) {
 				this.#craftMenu.updateCraftingAvailability();
 			}
+
+			// Crafting (and drops, stack depletes) can move or replace the item
+			// in the selected hotbar slot — refresh the held-item name so the
+			// HUD matches the inventory right after the change.
+			this.updateHotbarSelection();
 		});
 
 		// Armour feeds PlayerStats through a scalar, so every change has to push
@@ -2111,39 +2116,66 @@ export class PlayerHud {
 		const stats = this.#player.stats;
 		if (!stats) return;
 
-		const bars: Array<[HTMLDivElement, number, number]> = [
-			[this.#healthBarFill, stats.health, stats.maxHealth],
-			[this.#hungerBarFill, stats.hunger, stats.maxHunger],
-			[this.#staminaBarFill, stats.stamina, stats.maxStamina],
-			[this.#manaBarFill, stats.mana, stats.maxMana],
-		];
+		const states = this.#statBarStates;
 
-		for (let i = 0; i < bars.length; i++) {
-			const [fill, value, max] = bars[i];
-			const state = this.#statBarStates[i];
+		let state = states[0];
+		let value = stats.health;
+		let max = stats.maxHealth;
 
-			if (value === state.value && max === state.max) continue;
-
+		if (value !== state.value || max !== state.max) {
 			state.value = value;
 			state.max = max;
-			state.pct = setBar(fill, state.pct, statPct(value, max));
+			state.pct = setBar(this.#healthBarFill, state.pct, statPct(value, max));
+		}
+
+		state = states[1];
+		value = stats.hunger;
+		max = stats.maxHunger;
+
+		if (value !== state.value || max !== state.max) {
+			state.value = value;
+			state.max = max;
+			state.pct = setBar(this.#hungerBarFill, state.pct, statPct(value, max));
+		}
+
+		state = states[2];
+		value = stats.stamina;
+		max = stats.maxStamina;
+
+		if (value !== state.value || max !== state.max) {
+			state.value = value;
+			state.max = max;
+			state.pct = setBar(this.#staminaBarFill, state.pct, statPct(value, max));
+		}
+
+		state = states[3];
+		value = stats.mana;
+		max = stats.maxMana;
+
+		if (value !== state.value || max !== state.max) {
+			state.value = value;
+			state.max = max;
+			state.pct = setBar(this.#manaBarFill, state.pct, statPct(value, max));
 		}
 
 		const xp = stats.xp;
 		const xpLevel = stats.xpLevel;
-		const state = this.#xpState;
+		const xpState = this.#xpState;
+		const levelChanged = xpLevel !== this.#prevXpLevel;
 
-		/*
-		 * xpForNextLevel() only needs to run when XP or level changes. Level is
-		 * included because the requirement commonly depends on the current level.
-		 */
-		if (xp !== state.value || xpLevel !== this.#prevXpLevel) {
-			state.need = stats.xpForNextLevel();
-			state.value = xp;
-			state.pct = setBar(this.#xpBarFill, state.pct, statPct(xp, state.need));
+		if (xp !== xpState.value || levelChanged) {
+			const requiredXp = stats.xpForNextLevel();
+
+			xpState.value = xp;
+			xpState.need = requiredXp;
+			xpState.pct = setBar(
+				this.#xpBarFill,
+				xpState.pct,
+				statPct(xp, requiredXp),
+			);
 		}
 
-		if (xpLevel !== this.#prevXpLevel) {
+		if (levelChanged) {
 			this.#prevXpLevel = xpLevel;
 			this.#xpLevelLabel.textContent = `Lv ${xpLevel}`;
 		}
