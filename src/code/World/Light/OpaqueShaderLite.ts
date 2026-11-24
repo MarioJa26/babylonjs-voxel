@@ -41,6 +41,7 @@ struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
   @location(1) @interpolate(flat) vTileLayer : u32,
+  @location(4) @interpolate(flat) vBrightness : f32,
   @location(6) vAO : f32,
   @location(7) @interpolate(flat) vLight : vec2<f32>,
   @location(13) vViewDirTS : vec3<f32>,
@@ -122,7 +123,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 
   let color = (diffuseRGB * directLight + specular) * lightMix * aoFactor;
 
-  return vec4<f32>(color, 1.0);
+  return vec4<f32>(color * in.vBrightness, 1.0);
 }
 `;
 
@@ -138,6 +139,7 @@ struct VSOut {
 @location(0) vUV : vec2<f32>,
 @location(1) @interpolate(flat) vTileLayer : u32,
 @location(2) vWorldPosition : vec3<f32>,
+@location(4) @interpolate(flat) vBrightness : f32,
 @location(6) vAO : f32,
 @location(7) @interpolate(flat) vLight : vec2<f32>,
 @location(10) vFogFactor : f32,
@@ -267,7 +269,7 @@ in.vFogFactor
 
 let alpha = diffuseColor.a * (0.9 - lightLevel * 0.5);
 
-return vec4<f32>(finalColor, alpha);
+return vec4<f32>(finalColor * in.vBrightness, alpha);
 }
 `;
 
@@ -287,6 +289,7 @@ struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
   @location(1) @interpolate(flat) vTileLayer : u32,
+  @location(4) @interpolate(flat) vBrightness : f32,
   @location(6) vAO : f32,
   @location(7) @interpolate(flat) vLight : vec2<f32>,
   @location(15) @interpolate(flat) vDiffuse : f32,
@@ -346,7 +349,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
     lightMix *
     aoFactor;
 
-  return vec4<f32>(color, 1.0);
+  return vec4<f32>(color * in.vBrightness, 1.0);
 }
 `;
 const OPAQUE_VERTEX_OPTIONS: VertexShaderOptions = {
@@ -362,6 +365,7 @@ const OPAQUE_VERTEX_OPTIONS: VertexShaderOptions = {
 	boundarySentinel: true,
 	ao: true,
 	bakeShade: false,
+	brightness: true,
 };
 
 const TRANSPARENT_VERTEX_OPTIONS: VertexShaderOptions = {
@@ -378,6 +382,7 @@ const TRANSPARENT_VERTEX_OPTIONS: VertexShaderOptions = {
 	boundaryFlag: true,
 	ao: true,
 	bakeShade: false,
+	brightness: true,
 };
 
 const CUTOUT_VERTEX_OPTIONS: VertexShaderOptions = {
@@ -397,6 +402,7 @@ const CUTOUT_VERTEX_OPTIONS: VertexShaderOptions = {
 	boundaryFlag: true,
 	ao: true,
 	bakeShade: false,
+	brightness: true,
 };
 export interface ChunkMaterialOptions {
 	engine: EngineContext;
@@ -426,6 +432,7 @@ function buildMaterialUniforms(
 		{ name: "atlasMaxTilesU32", type: "u32" },
 		{ name: "lightDirection", type: "vec3<f32>" },
 		{ name: "sunLightIntensity", type: "f32" },
+		{ name: "brightness", type: "f32" },
 	];
 
 	if (isOpaque) {
@@ -555,6 +562,7 @@ function buildChunkMaterial(
 	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles | 0);
 	setShaderUniform(material, "lightDirection", DEFAULT_LIGHT_DIRECTION);
 	setShaderUniform(material, "sunLightIntensity", 1);
+	setShaderUniform(material, "brightness", 1);
 
 	if (isOpaque) {
 		setShaderUniform(material, "wetness", 0);

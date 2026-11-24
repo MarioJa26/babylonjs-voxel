@@ -15,6 +15,7 @@ import {
 	computeSunLightState,
 	type SunLightState,
 } from "@/code/World/Light/SunLightState";
+import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 
 // Rig metrics must precede constants derived from them.
 export const PLAYER_MODEL_HEIGHT = 1.8;
@@ -260,7 +261,7 @@ fn mainFragment(
         faceShade *
         directLight;
 
-    return vec4<f32>(color, 1.0);
+    return vec4<f32>(color * shaderUniforms.brightness, 1.0);
 }
 `;
 
@@ -1031,6 +1032,10 @@ export function createRigShaderMaterial(name: string): ShaderMaterial {
 				name: "sunLightIntensity",
 				type: "f32",
 			},
+			{
+				name: "brightness",
+				type: "f32",
+			},
 		],
 		samplers: ["diffuseTexture"],
 		backFaceCulling: true,
@@ -1091,6 +1096,7 @@ function setRigSunUniforms(material: ShaderMaterial): void {
 
 	setShaderUniform(material, "lightDirection", rigSunDirectionScratch);
 	setShaderUniform(material, "sunLightIntensity", sun.intensity);
+	setShaderUniform(material, "brightness", SETTING_PARAMS.BRIGHTNESS);
 }
 
 // ─── Animation ──────────────────────────────────────────────────────────────

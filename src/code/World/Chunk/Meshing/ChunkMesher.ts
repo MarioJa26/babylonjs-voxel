@@ -39,6 +39,7 @@ import {
 	type SunLightState,
 } from "../../Light/SunLightState";
 import { carryMeshCulled } from "../../MeshVisibility";
+import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import { packAtlas } from "../../Texture/AtlasPacker";
 import {
 	atlasTileSize,
@@ -98,6 +99,11 @@ const cachedUniforms = {
 	time: 0,
 	sunLightIntensity: 1,
 	wetness: 0,
+	brightness: 1,
+	// Uniform-only factors of the packed bakeShade equation, folded here so
+	// the vertex stage never recomputes them for every vertex of every face.
+	shadeSunScale: 0.8 * (1 + 0.2),
+	shadeWetBright: 1,
 };
 
 /**
@@ -142,6 +148,7 @@ let lastLY = 0;
 let lastLZ = 0;
 let lastSun = -1;
 let lastWet = -1;
+let lastBrightness = -1;
 
 let timeFrameCounter = 0;
 
@@ -270,6 +277,11 @@ function cacheStaticLightingState(): void {
 	lastLZ = direction.z;
 	lastSun = uniforms.sunLightIntensity;
 	lastWet = uniforms.wetness;
+	// Single source of truth: the settings value is read here (both on init
+	// and whenever lighting changes) so newly created materials never show
+	// one frame at the wrong brightness.
+	lastBrightness = SETTING_PARAMS.BRIGHTNESS;
+	uniforms.brightness = lastBrightness;
 
 	lightDirArray[0] = direction.x;
 	lightDirArray[1] = direction.y;
@@ -283,6 +295,9 @@ function setStaticMaterialUniforms(material: ShaderMaterial): void {
 		"sunLightIntensity",
 		cachedUniforms.sunLightIntensity,
 	);
+	// Computed once per vertex by the packed shader; the fragment stage only
+	// reads a flat varying (or a shade that already includes it).
+	setShaderUniform(material, "brightness", cachedUniforms.brightness);
 
 	const wetness = cachedUniforms.wetness;
 
@@ -297,6 +312,26 @@ function setStaticMaterialUniforms(material: ShaderMaterial): void {
 
 	if (material === cutoutMaterial) {
 		setShaderUniform(material, "cutoutWetDiffuseMul", 1 - 0.35 * wetness);
+	}
+
+	// Only the bakeShade materials declare these; they are the ones whose
+	// vertex stage consumes the CPU-folded sun/wetness/brightness factors.
+	if (
+		material === lod2OpaqueMaterial ||
+		material === lod2CutoutMaterial ||
+		material === lod2TransparentMaterial ||
+		material === lod3OpaqueMaterial ||
+		material === lod3CutoutMaterial ||
+		material === lod3TransparentMaterial ||
+		material === lod4OpaqueMaterial ||
+		material === lod4TransparentMaterial
+	) {
+		setShaderUniform(material, "shadeSunScale", cachedUniforms.shadeSunScale);
+		setShaderUniform(
+			material,
+			"shadeWetBright",
+			cachedUniforms.shadeWetBright,
+		);
 	}
 }
 
@@ -813,19 +848,26 @@ export function updateGlobalUniforms(frameId: number): void {
 	const direction = uniforms.lightDirection;
 	// Base wetness (debug slider) plus whatever the rain is contributing.
 	const wetness = Map1.environment?.effectiveWetness ?? 0;
+	const brightness = SETTING_PARAMS.BRIGHTNESS;
 
 	const lightingChanged =
 		!nearlyEqual(sun.x, lastLX) ||
 		!nearlyEqual(sun.y, lastLY) ||
 		!nearlyEqual(sun.z, lastLZ) ||
 		!nearlyEqual(sun.intensity, lastSun) ||
-		!nearlyEqual(wetness, lastWet);
+		!nearlyEqual(wetness, lastWet) ||
+		!nearlyEqual(brightness, lastBrightness);
 
 	direction.x = sun.x;
 	direction.y = sun.y;
 	direction.z = sun.z;
 	uniforms.sunLightIntensity = sun.intensity;
 	uniforms.wetness = wetness;
+	uniforms.brightness = brightness;
+	// These depend only on uniforms, so compute them once per lighting change
+	// instead of once per vertex in every LOD bakeShade shader.
+	uniforms.shadeSunScale = 0.8 * (sun.intensity + 0.2);
+	uniforms.shadeWetBright = (1 - 0.35 * wetness) * brightness;
 
 	if (lightingChanged) {
 		populateMaterialList();

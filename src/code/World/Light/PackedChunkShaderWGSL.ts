@@ -54,12 +54,23 @@ export interface VertexShaderOptions {
 	ao?: boolean;
 	/**
 	 * Bake every per-quad lighting term into ONE flat vec3 varying
-	 * (`vShade` @15): wetness darkening × (1 + N·L·sun·sky) × lightMix ×
-	 * faceShade. Drops the vNormal (@5) and vLight (@7) varyings entirely.
+	 * (`vShade` @15): wetness/brightness × (1 + N·L·sun·sky) × lightMix ×
+	 * faceShade. The uniform-only factors (`shadeSunScale`, `shadeWetBright`)
+	 * are precomputed on the CPU once per lighting change. Drops the vNormal
+	 * (@5) and vLight (@7) varyings entirely.
 	 * The paired fragment stage MUST drop those VSOut fields and reduce to
 	 * `diffuse.rgb * in.vShade` (+ tint/fog).
 	 */
 	bakeShade?: boolean;
+	/**
+	 * Player-facing brightness multiplier, applied once per vertex so the
+	 * fragment stage never reads the uniform. With `bakeShade` it is folded
+	 * straight into `vShade` (zero fragment cost); otherwise it travels as
+	 * one flat `vBrightness` varying and costs a single multiply per pixel.
+	 * The paired fragment stage MUST declare `vBrightness` when bakeShade is
+	 * false.
+	 */
+	brightness?: boolean;
 }
 
 type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
@@ -68,6 +79,7 @@ type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
 //   1: vTileLayer   (always)
 //   2: vWorldPosition (optional)
 //   3: vTangent     (optional)
+//   4: vBrightness  (optional, flat, only without bakeShade)
 //   5: vNormal      (always unless bakeShade)
 //   6: vAO          (optional)
 //   7: vLight       (always unless bakeShade)
@@ -113,6 +125,8 @@ function vsOutFields(opts: ResolvedVertexShaderOptions): string {
 	if (opts.worldPosition) f.push("  @location(2) vWorldPosition : vec3<f32>,");
 	if (opts.tangent)
 		f.push("  @location(3) @interpolate(flat) vTangent : vec3<f32>,");
+	if (opts.brightness && !opts.bakeShade)
+		f.push("  @location(4) @interpolate(flat) vBrightness : f32,");
 	if (!opts.bakeShade)
 		f.push("  @location(5) @interpolate(flat) vNormal : vec3<f32>,");
 	if (opts.ao) f.push("  @location(6) vAO : f32,");
@@ -327,9 +341,16 @@ function buildWorldAndCameraBlock(
 	return lines.join("\n");
 }
 
+/**
+ * Sun/wetness/brightness terms are folded on the CPU once per lighting change
+ * into `shadeSunScale` / `shadeWetBright` and uploaded as uniforms. Both were
+ * recomputed in every vertex even though neither varies across a draw call
+ * (or across frames — the sun is quantized). bakeShade materials always enable
+ * brightness, so `shadeWetBright` already includes it.
+ */
 function buildGeneralShadeAssignment(): string {
 	return /* wgsl */ ` let sunI = shaderUniforms.sunLightIntensity;
- let skyScale = skyLight * 0.8 * (sunI + 0.2);
+ let skyScale = skyLight * shaderUniforms.shadeSunScale;
 
  let lightMix = clamp(
  vec3<f32>(skyScale) +
@@ -349,20 +370,17 @@ function buildGeneralShadeAssignment(): string {
  dot(shaderUniforms.lightDirection, sharedNormal)
  );
 
- let wetnessFactor =
- 1.0 - shaderUniforms.wetness * 0.35;
-
  let directLight =
  1.0 + diffuseTerm * sunI * skyLight;
 
  out.vShade =
- vec3<f32>(wetnessFactor * directLight * faceShade) *
+ vec3<f32>(shaderUniforms.shadeWetBright * directLight * faceShade) *
  lightMix;`;
 }
 
 function buildRawUnitsShadeAssignment(): string {
 	return /* wgsl */ ` let sunI = shaderUniforms.sunLightIntensity;
- let skyScale = skyLight * 0.8 * (sunI + 0.2);
+ let skyScale = skyLight * shaderUniforms.shadeSunScale;
 
  let lightMix = clamp(
  vec3<f32>(skyScale) +
@@ -393,14 +411,11 @@ function buildRawUnitsShadeAssignment(): string {
  let faceShade =
  select(0.78, verticalShade, axis == 1u);
 
- let wetnessFactor =
- 1.0 - shaderUniforms.wetness * 0.35;
-
  let directLight =
  1.0 + diffuseTerm * sunI * skyLight;
 
  out.vShade =
- vec3<f32>(wetnessFactor * directLight * faceShade) *
+ vec3<f32>(shaderUniforms.shadeWetBright * directLight * faceShade) *
  lightMix;`;
 }
 
@@ -448,6 +463,10 @@ function vsOutAssignments(opts: ResolvedVertexShaderOptions): string {
 		a.push(
 			" out.vDiffuse = max(0.0, dot(shaderUniforms.lightDirection, sharedNormal));",
 		);
+	}
+
+	if (opts.brightness && !opts.bakeShade) {
+		a.push(" out.vBrightness = shaderUniforms.brightness;");
 	}
 
 	if (opts.fog) {
@@ -522,6 +541,7 @@ export function buildPackedVertexWGSL(
 
 		ao: opts.ao ?? true,
 		bakeShade,
+		brightness: opts.brightness ?? false,
 	};
 
 	/*

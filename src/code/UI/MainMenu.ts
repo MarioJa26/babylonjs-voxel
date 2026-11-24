@@ -131,6 +131,7 @@ export class MainMenu {
 	private readonly optionsScreen!: HTMLElement;
 	private optFov!: { row: HTMLElement; getValue: () => number };
 	private optSens!: { row: HTMLElement; getValue: () => number };
+	private optBrightness!: { row: HTMLElement; getValue: () => number };
 	private optRenderDist!: { row: HTMLElement; getValue: () => number };
 	private optVertDist!: { row: HTMLElement; getValue: () => number };
 	private optRenderScale!: { row: HTMLElement; getValue: () => number };
@@ -469,6 +470,14 @@ export class MainMenu {
 			Math.round(settings.mouseSensitivity * 1000),
 			(v) => (v / 1000).toFixed(3),
 		);
+		this.optBrightness = this.makeOptionSlider(
+			"Brightness",
+			25,
+			200,
+			5,
+			Math.round(settings.brightness * 100),
+			(v) => `${v}%`,
+		);
 		this.optRenderDist = this.makeOptionSlider(
 			"Render Distance",
 			1,
@@ -523,6 +532,7 @@ export class MainMenu {
 		for (const opt of [
 			this.optFov,
 			this.optSens,
+			this.optBrightness,
 			this.optRenderDist,
 			this.optVertDist,
 			this.optRenderScale,
@@ -550,6 +560,7 @@ export class MainMenu {
 			const next = loadGameSettings();
 			next.fov = this.optFov.getValue();
 			next.mouseSensitivity = this.optSens.getValue() / 1000;
+			next.brightness = this.optBrightness.getValue() / 100;
 			next.renderDistance = this.optRenderDist.getValue();
 			next.verticalRenderDistance = this.optVertDist.getValue();
 			next.renderScale = this.optRenderScale.getValue() / 100;

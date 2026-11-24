@@ -341,6 +341,7 @@ let lastLx = Number.NaN;
 let lastLy = Number.NaN;
 let lastLz = Number.NaN;
 let lastSunIntensity = Number.NaN;
+let lastBrightness = Number.NaN;
 let lastUnderWater: boolean | null = null;
 
 /**
@@ -418,12 +419,14 @@ function updateUniforms() {
 		: MapFog.getFogColor(isUnderWater);
 	const fogInvRange = 1.0 / Math.max(end - start, 1e-4);
 	const rainAmount = q(WorldEnvironment.instance?.rainIntensity ?? 0);
+	const brightness = SETTING_PARAMS.BRIGHTNESS;
 
 	const staticChanged =
 		lxQ !== lastLx ||
 		lyQ !== lastLy ||
 		lzQ !== lastLz ||
-		sunQ !== lastSunIntensity;
+		sunQ !== lastSunIntensity ||
+		brightness !== lastBrightness;
 
 	const fogChanged =
 		isUnderWater !== lastUnderWater ||
@@ -445,9 +448,11 @@ function updateUniforms() {
 		lastLy = lyQ;
 		lastLz = lzQ;
 		lastSunIntensity = sunQ;
+		lastBrightness = brightness;
 
 		setUniformBoth("lightDirection", lightDirScratch);
 		setUniformBoth("sunLightIntensity", sunQ);
+		setUniformBoth("brightness", brightness);
 	}
 
 	if (fogChanged) {

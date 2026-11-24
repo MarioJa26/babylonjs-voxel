@@ -120,9 +120,18 @@ fn mainVertex(input : VertexInput) -> VSOut {
     0.0
   );
 
-  out.vShade =
+  /*
+   * Brightness is a rarely-changed CPU-side setting. Fold it into the two
+   * varyings here so the fragment stage pays nothing for it — scaling both
+   * mix() inputs is exactly equivalent to scaling the final colour.
+   */
+  let brightness =
+    shaderUniforms.brightness;
+
+  out.vShade = (
     ndotl * sun * 0.6 +
-    0.48 * (sun + 0.2);
+    0.48 * (sun + 0.2)
+  ) * brightness;
 
   let viewVec =
     shaderSystem.cameraPosition -
@@ -186,7 +195,7 @@ fn mainVertex(input : VertexInput) -> VSOut {
     baseFogColor,
     skyboxColor,
     skyBlend
-  );
+  ) * brightness;
 
   return out;
 }
@@ -445,7 +454,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
       fogColor,
       waterColor,
       fogFactor
-    ),
+    ) * shaderUniforms.brightness,
     1.0
   );
 }
@@ -465,6 +474,7 @@ const TERRAIN_UNIFORMS = [
 	{ name: "cameraPosition", type: "vec3<f32>" },
 	{ name: "lightDirection", type: "vec3<f32>" },
 	{ name: "sunLightIntensity", type: "f32" },
+	{ name: "brightness", type: "f32" },
 	{ name: "atlasTileSize", type: "f32" },
 	{ name: "textureScale", type: "f32" },
 	{ name: "useTexture", type: "f32" },
@@ -483,6 +493,7 @@ const WATER_UNIFORMS = [
 	{ name: "cameraPosition", type: "vec3<f32>" },
 	{ name: "lightDirection", type: "vec3<f32>" },
 	{ name: "sunLightIntensity", type: "f32" },
+	{ name: "brightness", type: "f32" },
 	{ name: "fogInfos", type: "vec4<f32>" },
 	{ name: "fogColor", type: "vec3<f32>" },
 	{ name: "fogInvRange", type: "f32" },
@@ -516,6 +527,7 @@ export interface DistantTerrainMaterialOptions {
 
 function setEnvironmentDefaults(material: ShaderMaterial): void {
 	setShaderUniform(material, "sunLightIntensity", 1);
+	setShaderUniform(material, "brightness", 1);
 
 	setShaderUniform(material, "lightDirection", DEFAULT_LIGHT_DIRECTION);
 

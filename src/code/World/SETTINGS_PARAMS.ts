@@ -74,6 +74,11 @@ export const SETTING_PARAMS = {
 	// --- Lighting ---
 	HEMISPHERIC_LIGHT_INTENSITY: 1.0,
 
+	// Player-facing brightness multiplier (0.25 = very dark … 2.0 = very bright).
+	// Applied as a final colour scalar in every fragment shader so it acts like a
+	// display-gamma / exposure knob without touching the day-night cycle.
+	BRIGHTNESS: 1.0,
+
 	// --- Mob lighting (voxel-tinted thin-instance colors) ---
 	// How many mob instances may resample voxel light per frame.
 	// 0 = update every registered mob every tick (tick still gated by HZ).

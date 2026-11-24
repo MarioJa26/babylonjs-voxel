@@ -36,6 +36,8 @@ export interface GameSettings {
 	hitmarkerEnabled: boolean;
 	/** First-person held-item walk bob amplitude, 0 (off) .. 1 (full). */
 	heldItemBobAmplitude: number;
+	/** Overall brightness multiplier, 0.25 (very dark) .. 2.0 (very bright). */
+	brightness: number;
 }
 
 const STORAGE_KEY = "b102.settings.v1";
@@ -55,6 +57,7 @@ const DEFAULTS: GameSettings = {
 	crosshairVisible: DEFAULT_CROSSHAIR_OPTIONS.crosshairVisible,
 	hitmarkerEnabled: DEFAULT_CROSSHAIR_OPTIONS.hitmarkerEnabled,
 	heldItemBobAmplitude: 1,
+	brightness: SETTING_PARAMS.BRIGHTNESS,
 };
 
 function clamp(v: number, min: number, fallback: number, max: number): number {
@@ -128,6 +131,12 @@ export function loadGameSettings(): GameSettings {
 				defaults.heldItemBobAmplitude,
 				1,
 			),
+			brightness: clamp(
+				parsed.brightness ?? defaults.brightness,
+				0.25,
+				defaults.brightness,
+				2,
+			),
 		};
 	} catch {
 		return defaults;
@@ -149,5 +158,6 @@ export function applyGameSettingsToEngine(
 	SETTING_PARAMS.CAMERA_FOV = Math.round(settings.fov);
 	SETTING_PARAMS.RENDER_SCALE = settings.renderScale;
 	SETTING_PARAMS.ENABLE_MSAA = settings.msaaEnabled;
+	SETTING_PARAMS.BRIGHTNESS = settings.brightness;
 	return settings;
 }

@@ -47,6 +47,7 @@ const LOD4_OPAQUE_VERTEX_OPTIONS = {
 	boundarySentinel: false,
 	ao: false,
 	bakeShade: true,
+	brightness: true,
 } as const;
 
 const LOD4_WATER_VERTEX_OPTIONS = {
@@ -65,6 +66,7 @@ const LOD4_WATER_VERTEX_OPTIONS = {
 	boundarySentinel: false,
 	ao: false,
 	bakeShade: true,
+	brightness: true,
 } as const;
 
 /**
@@ -316,11 +318,23 @@ function buildCommonMaterial(
 				type: "f32",
 			},
 			{
+				name: "brightness",
+				type: "f32",
+			},
+			{
 				name: "time",
 				type: "f32",
 			},
 			{
 				name: "wetness",
+				type: "f32",
+			},
+			{
+				name: "shadeSunScale",
+				type: "f32",
+			},
+			{
+				name: "shadeWetBright",
 				type: "f32",
 			},
 			{
@@ -349,8 +363,11 @@ function buildCommonMaterial(
 	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles | 0);
 
 	setShaderUniform(material, "sunLightIntensity", 1);
+	setShaderUniform(material, "brightness", 1);
 	setShaderUniform(material, "time", 0);
 	setShaderUniform(material, "wetness", 0);
+	setShaderUniform(material, "shadeSunScale", 0.96);
+	setShaderUniform(material, "shadeWetBright", 1);
 	setShaderUniform(material, "fogInfos", [0, 0, 1000, 0]);
 	setShaderUniform(material, "fogColor", [0.6, 0.7, 0.9]);
 	setShaderUniform(material, "lightDirection", [0, 1, 0]);

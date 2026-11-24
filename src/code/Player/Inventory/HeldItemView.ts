@@ -23,6 +23,7 @@ import {
 import { Map1 } from "@/code/Maps/Map1";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
+import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { isRegisteredBlockId } from "@/code/World/Shape/BlockShapes";
 import {
 	getDiffuseArray,
@@ -402,11 +403,14 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let specularIntensity =
     0.25 + wetness * 0.45;
 
-  return vec4<f32>(
+  let litColor =
     diffuseRGB * lightMix +
     vec3<f32>(specularIntensity) *
       specular *
-      localSunIntensity,
+      localSunIntensity;
+
+  return vec4<f32>(
+    litColor * shaderUniforms.brightness,
     tex.a
   );
 }
@@ -594,11 +598,14 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let specularIntensity =
     0.25 + wetness * 0.45;
 
-  return vec4<f32>(
+  let litColor =
     diffuseRGB * lightMix * directLight +
     vec3<f32>(specularIntensity) *
       specularPower *
-      localSunIntensity,
+      localSunIntensity;
+
+  return vec4<f32>(
+    litColor * shaderUniforms.brightness,
     tex.a
   );
 }
@@ -618,6 +625,7 @@ function createHeldItemMaterial(name: string): ShaderMaterial {
 			{ name: "lightColor", type: "vec3<f32>" },
 			{ name: "lightDirection", type: "vec3<f32>" },
 			{ name: "sunLightIntensity", type: "f32" },
+			{ name: "brightness", type: "f32" },
 			{ name: "skyLightLevel", type: "f32" },
 			{ name: "wetness", type: "f32" },
 		],
@@ -644,6 +652,7 @@ function createHeldBlockMaterial(name: string): ShaderMaterial {
 			{ name: "lightColor", type: "vec3<f32>" },
 			{ name: "lightDirection", type: "vec3<f32>" },
 			{ name: "sunLightIntensity", type: "f32" },
+			{ name: "brightness", type: "f32" },
 			{ name: "skyLightLevel", type: "f32" },
 			{ name: "wetness", type: "f32" },
 		],
@@ -971,6 +980,7 @@ export class HeldItemView {
 		setShaderUniform(entry.material, "lightDirection", [sunX, sunY, sunZ]);
 
 		setShaderUniform(entry.material, "sunLightIntensity", sunIntensity);
+		setShaderUniform(entry.material, "brightness", SETTING_PARAMS.BRIGHTNESS);
 
 		entry.sunVersion = this._sunVersion;
 	}
@@ -1340,6 +1350,7 @@ export class HeldItemView {
 		setShaderUniform(material, "uOffset", [0, 0]);
 		setShaderVector3(material, "lightColor", [1, 1, 1]);
 		setShaderUniform(material, "skyLightLevel", 0);
+		setShaderUniform(material, "brightness", SETTING_PARAMS.BRIGHTNESS);
 
 		setShaderTexture(material, "diffuseTexture", getWhiteFallback(Map1.engine));
 
@@ -1417,6 +1428,7 @@ export class HeldItemView {
 
 		setShaderVector3(material, "lightColor", [1, 1, 1]);
 		setShaderUniform(material, "skyLightLevel", 0);
+		setShaderUniform(material, "brightness", SETTING_PARAMS.BRIGHTNESS);
 
 		setShaderTexture(
 			material,

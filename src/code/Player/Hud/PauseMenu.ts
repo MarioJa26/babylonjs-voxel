@@ -418,6 +418,20 @@ export class PauseMenu {
 		container.appendChild(this.createSeparator("Graphics"));
 
 		this.createSlider(container, {
+			label: "Brightness",
+			min: 25,
+			max: 200,
+			step: 5,
+			initialValue: Math.round(SETTING_PARAMS.BRIGHTNESS * 100),
+			format: (value) => `${value}%`,
+			onInput: (value) => {
+				const brightness = value / 100;
+				SETTING_PARAMS.BRIGHTNESS = brightness;
+				this.persistSetting("brightness", brightness);
+			},
+		});
+
+		this.createSlider(container, {
 			label: "Render Distance",
 			min: 1,
 			max: 32,

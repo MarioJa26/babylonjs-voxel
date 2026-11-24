@@ -128,30 +128,10 @@ struct VSOut {
   @location(15) @interpolate(flat) vShade : vec3<f32>,
 };
 
-fn hash12(p : vec2<f32>) -> f32 {
-  var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
-  p3 = p3 + dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
-}
-
-fn applyDitherFade(coord : vec2<f32>) {
-  if (abs(shaderUniforms.lodFadeDirection) < 0.5) { return; }
-
-  let n = hash12(
-    floor(coord) +
-    vec2<f32>(
-      shaderUniforms.lodFadeSeed,
-      shaderUniforms.lodFadeSeed * 1.37
-    )
-  );
-
-  if (shaderUniforms.lodFadeDirection > 0.0) {
-    if (n > shaderUniforms.lodFadeProgress) { discard; }
-  } else {
-    if (n < shaderUniforms.lodFadeProgress) { discard; }
-  }
-}
-
+// The LOD dither fade was driven by \`lodFadeDirection\`, which is pinned to 0
+// at creation and never written again. Its hash and both discard branches were
+// unreachable, so they are not generated at all rather than branched around
+// once per fragment.
 fn applyTintBucket(color : vec3<f32>, bucket : u32) -> vec3<f32> {
   let idx = i32(min(bucket, 5u));
   let lum = dot(color, vec3<f32>(0.299, 0.587, 0.114));
@@ -160,8 +140,6 @@ fn applyTintBucket(color : vec3<f32>, bucket : u32) -> vec3<f32> {
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-  applyDitherFade(in.pos.xy);
-
   let singleTileUV = fract(in.vUV);
 
   var diffuseColor = textureSampleLevel(
@@ -221,6 +199,7 @@ interface Lod3VertexOptions {
 	viewDir: boolean;
 	ao: boolean;
 	bakeShade: boolean;
+	brightness: boolean;
 	boundarySentinel?: boolean;
 	boundaryFlag?: boolean;
 }
@@ -234,6 +213,7 @@ const LOD3_OPAQUE_VERTEX_OPTIONS: Lod3VertexOptions = {
 	viewDir: false,
 	ao: false,
 	bakeShade: true,
+	brightness: true,
 };
 
 const LOD3_CUTOUT_VERTEX_OPTIONS: Lod3VertexOptions = {
@@ -246,6 +226,7 @@ const LOD3_CUTOUT_VERTEX_OPTIONS: Lod3VertexOptions = {
 	viewDir: false,
 	ao: false,
 	bakeShade: true,
+	brightness: true,
 };
 
 const LOD3_TRANSPARENT_VERTEX_OPTIONS: Lod3VertexOptions = {
@@ -258,6 +239,7 @@ const LOD3_TRANSPARENT_VERTEX_OPTIONS: Lod3VertexOptions = {
 	viewDir: false,
 	ao: false,
 	bakeShade: true,
+	brightness: true,
 	boundarySentinel: false,
 	boundaryFlag: true,
 };
@@ -332,7 +314,10 @@ function createLod3Material(
 		{ name: "atlasMaxTilesU32", type: "u32" },
 		{ name: "lightDirection", type: "vec3<f32>" },
 		{ name: "sunLightIntensity", type: "f32" },
+		{ name: "brightness", type: "f32" },
 		{ name: "wetness", type: "f32" },
+		{ name: "shadeSunScale", type: "f32" },
+		{ name: "shadeWetBright", type: "f32" },
 		{ name: "lodFadeProgress", type: "f32" },
 		{ name: "lodFadeDirection", type: "f32" },
 		{ name: "lodFadeSeed", type: "f32" },
@@ -374,7 +359,10 @@ function createLod3Material(
 	setShaderUniform(material, "atlasMaxTiles", opts.atlasMaxTiles);
 	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles);
 	setShaderUniform(material, "sunLightIntensity", 1);
+	setShaderUniform(material, "brightness", 1);
 	setShaderUniform(material, "wetness", 0);
+	setShaderUniform(material, "shadeSunScale", 0.96);
+	setShaderUniform(material, "shadeWetBright", 1);
 	setShaderUniform(material, "lodFadeProgress", 1);
 	setShaderUniform(material, "lodFadeDirection", 0);
 	setShaderUniform(material, "lodFadeSeed", 0);
