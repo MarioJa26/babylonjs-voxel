@@ -15,31 +15,32 @@ import {
 	type LiquidDefinition,
 	WATER_LIQUID,
 } from "@/code/World/Liquid/LiquidRegistry";
+
+import { carryMeshCulled } from "../../MeshVisibility";
+import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import {
 	createLod2CutoutMaterial,
 	createLod2OpaqueMaterial,
 	createLod2TransparentMaterial,
-} from "../../Light/Lod2ShaderLite";
+} from "../../Shader/Lod2ShaderLite";
 import {
 	createLod3CutoutMaterial,
 	createLod3OpaqueMaterial,
 	createLod3TransparentMaterial,
-} from "../../Light/Lod3ShaderLite";
+} from "../../Shader/Lod3ShaderLite";
 import {
 	createLod4OpaqueMaterial,
 	createLod4TransparentMaterial,
-} from "../../Light/Lod4ShaderLite";
+} from "../../Shader/Lod4ShaderLite";
 import {
 	createChunkCutoutMaterial,
 	createChunkOpaqueMaterial,
 	createChunkTransparentMaterial,
-} from "../../Light/OpaqueShaderLite";
+} from "../../Shader/OpaqueShaderLite";
 import {
 	computeSunLightState,
 	type SunLightState,
-} from "../../Light/SunLightState";
-import { carryMeshCulled } from "../../MeshVisibility";
-import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
+} from "../../Shader/SunLightState";
 import { packAtlas } from "../../Texture/AtlasPacker";
 import {
 	atlasTileSize,
@@ -327,11 +328,7 @@ function setStaticMaterialUniforms(material: ShaderMaterial): void {
 		material === lod4TransparentMaterial
 	) {
 		setShaderUniform(material, "shadeSunScale", cachedUniforms.shadeSunScale);
-		setShaderUniform(
-			material,
-			"shadeWetBright",
-			cachedUniforms.shadeWetBright,
-		);
+		setShaderUniform(material, "shadeWetBright", cachedUniforms.shadeWetBright);
 	}
 }
 
