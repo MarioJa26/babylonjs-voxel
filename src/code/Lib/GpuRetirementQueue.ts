@@ -5,7 +5,7 @@ import {
 	type StorageBuffer,
 } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
-import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer";
+import { onGpuWorkDone } from "@/code/World/Shader/liteGpuBuffer";
 
 /**
  * One GPU fence for all deferred resource retirement, instead of one promise

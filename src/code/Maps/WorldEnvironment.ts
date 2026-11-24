@@ -23,8 +23,8 @@ import {
 } from "@babylonjs/lite";
 import { clamp01 } from "../Generation/CaveCarver";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
-import { createSkyMaterial } from "../World/Light/SkyShaderLite";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
+import { createSkyMaterial } from "../World/Shader/SkyShaderLite";
 
 const DOME_MOVE_THRESHOLD = 1.25;
 /**

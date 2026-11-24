@@ -56,26 +56,26 @@ import {
 } from "../World/Chunk/Simulation/WaterSimulation";
 import { FarTileManager } from "../World/FarTiles/FarTileManager";
 import {
+	getLiquidDefinitionBySourceId,
+	isLiquidBlockId,
+} from "../World/Liquid/LiquidRegistry";
+import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
+import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
+import {
 	cycleGpuProbe,
 	getGpuExecSnapshot,
 	getLastBisectSummary,
 	isBisectRunning,
 	isLiveSortEnabled,
 	runBucketBisect,
-} from "../World/Light/gpuBottleneckProbe";
+} from "../World/Shader/gpuBottleneckProbe";
 import {
 	getGpuPressureFactor,
 	getGpuPressureMs,
 	onGpuWorkDone,
 	publishGpuPressure,
 	resetGpuPressure,
-} from "../World/Light/liteGpuBuffer";
-import {
-	getLiquidDefinitionBySourceId,
-	isLiquidBlockId,
-} from "../World/Liquid/LiquidRegistry";
-import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
-import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
+} from "../World/Shader/liteGpuBuffer";
 import { onSpawnPrepared } from "../World/SpawnPoint";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import {

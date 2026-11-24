@@ -23,17 +23,18 @@ import { WorldEnvironment } from "@/code/Maps/WorldEnvironment";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
-import {
-	createDistantTerrainMaterial,
-	createDistantWaterMaterial,
-} from "@/code/World/Light/DistantTerrainShaderLite";
-import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer";
+
 import {
 	type LiquidDefinition,
 	WATER_LIQUID,
 } from "@/code/World/Liquid/LiquidRegistry";
 import { setMeshBaseVisible } from "@/code/World/MeshVisibility";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
+import {
+	createDistantTerrainMaterial,
+	createDistantWaterMaterial,
+} from "@/code/World/Shader/DistantTerrainShaderLite";
+import { onGpuWorkDone } from "@/code/World/Shader/liteGpuBuffer";
 import {
 	atlasTileSize,
 	getDiffuseTexture2D,

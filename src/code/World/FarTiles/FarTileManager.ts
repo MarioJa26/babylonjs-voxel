@@ -31,13 +31,16 @@ import {
 import { frameProfiler } from "../../Lib/FrameProfiler";
 import { ChunkWorkerPool } from "../Chunk/ChunkWorkerPool";
 import type { FarTileGeneratedMessage } from "../Chunk/DataStructures/WorkerMessageType";
+import { setMeshBaseVisible } from "../MeshVisibility";
 import {
 	bindFarTileBuffers,
 	createFarTileTerrainMaterial,
 	createFarTileWaterMaterial,
-} from "../Light/FarTileShaderLite";
-import { getGpuPressureFactor, onGpuWorkDone } from "../Light/liteGpuBuffer.js";
-import { setMeshBaseVisible } from "../MeshVisibility";
+} from "../Shader/FarTileShaderLite";
+import {
+	getGpuPressureFactor,
+	onGpuWorkDone,
+} from "../Shader/liteGpuBuffer.js";
 import {
 	atlasTileSize,
 	getDiffuseTexture2D,

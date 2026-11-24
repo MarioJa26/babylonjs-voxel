@@ -43,7 +43,7 @@ import {
 	type SprintEmitterState,
 } from "@/code/Maps/PlayParticles";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
+import { onGpuWorkDone } from "@/code/World/Shader/liteGpuBuffer.js";
 import { HeldItemView } from "../Player/Inventory/HeldItemView";
 import {
 	applyRigSkin,

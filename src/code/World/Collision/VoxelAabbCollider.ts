@@ -8,7 +8,7 @@ import {
 	type Vec3,
 } from "@babylonjs/lite";
 import { copyVec3, Quaternion } from "@/code/Lib/Math";
-import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
+import { onGpuWorkDone } from "@/code/World/Shader/liteGpuBuffer.js";
 import type { ShapeDefinition } from "../Shape/BlockShapes";
 import { BlockType, isPassThroughBlock } from "../Texture/BlockType";
 

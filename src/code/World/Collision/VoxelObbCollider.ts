@@ -11,7 +11,7 @@ import {
 	vec3,
 } from "@babylonjs/lite";
 import { copyVec3, Quaternion, setVec3 } from "@/code/Lib/Math";
-import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
+import { onGpuWorkDone } from "@/code/World/Shader/liteGpuBuffer.js";
 import { Axis } from "./VoxelAabbCollider";
 
 type IsSolidBlockAt = (x: number, y: number, z: number) => boolean;

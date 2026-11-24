@@ -39,7 +39,7 @@ import {
 import { explode } from "@/code/World/Explosion";
 import { TNT_BLAST_RADIUS, tntBlastRadius } from "@/code/World/ExplosionSim";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
-import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
+import { onGpuWorkDone } from "@/code/World/Shader/liteGpuBuffer.js";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import {
 	computeFenceNeighborMask,

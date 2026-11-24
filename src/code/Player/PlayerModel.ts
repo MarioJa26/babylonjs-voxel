@@ -11,11 +11,11 @@ import {
 	type Texture2D,
 } from "@babylonjs/lite";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
+import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import {
 	computeSunLightState,
 	type SunLightState,
-} from "@/code/World/Light/SunLightState";
-import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
+} from "@/code/World/Shader/SunLightState";
 
 // Rig metrics must precede constants derived from them.
 export const PLAYER_MODEL_HEIGHT = 1.8;
