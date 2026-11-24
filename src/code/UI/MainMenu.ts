@@ -1,3 +1,4 @@
+import { renderToWebStream } from "vue/server-renderer";
 import {
 	getPlayerName,
 	getSavedServers,
@@ -874,12 +875,12 @@ export class MainMenu {
 			return;
 		}
 
-		const rows: HTMLElement[] = [];
 		const fragment = document.createDocumentFragment();
+		const rowsByUrl = new Map<string, HTMLElement>();
 
 		for (const server of servers) {
 			const row = this.serverRow(server);
-			rows.push(row);
+			rowsByUrl.set(server.url, row);
 			fragment.appendChild(row);
 		}
 
@@ -888,33 +889,72 @@ export class MainMenu {
 		try {
 			const statuses = await fetchAllStatuses(servers);
 
-			// Ignore an older request if the list was refreshed again while
-			// server statuses were being fetched.
+			// A newer refresh has already replaced these rows.
 			if (refreshVersion !== this.serverRefreshVersion) {
 				return;
 			}
 
-			const count = Math.min(servers.length, rows.length, statuses.length);
+			const statusCount = Math.min(servers.length, statuses.length);
 
-			for (let i = 0; i < count; i++) {
-				this.updateServerRow(rows[i], servers[i], statuses[i]);
+			for (let index = 0; index < statusCount; index++) {
+				const server = servers[index];
+				const row = rowsByUrl.get(server.url);
+
+				if (row) {
+					this.updateServerRow(row, server, statuses[index]);
+				}
 			}
 
-			// Leave unmatched rows in their existing "Pinging…" state, but make
-			// the incomplete response visible instead of throwing at runtime.
 			if (statuses.length < servers.length) {
+				// Mark servers without a returned status as offline instead of
+				// leaving them indefinitely in the "Pinging…" state.
+				for (let index = statuses.length; index < servers.length; index++) {
+					const server = servers[index];
+					const row = rowsByUrl.get(server.url);
+
+					if (row) {
+						this.updateServerRow(row, server, {
+							name: server.name,
+							version: "",
+							online: false,
+							motd: "Status unavailable",
+							players: 0,
+							maxPlayers: 0,
+							pingMs: -1,
+						});
+					}
+				}
+
 				setStatus(
 					this.mpStatusEl,
 					`Received status for ${statuses.length} of ${servers.length} servers.`,
 					true,
 				);
 			}
-		} catch (err: unknown) {
+		} catch (error: unknown) {
 			if (refreshVersion !== this.serverRefreshVersion) {
 				return;
 			}
 
-			const message = err instanceof Error ? err.message : String(err);
+			const message = error instanceof Error ? error.message : String(error);
+
+			// Ensure every visible row leaves the temporary "Pinging…" state.
+			const offlineStatus: ServerStatus = {
+				name: "Error",
+				version: "",
+				online: false,
+				motd: "Could not reach server",
+				players: 0,
+				maxPlayers: 0,
+				pingMs: -1,
+			};
+
+			for (const server of servers) {
+				const row = rowsByUrl.get(server.url);
+				if (row) {
+					this.updateServerRow(row, server, offlineStatus);
+				}
+			}
 
 			setStatus(
 				this.mpStatusEl,
