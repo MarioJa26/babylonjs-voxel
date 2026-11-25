@@ -345,6 +345,9 @@ const OPAQUE_VERTEX_OPTIONS: VertexShaderOptions = {
 	ao: true,
 	bakeShade: false,
 	brightness: true,
+
+	// No fragment stage here reads vNormal; do not compute/export it.
+	normal: false,
 };
 
 const TRANSPARENT_VERTEX_OPTIONS: VertexShaderOptions = {
@@ -362,6 +365,9 @@ const TRANSPARENT_VERTEX_OPTIONS: VertexShaderOptions = {
 	ao: true,
 	bakeShade: false,
 	brightness: true,
+
+	// No fragment stage here reads vNormal; do not compute/export it.
+	normal: false,
 };
 
 const CUTOUT_VERTEX_OPTIONS: VertexShaderOptions = {
@@ -382,6 +388,9 @@ const CUTOUT_VERTEX_OPTIONS: VertexShaderOptions = {
 	ao: true,
 	bakeShade: false,
 	brightness: true,
+
+	// No fragment stage here reads vNormal; do not compute/export it.
+	normal: false,
 };
 
 export interface ChunkMaterialOptions {

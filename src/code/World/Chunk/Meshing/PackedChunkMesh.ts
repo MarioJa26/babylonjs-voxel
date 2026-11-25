@@ -117,8 +117,6 @@ const FACE_BASE_INSTANCE_INDEX = 0;
 const ARENA_INSTANCE_INDEX = 1;
 const OFFSET_BASE_INSTANCE_INDEX = 2;
 
-const MIN_INSTANCE_DATA_ELEMENTS = INSTANCE_FLOATS;
-
 // Retain the existing safety limit.
 const MAX_INSTANCE_DATA_ELEMENTS = 1 << 23;
 
@@ -180,19 +178,6 @@ let sceneRef: SceneContext | null = null;
 // arena growth depends on: a regrow installs the new buffer before freeing
 // the old one, and freeing out of order can strand a buffer still referenced
 // by the new mesh.
-
-function instanceCapacityFor(needLen: number): number {
-	if (needLen <= MIN_INSTANCE_DATA_ELEMENTS) {
-		return MIN_INSTANCE_DATA_ELEMENTS;
-	}
-
-	/*
-	 * Computing the exponent avoids repeatedly multiplying in a loop.
-	 * MAX_INSTANCE_DATA_ELEMENTS is below the range where Math.log2 loses
-	 * integer precision.
-	 */
-	return 2 ** Math.ceil(Math.log2(needLen));
-}
 
 function scheduleDeferredDisposal(mesh: Mesh): void {
 	GPU_RETIREMENT_QUEUE.retireMesh(mesh);

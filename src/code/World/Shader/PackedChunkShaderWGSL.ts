@@ -71,6 +71,15 @@ export interface VertexShaderOptions {
 	 * false.
 	 */
 	brightness?: boolean;
+	/**
+	 * Emit the flat world-space face normal varying (`vNormal` @5). Defaults to
+	 * true (the historical behaviour: emitted whenever bakeShade is off), so
+	 * existing fragment stages keep working. Fragment stages that never read
+	 * `in.vNormal` (the chunk opaque/water/cutout shaders) should pass false:
+	 * Tint does not link-strip unused outputs, so the normal would otherwise be
+	 * computed and exported for nothing. Ignored (always false) with bakeShade.
+	 */
+	normal?: boolean;
 }
 
 type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
@@ -80,7 +89,7 @@ type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
 //   2: vWorldPosition (optional)
 //   3: vTangent     (optional)
 //   4: vBrightness  (optional, flat, only without bakeShade)
-//   5: vNormal      (always unless bakeShade)
+//   5: vNormal      (optional, flat, only without bakeShade, see `normal`)
 //   6: vAO          (optional)
 //   7: vLight       (always unless bakeShade)
 //   9: vMeta        (optional)
@@ -127,7 +136,7 @@ function vsOutFields(opts: ResolvedVertexShaderOptions): string {
 		f.push("  @location(3) @interpolate(flat) vTangent : vec3<f32>,");
 	if (opts.brightness && !opts.bakeShade)
 		f.push("  @location(4) @interpolate(flat) vBrightness : f32,");
-	if (!opts.bakeShade)
+	if (opts.normal)
 		f.push("  @location(5) @interpolate(flat) vNormal : vec3<f32>,");
 	if (opts.ao) f.push("  @location(6) vAO : f32,");
 	if (!opts.bakeShade)
@@ -151,6 +160,29 @@ function vsOutFields(opts: ResolvedVertexShaderOptions): string {
 	return f.join("\n");
 }
 
+/**
+ * Axis frame of the face. The face axis is 0..2 and the in-plane axes are the
+ * cyclic successors: U = (axis + 1) % 3, V = (axis + 2) % 3. For the one-hot
+ * axis vector eA that is exactly eU = eA.zxy and eV = eA.yzx, so no U_AXIS /
+ * V_AXIS / AXIS_BASIS tables (dynamically indexed const arrays, which many
+ * drivers spill to scratch memory) and no compare chains are needed.
+ */
+const AXIS_FRAME_WGSL = ` let eA = axisVec(axis);
+ let eU = eA.zxy;
+ let eV = eA.yzx;`;
+
+/**
+ * Atlas corner → (u, v) bit lookup. Replaces ATLAS_CORNER_LUT plus the
+ * per-vertex `(c ^ (c >> 1)) & 1` / `c >> 1` decode: each (face, corner) entry
+ * is stored directly as two bits (u | v << 1). Faces 0..3 live in
+ * ATLAS_PACK_LO (8 bits per face), faces 4..5 in ATLAS_PACK_HI.
+ */
+const ATLAS_DECODE_WGSL = ` let atlasWord = select(ATLAS_PACK_HI, ATLAS_PACK_LO, axisFace < 4u);
+ let atlasBits = (atlasWord >> (((axisFace & 3u) << 3u) | (corner << 1u))) & 3u;
+ let atlasU = atlasBits & 1u;
+ let atlasV = atlasBits >> 1u;
+ let swapUV = axisFace < 4u;`;
+
 function buildRawUnitsNormalBlock(
 	needsNormal: boolean,
 	needsTangent: boolean,
@@ -159,19 +191,17 @@ function buildRawUnitsNormalBlock(
 	const lines: string[] = [];
 
 	lines.push(" let cornerState = isBackFace << 1u;");
-	lines.push(" let uAxis = U_AXIS[axis];");
-	lines.push(" let vAxis = V_AXIS[axis];");
 
 	if (needsNormal || needsTangent || needsBitangent) {
-		lines.push(" let faceSign = select(1.0, -1.0, isBackFace != 0u);");
+		lines.push(" let faceSign = 1.0 - 2.0 * f32(isBackFace);");
 	}
 
 	if (needsNormal || needsBitangent) {
-		lines.push(" let sharedNormal = AXIS_BASIS[axis] * faceSign;");
+		lines.push(" let sharedNormal = eA * faceSign;");
 	}
 
 	if (needsTangent || needsBitangent) {
-		lines.push(" let sharedTangent = AXIS_BASIS[uAxis] * faceSign;");
+		lines.push(" let sharedTangent = eU * faceSign;");
 	}
 
 	if (needsBitangent) {
@@ -189,30 +219,28 @@ function buildPackedNormalBlock(
 	const lines: string[] = [];
 
 	lines.push(" let cornerState = (isBackFace << 1u) | flip;");
-	lines.push(" let uAxis = U_AXIS[axis];");
-	lines.push(" let vAxis = V_AXIS[axis];");
-	lines.push(" let faceSign = select(1.0, -1.0, isBackFace != 0u);");
+	lines.push(" let faceSign = 1.0 - 2.0 * f32(isBackFace);");
 	lines.push(" let isDiag = diagonalEnabled != 0u;");
 
+	// Always needed: the diagonal branch of the position block positions its
+	// corners along the diagonal tangent (DIAGONAL, 0, diagonalZ). The shared
+	// (axis/diagonal) tangent is only built when something actually consumes it.
+	lines.push(
+		" let diagonalZ = select(-DIAGONAL, DIAGONAL, diagonalVariant == 0u);",
+	);
+
 	if (needsNormal || needsBitangent) {
-		lines.push(" let axisNormal = AXIS_BASIS[axis] * faceSign;");
-		lines.push(
-			" let diagonalZ = select(-DIAGONAL, DIAGONAL, diagonalVariant == 0u);",
-		);
+		lines.push(" let axisNormal = eA * faceSign;");
 		lines.push(
 			" let diagonalNormal = vec3<f32>(diagonalZ * faceSign, 0.0, -DIAGONAL * faceSign);",
 		);
 		lines.push(
 			" let sharedNormal = select(axisNormal, diagonalNormal, isDiag);",
 		);
-	} else if (needsTangent) {
-		lines.push(
-			" let diagonalZ = select(-DIAGONAL, DIAGONAL, diagonalVariant == 0u);",
-		);
 	}
 
 	if (needsTangent || needsBitangent) {
-		lines.push(" let axisTangent = AXIS_BASIS[uAxis] * faceSign;");
+		lines.push(" let axisTangent = eU * faceSign;");
 		lines.push(" let diagonalTangent = vec3<f32>(DIAGONAL, 0.0, diagonalZ);");
 		lines.push(
 			" let sharedTangent = select(axisTangent, diagonalTangent, isDiag);",
@@ -232,13 +260,10 @@ function buildRawUnitsPositionBlock(): string {
 
  position =
  vec3<f32>(baseX, baseY, baseZ) +
- AXIS_BASIS[uAxis] * pu +
- AXIS_BASIS[vAxis] * pv;
+ eU * pu +
+ eV * pv;
 
- let atlasCorner = ATLAS_CORNER_LUT[axisFace * 4u + corner];
- let atlasU = (atlasCorner ^ (atlasCorner >> 1u)) & 1u;
- let atlasV = atlasCorner >> 1u;
- let swapUV = axisFace < 4u;
+${ATLAS_DECODE_WGSL}
 
  let atlasUF = f32(atlasU);
  let atlasVF = f32(atlasV);
@@ -265,42 +290,28 @@ function buildPackedPositionBlock(): string {
  let diagonalOffset = (cuF - 0.5) * faceWidth;
 
  position = vec3<f32>(
- baseX + sharedTangent.x * diagonalOffset,
+ baseX + DIAGONAL * diagonalOffset,
  baseY + cvF * faceHeight,
- baseZ + sharedTangent.z * diagonalOffset
+ baseZ + diagonalZ * diagonalOffset
  );
 
  faceU = cuF;
  faceV = cvF;
  } else {
- let fractionalX = fract(posX);
- let fractionalY = fract(baseY);
- let fractionalZ = fract(posZ);
-
- let uvOffsetU = select(
- select(fractionalX, fractionalZ, uAxis == 2u),
- fractionalY,
- uAxis == 1u
- );
-
- let uvOffsetV = select(
- select(fractionalX, fractionalZ, vAxis == 2u),
- fractionalY,
- vAxis == 1u
- );
+ // One-hot dot products pick the fractional part of the in-plane axes.
+ let fractions = vec3<f32>(fract(posX), fract(baseY), fract(posZ));
+ let uvOffsetU = dot(fractions, eU);
+ let uvOffsetV = dot(fractions, eV);
 
  let pu = cuF * faceWidth;
  let pv = cvF * faceHeight;
 
  position =
  vec3<f32>(baseX, baseY, baseZ) +
- AXIS_BASIS[uAxis] * pu +
- AXIS_BASIS[vAxis] * pv;
+ eU * pu +
+ eV * pv;
 
- let atlasCorner = ATLAS_CORNER_LUT[axisFace * 4u + corner];
- let atlasU = (atlasCorner ^ (atlasCorner >> 1u)) & 1u;
- let atlasV = atlasCorner >> 1u;
- let swapUV = axisFace < 4u;
+${ATLAS_DECODE_WGSL}
 
  faceU = select(
  f32(atlasU) * faceWidth + uvOffsetU,
@@ -433,7 +444,7 @@ function vsOutAssignments(opts: ResolvedVertexShaderOptions): string {
 		a.push(" out.vTangent = sharedTangent;");
 	}
 
-	if (!opts.bakeShade) {
+	if (opts.normal) {
 		a.push(" out.vNormal = sharedNormal;");
 	}
 
@@ -542,6 +553,9 @@ export function buildPackedVertexWGSL(
 		ao: opts.ao ?? true,
 		bakeShade,
 		brightness: opts.brightness ?? false,
+
+		// bakeShade replaces vNormal as well.
+		normal: !bakeShade && (opts.normal ?? true),
 	};
 
 	/*
@@ -561,26 +575,23 @@ export function buildPackedVertexWGSL(
 	const needsWorldPosition = o.worldPosition || needsCameraVector;
 
 	/*
-	 * Packed bakeShade requires sharedNormal for general face shading.
-	 *
-	 * rawUnits + bakeShade can calculate diffuse and face shading directly
-	 * from axis/isBackFace, unless another enabled feature consumes the
-	 * normal.
+	 * sharedNormal is consumed by: the vNormal varying, the exported tangent
+	 * frame, tangent-space lighting, the hoisted N·L, and (packed only) the
+	 * general bakeShade face shading. rawUnits + bakeShade derives diffuse and
+	 * face shading directly from axis/isBackFace.
 	 */
 	const needsNormal =
-		!o.rawUnits ||
-		!o.bakeShade ||
-		o.tangentSpaceLighting ||
+		o.normal ||
 		o.tangent ||
-		o.vertexDiffuse;
-
-	const needsTangent = o.tangent || o.tangentSpaceLighting;
+		o.tangentSpaceLighting ||
+		o.vertexDiffuse ||
+		(o.bakeShade && !o.rawUnits);
 
 	/*
-	 * Packed diagonal positioning consumes sharedTangent even when the
-	 * tangent is not exported. rawUnits guarantees axis-aligned faces.
+	 * sharedTangent is only needed when it is exported or feeds tangent-space
+	 * lighting. The packed diagonal position uses its own diagonalTangent.
 	 */
-	const needsTangentWithPosition = needsTangent || !o.rawUnits;
+	const needsTangent = o.tangent || o.tangentSpaceLighting;
 
 	const needsBitangent = o.tangentSpaceLighting;
 
@@ -617,7 +628,8 @@ ${Array.from(
 
 	/*
 	 * This block is omitted completely for pipelines that cannot contain
-	 * either boundary representation.
+	 * either boundary representation. Branchless: the face axis one-hot eA
+	 * selects which coordinate moves.
 	 */
 	const boundaryRestoreBlock =
 		o.boundarySentinel || o.boundaryFlag
@@ -626,15 +638,10 @@ ${Array.from(
      ${o.boundarySentinel ? "(((metaByte >> 1u) & 3u) == 3u)" : "false"} ||
      ${o.boundaryFlag ? "(((metaByte >> 5u) & 1u) != 0u)" : "false"};
 
- if (restoreBoundary) {
-     if (axis == 0u) {
-         baseX += INV_POS;
-     } else if (axis == 1u) {
-         baseY += INV_POS;
-     } else {
-         baseZ += INV_POS;
-     }
- }
+ let boundaryStep = select(0.0, INV_POS, restoreBoundary);
+ baseX += eA.x * boundaryStep;
+ baseY += eA.y * boundaryStep;
+ baseZ += eA.z * boundaryStep;
 `
 			: "";
 
@@ -660,6 +667,7 @@ ${tintDecode}
 
  let axis = axisFace >> 1u;
  let isBackFace = axisFace & 1u;
+${AXIS_FRAME_WGSL}
 
  let faceWidth = f32(widthByte);
  let faceHeight = f32(heightByte);
@@ -677,6 +685,7 @@ ${tintDecode}
 
  let axis = axisFace >> 1u;
  let isBackFace = axisFace & 1u;
+${AXIS_FRAME_WGSL}
 
  let flip = metaByte & 1u;
  let diagonalEnabled = (metaByte >> 4u) & 1u;
@@ -714,11 +723,7 @@ ${boundaryRestoreBlock}`;
 
 	const normalBlock = o.rawUnits
 		? buildRawUnitsNormalBlock(needsNormal, needsTangent, needsBitangent)
-		: buildPackedNormalBlock(
-				needsNormal,
-				needsTangentWithPosition,
-				needsBitangent,
-			);
+		: buildPackedNormalBlock(needsNormal, needsTangent, needsBitangent);
 
 	const positionBlock = o.rawUnits
 		? buildRawUnitsPositionBlock()
@@ -763,43 +768,18 @@ const INV_POS : f32 = 0.125;
 const HALF_INV_POS : f32 = 0.0625;
 const INV_LIGHT : f32 = 0.0666666667;
 
-const CORNER_LUT = array<u32, 16>(
-    0u, 1u, 2u, 3u,
-    3u, 0u, 1u, 2u,
-    2u, 1u, 0u, 3u,
-    1u, 0u, 3u, 2u
-);
+// Corner permutation, 2 bits per entry, index = cornerState * 4 + vertex
+// (16 entries). Replaces the CORNER_LUT const array.
+const CORNER_PACK : u32 = 0xB1C693E4u;
 
-const ATLAS_CORNER_LUT = array<u32, 24>(
-    0u, 3u, 2u, 1u,
-    1u, 2u, 3u, 0u,
-    0u, 3u, 2u, 1u,
-    3u, 0u, 1u, 2u,
-    1u, 0u, 3u, 2u,
-    0u, 1u, 2u, 3u
-);
+// Atlas (u | v << 1) per face corner, see ATLAS_DECODE. Replaces
+// ATLAS_CORNER_LUT.
+const ATLAS_PACK_LO : u32 = 0xD2782D78u;
+const ATLAS_PACK_HI : u32 = 0x0000B4E1u;
 
-const AXIS_BASIS = array<vec3<f32>, 3>(
-    vec3<f32>(1.0, 0.0, 0.0),
-    vec3<f32>(0.0, 1.0, 0.0),
-    vec3<f32>(0.0, 0.0, 1.0)
-);
-
-const CORNER_U = array<f32, 4>(
-    0.0, 1.0, 1.0, 0.0
-);
-
-const CORNER_V = array<f32, 4>(
-    0.0, 0.0, 1.0, 1.0
-);
-
-const U_AXIS = array<u32, 3>(
-    1u, 2u, 0u
-);
-
-const V_AXIS = array<u32, 3>(
-    2u, 0u, 1u
-);
+fn axisVec(a : u32) -> vec3<f32> {
+    return vec3<f32>(f32(a == 0u), f32(a == 1u), f32(a == 2u));
+}
 
 @vertex
 fn mainVertex(
@@ -848,13 +828,10 @@ ${decodeBlock}
 ${normalBlock}
 
     let corner =
-        CORNER_LUT[
-            cornerState * 4u +
-            vertexIndex
-        ];
+        (CORNER_PACK >> (((cornerState << 2u) | (vertexIndex & 3u)) << 1u)) & 3u;
 
-    let cuF = CORNER_U[corner];
-    let cvF = CORNER_V[corner];
+    let cuF = f32(((corner + 1u) >> 1u) & 1u);
+    let cvF = f32(corner >> 1u);
 
     var position : vec3<f32>;
     var faceU : f32;
