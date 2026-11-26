@@ -32,22 +32,7 @@
  * caller's responsibility.
  */
 export const FAR_TILE_FACE_WORDS = 4;
-
 export const FAR_TILE_Y_OFFSET = 1024;
-
-const COORD_MASK = 0x3ff;
-const HEIGHT_MASK = 0xfff;
-const BYTE_MASK = 0xff;
-
-const Y_SHIFT = 10;
-const Z_SHIFT = 22;
-
-const FACE_HEIGHT_SHIFT = 10;
-const BACK_FACE_SHIFT = 20;
-const AXIS_SHIFT = 21;
-
-const TILE_Y_SHIFT = 8;
-const LIGHT_SHIFT = 16;
 
 export class FaceWriter {
 	private faces: Uint32Array;
@@ -56,8 +41,9 @@ export class FaceWriter {
 	public constructor(initialFaceCapacity = 4096) {
 		const capacity = Math.floor(initialFaceCapacity);
 
+		// Ensure at least 1 face (4 words) to prevent zero-length array edge cases
 		this.faces = new Uint32Array(
-			(capacity > 0 ? capacity : 1) * FAR_TILE_FACE_WORDS,
+			(capacity > 0 ? capacity : 1) << 2, // * 4
 		);
 	}
 
@@ -78,10 +64,10 @@ export class FaceWriter {
 		light: number,
 		kind: number,
 	): void {
-		const requiredWordCount = this.wordCount + FAR_TILE_FACE_WORDS;
+		const requiredWordCount = this.wordCount + 4;
 
 		if (requiredWordCount > this.faces.length) {
-			let newWordCapacity = this.faces.length * 2;
+			let newWordCapacity = this.faces.length << 1; // * 2
 
 			if (newWordCapacity < requiredWordCount) {
 				newWordCapacity = requiredWordCount;
@@ -94,41 +80,39 @@ export class FaceWriter {
 
 		const index = this.wordCount;
 
-		const yBiased = y + FAR_TILE_Y_OFFSET;
+		// PERF: Fast-path for axis. Modulo is a division instruction and is
+		// relatively slow. Since axis is almost always 0, 1, or 2 in practice,
+		// we bypass the modulo operation entirely for the common case.
+		let safeAxis = axis;
+		if (safeAxis < 0 || safeAxis > 2) {
+			safeAxis = axis % 3;
+			if (safeAxis < 0) safeAxis += 3;
+		}
 
-		/*
-		 * Modulo-3 remap makes EVERY integer input decodable — masking alone
-		 * could emit axis value 3, which no axis basis defines (see header).
-		 */
-		const safeAxis = ((axis % 3) + 3) % 3;
-
+		// w0: x:u10 | (y + 1024):u12 | z:u10
 		this.faces[index] =
-			(x & COORD_MASK) |
-			((yBiased & HEIGHT_MASK) << Y_SHIFT) |
-			((z & COORD_MASK) << Z_SHIFT);
+			(x & 0x3ff) | (((y + 1024) & 0xfff) << 10) | ((z & 0x3ff) << 22);
 
+		// w1: w:u10 | h:u10 | backFace:u1 | axis:u2
 		this.faces[index + 1] =
-			(w & COORD_MASK) |
-			((h & COORD_MASK) << FACE_HEIGHT_SHIFT) |
-			((backFace & 1) << BACK_FACE_SHIFT) |
-			(safeAxis << AXIS_SHIFT);
+			(w & 0x3ff) |
+			((h & 0x3ff) << 10) |
+			((backFace & 1) << 20) |
+			(safeAxis << 21);
 
+		// w2: tileX:u8 | tileY:u8 | light:u8
 		this.faces[index + 2] =
-			(tileX & BYTE_MASK) |
-			((tileY & BYTE_MASK) << TILE_Y_SHIFT) |
-			((light & BYTE_MASK) << LIGHT_SHIFT);
+			(tileX & 0xff) | ((tileY & 0xff) << 8) | ((light & 0xff) << 16);
 
-		/*
-		 * Writing the complete word ensures origin-slot bits 8-23 and
-		 * currently unused bits 24-31 are clear.
-		 */
-		this.faces[index + 3] = kind & BYTE_MASK;
+		// w3: kind:u8 | originSlot:u16 (Bits 8-23 intentionally left clear)
+		this.faces[index + 3] = kind & 0xff;
 
 		this.wordCount = requiredWordCount;
 	}
 
 	public getFaceCount(): number {
-		return this.wordCount / FAR_TILE_FACE_WORDS;
+		// PERF: Bitwise shift is strictly faster than division by a constant power of 2
+		return this.wordCount >>> 2;
 	}
 
 	/**
