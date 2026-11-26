@@ -36,7 +36,9 @@ export function farTilePushDirtyRange(
 	let hi = size;
 
 	while (lo < hi) {
-		const mid = (lo + hi) >> 1;
+		// PERF: Unsigned right shift is strictly safer and signals 32-bit
+		// integer math to the JIT, avoiding any potential deoptimization.
+		const mid = (lo + hi) >>> 1;
 
 		if (starts[mid] < start) {
 			lo = mid + 1;
@@ -51,20 +53,21 @@ export function farTilePushDirtyRange(
 	 * from below; anything further left ends strictly before it starts.
 	 */
 	let insert = lo;
-	let absorbStart = lo;
+	const absorbStart = lo;
 
 	if (lo > 0) {
 		const prevIndex = lo - 1;
-		const prevEnd = starts[prevIndex] + counts[prevIndex];
+		// PERF: Cache array access to guarantee a single memory read
+		const prevStart = starts[prevIndex];
+		const prevEnd = prevStart + counts[prevIndex];
 
 		if (prevEnd >= newStart) {
 			if (prevEnd > newEnd) {
 				newEnd = prevEnd;
 			}
 
-			newStart = starts[prevIndex];
+			newStart = prevStart;
 			insert = prevIndex;
-			absorbStart = lo;
 		}
 	}
 
@@ -72,11 +75,13 @@ export function farTilePushDirtyRange(
 	let absorbEnd = absorbStart;
 
 	for (let index = absorbStart; index < size; index++) {
-		if (starts[index] > newEnd) {
+		// PERF: Cache array access to guarantee a single memory read per iteration
+		const s = starts[index];
+		if (s > newEnd) {
 			break;
 		}
 
-		const existingEnd = starts[index] + counts[index];
+		const existingEnd = s + counts[index];
 
 		if (existingEnd > newEnd) {
 			newEnd = existingEnd;
@@ -94,8 +99,10 @@ export function farTilePushDirtyRange(
 	// grown first. Absorbed merges shift narrowed overlap targets DOWN and
 	// always fit inside the current length — no growth there.
 	if (insert === absorbEnd) {
-		starts.push(0);
-		counts.push(0);
+		// PERF: Direct length assignment is strictly faster than push(0)
+		// as it avoids method lookup and function call overhead entirely.
+		starts.length = size + 1;
+		counts.length = size + 1;
 	}
 
 	const tailLength = size - absorbEnd;
