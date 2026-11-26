@@ -1719,22 +1719,32 @@ class FarTileManagerImpl {
 					const tzMin = Math.floor((pcz - loadOuter) / span);
 					const tzMax = Math.floor((pcz + loadOuter) / span);
 
+					/*
+					 * Tile index whose area contains the player's Z chunk.
+					 * The area-distance helper takes TILE indices, not chunk
+					 * coordinates — passing pcz directly made the collapsed
+					 * z-distance grow with |pcz| (e.g. 1368 chunks at z=-1369),
+					 * which skipped every column and loaded zero tiles away
+					 * from the world origin.
+					 */
+					const playerTileZ = Math.floor(pcz / span);
+
 					for (let tx = txMin; tx <= txMax; tx++) {
 						/*
 						 * Column skip via the shared area-distance helper:
-						 * passing tz = pcz forces the z component to zero,
-						 * so the helper returns exactly the x-axis component
-						 * for this whole column — the minimum tile distance
-						 * any tz inside it can reach. Chebyshev distance can
-						 * never become smaller than distanceX regardless of
-						 * tz, so skip the column when it cannot intersect
-						 * the level's loading window.
+						 * passing the player's tile Z forces the z component
+						 * to zero, so the helper returns exactly the x-axis
+						 * component for this whole column — the minimum tile
+						 * distance any tz inside it can reach. Chebyshev
+						 * distance can never become smaller than distanceX
+						 * regardless of tz, so skip the column when it cannot
+						 * intersect the level's loading window.
 						 */
 						const distanceX = tileChebyshevDistanceChunks(
 							pcx,
 							pcz,
 							tx,
-							pcz,
+							playerTileZ,
 							span,
 						);
 
