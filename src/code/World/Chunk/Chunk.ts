@@ -14,7 +14,7 @@ import {
 	ChunkLifecycle,
 	notifyResidencyLoadComplete,
 } from "./Loading/ChunkLifecycle";
-import { LoadedChunkIndex } from "./Loading/LoadedChunkIndex";
+import { type LoadedChunkCell, LoadedChunkIndex } from "./Loading/LoadedChunkIndex";
 import { connectFacesMask } from "./Meshing/ChunkFaceMasks";
 import { removeChunkFromGroup } from "./Meshing/MergedMeshManager";
 import { type ChunkCensus, getChunkCensus } from "./Runtime/ChunkCensus";
@@ -138,6 +138,10 @@ export class Chunk {
 	 */
 	public appliedMeshLod = -1;
 
+	/** LoadedChunkIndex bookkeeping (Phase 3.1): cell + dense slot, or null/-1. */
+	public loadedIndexCell: LoadedChunkCell | null = null;
+	public loadedIndexSlot = -1;
+
 	public static readonly SIZE = GenerationParams.CHUNK_SIZE;
 	public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
 	public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
@@ -174,6 +178,8 @@ export class Chunk {
 			c.meshRevision = 0;
 			c.appliedMeshLod = -1;
 			// blockRevision / generation keep their pooled values + bump on next loadFromStorage
+			c.loadedIndexCell = null;
+			c.loadedIndexSlot = -1;
 			c.mergedGroupKey = null;
 			c.faceConnectivity = 0;
 			c.connectivityDirty = true;
@@ -1697,6 +1703,8 @@ export class Chunk {
 
 		Chunk.loadedChunks.delete(this);
 		Chunk.loadedChunkIndex.unregister(this);
+		this.loadedIndexCell = null;
+		this.loadedIndexSlot = -1;
 		unregisterChunk(this);
 
 		this.isTerrainScheduled = false;

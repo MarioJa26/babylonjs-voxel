@@ -11,7 +11,7 @@ const HASH_X = 73_856_093;
 const HASH_Y = 19_349_663;
 const HASH_Z = 83_492_791;
 
-type LoadedChunkCell = {
+export type LoadedChunkCell = {
 	hash: number;
 	cx: number;
 	cy: number;
@@ -46,22 +46,6 @@ export class LoadedChunkIndex {
 	 * coordinates are always checked before a bucket entry is used.
 	 */
 	private readonly cells = new Map<number, LoadedChunkCell[]>();
-
-	/**
-	 * Chunk numeric ID to its exact cell.
-	 *
-	 * Storing the cell object avoids recomputing coordinates during unregister
-	 * and prevents sentinel-key ambiguity.
-	 */
-	private readonly chunkCells = new Map<number, LoadedChunkCell>();
-
-	/**
-	 * Chunk numeric ID to its slot in LoadedChunkCell.chunks.
-	 *
-	 * Together with chunkCells, this makes removal O(1). The moved chunk's slot
-	 * is updated during swap-removal.
-	 */
-	private readonly chunkSlots = new Map<number, number>();
 
 	/**
 	 * Recycled empty cells.
@@ -103,16 +87,14 @@ export class LoadedChunkIndex {
 	 * spatial cell.
 	 */
 	register(chunk: Chunk): void {
-		const numericId = chunk.numericId;
-
 		const cx = chunk.chunkX >> CELL_SHIFT;
 		const cy = chunk.chunkY >> CELL_SHIFT;
 		const cz = chunk.chunkZ >> CELL_SHIFT;
 
-		const previousCell = this.chunkCells.get(numericId);
+		const previousCell = chunk.loadedIndexCell;
 
 		if (
-			previousCell !== undefined &&
+			previousCell !== null &&
 			previousCell.cx === cx &&
 			previousCell.cy === cy &&
 			previousCell.cz === cz
@@ -121,10 +103,10 @@ export class LoadedChunkIndex {
 			 * Already registered in the correct cell. The slot identity check
 			 * repairs missing slot bookkeeping without duplicating the chunk.
 			 */
-			const previousSlot = this.chunkSlots.get(numericId);
+			const previousSlot = chunk.loadedIndexSlot;
 
 			if (
-				previousSlot !== undefined &&
+				previousSlot !== -1 &&
 				previousCell.chunks[previousSlot] === chunk
 			) {
 				return;
@@ -133,20 +115,20 @@ export class LoadedChunkIndex {
 			const recoveredSlot = previousCell.chunks.indexOf(chunk);
 
 			if (recoveredSlot !== -1) {
-				this.chunkSlots.set(numericId, recoveredSlot);
+				chunk.loadedIndexSlot = recoveredSlot;
 				return;
 			}
 
 			const slot = previousCell.chunks.length;
 
 			previousCell.chunks.push(chunk);
-			this.chunkSlots.set(numericId, slot);
+			chunk.loadedIndexSlot = slot;
 
 			return;
 		}
 
-		if (previousCell !== undefined) {
-			this.removeFromCell(numericId, chunk, previousCell);
+		if (previousCell !== null) {
+			this.removeFromCell(chunk, previousCell);
 		}
 
 		const hash = hashCellKey(cx, cy, cz);
@@ -178,22 +160,21 @@ export class LoadedChunkIndex {
 		const slot = cell.chunks.length;
 
 		cell.chunks.push(chunk);
-		this.chunkCells.set(numericId, cell);
-		this.chunkSlots.set(numericId, slot);
+		chunk.loadedIndexCell = cell;
+		chunk.loadedIndexSlot = slot;
 	}
 
 	/**
 	 * Remove a chunk from the index.
 	 */
 	unregister(chunk: Chunk): void {
-		const numericId = chunk.numericId;
-		const cell = this.chunkCells.get(numericId);
+		const cell = chunk.loadedIndexCell;
 
-		if (cell === undefined) {
+		if (cell === null) {
 			return;
 		}
 
-		this.removeFromCell(numericId, chunk, cell);
+		this.removeFromCell(chunk, cell);
 	}
 
 	/**
@@ -399,14 +380,13 @@ export class LoadedChunkIndex {
 	 * defensive repair if slot bookkeeping is inconsistent.
 	 */
 	private removeFromCell(
-		numericId: number,
 		chunk: Chunk,
 		cell: LoadedChunkCell,
 	): void {
 		const chunks = cell.chunks;
-		let slot = this.chunkSlots.get(numericId);
+		let slot = chunk.loadedIndexSlot;
 
-		if (slot === undefined || chunks[slot] !== chunk) {
+		if (slot === -1 || chunks[slot] !== chunk) {
 			/*
 			 * Bookkeeping drift should not happen, but recovering here is safer
 			 * than removing a different chunk or leaving a duplicate behind.
@@ -414,16 +394,16 @@ export class LoadedChunkIndex {
 			slot = chunks.indexOf(chunk);
 		}
 
-		this.chunkCells.delete(numericId);
-		this.chunkSlots.delete(numericId);
+		chunk.loadedIndexCell = null;
+		chunk.loadedIndexSlot = -1;
 
-		if (slot !== -1 && slot !== undefined) {
+		if (slot !== -1) {
 			const lastIndex = chunks.length - 1;
 			const movedChunk = chunks[lastIndex];
 
 			if (slot !== lastIndex) {
 				chunks[slot] = movedChunk;
-				this.chunkSlots.set(movedChunk.numericId, slot);
+				movedChunk.loadedIndexSlot = slot;
 			}
 
 			chunks.pop();
