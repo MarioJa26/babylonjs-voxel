@@ -173,6 +173,9 @@ export class ChunkProcessScheduler {
 	 */
 	private readonly _notificationRequests: QueuedChunkRequest[] = [];
 
+	private _offFrameStart = 0;
+	private _offFrameMs = 0;
+
 	private preferLoadNext = false;
 	private unloadRetryAfterMs = 0;
 
@@ -355,38 +358,25 @@ export class ChunkProcessScheduler {
 	public async processQueues(): Promise<void> {
 		if (this.isProcessing) return;
 
+		// Early-out: nothing in flight, nothing queued -> skip profiler + state machine.
+		// (No in-flight state to finalize; finalizeProcessState only runs when a
+		// slice was actually started or carried over.)
+		if (
+			this.inFlightProcessState === null &&
+			this.adapter.getLoadQueue().length === 0 &&
+			this.adapter.getUnloadQueueSet().size === 0
+		) {
+			return;
+		}
+
 		let shouldContinue = false;
 		this.isProcessing = true;
 
-		/*
-		 * PERF INSTRUMENTATION.
-		 *
-		 * The stages before the first `await` run synchronously inside the
-		 * caller's onBeforeRender callback, so they are already covered by the
-		 * `streaming` section. Every stage AFTER an await resumes in a
-		 * microtask with no frame in progress — ApplyLoadedChunks,
-		 * ApplyHydration, ScheduleGeneration (the actual worker dispatch) and
-		 * Finalize. That is the bulk of the scheduler and it was invisible.
-		 *
-		 * Time it as off-frame work. `markResume` is placed AFTER each await
-		 * rather than before, because the main thread is genuinely idle while
-		 * the storage read is in flight; counting that wait would overstate
-		 * the cost and misdiagnose it as main-thread pressure.
-		 */
-		let offFrameStart = 0;
-		let offFrameMs = 0;
-		const markResume = (): void => {
-			const now = performance.now();
-			if (offFrameStart !== 0) offFrameMs += now - offFrameStart;
-			offFrameStart = now;
-		};
-		const markSuspend = (): void => {
-			if (offFrameStart === 0) return;
-			offFrameMs += performance.now() - offFrameStart;
-			offFrameStart = 0;
-		};
+		// PERF: profiler bookkeeping hoisted to fields; no per-call closures.
+		this._offFrameStart = 0;
+		this._offFrameMs = 0;
 
-		let state = this.inFlightProcessState;
+let state = this.inFlightProcessState;
 		if (!state) {
 			state = this._state;
 			this.inFlightProcessState = state;
@@ -485,7 +475,7 @@ export class ChunkProcessScheduler {
 						}
 
 						if (this._saveScratch.length > 0) {
-							markSuspend();
+							this.markSuspend();
 
 							try {
 								await this.withIoTimeout(
@@ -504,7 +494,7 @@ export class ChunkProcessScheduler {
 								state.savedChunkRevisions.clear();
 								this.unloadRetryAfterMs = performance.now() + 250;
 							} finally {
-								markResume();
+								this.markResume();
 								this.beginSlice(state);
 							}
 						}
@@ -538,7 +528,7 @@ export class ChunkProcessScheduler {
 								continue;
 							}
 
-							markSuspend();
+							this.markSuspend();
 
 							try {
 								await this.withIoTimeout(
@@ -551,7 +541,7 @@ export class ChunkProcessScheduler {
 								state.unloadBatchIndex++;
 								continue;
 							} finally {
-								markResume();
+								this.markResume();
 								this.beginSlice(state);
 							}
 
@@ -759,33 +749,33 @@ export class ChunkProcessScheduler {
 									: undefined;
 
 							if (nearPromise && farPromise) {
-								markSuspend();
+								this.markSuspend();
 								await this.withIoTimeout(
 									"WorldStorage.loadChunks (near+far)",
 									Promise.all([nearPromise, farPromise]),
 								);
 							} else if (nearPromise) {
-								markSuspend();
+								this.markSuspend();
 								await this.withIoTimeout(
 									"WorldStorage.loadChunks (near)",
 									nearPromise,
 								);
 							} else if (farPromise) {
-								markSuspend();
+								this.markSuspend();
 								await this.withIoTimeout(
 									"WorldStorage.loadChunks (far)",
 									farPromise,
 								);
 							}
 
-							markResume();
+							this.markResume();
 							this.beginSlice(state);
 							state.stage = ProcessStage.ApplyLoadedChunks;
 						} catch (error) {
 							console.warn("Failed to load chunks from storage", error);
 							state.nearLoadedDataMap.clear();
 							state.farLoadedDataMap.clear();
-							markResume();
+							this.markResume();
 							this.beginSlice(state);
 							state.stage = ProcessStage.ApplyLoadedChunks;
 						}
@@ -846,18 +836,18 @@ export class ChunkProcessScheduler {
 						try {
 							state.hydrateMap.clear();
 
-							markSuspend();
+							this.markSuspend();
 							await this.withIoTimeout(
 								"WorldStorage.loadChunkBlobs (hydration)",
 								WorldStorage.loadChunkBlobs(state.hydrateIds, state.hydrateMap),
 							);
 
-							markResume();
+							this.markResume();
 							this.beginSlice(state);
 						} catch (error) {
 							console.warn("Failed to hydrate chunks from storage", error);
 							state.hydrateMap.clear();
-							markResume();
+							this.markResume();
 							this.beginSlice(state);
 						}
 
@@ -1014,9 +1004,9 @@ export class ChunkProcessScheduler {
 			this.adapter.onProcessError?.(error);
 		} finally {
 			// Covers every exit path, including the `return` in Finalize.
-			markSuspend();
-			if (offFrameMs > 0) {
-				frameProfiler.noteOffFrameValue("streamAsync", offFrameMs);
+			this.markSuspend();
+			if (this._offFrameMs > 0) {
+				frameProfiler.noteOffFrameValue("streamAsync", this._offFrameMs);
 			}
 
 			// Book the slice's own synchronous cost against the shared frame pool.
@@ -1024,7 +1014,7 @@ export class ChunkProcessScheduler {
 			// outside any frame and so must NOT be charged here.
 			const synchronousSliceMs = Math.max(
 				0,
-				performance.now() - state.sliceStartMs - offFrameMs,
+				performance.now() - state.sliceStartMs - this._offFrameMs,
 			);
 
 			FRAME_WORK_BUDGET.record(FrameWorkKind.Streaming, synchronousSliceMs);
@@ -1277,6 +1267,18 @@ export class ChunkProcessScheduler {
 			performance.now() < state.sliceDeadlineMs &&
 			FRAME_WORK_BUDGET.canContinue(FrameWorkKind.Streaming)
 		);
+	}
+
+	private markResume(): void {
+		const now = performance.now();
+		if (this._offFrameStart !== 0) this._offFrameMs += now - this._offFrameStart;
+		this._offFrameStart = now;
+	}
+
+	private markSuspend(): void {
+		if (this._offFrameStart === 0) return;
+		this._offFrameMs += performance.now() - this._offFrameStart;
+		this._offFrameStart = 0;
 	}
 
 	public scheduleProcessContinuation(): void {
