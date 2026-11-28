@@ -29,11 +29,13 @@ export interface ChunkPriorityContext {
  * Weights for the priority score. Lower priority value = scheduled sooner.
  *
  * `LOD_WEIGHT` must exceed the largest possible distance term by a wide margin,
- * or a far LOD0 chunk could outrank a near LOD5 one. At LOD6 (DISTANT_LOD_LEVEL)
- * and a 256-chunk radius the squared distance tops out near 3 * 256^2 ~= 196k,
- * so 4096 per LOD level leaves ample headroom.
+ * or a far LOD0 chunk could outrank a near LOD5 one. Unified to 1,000,000
+ * (matches ChunkStreamingController.computePriority).
  */
-const LOD_WEIGHT = 4096;
+// Unified with ChunkStreamingController's 1,000,000 LOD band (item 2.6):
+// one scale across request/inflate/mesh/upload. Far LOD0 must never outrank
+// near LOD5; forward term + age credit stay well below one LOD band.
+const LOD_WEIGHT = 1_000_000;
 const FORWARD_WEIGHT = 512;
 const AGE_WEIGHT = 0.25;
 

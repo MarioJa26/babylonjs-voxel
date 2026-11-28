@@ -39,7 +39,7 @@ import {
 	ResidencyState,
 	setChunkLifecycleHost,
 } from "./ChunkLifecycle";
-import { chunkForwardScore } from "./ChunkPriority";
+import { chunkForwardScore, chunkPriority } from "./ChunkPriority";
 import {
 	ChunkResidency,
 	forgetChunkResidency,
@@ -307,15 +307,6 @@ function noteChunkEvicted(chunk: Chunk, buried: boolean): void {
 //   heightmap estimate. Without it, tall density-amplified mountains keep
 //   their whole interior rendered.
 const BURIED_SAFETY_MARGIN = Chunk.SIZE / 2 + SURFACE_DENSITY_INFLUENCE_RANGE;
-
-/*
- * Weight of the camera-forward term added to streaming priority.
- *
- * Must stay well below the 1,000,000 LOD band so a near LOD5 chunk can never
- * outrank a far LOD0 one, and comparable to COLUMN_AHEAD_BONUS so the two
- * corrections cannot combine to invert the LOD ordering.
- */
-const CAMERA_FORWARD_BONUS = 512;
 
 function ensureColumnProfileSeed(): void {
 	const seed = getTerrainSeedAsInt();
@@ -2548,26 +2539,11 @@ public onLoadRequestsRecovered(
 		const dy = chunk.chunkY - playerChunkY;
 		const dz = chunk.chunkZ - playerChunkZ;
 
-		let priority = desiredLod * 1_000_000 + dx * dx + dy * dy + dz * dz;
-
-		/*
-		 * Camera-forward term, from the shared priority module.
-		 *
-		 * Pure distance ranks a chunk dead ahead the same as one dead behind, but
-		 * the one in front is about to fill the screen while the one behind stays
-		 * invisible until the player turns. This is deliberately a MODIFIER
-		 * rather than a replacement for the existing formula: the 1M LOD band
-		 * and the column-ahead bonus carry tuning invariants that must survive,
-		 * so the forward term is scaled to stay well inside a single LOD band.
-		 *
-		 * See ChunkPriority for the full rationale and weights.
-		 */
-		const forwardScore = chunkForwardScore(
-			chunk.chunkX,
-			chunk.chunkY,
-			chunk.chunkZ,
-		);
-		priority -= forwardScore * CAMERA_FORWARD_BONUS;
+		// Unified scale (item 2.6): one LOD band + d^2 + forward term, shared
+		// with chunkPriority/priorityForChunk. ageMs=0 here.
+		const distanceSq = dx * dx + dy * dy + dz * dz;
+		const forwardScore = chunkForwardScore(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+		let priority = chunkPriority(distanceSq, forwardScore, desiredLod, 0);
 
 		// Column-ring bonus: approaching columns load first within their LOD
 		// band during fast fly. Stays below the 1M LOD band by construction.
