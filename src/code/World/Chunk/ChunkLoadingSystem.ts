@@ -878,9 +878,9 @@ function applyLoadedChunkFromSavedData(
 	// sends the chunk's version to the server so it can confirm the local
 	// copy (ChunkUnchanged) or return the authoritative data.
 	if (ChunkWorkerPool.getInstance().isRemoteGenerationEnabled()) {
-		if (!chunk.isLoaded && !state.chunksToGenerateIds.has(chunk.id)) {
+		if (!chunk.isLoaded && !state.chunksToGenerateIds.has(chunk.numericId)) {
 			chunk.isTerrainScheduled = true;
-			state.chunksToGenerateIds.add(chunk.id);
+			state.chunksToGenerateIds.add(chunk.numericId);
 			state.chunksToGenerate.push(chunk);
 		}
 		return;

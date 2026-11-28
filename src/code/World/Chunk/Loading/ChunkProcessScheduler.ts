@@ -473,10 +473,7 @@ export class ChunkProcessScheduler {
 								(chunk.isModified || chunk.isLightDirty)
 							) {
 								this._saveScratch.push(chunk);
-								state.savedChunkRevisions.set(
-									chunk.id,
-									chunk.persistenceRevision,
-								);
+								state.savedChunkRevisions.set(chunk.numericId, chunk.persistenceRevision);
 							}
 						}
 
@@ -524,7 +521,7 @@ export class ChunkProcessScheduler {
 							}
 
 							const isDirty = chunk.isModified || chunk.isLightDirty;
-							const savedRevision = state.savedChunkRevisions.get(chunk.id);
+							const savedRevision = state.savedChunkRevisions.get(chunk.numericId);
 							const canUnload =
 								!isDirty || savedRevision === chunk.persistenceRevision;
 
@@ -560,9 +557,7 @@ export class ChunkProcessScheduler {
 							}
 
 							const dirtyAfterAwait = chunk.isModified || chunk.isLightDirty;
-							const currentSavedRevision = state.savedChunkRevisions.get(
-								chunk.id,
-							);
+							const currentSavedRevision = state.savedChunkRevisions.get(chunk.numericId);
 
 							if (
 								dirtyAfterAwait &&
@@ -1225,12 +1220,12 @@ export class ChunkProcessScheduler {
 		if (
 			chunk.isLoaded ||
 			!chunk.isTerrainScheduled ||
-			state.chunksToGenerateIds.has(chunk.id)
+			state.chunksToGenerateIds.has(chunk.numericId)
 		) {
 			return;
 		}
 
-		state.chunksToGenerateIds.add(chunk.id);
+		state.chunksToGenerateIds.add(chunk.numericId);
 		state.chunksToGenerate.push(chunk);
 	}
 
