@@ -47,6 +47,15 @@
 .mason-overlay,
 .woodcrate-overlay,
 .station-overlay,
+.station-panel,
+.station-crafting,
+.station-inventory,
+.station-inventory-row,
+.station-hotbar-row,
+.station-slot-host,
+.station-flame,
+.station-arrow,
+.station-repair-progress,
 .inventory-container,
 .inventory-slot,
 .crafting-slot,
@@ -1750,86 +1759,284 @@ body.hud-hidden #chat-input {
 	display: none !important;
 }
 
-/* ─── Station panel (kiln / furnace / whetstone) ─── */
-/* Shares the overlay frame with the mason table and wood crate, so all three
-   modal panels feel like the same surface. */
+/* ─── Station panel (kiln / furnace / whetstone) ──────────────────────────── */
+/* Minecraft-style furnace layout: ingredients on the left (input, flame, fuel),
+   a progress arrow in the middle and the result on the right, with the player's
+   live inventory underneath. The overlay is a full-screen scrim because the
+   panel is modal — the mouse is released while it is open. */
+
+.station-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 150;
+	display: none; /* JS switches this to flex while open */
+	align-items: center;
+	justify-content: center;
+	padding: 1em;
+	background-color: rgba(4, 8, 12, 0.45);
+
+	/* One slot size drives the whole panel. It is smaller than the HUD's
+	   because a 10x10 inventory plus a crafting area has to fit on screen. */
+	--station-columns: 10;
+	--station-slot: clamp(1.7em, 3.4vw, 2.5em);
+	--station-gap: calc(var(--station-slot) * 0.16);
+	--station-pad: calc(var(--station-slot) * 0.4);
+	/* Reserved for the inventory scrollbar on short screens. */
+	--station-scrollbar: 8px;
+
+	font-family: var(--ui-font-family);
+	font-size: 1em;
+	color: var(--hud-text);
+	user-select: none;
+}
 
 .station-panel {
+	position: relative;
 	display: flex;
 	flex-direction: column;
-	align-items: center;
-	gap: var(--slot-gap);
-	padding: 1em;
+	align-items: stretch;
+	gap: 0.55em;
+	width: min(
+		92vw,
+		calc(
+			var(--station-columns) *
+			var(--station-slot) +
+			(var(--station-columns) - 1) *
+			var(--station-gap) +
+			var(--station-scrollbar) +
+			2 *
+			var(--station-pad) +
+			2 *
+			var(--panel-frame-w)
+		)
+	);
+	max-height: calc(100vh - 2em);
+	padding: var(--station-pad);
 	background-color: var(--hud-bg-panel);
 	border: var(--panel-frame-w) solid var(--hud-frame);
 	border-radius: var(--hud-radius-md);
 	box-shadow: var(--hud-shadow-panel);
-	font-family: var(--ui-font-family);
-	color: var(--hud-text);
 }
 
 .station-title {
+	flex: 0 0 auto;
+	padding: 0 2.2em;
 	font-size: 1.1em;
 	font-weight: 700;
-	color: var(--hud-accent);
+	text-align: center;
+	color: var(--hud-text);
+	text-shadow: var(--hud-text-shadow);
 }
 
-.station-slots {
+/* Keep the shared close button inside this panel's frame. */
+.station-overlay .hud-close-button {
+	top: 0.35em;
+	right: 0.35em;
+}
+
+/* Recessed work surface, like the grey crafting window in Minecraft. It hugs
+   its contents instead of spanning the panel, so the furnace does not sit in a
+   mostly-empty black box. */
+.station-crafting {
+	flex: 0 0 auto;
+	align-self: center;
 	display: flex;
-	flex-direction: row;
-	align-items: flex-start;
-	gap: calc(var(--slot-gap) * 1.5);
+	align-items: center;
+	justify-content: center;
+	width: fit-content;
+	min-width: calc(var(--station-slot) * 3.2);
+	gap: calc(var(--station-slot) * 0.45);
+	padding: calc(var(--station-slot) * 0.4) calc(var(--station-slot) * 0.65);
+	background-color: var(--hud-bg-inset);
+	border: var(--hud-border-width) solid var(--hud-frame-dim);
+	border-radius: var(--hud-radius-sm);
+	box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.station-ingredients {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: calc(var(--station-slot) * 0.12);
 }
 
 .station-cell {
 	display: flex;
-	flex-direction: column;
 	align-items: center;
-	gap: calc(var(--slot-gap) * 0.4);
-}
-
-.station-cell-label {
-	font-size: 0.75em;
-	color: var(--hud-text-muted);
-	text-transform: uppercase;
-	letter-spacing: 0.06em;
+	justify-content: center;
 }
 
 /* The ItemSlot supplies its own .inventory-slot div; this only sizes it. */
 .station-slot-host {
-	width: var(--slot-size);
-	height: var(--slot-size);
+	width: var(--station-slot);
+	height: var(--station-slot);
+	cursor: pointer;
 }
 
-.station-progress {
-	width: var(--slot-size);
-	height: 4px;
-	margin-top: calc(var(--slot-gap) * 0.3);
-	background-color: rgba(0, 0, 0, 0.55);
+/* Every slot in the panel (station and player inventory) uses the compact
+   station scale and a shallower frame, so it still reads as a slot at 30px. */
+.station-overlay .inventory-slot {
+	width: var(--station-slot);
+	border-width: 2px;
+	border-radius: 3px;
+	box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.5);
+}
+
+/* ─── Fuel flame ──────────────────────────────────────────────────────────── */
+
+.station-flame {
+	position: relative;
+	flex: 0 0 auto;
+	width: calc(var(--station-slot) * 0.72);
+	height: calc(var(--station-slot) * 0.9);
+	/* No track: the unlit part of the flame is simply absent, so the icon
+	   shrinks from the top like Minecraft's fuel gauge. */
+	clip-path: polygon(
+		50% 0%,
+		65% 18%,
+		78% 38%,
+		84% 58%,
+		82% 76%,
+		70% 92%,
+		50% 100%,
+		30% 92%,
+		18% 76%,
+		16% 58%,
+		22% 38%,
+		35% 18%
+	);
+	transition: filter 120ms;
+}
+
+.station-flame.is-lit {
+	filter: drop-shadow(
+		0 0 calc(var(--station-slot) * 0.14) rgba(255, 148, 32, 0.55)
+	);
+}
+
+.station-flame-fill {
+	position: absolute;
+	inset: 0;
+	transform-origin: bottom center;
+	transform: scaleY(0);
+	background: radial-gradient(
+		ellipse at 50% 74%,
+		#fff0a0 0%,
+		#ffc400 38%,
+		#ff7a00 74%,
+		#e04300 100%
+	);
+	transition: transform 100ms linear;
+}
+
+/* ─── Progress arrow ──────────────────────────────────────────────────────── */
+
+.station-arrow {
+	position: relative;
+	flex: 0 0 auto;
+	width: calc(var(--station-slot) * 1.35);
+	height: calc(var(--station-slot) * 0.72);
+	background-color: rgba(255, 255, 255, 0.1);
+	clip-path: polygon(
+		0% 32%,
+		56% 32%,
+		56% 4%,
+		100% 50%,
+		56% 96%,
+		56% 68%,
+		0% 68%
+	);
+}
+
+.station-arrow-fill {
+	position: absolute;
+	inset: 0;
+	transform-origin: left center;
+	transform: scaleX(0);
+	background-color: var(--hud-text);
+	transition: transform 80ms linear;
+}
+
+/* Repair stations have no result slot, so they get a bar instead of an arrow. */
+.station-repair-progress {
+	width: 100%;
+	height: calc(var(--station-slot) * 0.16);
+	margin-top: calc(var(--station-slot) * 0.18);
+	background-color: var(--hud-bg-slot);
+	border: var(--hud-border-width) solid var(--hud-frame-dim);
 	border-radius: 2px;
 	overflow: hidden;
 }
 
-.station-progress-fill {
+.station-repair-progress-fill {
+	width: 100%;
 	height: 100%;
-	width: 0%;
+	transform-origin: left center;
+	transform: scaleX(0);
 	background-color: var(--hud-accent);
-	transition: width 80ms linear;
+	transition: transform 80ms linear;
 }
 
 .station-status {
-	font-size: 0.85em;
-	color: var(--hud-text-muted);
+	flex: 0 0 auto;
 	min-height: 1.2em;
+	font-size: 0.78em;
+	text-align: center;
+	color: var(--hud-text-muted);
 }
 
-/* Click a station slot to take its contents back. The cursor is the only
-   affordance — there is no button, and the result slot is read-only for
-   writing so it needs a way out. */
-.station-slot-host {
-	cursor: pointer;
+/* ─── Player inventory ────────────────────────────────────────────────────── */
+
+.station-inventory {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	gap: var(--station-gap);
+	min-height: 0;
+	padding-top: calc(var(--station-gap) * 1.5);
+	border-top: var(--hud-border-width) solid var(--hud-frame-dim);
 }
 
-.station-slot-host .inventory-item {
-	pointer-events: none;
+.station-inventory-main {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	gap: var(--station-gap);
+	min-height: 0;
+	overflow-y: auto;
+	overflow-x: hidden;
+	scrollbar-width: thin;
+	scrollbar-color: var(--hud-accent-soft) transparent;
+}
+
+.station-inventory-main::-webkit-scrollbar {
+	width: 8px;
+}
+
+.station-inventory-main::-webkit-scrollbar-track {
+	background: var(--hud-bg-inset);
+	border-radius: var(--hud-radius-md);
+}
+
+.station-inventory-main::-webkit-scrollbar-thumb {
+	background: var(--hud-accent-soft);
+	border-radius: var(--hud-radius-md);
+}
+
+.station-inventory-row,
+.station-hotbar-row {
+	display: flex;
+	flex: 0 0 auto;
+	justify-content: center;
+	gap: var(--station-gap);
+}
+
+.station-hotbar-row {
+	padding-top: calc(var(--station-gap) * 0.5);
+	border-top: var(--hud-border-width) solid var(--hud-border-soft);
+}
+
+/* Layout toggles set by #applyLayout (kiln has no input, anvil no fuel, ...). */
+.station-overlay .is-hidden {
+	display: none;
 }

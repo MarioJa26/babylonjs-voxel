@@ -25,9 +25,9 @@ import {
 } from "../../Chunk/DataStructures/BlockEncoding";
 import {
 	BLOCK_TYPE,
+	FIRE_BLOCK_ID,
 	LAVA_BLOCK_ID,
 	OIL_BLOCK_ID,
-	FIRE_BLOCK_ID,
 	WATER_BLOCK_ID,
 } from "../../Chunk/Worker/ChunkMesherConstants";
 import {

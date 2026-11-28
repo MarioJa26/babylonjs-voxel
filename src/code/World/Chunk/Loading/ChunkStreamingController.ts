@@ -325,14 +325,19 @@ function columnProfile(x: number, z: number): ColumnProfile {
 
 	// The center sample doubles as columnMinHeight's mid sample (fhc-cached),
 	// so this costs one sampling pass per column, not two.
-	const centerH = getFinalTerrainHeight(x * Chunk.SIZE + 16, z * Chunk.SIZE + 16);
+	const centerH = getFinalTerrainHeight(
+		x * Chunk.SIZE + 16,
+		z * Chunk.SIZE + 16,
+	);
 	const minH = columnMinHeight(x, z);
 
 	// STRUCTURE-AWARE SKY BOUND. A tower is a solid cylinder standing on the
 	// ground; its upper chunks live ABOVE the terrain top. Ask the features
 	// how high they reach and use the higher of the two bounds.
 	const structureTop =
-		seed === 0 ? -1 : structureColumnTopY(x * Chunk.SIZE + 16, z * Chunk.SIZE + 16, seed);
+		seed === 0
+			? -1
+			: structureColumnTopY(x * Chunk.SIZE + 16, z * Chunk.SIZE + 16, seed);
 	const surfaceTop = structureTop > centerH ? structureTop : centerH;
 
 	const profile: ColumnProfile = {
@@ -552,7 +557,13 @@ export class ChunkStreamingController {
 				req.desiredLod = desiredLod;
 				req.revision = revision;
 				req.includeVoxelData = includeVoxelData;
-				req.priority = this.computePriority(chunk, desiredLod, this._pcx, this._pcy, this._pcz);
+				req.priority = this.computePriority(
+					chunk,
+					desiredLod,
+					this._pcx,
+					this._pcy,
+					this._pcz,
+				);
 				req.cancelled = false;
 			} else {
 				const pooled = this._freeRequests.pop();
@@ -561,7 +572,13 @@ export class ChunkStreamingController {
 					pooled.desiredLod = desiredLod;
 					pooled.revision = revision;
 					pooled.includeVoxelData = includeVoxelData;
-					pooled.priority = this.computePriority(chunk, desiredLod, this._pcx, this._pcy, this._pcz);
+					pooled.priority = this.computePriority(
+						chunk,
+						desiredLod,
+						this._pcx,
+						this._pcy,
+						this._pcz,
+					);
 					pooled.cancelled = false;
 					req = pooled;
 				} else {
@@ -570,7 +587,13 @@ export class ChunkStreamingController {
 						desiredLod,
 						revision,
 						includeVoxelData,
-						priority: this.computePriority(chunk, desiredLod, this._pcx, this._pcy, this._pcz),
+						priority: this.computePriority(
+							chunk,
+							desiredLod,
+							this._pcx,
+							this._pcy,
+							this._pcz,
+						),
 						cancelled: false,
 					};
 				}
@@ -870,7 +893,12 @@ export class ChunkStreamingController {
 		const rH = lodRuleSet.maxHorizontalRadius() + 2;
 		const rV = lodRuleSet.maxVerticalRadius() + 2;
 		const size = (2 * rH + 1) * (2 * rH + 1) * (2 * rV + 1) * 2 * 8;
-		if (this._refreshArr === null || this._refreshArr.length !== size || this._rH !== rH || this._rV !== rV) {
+		if (
+			this._refreshArr === null ||
+			this._refreshArr.length !== size ||
+			this._rH !== rH ||
+			this._rV !== rV
+		) {
 			this.buildRefreshCache(lodRuleSet);
 		}
 	}
@@ -895,20 +923,34 @@ export class ChunkStreamingController {
 		}
 	}
 
-	private refreshIndex(rx: number, ry: number, rz: number, chunkY: number, prevLod: number): number {
+	private refreshIndex(
+		rx: number,
+		ry: number,
+		rz: number,
+		chunkY: number,
+		prevLod: number,
+	): number {
 		const ax = rx + this._rH;
 		const az = rz + this._rZ;
 		const ay = ry + this._rV;
 		const wX = 2 * this._rH + 1;
 		const wZ = 2 * this._rZ + 1;
 		const wY = 2 * this._rV + 1;
-		if (ax < 0 || ax >= wX || az < 0 || az >= wZ || ay < 0 || ay >= wY) return -1;
+		if (ax < 0 || ax >= wX || az < 0 || az >= wZ || ay < 0 || ay >= wY)
+			return -1;
 		const sign = chunkY < 0 ? 1 : 0;
 		const lod = prevLod & 7;
-		return ((((ay * wZ + az) * wX + ax) * 2 + sign) * 8 + lod);
+		return (((ay * wZ + az) * wX + ax) * 2 + sign) * 8 + lod;
 	}
 
-	private getCachedDecisionLod(rx: number, ry: number, rz: number, chunkY: number, prevLod: number, isDirty: boolean): number {
+	private getCachedDecisionLod(
+		rx: number,
+		ry: number,
+		rz: number,
+		chunkY: number,
+		prevLod: number,
+		isDirty: boolean,
+	): number {
 		if (isDirty) return -1;
 		const arr = this._refreshArr;
 		if (arr !== null) {
@@ -917,11 +959,21 @@ export class ChunkStreamingController {
 			const v = arr[idx];
 			return v === undefined ? -1 : v;
 		}
-		const cached = this._refreshFallback.get(packOffsetKey(rx, ry, rz, chunkY, prevLod));
+		const cached = this._refreshFallback.get(
+			packOffsetKey(rx, ry, rz, chunkY, prevLod),
+		);
 		return cached === undefined ? -1 : cached;
 	}
 
-	private setCachedDecisionLod(rx: number, ry: number, rz: number, chunkY: number, prevLod: number, lod: number, isDirty: boolean): void {
+	private setCachedDecisionLod(
+		rx: number,
+		ry: number,
+		rz: number,
+		chunkY: number,
+		prevLod: number,
+		lod: number,
+		isDirty: boolean,
+	): void {
 		if (isDirty) return;
 		const arr = this._refreshArr;
 		if (arr !== null) {
@@ -1076,7 +1128,14 @@ export class ChunkStreamingController {
 					const previousLod = chunk.lodLevel ?? desiredLod;
 					desiredLod = isDirty
 						? -1
-						: this.getCachedDecisionLod(relX, relY, relZ, chunkYValue, previousLod, false);
+						: this.getCachedDecisionLod(
+								relX,
+								relY,
+								relZ,
+								chunkYValue,
+								previousLod,
+								false,
+							);
 
 					if (desiredLod < 0) {
 						desiredLod = resolveDesiredLod(
@@ -1097,7 +1156,15 @@ export class ChunkStreamingController {
 						}
 
 						if (!isDirty) {
-							this.setCachedDecisionLod(relX, relY, relZ, chunkYValue, previousLod, desiredLod, false);
+							this.setCachedDecisionLod(
+								relX,
+								relY,
+								relZ,
+								chunkYValue,
+								previousLod,
+								desiredLod,
+								false,
+							);
 						}
 					}
 				} else {
@@ -1357,22 +1424,51 @@ export class ChunkStreamingController {
 				const dx = canUseDelta ? chunkX - prevChunkX! : 0;
 				const dy = canUseDelta ? chunkY - prevChunkY! : 0;
 				const dz = canUseDelta ? chunkZ - prevChunkZ! : 0;
-				const removeRadius = operationalRadius + SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
-				const vRemove = operationalVerticalRadius + SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
+				const removeRadius =
+					operationalRadius + SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
+				const vRemove =
+					operationalVerticalRadius +
+					SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
 				const slab = SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER + 1;
 
-				let minX = chunkX - removeRadius, maxX = chunkX + removeRadius;
-				let minZ = chunkZ - removeRadius, maxZ = chunkZ + removeRadius;
-				let minY = chunkY - vRemove, maxY = chunkY + vRemove;
+				let minX = chunkX - removeRadius,
+					maxX = chunkX + removeRadius;
+				let minZ = chunkZ - removeRadius,
+					maxZ = chunkZ + removeRadius;
+				let minY = chunkY - vRemove,
+					maxY = chunkY + vRemove;
 
-				if (dx > 0) { minX = chunkX - removeRadius - slab; maxX = chunkX - removeRadius + slab; }
-				else if (dx < 0) { minX = chunkX + removeRadius - slab; maxX = chunkX + removeRadius + slab; }
-				if (dz > 0) { minZ = chunkZ - removeRadius - slab; maxZ = chunkZ - removeRadius + slab; }
-				else if (dz < 0) { minZ = chunkZ + removeRadius - slab; maxZ = chunkZ + removeRadius + slab; }
-				if (dy > 0) { minY = chunkY - vRemove - slab; maxY = chunkY - vRemove + slab; }
-				else if (dy < 0) { minY = chunkY + vRemove - slab; maxY = chunkY + vRemove + slab; }
+				if (dx > 0) {
+					minX = chunkX - removeRadius - slab;
+					maxX = chunkX - removeRadius + slab;
+				} else if (dx < 0) {
+					minX = chunkX + removeRadius - slab;
+					maxX = chunkX + removeRadius + slab;
+				}
+				if (dz > 0) {
+					minZ = chunkZ - removeRadius - slab;
+					maxZ = chunkZ - removeRadius + slab;
+				} else if (dz < 0) {
+					minZ = chunkZ + removeRadius - slab;
+					maxZ = chunkZ + removeRadius + slab;
+				}
+				if (dy > 0) {
+					minY = chunkY - vRemove - slab;
+					maxY = chunkY - vRemove + slab;
+				} else if (dy < 0) {
+					minY = chunkY + vRemove - slab;
+					maxY = chunkY + vRemove + slab;
+				}
 
-				Chunk.loadedChunkIndex.queryCollectBox(minX, maxX, minY, maxY, minZ, maxZ, unloadScratch);
+				Chunk.loadedChunkIndex.queryCollectBox(
+					minX,
+					maxX,
+					minY,
+					maxY,
+					minZ,
+					maxZ,
+					unloadScratch,
+				);
 			}
 
 			this._scanCave = caveState;
@@ -1461,7 +1557,14 @@ export class ChunkStreamingController {
 			}
 
 			const chunkLod = chunk.lodLevel ?? 3;
-			let decisionLod = this.getCachedDecisionLod(relX, relY, relZ, chunk.chunkY, chunkLod, chunk.isDirty);
+			let decisionLod = this.getCachedDecisionLod(
+				relX,
+				relY,
+				relZ,
+				chunk.chunkY,
+				chunkLod,
+				chunk.isDirty,
+			);
 
 			if (decisionLod < 0) {
 				decisionLod = resolveDesiredLod(
@@ -1475,7 +1578,15 @@ export class ChunkStreamingController {
 					false,
 				);
 				if (decisionLod < 0) continue;
-				this.setCachedDecisionLod(relX, relY, relZ, chunk.chunkY, chunkLod, decisionLod, chunk.isDirty);
+				this.setCachedDecisionLod(
+					relX,
+					relY,
+					relZ,
+					chunk.chunkY,
+					chunkLod,
+					decisionLod,
+					chunk.isDirty,
+				);
 			}
 
 			if (
@@ -1815,7 +1926,14 @@ export class ChunkStreamingController {
 		const previousLod = chunk?.lodLevel ?? 3;
 		const isDirty = chunk?.isDirty === true;
 
-		let desiredLod = this.getCachedDecisionLod(relX, relY, relZ, y, previousLod, isDirty);
+		let desiredLod = this.getCachedDecisionLod(
+			relX,
+			relY,
+			relZ,
+			y,
+			previousLod,
+			isDirty,
+		);
 
 		if (desiredLod < 0) {
 			desiredLod = resolveDesiredLod(
@@ -1830,7 +1948,15 @@ export class ChunkStreamingController {
 			);
 			if (desiredLod < 0) return;
 
-			this.setCachedDecisionLod(relX, relY, relZ, y, previousLod, desiredLod, isDirty);
+			this.setCachedDecisionLod(
+				relX,
+				relY,
+				relZ,
+				y,
+				previousLod,
+				desiredLod,
+				isDirty,
+			);
 		}
 
 		this.applyTargetChunkDecision(x, y, z, chunk, previousLod, desiredLod);
@@ -2062,7 +2188,15 @@ export class ChunkStreamingController {
 			const x = skipX;
 			for (let y = minY; y <= maxY; y++) {
 				for (let z = chunkZ - r; z <= chunkZ + r; z++) {
-					this.processTargetChunkCoordinate(x, y, z, chunkX, chunkY, chunkZ, lodRuleSet);
+					this.processTargetChunkCoordinate(
+						x,
+						y,
+						z,
+						chunkX,
+						chunkY,
+						chunkZ,
+						lodRuleSet,
+					);
 				}
 			}
 		}
@@ -2072,7 +2206,15 @@ export class ChunkStreamingController {
 			for (let y = minY; y <= maxY; y++) {
 				for (let x = chunkX - r; x <= chunkX + r; x++) {
 					if (dx !== 0 && x === skipX) continue;
-					this.processTargetChunkCoordinate(x, y, z, chunkX, chunkY, chunkZ, lodRuleSet);
+					this.processTargetChunkCoordinate(
+						x,
+						y,
+						z,
+						chunkX,
+						chunkY,
+						chunkZ,
+						lodRuleSet,
+					);
 				}
 			}
 		}
@@ -2083,7 +2225,15 @@ export class ChunkStreamingController {
 				if (dx !== 0 && x === skipX) continue;
 				for (let z = chunkZ - r; z <= chunkZ + r; z++) {
 					if (dz !== 0 && z === skipZ) continue;
-					this.processTargetChunkCoordinate(x, y, z, chunkX, chunkY, chunkZ, lodRuleSet);
+					this.processTargetChunkCoordinate(
+						x,
+						y,
+						z,
+						chunkX,
+						chunkY,
+						chunkZ,
+						lodRuleSet,
+					);
 				}
 			}
 		}
@@ -2227,7 +2377,14 @@ export class ChunkStreamingController {
 					const existing = getChunkFast(x, y, z);
 					const previousLod = existing?.lodLevel ?? 3;
 					const isDirty = existing?.isDirty === true;
-					let desiredLod = this.getCachedDecisionLod(relX, relY, relZ, y, previousLod, isDirty);
+					let desiredLod = this.getCachedDecisionLod(
+						relX,
+						relY,
+						relZ,
+						y,
+						previousLod,
+						isDirty,
+					);
 
 					if (desiredLod < 0) {
 						desiredLod = resolveDesiredLod(
@@ -2242,7 +2399,15 @@ export class ChunkStreamingController {
 						);
 						if (desiredLod < 0) continue;
 
-						this.setCachedDecisionLod(relX, relY, relZ, y, previousLod, desiredLod, isDirty);
+						this.setCachedDecisionLod(
+							relX,
+							relY,
+							relZ,
+							y,
+							previousLod,
+							desiredLod,
+							isDirty,
+						);
 					}
 
 					if (
@@ -2418,7 +2583,7 @@ export class ChunkStreamingController {
 	 * invisible to ensureChunkQueuedForLoad, which would then allocate a second
 	 * request object for a chunk that already has one queued.
 	 */
-public onLoadRequestsRecovered(
+	public onLoadRequestsRecovered(
 		requests: ReadonlyArray<QueuedChunkRequest>,
 	): void {
 		for (let i = 0; i < requests.length; i++) {
@@ -2551,10 +2716,16 @@ public onLoadRequestsRecovered(
 	private poolCulledRequest(request: QueuedChunkRequest): void {
 		// keep requestMap in sync for cancelled + culled removals
 		const numericId = request.chunk ? request.chunk.numericId : -1;
-		if (numericId !== -1 && this.loadQueueRequestMap.get(numericId) === request) {
+		if (
+			numericId !== -1 &&
+			this.loadQueueRequestMap.get(numericId) === request
+		) {
 			this.loadQueueRequestMap.delete(numericId);
 		}
-		if (this._freeRequests.length >= ChunkStreamingController.FREE_REQUEST_POOL_MAX) {
+		if (
+			this._freeRequests.length >=
+			ChunkStreamingController.FREE_REQUEST_POOL_MAX
+		) {
 			return;
 		}
 		this._freeRequests.push(request);
@@ -2589,7 +2760,11 @@ public onLoadRequestsRecovered(
 		// Unified scale (item 2.6): one LOD band + d^2 + forward term, shared
 		// with chunkPriority/priorityForChunk. ageMs=0 here.
 		const distanceSq = dx * dx + dy * dy + dz * dz;
-		const forwardScore = chunkForwardScore(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+		const forwardScore = chunkForwardScore(
+			chunk.chunkX,
+			chunk.chunkY,
+			chunk.chunkZ,
+		);
 		let priority = chunkPriority(distanceSq, forwardScore, desiredLod, 0);
 
 		// Column-ring bonus: approaching columns load first within their LOD

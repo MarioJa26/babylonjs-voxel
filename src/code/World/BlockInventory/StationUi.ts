@@ -1,4 +1,10 @@
 ﻿import { onSceneDispose, type SceneContext } from "@babylonjs/lite";
+import {
+	closeUi,
+	isUiOpen,
+	openUi,
+	UiFocus,
+} from "@/code/Lib/GameRuntimeState";
 import { Map1 } from "@/code/Maps/Map1";
 import type {
 	RemoteStationManager,
@@ -24,23 +30,27 @@ import {
 	type ItemStack,
 	isFuel,
 	STATION_KINDS,
+	STATION_RECIPES,
 	type StationKind,
 	type StationState,
 	stationProgress,
 } from "./StationTypes";
 
 /**
- * The station panel: input / fuel / result slots, a progress bar and a status
- * line.
+ * The station panel: a Minecraft-style furnace window.
  *
- * Extracted from `PlayerHud` rather than added to it â€” PlayerHud is already ~2000
+ * Ingredients sit on the left (input, flame, fuel), a progress arrow points at
+ * the result on the right, and the player's live inventory is borrowed into the
+ * bottom of the panel so ore and fuel can be dragged in without opening a second
+ * screen.
+ *
+ * Extracted from `PlayerHud` rather than added to it — PlayerHud is already ~2000
  * lines of hand-rolled DOM, and this panel needs a non-trivial teardown (Escape
  * handling, borrowed-slot DOM restoration, pointer-lock juggling, a per-frame
  * reach check) so it earns its own file.
  *
- * Singleplayer only in Phase 3a: `StationManager` is the source of truth and this
- * panel reads and writes it directly. Phase 3b routes the same operations through
- * the network instead.
+ * `StationManager` is the singleplayer source of truth; multiplayer routes the
+ * same operations through the network instead.
  */
 
 const STATION_TITLES: Readonly<Record<StationKind, string>> = {
@@ -58,9 +68,27 @@ const CELL_LABELS = ["Input", "Fuel", "Result"] as const;
 const CLOSE_RANGE = 64;
 const CLOSE_RANGE_SQ = CLOSE_RANGE * CLOSE_RANGE;
 
+/**
+ * Burn ticks drawn as a full flame.
+ *
+ * The state only carries the remaining ticks, not the size of the burn that
+ * started them, so the icon treats one cheap fuel unit as a full-height flame.
+ * Longer fuels (coal) simply stay full for longer before the flame starts to
+ * shrink, which is the same read as Minecraft's fuel gauge.
+ */
+const FLAME_FULL_TICKS = 240;
+
 /** A repair station holds a tool and produces nothing. */
 export function isRepairStation(kind: StationKind): boolean {
-	return findStationRecipe(kind, 0)?.resultId === 0;
+	// A mixed station (the crucible smelts ingots and also repairs) is not a
+	// repair station: checking only the input-0 catch-all would misclassify it.
+	let found = false;
+	for (const recipe of STATION_RECIPES) {
+		if (recipe.kind !== kind) continue;
+		found = true;
+		if (recipe.resultId !== 0) return false;
+	}
+	return found;
 }
 
 /** Build an Item from a persisted stack, or null if the id no longer exists. */
@@ -123,9 +151,13 @@ function stationKindFromId(id: number): StationKind | undefined {
 function progressFraction(
 	smeltProgress: number,
 	kind: StationKind | undefined,
+	inputId: number,
 ): number {
 	if (kind === undefined) return 0;
-	const recipe = findStationRecipe(kind, 0);
+	// A furnace has one recipe per ore, so the input the client last saw is what
+	// resolves the correct smelt length. Passing 0 would only find the kiln's
+	// catch-all recipe.
+	const recipe = findStationRecipe(kind, inputId);
 	if (recipe === undefined || recipe.smeltTicks <= 0) return 0;
 	const frac = smeltProgress / recipe.smeltTicks;
 	return frac > 1 ? 1 : frac < 0 ? 0 : frac;
@@ -148,7 +180,9 @@ export class StationUi {
 	#player: Player;
 
 	#open = false;
+	#disposed = false;
 	#div: HTMLDivElement | null = null;
+	#panel: HTMLDivElement | null = null;
 	#pos: { x: number; y: number; z: number } | null = null;
 	#kind: StationKind = "furnace";
 
@@ -160,9 +194,29 @@ export class StationUi {
 	/** Set while `#syncSlots` assigns, to stop `onChanged` echoing a write back. */
 	#syncing = false;
 	#keyHandler: ((e: KeyboardEvent) => void) | null = null;
-	#progressFill: HTMLDivElement | null = null;
 	#statusLabel: HTMLSpanElement | null = null;
 	#title: HTMLDivElement | null = null;
+
+	#inputCell: HTMLDivElement | null = null;
+	#fuelCell: HTMLDivElement | null = null;
+	#outputCell: HTMLDivElement | null = null;
+	#flame: HTMLDivElement | null = null;
+	#flameFill: HTMLDivElement | null = null;
+	#arrow: HTMLDivElement | null = null;
+	#arrowFill: HTMLDivElement | null = null;
+	#repairProgress: HTMLDivElement | null = null;
+	#repairFill: HTMLDivElement | null = null;
+
+	#inventoryGrid: HTMLDivElement | null = null;
+	#hotbarGrid: HTMLDivElement | null = null;
+	#inventoryBorrowed = false;
+	#borrowedSlots: {
+		div: HTMLDivElement;
+		parent: HTMLElement;
+		index: number;
+	}[] = [];
+	#hotbarWrapper: HTMLElement | null = null;
+	#hotbarDisplay = "";
 
 	constructor(scene: SceneContext, player: Player) {
 		this.#scene = scene;
@@ -204,8 +258,16 @@ export class StationUi {
 		this.#div.dataset.stationKind = kind;
 		if (this.#title !== null) this.#title.textContent = STATION_TITLES[kind];
 
+		this.#applyLayout(kind);
+		this.#borrowInventory();
 		this.#applySlotConstraints(kind);
 		this.#syncSlots();
+
+		// A station is a modal surface: free the mouse, keep the world running,
+		// and borrow the inventory controls so Q-drop and drag/drop keep working.
+		openUi(UiFocus.station);
+		this.#activateInventoryControls();
+		document.exitPointerLock();
 
 		// Capture phase: stop Tab/Escape reaching the InventoryControls instance
 		// that is live while this panel is open, which would otherwise swap the
@@ -291,12 +353,24 @@ export class StationUi {
 	}
 
 	#applyRemoteState(state: RemoteStationState): void {
-		this.#kind = stationKindFromId(state.kind) ?? this.#kind;
+		const kind = stationKindFromId(state.kind);
+		if (kind !== undefined && kind !== this.#kind) {
+			this.#kind = kind;
+			this.#applyLayout(kind);
+			this.#applySlotConstraints(kind);
+			if (this.#title !== null) this.#title.textContent = STATION_TITLES[kind];
+			if (this.#div !== null) this.#div.dataset.stationKind = kind;
+		}
 		this.#inputItem = makeStationItem(stackOrNull(state.input));
 		this.#fuelItem = makeStationItem(stackOrNull(state.fuel));
 		this.#outputItem = makeStationItem(stackOrNull(state.output));
 		this.#syncSlots();
-		this.#refreshBar(state.smeltProgress, state.lit, state.kind);
+		this.#refreshBar(
+			state.smeltProgress,
+			state.lit,
+			state.burnRemaining,
+			state.kind,
+		);
 	}
 
 	#applyRemoteUpdate(update: RemoteStationSlotUpdate): void {
@@ -323,7 +397,12 @@ export class StationUi {
 		}
 
 		this.#syncSlots();
-		this.#refreshBar(update.smeltProgress, update.lit, this.#remoteKindId());
+		this.#refreshBar(
+			update.smeltProgress,
+			update.lit,
+			update.burnRemaining,
+			this.#remoteKindId(),
+		);
 	}
 
 	#remoteKindId(): number {
@@ -331,19 +410,26 @@ export class StationUi {
 	}
 
 	/**
-	 * Redraw the bar and status from a server snapshot.
+	 * Redraw the indicators and status from a server snapshot.
 	 *
 	 * Takes the raw numeric kind off the wire and resolves it through
 	 * `STATION_KINDS`, so an unknown id from a newer server degrades to "no
 	 * progress" instead of throwing.
 	 */
-	#refreshBar(progress: number, lit: boolean, kindId: number): void {
+	#refreshBar(
+		progress: number,
+		lit: boolean,
+		burnRemaining: number,
+		kindId: number,
+	): void {
 		const kind = STATION_KINDS[kindId];
 
-		const fill = this.#progressFill;
-		if (fill !== null) {
-			fill.style.width = `${(progressFraction(progress, kind) * 100).toFixed(1)}%`;
-		}
+		this.#updateIndicators(
+			progressFraction(progress, kind, this.#inputItem?.itemId ?? 0),
+			lit,
+			burnRemaining,
+			kind ?? this.#kind,
+		);
 		if (kind === undefined) return;
 
 		const status = this.#statusLabel;
@@ -355,7 +441,7 @@ export class StationUi {
 				fuel: this.#stackOf(this.#fuelItem),
 				output: this.#stackOf(this.#outputItem),
 				smeltProgress: progress,
-				burnRemaining: lit ? 1 : 0,
+				burnRemaining,
 			});
 		}
 	}
@@ -365,6 +451,32 @@ export class StationUi {
 	};
 
 	public hide(): void {
+		this.#close(true);
+	}
+
+	public dispose(): void {
+		this.#disposed = true;
+		this.#close(false);
+		this.#div?.remove();
+		this.#div = null;
+		this.#panel = null;
+		this.#inputCell = null;
+		this.#fuelCell = null;
+		this.#outputCell = null;
+		this.#flame = null;
+		this.#flameFill = null;
+		this.#arrow = null;
+		this.#arrowFill = null;
+		this.#repairProgress = null;
+		this.#repairFill = null;
+		this.#inventoryGrid = null;
+		this.#hotbarGrid = null;
+		this.#statusLabel = null;
+		this.#title = null;
+		this.#slots.length = 0;
+	}
+
+	#close(restorePointerLock: boolean): void {
 		if (!this.#open) return;
 		this.#open = false;
 		this.#pos = null;
@@ -383,13 +495,149 @@ export class StationUi {
 			window.removeEventListener("keyup", handler, true);
 			this.#keyHandler = null;
 		}
+
+		this.#restoreInventory();
+		this.#restoreWalkingControls();
+		closeUi(UiFocus.station);
+
+		if (restorePointerLock && !this.#disposed && !isUiOpen()) {
+			this.#requestPointerLock();
+		}
 	}
 
-	public dispose(): void {
-		this.hide();
-		this.#div?.remove();
-		this.#div = null;
-		this.#slots.length = 0;
+	/** Free the mouse and borrow the inventory key scheme for Q-drop. */
+	#activateInventoryControls(): void {
+		const walking = this.#player.defaultKeyboardControls;
+		// Cancel any in-progress block breaking from a held mouse button.
+		walking.stopBlockBreaking();
+		const inventory = this.#player.playerInventory.inventoryControls;
+		inventory.underlyingControls = walking;
+		this.#player.keyboardControls = inventory;
+	}
+
+	#restoreWalkingControls(): void {
+		this.#player.keyboardControls = this.#player.defaultKeyboardControls;
+	}
+
+	#requestPointerLock(): void {
+		document.querySelector("canvas")?.requestPointerLock();
+	}
+
+	/**
+	 * Show only the parts of the crafting layout this station actually uses.
+	 *
+	 * A kiln has no input slot (the fuel *is* the material), an anvil has no
+	 * fuel, and a whetstone repairs in place so it has no result slot. Keeping
+	 * the grid stable and hiding cells leaves the panel the same size as the
+	 * player moves between stations.
+	 */
+	#applyLayout(kind: StationKind): void {
+		// A station can have several recipes (a crucible both smelts and
+		// repairs), so traits come from the whole recipe set rather than the
+		// input-0 catch-all. `findStationRecipe(kind, 0)` is undefined for a
+		// furnace, which would otherwise hide its fuel and result slots.
+		let fuelIsMaterial = false;
+		let usesFuel = false;
+		let hasResult = false;
+		for (const recipe of STATION_RECIPES) {
+			if (recipe.kind !== kind) continue;
+			if (recipe.fuelIsMaterial === true) fuelIsMaterial = true;
+			if (recipe.usesFuel) usesFuel = true;
+			if (recipe.resultId !== 0) hasResult = true;
+		}
+
+		this.#inputCell?.classList.toggle("is-hidden", fuelIsMaterial);
+		this.#fuelCell?.classList.toggle("is-hidden", !usesFuel);
+		this.#flame?.classList.toggle("is-hidden", !usesFuel);
+		this.#outputCell?.classList.toggle("is-hidden", !hasResult);
+		this.#arrow?.classList.toggle("is-hidden", !hasResult);
+		this.#repairProgress?.classList.toggle("is-hidden", hasResult);
+	}
+
+	/**
+	 * Move the player's live inventory slots into the panel.
+	 *
+	 * The slots are the same DOM nodes the HUD uses, so drag/drop and tooltips
+	 * keep working without a second inventory model. Every move records the
+	 * original parent and child index; `#restoreInventory` puts them back
+	 * exactly where they came from.
+	 */
+	#borrowInventory(): void {
+		if (this.#inventoryBorrowed) return;
+
+		const main = this.#inventoryGrid;
+		const hotbar = this.#hotbarGrid;
+		if (main === null || hotbar === null) return;
+
+		const inventory = this.#player.playerInventory.inventory;
+		if (inventory.length === 0) return;
+
+		const mainFragment = document.createDocumentFragment();
+		for (let row = inventory.length - 1; row >= 1; row--) {
+			const rowDiv = document.createElement("div");
+			rowDiv.className = "station-inventory-row";
+
+			const invRow = inventory[row];
+			for (let col = 0; col < invRow.length; col++) {
+				this.#borrowSlot(invRow[col].divItemSlot, rowDiv);
+			}
+
+			mainFragment.appendChild(rowDiv);
+		}
+		main.replaceChildren(mainFragment);
+
+		const hotbarFragment = document.createDocumentFragment();
+		const hotbarRow = inventory[0];
+		if (hotbarRow !== undefined) {
+			for (let col = 0; col < hotbarRow.length; col++) {
+				this.#borrowSlot(hotbarRow[col].divItemSlot, hotbarFragment);
+			}
+		}
+		hotbar.replaceChildren(hotbarFragment);
+
+		// The real hotbar is now empty (its slots live in the panel), so hide the
+		// empty frame. Restore whatever display value it had on close.
+		const wrapper = document.getElementById("hotbar-wrapper");
+		if (wrapper !== null) {
+			this.#hotbarWrapper = wrapper;
+			this.#hotbarDisplay = wrapper.style.display;
+			wrapper.style.display = "none";
+		}
+
+		this.#inventoryBorrowed = true;
+	}
+
+	#borrowSlot(div: HTMLDivElement, target: Node): void {
+		const parent = div.parentElement;
+		if (parent !== null) {
+			this.#borrowedSlots.push({
+				div,
+				parent,
+				index: Array.from(parent.children).indexOf(div),
+			});
+		}
+		target.appendChild(div);
+	}
+
+	/** Put every borrowed slot back in its original row, in order. */
+	#restoreInventory(): void {
+		if (!this.#inventoryBorrowed) return;
+
+		this.#borrowedSlots.sort((a, b) => a.index - b.index);
+		for (const { div, parent } of this.#borrowedSlots) {
+			parent.appendChild(div);
+		}
+		this.#borrowedSlots.length = 0;
+
+		this.#inventoryGrid?.replaceChildren();
+		this.#hotbarGrid?.replaceChildren();
+		this.#inventoryBorrowed = false;
+
+		if (this.#hotbarWrapper !== null) {
+			this.#hotbarWrapper.style.display = this.#hotbarDisplay;
+			this.#hotbarWrapper = null;
+			this.#hotbarDisplay = "";
+		}
 	}
 
 	/**
@@ -476,28 +724,75 @@ export class StationUi {
 
 		const state = getStationState(pos.x, pos.y, pos.z, this.#kind);
 
-		const fill = this.#progressFill;
-		if (fill !== null) {
-			fill.style.width = `${(stationProgress(state) * 100).toFixed(1)}%`;
-		}
-
-		const status = this.#statusLabel;
-		if (status !== null) status.textContent = describeStation(state);
-
 		const inputId = state.input?.itemId ?? 0;
 		const inputSize = state.input?.stackSize ?? 0;
+		const fuelId = state.fuel?.itemId ?? 0;
+		const fuelSize = state.fuel?.stackSize ?? 0;
 		const outputId = state.output?.itemId ?? 0;
 		const outputSize = state.output?.stackSize ?? 0;
 
 		if (
 			(this.#inputItem?.itemId ?? 0) !== inputId ||
 			(this.#inputItem?.stackSize ?? 0) !== inputSize ||
+			(this.#fuelItem?.itemId ?? 0) !== fuelId ||
+			(this.#fuelItem?.stackSize ?? 0) !== fuelSize ||
 			(this.#outputItem?.itemId ?? 0) !== outputId ||
 			(this.#outputItem?.stackSize ?? 0) !== outputSize
 		) {
 			this.#reload();
 			this.#syncSlots();
 		}
+
+		this.#updateIndicators(
+			stationProgress(state),
+			state.burnRemaining > 0,
+			state.burnRemaining,
+			state.kind,
+		);
+
+		const status = this.#statusLabel;
+		if (status !== null) status.textContent = describeStation(state);
+	}
+
+	/**
+	 * Drive the arrow and flame from a 0..1 progress and burn timer.
+	 *
+	 * The flame is a kiln special case: a fuel-as-material station sets
+	 * `burnRemaining` to 1 rather than the fuel's burn time, so its flame is
+	 * simply "lit while the slot has material" rather than a shrinking gauge.
+	 */
+	#updateIndicators(
+		progress: number,
+		lit: boolean,
+		burnRemaining: number,
+		kind: StationKind,
+	): void {
+		const clamped = progress > 1 ? 1 : progress < 0 ? 0 : progress;
+		const arrowFill = this.#arrowFill;
+		if (arrowFill !== null) {
+			arrowFill.style.transform = `scaleX(${clamped})`;
+		}
+		const repairFill = this.#repairFill;
+		if (repairFill !== null) {
+			repairFill.style.transform = `scaleX(${clamped})`;
+		}
+
+		const flame = this.#flame;
+		const flameFill = this.#flameFill;
+		if (flame === null || flameFill === null) return;
+
+		const fuelIsMaterial = findStationRecipe(kind, 0)?.fuelIsMaterial === true;
+		const flameLit = fuelIsMaterial
+			? this.#fuelItem !== null && isFuel(this.#fuelItem.itemId)
+			: lit;
+		const fraction = flameLit
+			? fuelIsMaterial
+				? 1
+				: Math.min(1, Math.max(0.08, burnRemaining / FLAME_FULL_TICKS))
+			: 0;
+
+		flameFill.style.transform = `scaleY(${fraction})`;
+		flame.classList.toggle("is-lit", flameLit);
 	}
 
 	#syncSlots(): void {
@@ -655,63 +950,38 @@ export class StationUi {
 
 		const panel = document.createElement("div");
 		panel.className = "station-panel";
+		this.#panel = panel;
 
 		const title = document.createElement("div");
 		title.className = "station-title";
 		this.#title = title;
 
-		const grid = document.createElement("div");
-		grid.className = "station-slots";
+		const crafting = document.createElement("div");
+		crafting.className = "station-crafting";
 
-		for (let i = 0; i < 3; i++) {
-			const cell = document.createElement("div");
-			cell.className = "station-cell";
+		const ingredients = document.createElement("div");
+		ingredients.className = "station-ingredients";
 
-			const caption = document.createElement("span");
-			caption.className = "station-cell-label";
-			caption.textContent = CELL_LABELS[i] ?? "";
+		ingredients.appendChild(
+			this.#createSlotCell(0, CELL_LABELS[0], "station-input-cell"),
+		);
+		ingredients.appendChild(this.#createFlame());
+		ingredients.appendChild(
+			this.#createSlotCell(1, CELL_LABELS[1], "station-fuel-cell"),
+		);
+		ingredients.appendChild(this.#createRepairProgress());
 
-			const host = document.createElement("div");
-			host.className = "station-slot-host";
-
-			const slot = new ItemSlot(-1 - i, -1);
-			slot.isEquipmentSlot = true;
-			slot.divItemSlot = host;
-
-			// Fires on every mutation of this slot, which covers drag-in,
-			// drag-out, an in-place stack merge and a programmatic clear.
-			slot.onChanged = () => this.#adoptSlot(i);
-
-			// Click withdraws. Needed because the result slot is read-only for
-			// writing, so a finished smelt would otherwise have no way out.
-			host.addEventListener("click", () => this.#withdrawSlot(i));
-
-			this.#slots.push(slot);
-
-			cell.appendChild(caption);
-			cell.appendChild(host);
-
-			// The result cell carries the progress bar, so the eye stays in one
-			// place while waiting.
-			if (i === 2) {
-				const bar = document.createElement("div");
-				bar.className = "station-progress";
-
-				const fill = document.createElement("div");
-				fill.className = "station-progress-fill";
-				fill.style.width = "0%";
-				this.#progressFill = fill;
-
-				bar.appendChild(fill);
-				cell.appendChild(bar);
-			}
-
-			grid.appendChild(cell);
-		}
+		crafting.appendChild(ingredients);
+		crafting.appendChild(this.#createArrow());
+		crafting.appendChild(
+			this.#createSlotCell(2, CELL_LABELS[2], "station-output-cell"),
+		);
 
 		const status = document.createElement("span");
 		status.className = "station-status";
 		this.#statusLabel = status;
+
+		const inventory = this.#createInventorySection();
 
 		const close = document.createElement("button");
 		close.className = "hud-close-button";
@@ -719,17 +989,109 @@ export class StationUi {
 		close.onclick = (): void => this.hide();
 
 		panel.appendChild(title);
-		panel.appendChild(grid);
+		panel.appendChild(crafting);
 		panel.appendChild(status);
+		panel.appendChild(inventory);
+		panel.appendChild(close);
 		overlay.appendChild(panel);
-		overlay.appendChild(close);
 		document.body.appendChild(overlay);
 
 		onSceneDispose(this.#scene, () => {
-			overlay.remove();
+			this.dispose();
 		});
 
 		return overlay;
+	}
+
+	#createSlotCell(
+		index: number,
+		label: string,
+		className: string,
+	): HTMLDivElement {
+		const cell = document.createElement("div");
+		cell.className = `station-cell ${className}`;
+		if (index === 0) this.#inputCell = cell;
+		else if (index === 1) this.#fuelCell = cell;
+		else this.#outputCell = cell;
+
+		const host = document.createElement("div");
+		host.className = "station-slot-host";
+		host.setAttribute("aria-label", label);
+
+		const slot = new ItemSlot(-1 - index, -1);
+		slot.isEquipmentSlot = true;
+		slot.divItemSlot = host;
+
+		// Fires on every mutation of this slot, which covers drag-in,
+		// drag-out, an in-place stack merge and a programmatic clear.
+		slot.onChanged = () => this.#adoptSlot(index);
+
+		// Click withdraws. Needed because the result slot is read-only for
+		// writing, so a finished smelt would otherwise have no way out.
+		host.addEventListener("click", () => this.#withdrawSlot(index));
+
+		this.#slots.push(slot);
+		cell.appendChild(host);
+		return cell;
+	}
+
+	#createFlame(): HTMLDivElement {
+		const flame = document.createElement("div");
+		flame.className = "station-flame";
+		flame.setAttribute("aria-hidden", "true");
+
+		const fill = document.createElement("div");
+		fill.className = "station-flame-fill";
+		flame.appendChild(fill);
+
+		this.#flame = flame;
+		this.#flameFill = fill;
+		return flame;
+	}
+
+	#createArrow(): HTMLDivElement {
+		const arrow = document.createElement("div");
+		arrow.className = "station-arrow";
+		arrow.setAttribute("aria-hidden", "true");
+
+		const fill = document.createElement("div");
+		fill.className = "station-arrow-fill";
+		arrow.appendChild(fill);
+
+		this.#arrow = arrow;
+		this.#arrowFill = fill;
+		return arrow;
+	}
+
+	#createRepairProgress(): HTMLDivElement {
+		const bar = document.createElement("div");
+		bar.className = "station-repair-progress";
+		bar.setAttribute("aria-hidden", "true");
+
+		const fill = document.createElement("div");
+		fill.className = "station-repair-progress-fill";
+		bar.appendChild(fill);
+
+		this.#repairProgress = bar;
+		this.#repairFill = fill;
+		return bar;
+	}
+
+	#createInventorySection(): HTMLDivElement {
+		const section = document.createElement("div");
+		section.className = "station-inventory";
+
+		const main = document.createElement("div");
+		main.className = "station-inventory-main";
+		this.#inventoryGrid = main;
+
+		const hotbar = document.createElement("div");
+		hotbar.className = "station-hotbar-row";
+		this.#hotbarGrid = hotbar;
+
+		section.appendChild(main);
+		section.appendChild(hotbar);
+		return section;
 	}
 }
 

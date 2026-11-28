@@ -68,14 +68,14 @@ import {
 
 const GROUP_SIZE = 4;
 const GROUP_WORLD_SIZE = GROUP_SIZE * CHUNK_SIZE;
-
-const LOD2_BUCKET = 2;
-const LOD3_BUCKET = 3;
-const LOD4_BUCKET = 4;
 const MAX_LOD_BUCKET = 4;
 
 const TRANSPARENT_TIME_UPDATE_INTERVAL = 3;
-const UNIFORM_EPSILON = 0.00001;
+const UNIFORM_EPSILON = 1e-5;
+
+// O(1) LOD -> bucket mapping (clamped 0..4)
+const LOD_BUCKET_LUT = new Uint8Array([0, 0, 2, 3, 4]);
+
 let atlasMaterial: ShaderMaterial | null = null;
 let transparentMaterial: ShaderMaterial | null = null;
 let cutoutMaterial: ShaderMaterial | null = null;
@@ -101,21 +101,19 @@ const cachedUniforms = {
 	sunLightIntensity: 1,
 	wetness: 0,
 	brightness: 1,
-	// Uniform-only factors of the packed bakeShade equation, folded here so
-	// the vertex stage never recomputes them for every vertex of every face.
-	shadeSunScale: 0.8 * (1 + 0.2),
+	shadeSunScale: 0.96, // 0.8 * (1 + 0.2)
 	shadeWetBright: 1,
 };
 
-/**
- * Scratch for the shared sun-light computation.
- */
 const sunStateScratch: SunLightState = { x: 0, y: 1, z: 0, intensity: 1 };
-
-let lastUpdateFrame = -1;
-
 const boatChunkOffsets = new Float32Array(192);
-const materialList: ShaderMaterial[] = [];
+
+// Partitioned material lists for branchless, linear uniform updates
+const allMaterials: ShaderMaterial[] = [];
+const fogMaterials: ShaderMaterial[] = [];
+const timeMaterials: ShaderMaterial[] = [];
+const wetnessMaterials: ShaderMaterial[] = [];
+const bakeShadeMaterials: ShaderMaterial[] = [];
 
 const opaqueMaterialByLod: Array<ShaderMaterial | null> = [
 	null,
@@ -124,7 +122,6 @@ const opaqueMaterialByLod: Array<ShaderMaterial | null> = [
 	null,
 	null,
 ];
-
 const cutoutMaterialByLod: Array<ShaderMaterial | null> = [
 	null,
 	null,
@@ -132,7 +129,6 @@ const cutoutMaterialByLod: Array<ShaderMaterial | null> = [
 	null,
 	null,
 ];
-
 const transparentMaterialByLod: Array<ShaderMaterial | null> = [
 	null,
 	null,
@@ -141,15 +137,13 @@ const transparentMaterialByLod: Array<ShaderMaterial | null> = [
 	null,
 ];
 
-let materialListDirty = true;
-let materialBucketsDirty = true;
-
-let lastLX = 0;
-let lastLY = 0;
-let lastLZ = 0;
-let lastSun = -1;
-let lastWet = -1;
-let lastBrightness = -1;
+let lastUpdateFrame = -1;
+let lastLX = Number.NaN;
+let lastLY = Number.NaN;
+let lastLZ = Number.NaN;
+let lastSun = Number.NaN;
+let lastWet = Number.NaN;
+let lastBrightness = Number.NaN;
 
 let timeFrameCounter = 0;
 
@@ -157,11 +151,11 @@ const lightDirArray = new Float32Array(3);
 const fogInfosArray = new Float32Array(4);
 const fogColorArray = new Float32Array(3);
 
-let fogCachedStart = -1;
-let fogCachedEnd = -1;
-let fogCachedColorR = -1;
-let fogCachedColorG = -1;
-let fogCachedColorB = -1;
+let fogCachedStart = Number.NaN;
+let fogCachedEnd = Number.NaN;
+let fogCachedColorR = Number.NaN;
+let fogCachedColorG = Number.NaN;
+let fogCachedColorB = Number.NaN;
 let fogCachedUnderwater = false;
 
 const LOD_TINT_LUT = new Float32Array([
@@ -188,19 +182,16 @@ function nearlyEqual(a: number, b: number): boolean {
 }
 
 function normalizeLodBucket(lod: number): number {
-	return lod >= MAX_LOD_BUCKET
-		? MAX_LOD_BUCKET
-		: lod >= LOD3_BUCKET
-			? LOD3_BUCKET
-			: lod >= LOD2_BUCKET
-				? LOD2_BUCKET
-				: 0;
+	const clamped = lod < 0 ? 0 : lod > MAX_LOD_BUCKET ? MAX_LOD_BUCKET : lod | 0;
+	return LOD_BUCKET_LUT[clamped];
 }
 
-function populateMaterialBuckets(): void {
-	if (!materialBucketsDirty) {
-		return;
-	}
+function rebuildMaterialTables(): void {
+	allMaterials.length = 0;
+	fogMaterials.length = 0;
+	timeMaterials.length = 0;
+	wetnessMaterials.length = 0;
+	bakeShadeMaterials.length = 0;
 
 	opaqueMaterialByLod[0] = atlasMaterial;
 	opaqueMaterialByLod[1] = atlasMaterial;
@@ -220,154 +211,132 @@ function populateMaterialBuckets(): void {
 	transparentMaterialByLod[3] = lod3TransparentMaterial;
 	transparentMaterialByLod[4] = lod4TransparentMaterial;
 
-	materialBucketsDirty = false;
-}
+	// All materials receive core lighting uniforms
+	const candidates = [
+		atlasMaterial,
+		transparentMaterial,
+		cutoutMaterial,
+		lod2OpaqueMaterial,
+		lod2CutoutMaterial,
+		lod2TransparentMaterial,
+		lod3OpaqueMaterial,
+		lod3CutoutMaterial,
+		lod3TransparentMaterial,
+		lod4OpaqueMaterial,
+		lod4TransparentMaterial,
+	];
 
-function getOpaqueMaterialForLodBucket(lod: number): ShaderMaterial {
-	populateMaterialBuckets();
-	return opaqueMaterialByLod[normalizeLodBucket(lod)]!;
-}
-
-function getCutoutMaterialForLodBucket(lod: number): ShaderMaterial {
-	populateMaterialBuckets();
-	return cutoutMaterialByLod[normalizeLodBucket(lod)]!;
-}
-
-function getTransparentMaterialForLodBucket(lod: number): ShaderMaterial {
-	populateMaterialBuckets();
-	return transparentMaterialByLod[normalizeLodBucket(lod)]!;
-}
-
-function populateMaterialList(): void {
-	if (!materialListDirty) {
-		return;
+	for (let i = 0; i < candidates.length; i++) {
+		const mat = candidates[i];
+		if (mat) {
+			allMaterials.push(mat);
+		}
 	}
 
-	materialList.length = 0;
-
-	if (atlasMaterial) materialList.push(atlasMaterial);
-	if (transparentMaterial) materialList.push(transparentMaterial);
-	if (cutoutMaterial) materialList.push(cutoutMaterial);
-
-	if (lod2OpaqueMaterial) materialList.push(lod2OpaqueMaterial);
-	if (lod2CutoutMaterial) materialList.push(lod2CutoutMaterial);
-	if (lod2TransparentMaterial) {
-		materialList.push(lod2TransparentMaterial);
+	// Fog-enabled materials (all except LOD0/1 opaque & cutout)
+	const fogCandidates = [
+		transparentMaterial,
+		lod2OpaqueMaterial,
+		lod2CutoutMaterial,
+		lod2TransparentMaterial,
+		lod3OpaqueMaterial,
+		lod3CutoutMaterial,
+		lod3TransparentMaterial,
+		lod4OpaqueMaterial,
+		lod4TransparentMaterial,
+	];
+	for (let i = 0; i < fogCandidates.length; i++) {
+		const mat = fogCandidates[i];
+		if (mat) fogMaterials.push(mat);
 	}
 
-	if (lod3OpaqueMaterial) materialList.push(lod3OpaqueMaterial);
-	if (lod3CutoutMaterial) materialList.push(lod3CutoutMaterial);
-	if (lod3TransparentMaterial) {
-		materialList.push(lod3TransparentMaterial);
+	// Animated time materials
+	const timeCandidates = [
+		transparentMaterial,
+		cutoutMaterial,
+		lod2CutoutMaterial,
+		lod3CutoutMaterial,
+		lod4TransparentMaterial,
+	];
+	for (let i = 0; i < timeCandidates.length; i++) {
+		const mat = timeCandidates[i];
+		if (mat) timeMaterials.push(mat);
 	}
 
-	if (lod4OpaqueMaterial) materialList.push(lod4OpaqueMaterial);
-	if (lod4TransparentMaterial) {
-		materialList.push(lod4TransparentMaterial);
+	// Direct wetness uniform materials
+	const wetCandidates = [
+		atlasMaterial,
+		lod2OpaqueMaterial,
+		lod3OpaqueMaterial,
+		lod4OpaqueMaterial,
+	];
+	for (let i = 0; i < wetCandidates.length; i++) {
+		const mat = wetCandidates[i];
+		if (mat) wetnessMaterials.push(mat);
 	}
 
-	materialListDirty = false;
+	// Pre-folded bakeShade materials
+	const bakeCandidates = [
+		lod2OpaqueMaterial,
+		lod2CutoutMaterial,
+		lod2TransparentMaterial,
+		lod3OpaqueMaterial,
+		lod3CutoutMaterial,
+		lod3TransparentMaterial,
+		lod4OpaqueMaterial,
+		lod4TransparentMaterial,
+	];
+	for (let i = 0; i < bakeCandidates.length; i++) {
+		const mat = bakeCandidates[i];
+		if (mat) bakeShadeMaterials.push(mat);
+	}
 }
 
-function cacheStaticLightingState(): void {
+function pushStaticLightingUniforms(): void {
 	const uniforms = cachedUniforms;
-	const direction = uniforms.lightDirection;
+	const sunIntensity = uniforms.sunLightIntensity;
+	const brightness = uniforms.brightness;
+	const wetness = uniforms.wetness;
+	const shadeSunScale = uniforms.shadeSunScale;
+	const shadeWetBright = uniforms.shadeWetBright;
 
-	lastLX = direction.x;
-	lastLY = direction.y;
-	lastLZ = direction.z;
-	lastSun = uniforms.sunLightIntensity;
-	lastWet = uniforms.wetness;
-	// Single source of truth: the settings value is read here (both on init
-	// and whenever lighting changes) so newly created materials never show
-	// one frame at the wrong brightness.
-	lastBrightness = SETTING_PARAMS.BRIGHTNESS;
-	uniforms.brightness = lastBrightness;
-
-	lightDirArray[0] = direction.x;
-	lightDirArray[1] = direction.y;
-	lightDirArray[2] = direction.z;
-}
-
-function setStaticMaterialUniforms(material: ShaderMaterial): void {
-	setShaderUniform(material, "lightDirection", lightDirArray);
-	setShaderUniform(
-		material,
-		"sunLightIntensity",
-		cachedUniforms.sunLightIntensity,
-	);
-	// Computed once per vertex by the packed shader; the fragment stage only
-	// reads a flat varying (or a shade that already includes it).
-	setShaderUniform(material, "brightness", cachedUniforms.brightness);
-
-	const wetness = cachedUniforms.wetness;
-
-	if (
-		material === atlasMaterial ||
-		material === lod2OpaqueMaterial ||
-		material === lod3OpaqueMaterial ||
-		material === lod4OpaqueMaterial
-	) {
-		setShaderUniform(material, "wetness", wetness);
+	for (let i = 0, len = allMaterials.length; i < len; i++) {
+		const mat = allMaterials[i];
+		setShaderUniform(mat, "lightDirection", lightDirArray);
+		setShaderUniform(mat, "sunLightIntensity", sunIntensity);
+		setShaderUniform(mat, "brightness", brightness);
 	}
 
-	if (material === cutoutMaterial) {
-		setShaderUniform(material, "cutoutWetDiffuseMul", 1 - 0.35 * wetness);
+	for (let i = 0, len = wetnessMaterials.length; i < len; i++) {
+		setShaderUniform(wetnessMaterials[i], "wetness", wetness);
 	}
 
-	// Only the bakeShade materials declare these; they are the ones whose
-	// vertex stage consumes the CPU-folded sun/wetness/brightness factors.
-	if (
-		material === lod2OpaqueMaterial ||
-		material === lod2CutoutMaterial ||
-		material === lod2TransparentMaterial ||
-		material === lod3OpaqueMaterial ||
-		material === lod3CutoutMaterial ||
-		material === lod3TransparentMaterial ||
-		material === lod4OpaqueMaterial ||
-		material === lod4TransparentMaterial
-	) {
-		setShaderUniform(material, "shadeSunScale", cachedUniforms.shadeSunScale);
-		setShaderUniform(material, "shadeWetBright", cachedUniforms.shadeWetBright);
+	if (cutoutMaterial) {
+		setShaderUniform(cutoutMaterial, "cutoutWetDiffuseMul", 1 - 0.35 * wetness);
+	}
+
+	for (let i = 0, len = bakeShadeMaterials.length; i < len; i++) {
+		const mat = bakeShadeMaterials[i];
+		setShaderUniform(mat, "shadeSunScale", shadeSunScale);
+		setShaderUniform(mat, "shadeWetBright", shadeWetBright);
 	}
 }
 
 function setTransparentTimeUniform(time: number): void {
-	if (transparentMaterial) {
-		setShaderUniform(transparentMaterial, "time", time);
+	for (let i = 0, len = timeMaterials.length; i < len; i++) {
+		setShaderUniform(timeMaterials[i], "time", time);
 	}
-	if (cutoutMaterial) {
-		setShaderUniform(cutoutMaterial, "time", time);
-	}
-	if (lod2CutoutMaterial) {
-		setShaderUniform(lod2CutoutMaterial, "time", time);
-	}
-	if (lod3CutoutMaterial) {
-		setShaderUniform(lod3CutoutMaterial, "time", time);
-	}
-	if (lod4TransparentMaterial) {
-		setShaderUniform(lod4TransparentMaterial, "time", time);
-	}
-}
-
-function materialUsesFog(material: ShaderMaterial): boolean {
-	return material !== atlasMaterial && material !== cutoutMaterial;
 }
 
 function pushFogUniforms(): void {
-	populateMaterialList();
-
-	let liquid: LiquidDefinition | null = null;
 	const scene = sceneRef;
+	let liquid: LiquidDefinition | null = null;
 
 	if (scene?.camera) {
 		const position = getCameraPosition(scene.camera);
-
 		liquid = getEyeLiquid(position.x, position.y, position.z);
 	}
 
-	// Water keeps the MapFog values (including dev overrides); lava and oil
-	// use their registry fog so the sky matches the dense overlay.
 	const underwater = liquid !== null;
 	const liquidFog = underwater && liquid !== WATER_LIQUID ? liquid : null;
 
@@ -406,35 +375,11 @@ function pushFogUniforms(): void {
 	fogColorArray[1] = g;
 	fogColorArray[2] = b;
 
-	for (let i = 0, count = materialList.length; i < count; i++) {
-		const material = materialList[i];
-
-		if (!materialUsesFog(material)) {
-			continue;
-		}
-
+	for (let i = 0, len = fogMaterials.length; i < len; i++) {
+		const material = fogMaterials[i];
 		setShaderUniform(material, "fogInfos", fogInfosArray);
 		setShaderUniform(material, "fogColor", fogColorArray);
 	}
-}
-
-function resetPackedInputSpatialData(
-	x: number,
-	y: number,
-	z: number,
-	size: number,
-): void {
-	packedInputPosition[0] = x;
-	packedInputPosition[1] = y;
-	packedInputPosition[2] = z;
-
-	packedInputBoundsMin[0] = x;
-	packedInputBoundsMin[1] = y;
-	packedInputBoundsMin[2] = z;
-
-	packedInputBoundsMax[0] = x + size;
-	packedInputBoundsMax[1] = y + size;
-	packedInputBoundsMax[2] = z + size;
 }
 
 function preparePackedInput(
@@ -446,12 +391,21 @@ function preparePackedInput(
 	z: number,
 	boundsSize: number,
 ): PackedMeshInput {
-	packedInput.name = "";
 	packedInput.material = material;
 	packedInput.faceData = faceData;
 	packedInput.chunkOffsets = chunkOffsets;
 
-	resetPackedInputSpatialData(x, y, z, boundsSize);
+	packedInputPosition[0] = x;
+	packedInputPosition[1] = y;
+	packedInputPosition[2] = z;
+
+	packedInputBoundsMin[0] = x;
+	packedInputBoundsMin[1] = y;
+	packedInputBoundsMin[2] = z;
+
+	packedInputBoundsMax[0] = x + boundsSize;
+	packedInputBoundsMax[1] = y + boundsSize;
+	packedInputBoundsMax[2] = z + boundsSize;
 
 	return packedInput;
 }
@@ -464,11 +418,7 @@ function createOrUpdatePackedMesh(
 ): Mesh | null {
 	if (!existingMesh) {
 		const mesh = createPackedChunkMesh(input);
-
-		if (!mesh) {
-			return null;
-		}
-
+		if (!mesh) return null;
 		mesh.renderOrder = renderOrder;
 		return mesh;
 	}
@@ -484,20 +434,25 @@ function createOrUpdatePackedMesh(
 	return mesh;
 }
 
-function buildLiteMesh(
+function syncGroupLayer(
 	group: MergedMeshGroup,
 	existingMesh: Mesh | null,
-	mergedData: {
-		faceData: Uint8Array;
-		faceCount: number;
-	},
+	mergedData: { faceData: Uint8Array; faceCount: number } | null | undefined,
 	material: ShaderMaterial,
 	originX: number,
 	originY: number,
 	originZ: number,
 	dirtyRanges: readonly MergedFaceRange[] | null,
-	renderOrder = 0,
+	cullReference: Mesh | null,
+	renderOrder: number,
 ): Mesh | null {
+	if (!mergedData || mergedData.faceCount <= 0) {
+		if (existingMesh) {
+			disposePackedMesh(existingMesh);
+		}
+		return null;
+	}
+
 	const input = preparePackedInput(
 		material,
 		mergedData.faceData,
@@ -508,12 +463,18 @@ function buildLiteMesh(
 		GROUP_WORLD_SIZE,
 	);
 
-	return createOrUpdatePackedMesh(
+	const mesh = createOrUpdatePackedMesh(
 		existingMesh,
 		input,
 		dirtyRanges,
 		renderOrder,
 	);
+
+	if (mesh) {
+		carryMeshCulled(cullReference, mesh);
+	}
+
+	return mesh;
 }
 
 function updateBoatMesh(
@@ -526,7 +487,6 @@ function updateBoatMesh(
 		if (existingMesh) {
 			disposePackedMesh(existingMesh);
 		}
-
 		return null;
 	}
 
@@ -551,40 +511,32 @@ function createBoatChunkMesh(
 ): void {
 	const validOpaque =
 		opaqueData && opaqueData.faceCount > 0 ? opaqueData : null;
-
 	const validWater = waterData && waterData.faceCount > 0 ? waterData : null;
-
 	const validCutout =
 		cutoutData && cutoutData.faceCount > 0 ? cutoutData : null;
 
 	chunk.mesh = updateBoatMesh(
 		chunk.mesh,
 		validOpaque,
-		getOpaqueMaterialForLodBucket(0),
+		opaqueMaterialByLod[0]!,
 		0,
 	);
-
 	chunk.cutoutMesh = updateBoatMesh(
 		chunk.cutoutMesh as Mesh | null,
 		validCutout,
-		getCutoutMaterialForLodBucket(0),
+		cutoutMaterialByLod[0]!,
 		0,
 	);
-
 	chunk.waterMesh = updateBoatMesh(
 		chunk.waterMesh as Mesh | null,
 		validWater,
-		getTransparentMaterialForLodBucket(0),
+		transparentMaterialByLod[0]!,
 		1,
 	);
 
 	chunk.opaqueMeshData = validOpaque;
 	chunk.waterMeshData = validWater;
 	chunk.cutoutMeshData = validCutout;
-}
-
-function uploadTintLUT(): void {
-	// LOD material factories bind their tint LUT directly.
 }
 
 export async function initAtlas(): Promise<void> {
@@ -678,31 +630,32 @@ export async function initAtlas(): Promise<void> {
 			diffuseTexture: transparentTexture,
 		});
 
-		materialListDirty = true;
-		materialBucketsDirty = true;
-
-		uploadTintLUT();
+		rebuildMaterialTables();
 	}
 
-	populateMaterialList();
-	populateMaterialBuckets();
-	cacheStaticLightingState();
+	// Sync initial lighting state
+	const direction = cachedUniforms.lightDirection;
+	lastLX = direction.x;
+	lastLY = direction.y;
+	lastLZ = direction.z;
+	lastSun = cachedUniforms.sunLightIntensity;
+	lastWet = cachedUniforms.wetness;
+	lastBrightness = SETTING_PARAMS.BRIGHTNESS;
+	cachedUniforms.brightness = lastBrightness;
 
-	for (let i = 0, count = materialList.length; i < count; i++) {
-		setStaticMaterialUniforms(materialList[i]);
-	}
+	lightDirArray[0] = direction.x;
+	lightDirArray[1] = direction.y;
+	lightDirArray[2] = direction.z;
 
+	pushStaticLightingUniforms();
 	setTransparentTimeUniform(performance.now() * 0.001);
 	pushFogUniforms();
 }
 
 setOnGroupMeshNeedsRebuild((group) => {
-	if (!sceneRef) {
-		return;
-	}
+	if (!sceneRef) return;
 
-	const lod = group.lodBucket;
-
+	const lodBucket = normalizeLodBucket(group.lodBucket);
 	const originX = group.gridX * GROUP_WORLD_SIZE;
 	const originY = group.gridY * GROUP_WORLD_SIZE;
 	const originZ = group.gridZ * GROUP_WORLD_SIZE;
@@ -710,85 +663,46 @@ setOnGroupMeshNeedsRebuild((group) => {
 	const cullReference =
 		group.opaqueMeshRef ?? group.cutoutMeshRef ?? group.waterMeshRef;
 
-	if (group.cachedOpaque && group.cachedOpaque.faceCount > 0) {
-		const mesh = buildLiteMesh(
-			group,
-			group.opaqueMeshRef,
-			group.cachedOpaque,
-			getOpaqueMaterialForLodBucket(lod),
-			originX,
-			originY,
-			originZ,
-			group.dirtyOpaqueRanges,
-			0,
-		);
+	group.opaqueMeshRef = syncGroupLayer(
+		group,
+		group.opaqueMeshRef,
+		group.cachedOpaque,
+		opaqueMaterialByLod[lodBucket]!,
+		originX,
+		originY,
+		originZ,
+		group.dirtyOpaqueRanges,
+		cullReference,
+		0,
+	);
 
-		if (mesh) {
-			carryMeshCulled(cullReference, mesh);
-			group.opaqueMeshRef = mesh;
-		}
-	} else if (group.opaqueMeshRef) {
-		disposePackedMesh(group.opaqueMeshRef);
-		group.opaqueMeshRef = null;
-	}
+	group.cutoutMeshRef = syncGroupLayer(
+		group,
+		group.cutoutMeshRef as Mesh | null,
+		group.cachedCutout,
+		cutoutMaterialByLod[lodBucket]!,
+		originX,
+		originY,
+		originZ,
+		group.dirtyCutoutRanges,
+		cullReference,
+		0,
+	);
 
-	if (group.cachedCutout && group.cachedCutout.faceCount > 0) {
-		const mesh = buildLiteMesh(
-			group,
-			group.cutoutMeshRef as Mesh | null,
-			group.cachedCutout,
-			getCutoutMaterialForLodBucket(lod),
-			originX,
-			originY,
-			originZ,
-			group.dirtyCutoutRanges,
-			0,
-		);
-
-		if (mesh) {
-			carryMeshCulled(cullReference, mesh);
-			group.cutoutMeshRef = mesh;
-		}
-	} else if (group.cutoutMeshRef) {
-		disposePackedMesh(group.cutoutMeshRef);
-		group.cutoutMeshRef = null;
-	}
-
-	if (group.cachedWater && group.cachedWater.faceCount > 0) {
-		const mesh = buildLiteMesh(
-			group,
-			group.waterMeshRef as Mesh | null,
-			group.cachedWater,
-			getTransparentMaterialForLodBucket(lod),
-			originX,
-			originY,
-			originZ,
-			group.dirtyWaterRanges,
-			1,
-		);
-
-		if (mesh) {
-			carryMeshCulled(cullReference, mesh);
-			group.waterMeshRef = mesh;
-		}
-	} else if (group.waterMeshRef) {
-		disposePackedMesh(group.waterMeshRef);
-		group.waterMeshRef = null;
-	}
+	group.waterMeshRef = syncGroupLayer(
+		group,
+		group.waterMeshRef as Mesh | null,
+		group.cachedWater,
+		transparentMaterialByLod[lodBucket]!,
+		originX,
+		originY,
+		originZ,
+		group.dirtyWaterRanges,
+		cullReference,
+		1,
+	);
 });
 
-/**
- * Apply mesh data to a chunk.
- *
- * `appliedLod` records which LOD level the data was built at, so the chunk
- * knows what it is actually rendering (`chunk.appliedMeshLod`). It must be
- * the LOD the mesh data was produced for — NOT the chunk's current
- * `lodLevel`, which the streaming controller advances before the rebuild
- * lands. Pass -1 when clearing the mesh.
- *
- * Defaults to `chunk.lodLevel` for callers that already guarantee the data
- * matches the chunk's current LOD.
- */
 export function createMeshFromData(
 	chunk: Chunk,
 	opaqueMeshData: MeshData | null,
@@ -798,10 +712,8 @@ export function createMeshFromData(
 ): void {
 	const opaque =
 		opaqueMeshData && opaqueMeshData.faceCount > 0 ? opaqueMeshData : null;
-
 	const water =
 		waterMeshData && waterMeshData.faceCount > 0 ? waterMeshData : null;
-
 	const cutout =
 		cutoutMeshData && cutoutMeshData.faceCount > 0 ? cutoutMeshData : null;
 
@@ -833,17 +745,16 @@ export function initEngineContext(
 	sceneRef = scene;
 }
 
-export function updateGlobalUniforms(frameId: number): void {
+export function updateGlobalUniforms(
+	frameId: number,
+	nowSeconds = performance.now() * 0.001,
+): void {
 	if (frameId === lastUpdateFrame) {
 		return;
 	}
-
 	lastUpdateFrame = frameId;
 
 	const sun = computeSunLightState(sunStateScratch);
-	const uniforms = cachedUniforms;
-	const direction = uniforms.lightDirection;
-	// Base wetness (debug slider) plus whatever the rain is contributing.
 	const wetness = Map1.environment?.effectiveWetness ?? 0;
 	const brightness = SETTING_PARAMS.BRIGHTNESS;
 
@@ -855,45 +766,39 @@ export function updateGlobalUniforms(frameId: number): void {
 		!nearlyEqual(wetness, lastWet) ||
 		!nearlyEqual(brightness, lastBrightness);
 
-	direction.x = sun.x;
-	direction.y = sun.y;
-	direction.z = sun.z;
-	uniforms.sunLightIntensity = sun.intensity;
-	uniforms.wetness = wetness;
-	uniforms.brightness = brightness;
-	// These depend only on uniforms, so compute them once per lighting change
-	// instead of once per vertex in every LOD bakeShade shader.
-	uniforms.shadeSunScale = 0.8 * (sun.intensity + 0.2);
-	uniforms.shadeWetBright = (1 - 0.35 * wetness) * brightness;
-
 	if (lightingChanged) {
-		populateMaterialList();
-		cacheStaticLightingState();
+		lastLX = sun.x;
+		lastLY = sun.y;
+		lastLZ = sun.z;
+		lastSun = sun.intensity;
+		lastWet = wetness;
+		lastBrightness = brightness;
 
-		for (let i = 0; i < materialList.length; i++) {
-			setStaticMaterialUniforms(materialList[i]);
-		}
+		const uniforms = cachedUniforms;
+		uniforms.lightDirection.x = sun.x;
+		uniforms.lightDirection.y = sun.y;
+		uniforms.lightDirection.z = sun.z;
+		uniforms.sunLightIntensity = sun.intensity;
+		uniforms.wetness = wetness;
+		uniforms.brightness = brightness;
+		uniforms.shadeSunScale = 0.8 * (sun.intensity + 0.2);
+		uniforms.shadeWetBright = (1 - 0.35 * wetness) * brightness;
+
+		lightDirArray[0] = sun.x;
+		lightDirArray[1] = sun.y;
+		lightDirArray[2] = sun.z;
+
+		pushStaticLightingUniforms();
 
 		timeFrameCounter = 1;
-
-		if (
-			transparentMaterial !== null ||
-			cutoutMaterial !== null ||
-			lod2CutoutMaterial !== null ||
-			lod3CutoutMaterial !== null ||
-			lod4TransparentMaterial !== null
-		) {
-			setTransparentTimeUniform(performance.now() * 0.001);
+		if (timeMaterials.length > 0) {
+			setTransparentTimeUniform(nowSeconds);
 		}
 	} else if (
-		(transparentMaterial !== null ||
-			cutoutMaterial !== null ||
-			lod2CutoutMaterial !== null ||
-			lod3CutoutMaterial !== null ||
-			lod4TransparentMaterial !== null) &&
+		timeMaterials.length > 0 &&
 		timeFrameCounter++ % TRANSPARENT_TIME_UPDATE_INTERVAL === 0
 	) {
-		setTransparentTimeUniform(performance.now() * 0.001);
+		setTransparentTimeUniform(nowSeconds);
 	}
 
 	pushFogUniforms();
@@ -917,7 +822,11 @@ export function disposeSharedResources(): void {
 	lod4OpaqueMaterial = null;
 	lod4TransparentMaterial = null;
 
-	materialList.length = 0;
+	allMaterials.length = 0;
+	fogMaterials.length = 0;
+	timeMaterials.length = 0;
+	wetnessMaterials.length = 0;
+	bakeShadeMaterials.length = 0;
 
 	for (let i = 0; i <= MAX_LOD_BUCKET; i++) {
 		opaqueMaterialByLod[i] = null;
@@ -931,21 +840,19 @@ export function disposeSharedResources(): void {
 	sceneRef = null;
 	lastUpdateFrame = -1;
 
-	materialListDirty = true;
-	materialBucketsDirty = true;
-
-	lastLX = 0;
-	lastLY = 0;
-	lastLZ = 0;
-	lastSun = -1;
-	lastWet = -1;
+	lastLX = Number.NaN;
+	lastLY = Number.NaN;
+	lastLZ = Number.NaN;
+	lastSun = Number.NaN;
+	lastWet = Number.NaN;
+	lastBrightness = Number.NaN;
 
 	timeFrameCounter = 0;
 
-	fogCachedStart = -1;
-	fogCachedEnd = -1;
-	fogCachedColorR = -1;
-	fogCachedColorG = -1;
-	fogCachedColorB = -1;
+	fogCachedStart = Number.NaN;
+	fogCachedEnd = Number.NaN;
+	fogCachedColorR = Number.NaN;
+	fogCachedColorG = Number.NaN;
+	fogCachedColorB = Number.NaN;
 	fogCachedUnderwater = false;
 }

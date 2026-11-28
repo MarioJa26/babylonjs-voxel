@@ -14,7 +14,10 @@ import {
 	ChunkLifecycle,
 	notifyResidencyLoadComplete,
 } from "./Loading/ChunkLifecycle";
-import { type LoadedChunkCell, LoadedChunkIndex } from "./Loading/LoadedChunkIndex";
+import {
+	type LoadedChunkCell,
+	LoadedChunkIndex,
+} from "./Loading/LoadedChunkIndex";
 import { connectFacesMask } from "./Meshing/ChunkFaceMasks";
 import { removeChunkFromGroup } from "./Meshing/MergedMeshManager";
 import { type ChunkCensus, getChunkCensus } from "./Runtime/ChunkCensus";

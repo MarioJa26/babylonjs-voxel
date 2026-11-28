@@ -105,10 +105,7 @@ export class LoadedChunkIndex {
 			 */
 			const previousSlot = chunk.loadedIndexSlot;
 
-			if (
-				previousSlot !== -1 &&
-				previousCell.chunks[previousSlot] === chunk
-			) {
+			if (previousSlot !== -1 && previousCell.chunks[previousSlot] === chunk) {
 				return;
 			}
 
@@ -343,7 +340,11 @@ export class LoadedChunkIndex {
 					const bucket = cells.get(hash);
 					if (bucket === undefined) continue;
 
-					for (let bucketIndex = 0; bucketIndex < bucket.length; bucketIndex++) {
+					for (
+						let bucketIndex = 0;
+						bucketIndex < bucket.length;
+						bucketIndex++
+					) {
 						const cell = bucket[bucketIndex];
 						if (cell.cx !== cx || cell.cy !== cy || cell.cz !== cz) continue;
 
@@ -379,10 +380,7 @@ export class LoadedChunkIndex {
 	 * Normal removal is O(1). A linear recovery scan is retained only for
 	 * defensive repair if slot bookkeeping is inconsistent.
 	 */
-	private removeFromCell(
-		chunk: Chunk,
-		cell: LoadedChunkCell,
-	): void {
+	private removeFromCell(chunk: Chunk, cell: LoadedChunkCell): void {
 		const chunks = cell.chunks;
 		let slot = chunk.loadedIndexSlot;
 

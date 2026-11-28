@@ -376,7 +376,7 @@ export class ChunkProcessScheduler {
 		this._offFrameStart = 0;
 		this._offFrameMs = 0;
 
-let state = this.inFlightProcessState;
+		let state = this.inFlightProcessState;
 		if (!state) {
 			state = this._state;
 			this.inFlightProcessState = state;
@@ -1280,7 +1280,8 @@ let state = this.inFlightProcessState;
 
 	private markResume(): void {
 		const now = performance.now();
-		if (this._offFrameStart !== 0) this._offFrameMs += now - this._offFrameStart;
+		if (this._offFrameStart !== 0)
+			this._offFrameMs += now - this._offFrameStart;
 		this._offFrameStart = now;
 	}
 
