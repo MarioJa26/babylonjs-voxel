@@ -541,6 +541,11 @@ export class ChunkStreamingController {
 			// requests. requestMap entry removed immediately. Never pools here.
 			if (request) request.cancelled = true;
 		},
+		discardQueuedLoad: (view) => {
+			const chunk = view as Chunk;
+			this.loadQueueRequestMap.delete(chunk.numericId);
+			this._orphanCandidates.delete(chunk);
+		},
 		enqueueLoad: (view, request) => {
 			if (!request) return; // no payload → nothing to enqueue (defensive)
 			const chunk = view as Chunk;

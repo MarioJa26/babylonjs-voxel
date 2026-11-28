@@ -181,6 +181,8 @@ export interface ChunkLifecycleHost extends ChunkLifecycleQueries {
 	clearInFlight(view: ChunkLifecycleView): void;
 	/** Remove from BOTH the load queue and the in-flight set (unload wins). */
 	dropFromLoadPath(view: ChunkLifecycleView): void;
+	/** Delete from request map only; caller compacts the queue. */
+	discardQueuedLoad(view: ChunkLifecycleView): void;
 	/** Add to the unload/save queue. */
 	enqueueUnload(view: ChunkLifecycleView): void;
 	/** Remove from the unload/save queue (dispose finished). */
@@ -663,6 +665,14 @@ export const ChunkLifecycle = {
 		writeResidencyBooleans(view, next);
 
 		return next;
+	},
+
+	/** Cull a queued (not in-flight) load; caller compacts the queue. No deriveResidencyState. */
+	cullQueuedLoad(view: ChunkLifecycleView): ResidencyState {
+		const host = requireHost();
+		host.discardQueuedLoad(view);
+		writeResidencyBooleans(view, ResidencyState.Absent);
+		return ResidencyState.Absent;
 	},
 
 	/** Dispose finished. Unloading → Absent; clears the mesh flags too. */
