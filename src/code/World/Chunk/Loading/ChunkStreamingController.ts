@@ -749,6 +749,7 @@ export class ChunkStreamingController {
 
 	private _lastCaveState: boolean | null = null;
 	private _lastBandGen = -1;
+	private _lastMaxH = 0;
 	private _desiredWrites = 0;
 	private _scanCave = false;
 	private _scanGen = -1;
@@ -1031,6 +1032,7 @@ export class ChunkStreamingController {
 			);
 
 			const operationalRadius = lodRuleSet.maxHorizontalRadius();
+			this._lastMaxH = operationalRadius;
 			const operationalVerticalRadius = lodRuleSet.maxVerticalRadius();
 
 			const lod0HorizontalRadius = lodRuleSet.horizontalRadiusFor(0);
@@ -1676,6 +1678,34 @@ export class ChunkStreamingController {
 	 * is REMOVED as it is inspected — so the set is a work list, not a
 	 * permanent record, and it self-prunes every pass.
 	 */
+	/** Warm columnProfile for columns about to enter the ring (B3). Call from frame loop after streaming. */
+	public prefetchColumnProfiles(pcx: number, pcz: number, budgetMs: number): void {
+		const mx = this.lastMoveDx, mz = this.lastMoveDz;
+		if (mx === 0 && mz === 0) return;
+		if (!FRAME_WORK_BUDGET.canContinue(FrameWorkKind.Streaming, budgetMs)) return;
+		ensureColumnProfileSeed();
+		const R = this._lastMaxH;
+		const t0 = performance.now();
+		let n = 0;
+		for (let k = 1; k <= 3; k++) {
+			if (mx !== 0) {
+				const x = pcx + mx * (R + k);
+				for (let z = pcz - R; z <= pcz + R; z++) {
+					columnProfile(x, z);
+					if ((++n & 15) === 0 && performance.now() - t0 >= budgetMs) { FRAME_WORK_BUDGET.record(FrameWorkKind.Streaming, performance.now() - t0); return; }
+				}
+			}
+			if (mz !== 0) {
+				const z = pcz + mz * (R + k);
+				for (let x = pcx - R; x <= pcx + R; x++) {
+					columnProfile(x, z);
+					if ((++n & 15) === 0 && performance.now() - t0 >= budgetMs) { FRAME_WORK_BUDGET.record(FrameWorkKind.Streaming, performance.now() - t0); return; }
+				}
+			}
+		}
+		FRAME_WORK_BUDGET.record(FrameWorkKind.Streaming, performance.now() - t0);
+	}
+
 	public sweepOrphanedChunks(): number {
 		ensureColumnProfileSeed();
 		const nowMs = performance.now();

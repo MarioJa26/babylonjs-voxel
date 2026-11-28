@@ -621,6 +621,8 @@ export async function processFrameBudgetedStreamingWork(
 		await processScheduler.processQueues();
 	}
 
+	streamingController.prefetchColumnProfiles(playerChunkX, playerChunkZ, 0.3);
+
 	streamingWatchdog.tick(performance.now());
 
 	const elapsedMs = performance.now() - sliceStart;
