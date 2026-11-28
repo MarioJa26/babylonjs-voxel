@@ -327,6 +327,57 @@ export class LoadedChunkIndex {
 	}
 
 	/**
+	 * Append chunks in cells intersecting an explicit chunk-space bounding box
+	 * to `out`. Same cell-level filtering as queryCollect; destination not
+	 * cleared. Lets callers fetch slabs directly (trailing-edge scans) without
+	 * pulling the whole radius.
+	 */
+	queryCollectBox(
+		minX: number,
+		maxX: number,
+		minY: number,
+		maxY: number,
+		minZ: number,
+		maxZ: number,
+		out: Chunk[],
+	): void {
+		const minCX = chunkCoordToCell(minX);
+		const maxCX = chunkCoordToCell(maxX);
+		const minCY = chunkCoordToCell(minY);
+		const maxCY = chunkCoordToCell(maxY);
+		const minCZ = chunkCoordToCell(minZ);
+		const maxCZ = chunkCoordToCell(maxZ);
+
+		const cells = this.cells;
+		let outIndex = out.length;
+
+		for (let cx = minCX; cx <= maxCX; cx++) {
+			const hx = Math.imul(cx, HASH_X);
+
+			for (let cy = minCY; cy <= maxCY; cy++) {
+				const hxy = hx ^ Math.imul(cy, HASH_Y);
+
+				for (let cz = minCZ; cz <= maxCZ; cz++) {
+					const hash = hxy ^ Math.imul(cz, HASH_Z);
+					const bucket = cells.get(hash);
+					if (bucket === undefined) continue;
+
+					for (let bucketIndex = 0; bucketIndex < bucket.length; bucketIndex++) {
+						const cell = bucket[bucketIndex];
+						if (cell.cx !== cx || cell.cy !== cy || cell.cz !== cz) continue;
+
+						const chunks = cell.chunks;
+						for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+							out[outIndex++] = chunks[chunkIndex];
+						}
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	/**
 	 * Iterate every indexed chunk.
 	 */
 	*all(): IterableIterator<Chunk> {

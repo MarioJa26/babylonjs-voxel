@@ -193,6 +193,8 @@ function compareQueuedChunkRequestPriority(
 
 // Scratch array for LoadedChunkIndex.queryCollect, avoids generator overhead.
 const _queryScratch: Chunk[] = [];
+// Separate scratch for the unload scan (trailing-slab vs full).
+const _unloadScratch: Chunk[] = [];
 
 // Scratch list for sweepOrphanedChunks: candidates that were inspected and found
 // healthy (or no longer wanting loading) and so should leave the candidate set.
@@ -719,6 +721,8 @@ export class ChunkStreamingController {
 
 	private _lastCaveState: boolean | null = null;
 	private _lastBandGen = -1;
+	private _scanCave = false;
+	private _scanGen = -1;
 	private _lastBandCave = false;
 	private _lastRenderDistance = 0;
 	private _lastVerticalRadius = 0;
@@ -1247,17 +1251,39 @@ export class ChunkStreamingController {
 			const queryScratch = _queryScratch;
 			queryScratch.length = 0;
 
-			Chunk.loadedChunkIndex.queryCollect(
-				chunkX,
-				chunkY,
-				chunkZ,
-				unloadScanRadius,
-				unloadScanVertical,
-				queryScratch,
-			);
-
 			const includeOuterBands =
 				revision % ChunkStreamingController.OUTER_SCAN_INTERVAL === 0;
+
+			// Full scan every OUTER_SCAN_INTERVAL revisions + on any non-delta
+			// update + cave/rule-set change as a safety net; otherwise only a
+			// near window for refresh and a trailing slab for unload.
+			const fullScan =
+				!canUseDelta ||
+				includeOuterBands ||
+				caveState !== this._scanCave ||
+				lodRuleSet.revision !== this._scanGen;
+
+			if (fullScan) {
+				Chunk.loadedChunkIndex.queryCollect(
+					chunkX,
+					chunkY,
+					chunkZ,
+					unloadScanRadius,
+					unloadScanVertical,
+					queryScratch,
+				);
+			} else {
+				const nearH = lodRuleSet.horizontalRadiusFor(2) + 2;
+				const nearV = lodRuleSet.verticalRadiusFor(2) + 2;
+				Chunk.loadedChunkIndex.queryCollect(
+					chunkX,
+					chunkY,
+					chunkZ,
+					nearH,
+					nearV,
+					queryScratch,
+				);
+			}
 
 			this.enqueueLoadedChunksForRefresh(
 				chunkX,
@@ -1269,6 +1295,46 @@ export class ChunkStreamingController {
 
 			this.sortLoadQueue();
 
+			const unloadScratch = _unloadScratch;
+			unloadScratch.length = 0;
+
+			if (fullScan) {
+				Chunk.loadedChunkIndex.queryCollect(
+					chunkX,
+					chunkY,
+					chunkZ,
+					unloadScanRadius,
+					unloadScanVertical,
+					unloadScratch,
+				);
+			} else {
+				// Trailing-edge slab(s) opposite movement direction, thickness
+				// unloadBuffer + 1. `queryCollect` over that box catches chunks
+				// newly leaving range; full scan is the safety net.
+				const dx = canUseDelta ? chunkX - prevChunkX! : 0;
+				const dy = canUseDelta ? chunkY - prevChunkY! : 0;
+				const dz = canUseDelta ? chunkZ - prevChunkZ! : 0;
+				const removeRadius = operationalRadius + SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
+				const vRemove = operationalVerticalRadius + SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
+				const slab = SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER + 1;
+
+				let minX = chunkX - removeRadius, maxX = chunkX + removeRadius;
+				let minZ = chunkZ - removeRadius, maxZ = chunkZ + removeRadius;
+				let minY = chunkY - vRemove, maxY = chunkY + vRemove;
+
+				if (dx > 0) { minX = chunkX - removeRadius - slab; maxX = chunkX - removeRadius + slab; }
+				else if (dx < 0) { minX = chunkX + removeRadius - slab; maxX = chunkX + removeRadius + slab; }
+				if (dz > 0) { minZ = chunkZ - removeRadius - slab; maxZ = chunkZ - removeRadius + slab; }
+				else if (dz < 0) { minZ = chunkZ + removeRadius - slab; maxZ = chunkZ + removeRadius + slab; }
+				if (dy > 0) { minY = chunkY - vRemove - slab; maxY = chunkY - vRemove + slab; }
+				else if (dy < 0) { minY = chunkY + vRemove - slab; maxY = chunkY + vRemove + slab; }
+
+				Chunk.loadedChunkIndex.queryCollectBox(minX, maxX, minY, maxY, minZ, maxZ, unloadScratch);
+			}
+
+			this._scanCave = caveState;
+			this._scanGen = lodRuleSet.revision;
+
 			this.queueUnloading(
 				chunkX,
 				chunkY,
@@ -1276,6 +1342,7 @@ export class ChunkStreamingController {
 				operationalRadius,
 				operationalVerticalRadius,
 				lodRuleSet,
+				unloadScratch,
 			);
 
 			if (!caveState) {
@@ -2169,6 +2236,7 @@ export class ChunkStreamingController {
 		renderDistance: number,
 		verticalRadius: number,
 		lodRuleSet: ChunkLodRuleSet,
+		scratch: Chunk[] = _queryScratch,
 	): void {
 		const unloadQueueSet = this.adapter.getUnloadQueueSet();
 
@@ -2183,8 +2251,8 @@ export class ChunkStreamingController {
 		const undergroundVerticalRadius = undergroundVerticalRange(lodRuleSet);
 		const caveState = isInCave();
 
-		for (let i = 0, length = _queryScratch.length; i < length; i++) {
-			const chunk = _queryScratch[i];
+		for (let i = 0, length = scratch.length; i < length; i++) {
+			const chunk = scratch[i];
 
 			if (chunk.isBoatChunk || unloadQueueSet.has(chunk)) {
 				continue;
