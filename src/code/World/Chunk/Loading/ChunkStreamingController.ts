@@ -40,7 +40,7 @@ import {
 	ResidencyState,
 	setChunkLifecycleHost,
 } from "./ChunkLifecycle";
-import { chunkForwardScore, chunkPriority } from "./ChunkPriority";
+import { chunkPriorityRelative } from "./ChunkPriority";
 import {
 	ChunkResidency,
 	forgetChunkResidency,
@@ -627,6 +627,7 @@ export class ChunkStreamingController {
 				// a newer request may already exist for this chunk.
 				if (!this.loadQueueRequestMap.has(numericId)) {
 					retained.cancelled = false;
+					retained.priority = this.computePriority(chunk, retained.desiredLod, this._pcx, this._pcy, this._pcz);
 					this.loadQueueRequestMap.set(numericId, retained);
 					this.adapter.getLoadQueue().push(retained);
 				}
@@ -2680,38 +2681,16 @@ export class ChunkStreamingController {
 		loadQueue.sort(compareQueuedChunkRequestPriority);
 	}
 
-	private computePriority(
-		chunk: Chunk,
-		desiredLod: number,
-		playerChunkX: number,
-		playerChunkY: number,
-		playerChunkZ: number,
-	): number {
-		const dx = chunk.chunkX - playerChunkX;
-		const dy = chunk.chunkY - playerChunkY;
-		const dz = chunk.chunkZ - playerChunkZ;
-
-		// Unified scale (item 2.6): one LOD band + d^2 + forward term, shared
-		// with chunkPriority/priorityForChunk. ageMs=0 here.
-		const distanceSq = dx * dx + dy * dy + dz * dz;
-		const forwardScore = chunkForwardScore(
-			chunk.chunkX,
-			chunk.chunkY,
-			chunk.chunkZ,
-		);
-		let priority = chunkPriority(distanceSq, forwardScore, desiredLod, 0);
-
-		// Column-ring bonus: approaching columns load first within their LOD
-		// band during fast fly. Stays below the 1M LOD band by construction.
+	private computePriority(chunk: Chunk, desiredLod: number, pcx: number, pcy: number, pcz: number): number {
+		const dx = chunk.chunkX - pcx;
+		const dy = chunk.chunkY - pcy;
+		const dz = chunk.chunkZ - pcz;
+		let p = chunkPriorityRelative(dx, dy, dz, desiredLod, 0);
 		if (SETTING_PARAMS.COLUMN_STREAMING_ENABLED) {
-			const moveDx = this.lastMoveDx;
-			const moveDz = this.lastMoveDz;
-			if ((moveDx !== 0 || moveDz !== 0) && dx * moveDx + dz * moveDz > 0) {
-				priority -= SETTING_PARAMS.COLUMN_AHEAD_BONUS;
-			}
+			const mx = this.lastMoveDx, mz = this.lastMoveDz;
+			if ((mx !== 0 || mz !== 0) && dx * mx + dz * mz > 0) p -= SETTING_PARAMS.COLUMN_AHEAD_BONUS;
 		}
-
-		return priority;
+		return p;
 	}
 
 	/**

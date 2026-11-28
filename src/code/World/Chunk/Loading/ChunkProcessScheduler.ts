@@ -662,7 +662,6 @@ export class ChunkProcessScheduler {
 								request.revision = desiredRevision;
 								request.desiredLod = desiredLod;
 								request.includeVoxelData = desiredLod <= 1;
-								request.priority = Number.POSITIVE_INFINITY;
 							} else if (desiredLod !== request.desiredLod) {
 								request.desiredLod = desiredLod;
 								request.includeVoxelData = desiredLod <= 1;
@@ -1150,7 +1149,6 @@ export class ChunkProcessScheduler {
 		if (wantVoxelData !== request.includeVoxelData) {
 			request.desiredLod = desiredLod;
 			request.includeVoxelData = wantVoxelData;
-			request.priority = Number.POSITIVE_INFINITY;
 
 			this.requeueLoadRequest(state, request);
 			return false;

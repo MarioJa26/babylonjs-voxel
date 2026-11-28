@@ -149,6 +149,12 @@ export function chunkForwardScore(cx: number, cy: number, cz: number): number {
 	return dx * ctx.forwardX + dy * ctx.forwardY + dz * ctx.forwardZ;
 }
 
+/** Priority from an offset already relative to the player. Uses only the context's forward vector. */
+export function chunkPriorityRelative(dx: number, dy: number, dz: number, lod: number, ageMs: number): number {
+	const c = currentContext;
+	return chunkPriority(dx * dx + dy * dy + dz * dz, dx * c.forwardX + dy * c.forwardY + dz * c.forwardZ, lod, ageMs);
+}
+
 /** Full priority for a chunk, using the current frame's context. */
 export function priorityForChunk(
 	cx: number,
