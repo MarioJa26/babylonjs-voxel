@@ -6,7 +6,7 @@ import {
 	type SavedChunkEntityData,
 	WorldStorage,
 } from "../WorldStorage";
-import { addChunkDisposeHook, Chunk } from "./Chunk";
+import { addChunkDisposeHook, Chunk, persistDirtyChunks } from "./Chunk";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { packCoords } from "./DataStructures/ChunkCoords";
 import { ChunkEntityRegistry } from "./Loading/ChunkEntityRegistry";
@@ -177,10 +177,13 @@ const worldMutations = new ChunkWorldMutations({
 });
 
 const persistenceCoordinator = new ChunkPersistenceCoordinator({
-	getModifiedChunks: () => Chunk.chunkInstances.values(),
+	getModifiedChunks: () => persistDirtyChunks,
 	getChunkEntityPayloads: collectChunkEntityPayloads,
 	getChunkSaveBatchSize: getUnloadBatchSize,
 	getChunkEntitySaveBatchSize: getUnloadBatchSize,
+	onChunksFlushed: (chunks) => {
+		for (const c of chunks) if (!c.isModified && !c.isLightDirty) persistDirtyChunks.delete(c);
+	},
 });
 
 // PERF: Debounce block-edit saves into a single batched save per 500 ms;

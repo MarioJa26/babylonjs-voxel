@@ -233,6 +233,25 @@ class WorldStorageImpl {
 		await store.setMetaBytes(key, bytes);
 	}
 
+	async saveChunkEntitiesBatch(
+		items: ReadonlyArray<{ chunkId: bigint; entities: SavedChunkEntityData[] }>,
+	): Promise<void> {
+		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
+		if (items.length === 0) return;
+		const store = this.store ?? (await this.getStore());
+		if (!store) return;
+		const ops: Promise<void>[] = [];
+		for (let i = 0; i < items.length; i++) {
+			const { chunkId, entities } = items[i];
+			const [cx, cy, cz] = chunkIdToCoords(chunkId);
+			const key = `${ENTITY_PREFIX}${cx},${cy},${cz}`;
+			if (entities.length === 0) ops.push(store.deleteMeta(key));
+			else ops.push(store.setMetaBytes(key, serializeEntities(entities)));
+		}
+		await Promise.all(ops);
+		await store.flush();
+	}
+
 	async loadChunkEntities(chunkId: bigint): Promise<SavedChunkEntityData[]> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING) return [];
 		const store = this.store ?? (await this.getStore());

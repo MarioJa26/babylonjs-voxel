@@ -117,6 +117,8 @@ function runChunkDisposeHooks(chunk: Chunk): void {
 	}
 }
 
+export const persistDirtyChunks = new Set<Chunk>();
+
 export class Chunk {
 	public id: bigint = 0n;
 	public lodLevel = 0;
@@ -218,12 +220,17 @@ export class Chunk {
 	public static readonly loadedChunks = new Set<Chunk>();
 	public static readonly loadedChunkIndex = new LoadedChunkIndex();
 
-	public isModified = false;
+	private _isModified = false;
 	public isBoatChunk = false;
 	public isDirty = false;
 	public isLoaded = false;
 	public isTerrainScheduled = false;
-	public isLightDirty = false;
+	private _isLightDirty = false;
+
+	get isModified(): boolean { return this._isModified; }
+	set isModified(v: boolean) { this._isModified = v; if (v) persistDirtyChunks.add(this); }
+	get isLightDirty(): boolean { return this._isLightDirty; }
+	set isLightDirty(v: boolean) { this._isLightDirty = v; if (v) persistDirtyChunks.add(this); }
 	public persistenceRevision = 0;
 	public remeshQueued = false;
 	/**
@@ -1704,6 +1711,7 @@ export class Chunk {
 			this.lightHeaderSlot = 0xffff_ffff;
 		}
 
+		persistDirtyChunks.delete(this);
 		Chunk.loadedChunks.delete(this);
 		Chunk.loadedChunkIndex.unregister(this);
 		this.loadedIndexCell = null;

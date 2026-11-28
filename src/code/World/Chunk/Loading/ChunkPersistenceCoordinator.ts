@@ -33,6 +33,7 @@ export class ChunkPersistenceCoordinator {
 	// Scratch storage. Only use before the first await in each flush pass.
 	private readonly modifiedChunksScratch: Chunk[] = [];
 	private readonly candidateChunkIdsScratch: bigint[] = [];
+	private readonly batchItemsScratch: { chunkId: bigint; entities: import("../../WorldStorage").SavedChunkEntityData[] }[] = [];
 
 	public constructor(
 		private readonly adapter: ChunkPersistenceCoordinatorAdapter,
@@ -111,6 +112,7 @@ export class ChunkPersistenceCoordinator {
 
 		for (const chunk of this.adapter.getModifiedChunks()) {
 			if (!chunk.isModified && !chunk.isLightDirty) {
+				// lazy prune stale entries (B7)
 				continue;
 			}
 
@@ -178,18 +180,20 @@ export class ChunkPersistenceCoordinator {
 		const candidateChunkIds = scratch.slice();
 		scratch.length = 0;
 
+		const items = this.batchItemsScratch;
+		items.length = 0;
 		for (let i = 0; i < candidateChunkIds.length; i++) {
 			const chunkId = candidateChunkIds[i];
-			const payload = payloadsByChunk.get(chunkId);
-
-			if (payload && payload.length > 0) {
-				await WorldStorage.saveChunkEntities(chunkId, payload);
-				this.lastPersistedEntityChunkIds.add(chunkId);
-			} else {
-				await WorldStorage.saveChunkEntities(chunkId, []);
-				this.lastPersistedEntityChunkIds.delete(chunkId);
-			}
+			items.push({ chunkId, entities: payloadsByChunk.get(chunkId) ?? [] });
 		}
+
+		await WorldStorage.saveChunkEntitiesBatch(items);
+
+		for (let i = 0; i < items.length; i++) {
+			if (items[i].entities.length > 0) this.lastPersistedEntityChunkIds.add(items[i].chunkId);
+			else this.lastPersistedEntityChunkIds.delete(items[i].chunkId);
+		}
+		items.length = 0;
 
 		this.adapter.onChunkEntitiesFlushed?.(candidateChunkIds);
 	}
