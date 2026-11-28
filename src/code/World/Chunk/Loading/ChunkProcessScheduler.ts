@@ -3,7 +3,11 @@ import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
 import { deserializeVoxelDataShared } from "../../Storage/VoxelSerializer";
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
 import { Chunk } from "../Chunk";
-import { ChunkLifecycle, ResidencyState } from "./ChunkLifecycle";
+import {
+	ChunkLifecycle,
+	getChunkLifecycleQueries,
+	ResidencyState,
+} from "./ChunkLifecycle";
 import type { QueuedChunkRequest } from "./ChunkStreamingController";
 import { type InFlightProcessState, ProcessStage } from "./ChunkTypes";
 
@@ -253,8 +257,6 @@ export class ChunkProcessScheduler {
 			hydrateMap: new Map(),
 			hydrateIndex: 0,
 			hydrationRecycledDrops: 0,
-
-			queuedLoadIdsScratch: new Set<bigint>(),
 		};
 	}
 
@@ -323,8 +325,6 @@ export class ChunkProcessScheduler {
 		state.unloadBatchIndex = 0;
 		state.savedChunkIds.clear();
 		state.savedChunkRevisions.clear();
-
-		state.queuedLoadIdsScratch.clear();
 
 		this.clearLoadState(state);
 	}
@@ -1091,45 +1091,31 @@ export class ChunkProcessScheduler {
 			return false;
 		}
 
-		const loadQueue = this.adapter.getLoadQueue();
-		const queuedIds = state.queuedLoadIdsScratch;
-
-		queuedIds.clear();
-
-		try {
-			for (let i = 0, length = loadQueue.length; i < length; i++) {
-				const queuedChunk = loadQueue[i].chunk;
-
-				if (queuedChunk) {
-					queuedIds.add(queuedChunk.id);
-				}
-			}
-
-			if (queuedIds.has(chunk.id)) {
-				return false;
-			}
-
-			/*
-			 * Loading -> Scheduled. The lifecycle host moves the retained request
-			 * from the in-flight registry back to the load queue.
-			 */
-			const result = ChunkLifecycle.abandonLoad(chunk, "requeue");
-
-			/*
-			 * If the transition was rejected because unloading or disposal won the
-			 * race, the request was not restored and must be treated as dropped.
-			 */
-			if (result !== ResidencyState.Scheduled) {
-				return false;
-			}
-
-			this.notifySingleRequest(this.adapter.onLoadRequestsRecovered, request);
-
-			this.adapter.onQueueSnapshotChanged?.();
-			return true;
-		} finally {
-			queuedIds.clear();
+		// O(1) queued check via the controller's request map instead of an
+		// O(queue) scan + Set rebuild on every requeue.
+		const queries = getChunkLifecycleQueries();
+		if (queries?.isQueuedForLoad(chunk)) {
+			return false;
 		}
+
+		/*
+		 * Loading -> Scheduled. The lifecycle host moves the retained request
+		 * from the in-flight registry back to the load queue.
+		 */
+		const result = ChunkLifecycle.abandonLoad(chunk, "requeue");
+
+		/*
+		 * If the transition was rejected because unloading or disposal won the
+		 * race, the request was not restored and must be treated as dropped.
+		 */
+		if (result !== ResidencyState.Scheduled) {
+			return false;
+		}
+
+		this.notifySingleRequest(this.adapter.onLoadRequestsRecovered, request);
+
+		this.adapter.onQueueSnapshotChanged?.();
+		return true;
 	}
 
 	/**
@@ -1186,21 +1172,14 @@ export class ChunkProcessScheduler {
 			}
 		}
 
-		const loadQueue = this.adapter.getLoadQueue();
-		const queuedIds = state.queuedLoadIdsScratch;
-
-		queuedIds.clear();
-
-		for (let i = 0; i < loadQueue.length; i++) {
-			const chunk = loadQueue[i].chunk;
-
-			if (chunk) {
-				queuedIds.add(chunk.id);
-			}
-		}
-
 		const recovered = this._recoveredRequests;
 		recovered.length = 0;
+
+		// O(1) queued check via the controller's request map instead of an
+		// O(queue) scan + Set rebuild. abandonLoad() re-queues + re-marks
+		// synchronously, so a chunk already recovered earlier in this loop is
+		// visible to isQueuedForLoad on later iterations.
+		const queries = getChunkLifecycleQueries();
 
 		for (let i = 0; i < state.loadBatch.length; i++) {
 			const request = state.loadBatch[i];
@@ -1210,12 +1189,11 @@ export class ChunkProcessScheduler {
 				!chunk ||
 				!chunk.isTerrainScheduled ||
 				chunk.isLoaded ||
-				queuedIds.has(chunk.id)
+				queries?.isQueuedForLoad(chunk) === true
 			) {
 				continue;
 			}
 
-			queuedIds.add(chunk.id);
 			// Route through the owner (Loading → Scheduled): the host
 			// restores the retained request — the same object — onto the
 			// load queue instead of pushing here.
@@ -1228,7 +1206,6 @@ export class ChunkProcessScheduler {
 		 * reset.
 		 */
 		state.loadBatch.length = 0;
-		queuedIds.clear();
 
 		if (recovered.length > 0) {
 			this.adapter.onLoadRequestsRecovered?.(recovered);

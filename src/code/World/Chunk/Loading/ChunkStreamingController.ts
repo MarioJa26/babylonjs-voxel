@@ -2,6 +2,7 @@
 	isInitialized as isDistantTerrainReady,
 	update as updateDistantTerrain,
 } from "@/code/Generation/DistantTerrain/DistantTerrain";
+import { structureColumnTopY } from "@/code/Generation/Structure/StructureColumnTops";
 import { SURFACE_DENSITY_INFLUENCE_RANGE } from "@/code/Generation/SurfaceGenerator";
 import {
 	columnMinHeight,
@@ -23,13 +24,12 @@ import {
 	DistantOnlyChunkCreationRule,
 	Lod0ChunkCreationRule,
 } from "../LOD/ChunkLodRules";
-import { isStaleLodMesh } from "../LOD/LodCurrency";
-import { structureColumnTopY } from "@/code/Generation/Structure/StructureColumnTops";
 import {
 	maxLodForChunkY,
 	UNDERGROUND_CULL_EXEMPT_RADIUS,
 	UNDERGROUND_SKIP_LOD,
 } from "../LOD/LODUtilities";
+import { isStaleLodMesh } from "../LOD/LodCurrency";
 import { createMeshFromData } from "../Meshing/ChunkMesher";
 import { getChunkFast } from "../Runtime/ChunkRegistry";
 import {
@@ -191,10 +191,6 @@ function compareQueuedChunkRequestPriority(
 
 // Scratch array for LoadedChunkIndex.queryCollect, avoids generator overhead.
 const _queryScratch: Chunk[] = [];
-
-// Scratch set for sweepOrphanedChunks: chunk ids currently sitting in loadQueue.
-// Reused so the sweep allocates nothing.
-const _orphanSweepQueuedIds = new Set<number>();
 
 // Scratch list for sweepOrphanedChunks: candidates that were inspected and found
 // healthy (or no longer wanting loading) and so should leave the candidate set.
@@ -1524,13 +1520,9 @@ export class ChunkStreamingController {
 			return 0;
 		}
 
-		const loadQueue = this.adapter.getLoadQueue();
-		const queuedIds = _orphanSweepQueuedIds;
-		queuedIds.clear();
-		for (let i = 0; i < loadQueue.length; i++) {
-			const queuedChunk = loadQueue[i].chunk;
-			if (queuedChunk) queuedIds.add(queuedChunk.numericId);
-		}
+		// O(1) membership via the controller's own request map instead of an
+		// O(queue) rebuild per sweep.
+		const requestMap = this.loadQueueRequestMap;
 
 		const pool = ChunkWorkerPool.getInstance();
 		const unloadQueueSet = this.adapter.getUnloadQueueSet();
@@ -1569,7 +1561,7 @@ export class ChunkStreamingController {
 				resolved.push(chunk);
 				continue;
 			}
-			if (queuedIds.has(chunk.numericId)) {
+			if (requestMap.has(chunk.numericId)) {
 				resolved.push(chunk);
 				continue;
 			}
@@ -1618,8 +1610,6 @@ export class ChunkStreamingController {
 			candidates.delete(resolved[i]);
 		}
 		resolved.length = 0;
-
-		queuedIds.clear();
 
 		this._lastOrphanSweepRescued = rescued;
 		this._totalOrphanSweepRescued += rescued;

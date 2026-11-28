@@ -74,16 +74,6 @@ export type InFlightProcessState = {
 	 * produces orphan chunks — worth surfacing rather than silently dropping.
 	 */
 	hydrationRecycledDrops: number;
-
-	/**
-	 * Caller-owned scratch set used while rebuilding the load queue after
-	 * processing fails. It is reused instead of allocating a new Set for
-	 * every recovery.
-	 *
-	 * This belongs to the process state because the state is exclusively
-	 * owned by one active processQueues() operation.
-	 */
-	queuedLoadIdsScratch: Set<bigint>;
 };
 
 export type ChunkLoadingDebugStats = {
