@@ -69,6 +69,8 @@ export interface ChunkProcessSchedulerAdapter {
 	finalizeProcessState(state: InFlightProcessState): void;
 
 	onQueueSnapshotChanged?(): void;
+	/** Idle-tick hook: called on the early-out when nothing is in flight/queued. */
+	onIdleTick?(): void;
 	onLoadRequestsDequeued?(requests: ReadonlyArray<QueuedChunkRequest>): void;
 	onLoadRequestsRecovered?(requests: ReadonlyArray<QueuedChunkRequest>): void;
 	onLoadRequestsAbandoned?(requests: ReadonlyArray<QueuedChunkRequest>): void;
@@ -366,6 +368,8 @@ export class ChunkProcessScheduler {
 			this.adapter.getLoadQueue().length === 0 &&
 			this.adapter.getUnloadQueueSet().size === 0
 		) {
+			// Nothing in flight, nothing queued. Keep idle work reachable.
+			this.adapter.onIdleTick?.();
 			return;
 		}
 

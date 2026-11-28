@@ -239,6 +239,9 @@ const processScheduler: ChunkProcessScheduler = new ChunkProcessScheduler({
 	},
 
 	updateSliceDebugStats,
+	onIdleTick: (): void => {
+		refreshQueueDebugSnapshot();
+	},
 	finalizeProcessState,
 
 	onQueueSnapshotChanged: refreshQueueDebugSnapshot,
