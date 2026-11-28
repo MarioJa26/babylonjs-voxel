@@ -740,6 +740,7 @@ export class ChunkStreamingController {
 
 	private _lastCaveState: boolean | null = null;
 	private _lastBandGen = -1;
+	private _desiredWrites = 0;
 	private _scanCave = false;
 	private _scanGen = -1;
 	private _lastBandCave = false;
@@ -770,6 +771,7 @@ export class ChunkStreamingController {
 		packed: number,
 		revision: number,
 	): void {
+		this._desiredWrites++;
 		this.desiredStates.set(numericId, packed);
 		let bucket = this.desiredStateBuckets.get(revision);
 		if (!bucket) {
@@ -1323,6 +1325,7 @@ export class ChunkStreamingController {
 				this.processInitialShell(chunkX, chunkY, chunkZ, lodRuleSet);
 			}
 
+			const DEV_VERIFY_DELTAS = false;
 			const fullBand =
 				!canUseDelta ||
 				lodRuleSet.revision !== this._lastBandGen ||
@@ -1340,6 +1343,7 @@ export class ChunkStreamingController {
 					lodRuleSet,
 				);
 			}
+			if (DEV_VERIFY_DELTAS && !fullBand) this.verifyBandDelta(chunkX, chunkY, chunkZ, lodRuleSet);
 			this._lastBandGen = lodRuleSet.revision;
 			this._lastBandCave = caveState;
 
@@ -2086,159 +2090,90 @@ export class ChunkStreamingController {
 		}
 	}
 
-	private ensureUndergroundBand(
-		chunkX: number,
-		chunkY: number,
-		chunkZ: number,
-		lodRuleSet: ChunkLodRuleSet,
+	private scanUndergroundColumn(
+		x: number,
+		z: number,
+		cx: number,
+		cy: number,
+		cz: number,
+		startY: number,
+		endY: number,
+		caveState: boolean,
+		rules: ChunkLodRuleSet,
 	): void {
-		const bandH = lodRuleSet.horizontalRadiusFor(UNDERGROUND_SKIP_LOD - 1);
-		const verticalRange = undergroundVerticalRange(lodRuleSet);
-
-		// The underground band never includes y >= 0.
-		const endY = Math.min(-1, chunkY + verticalRange);
-		if (endY < SETTING_PARAMS.MIN_CHUNK_Y) {
-			return;
+		const hDist = chebyH(x - cx, z - cz);
+		const profile = columnProfile(x, z);
+		let y0 = startY;
+		if (!caveState && hDist > UNDERGROUND_CULL_EXEMPT_RADIUS && y0 < profile.buriedTopY) {
+			y0 = profile.buriedTopY;
 		}
-
-		const startY = Math.max(SETTING_PARAMS.MIN_CHUNK_Y, chunkY - verticalRange);
-
-		if (startY > endY) {
-			return;
-		}
-
-		const startX = chunkX - bandH;
-		const endX = chunkX + bandH;
-		const startZ = chunkZ - bandH;
-		const endZ = chunkZ + bandH;
-
-		// Use the frame-cached state while an update is active. This avoids
-		// another runtime-state lookup and keeps the burial decision consistent
-		// throughout the streaming pass.
-		const caveState = frameCacheActive ? frameInCaveCache : isInCave();
-		const cullRadius = UNDERGROUND_CULL_EXEMPT_RADIUS;
-
-		for (let x = startX; x <= endX; x++) {
-			const relX = x - chunkX;
-
-			for (let z = startZ; z <= endZ; z++) {
-				const relZ = z - chunkZ;
-				const hDist = chebyH(relX, relZ);
-
-				const profile = columnProfile(x, z);
-				let columnStartY = startY;
-
-				// Outside caves, coordinates below buriedTopY are guaranteed to
-				// be rejected. Jump directly to the first potentially visible chunk.
-				if (!caveState && hDist > cullRadius) {
-					if (columnStartY < profile.buriedTopY) {
-						columnStartY = profile.buriedTopY;
-					}
-					// The whole scanned part of this column is fully buried.
-					if (columnStartY > endY) {
-						continue;
-					}
-				}
-
-				for (let y = columnStartY; y <= endY; y++) {
-					this.processTargetChunkCoordinate(
-						x,
-						y,
-						z,
-						chunkX,
-						chunkY,
-						chunkZ,
-						lodRuleSet,
-						profile,
-					);
-				}
-			}
+		for (let y = y0; y <= endY; y++) {
+			this.processTargetChunkCoordinate(x, y, z, cx, cy, cz, rules, profile);
 		}
 	}
 
-	/**
-	 * Incremental variant of ensureUndergroundBand for single-cell moves.
-	 * Scans only the leading X slab, Z slab and Y layer of the band (same slab
-	 * structure as processMovementRings with r=bandH, Y range
-	 * undergroundVerticalRange). Only called when canUseDelta && rule-set
-	 * generation + cave state unchanged; full scan otherwise.
-	 */
+	private ensureUndergroundBand(cx: number, cy: number, cz: number, rules: ChunkLodRuleSet): void {
+		const r = rules.horizontalRadiusFor(UNDERGROUND_SKIP_LOD - 1);
+		const vr = undergroundVerticalRange(rules);
+		const endY = Math.min(-1, cy + vr);
+		if (endY < SETTING_PARAMS.MIN_CHUNK_Y) return;
+		const startY = Math.max(SETTING_PARAMS.MIN_CHUNK_Y, cy - vr);
+		if (startY > endY) return;
+		const caveState = frameCacheActive ? frameInCaveCache : isInCave();
+		for (let x = cx - r; x <= cx + r; x++)
+			for (let z = cz - r; z <= cz + r; z++)
+				this.scanUndergroundColumn(x, z, cx, cy, cz, startY, endY, caveState, rules);
+	}
+
 	private ensureUndergroundBandDelta(
 		dx: number,
 		dy: number,
 		dz: number,
-		chunkX: number,
-		chunkY: number,
-		chunkZ: number,
-		lodRuleSet: ChunkLodRuleSet,
+		cx: number,
+		cy: number,
+		cz: number,
+		rules: ChunkLodRuleSet,
 	): void {
-		const bandH = lodRuleSet.horizontalRadiusFor(UNDERGROUND_SKIP_LOD - 1);
-		const verticalRange = undergroundVerticalRange(lodRuleSet);
-
-		const endY = Math.min(-1, chunkY + verticalRange);
+		const r = rules.horizontalRadiusFor(UNDERGROUND_SKIP_LOD - 1);
+		const vr = undergroundVerticalRange(rules);
+		const endY = Math.min(-1, cy + vr);
 		if (endY < SETTING_PARAMS.MIN_CHUNK_Y) return;
-		const startY = Math.max(SETTING_PARAMS.MIN_CHUNK_Y, chunkY - verticalRange);
+		const startY = Math.max(SETTING_PARAMS.MIN_CHUNK_Y, cy - vr);
 		if (startY > endY) return;
+		const caveState = frameCacheActive ? frameInCaveCache : isInCave();
 
-		const minY = startY;
-		const maxY = endY;
-		const r = bandH;
-
-		const skipX = dx !== 0 ? (dx > 0 ? chunkX + r : chunkX - r) : 0;
-		const skipZ = dz !== 0 ? (dz > 0 ? chunkZ + r : chunkZ - r) : 0;
-
-		if (dx !== 0) {
-			const x = skipX;
-			for (let y = minY; y <= maxY; y++) {
-				for (let z = chunkZ - r; z <= chunkZ + r; z++) {
-					this.processTargetChunkCoordinate(
-						x,
-						y,
-						z,
-						chunkX,
-						chunkY,
-						chunkZ,
-						lodRuleSet,
-					);
-				}
-			}
-		}
-
-		if (dz !== 0) {
-			const z = skipZ;
-			for (let y = minY; y <= maxY; y++) {
-				for (let x = chunkX - r; x <= chunkX + r; x++) {
+		const slabs = (h: number): void => {
+			const skipX = dx !== 0 ? cx + (dx > 0 ? h : -h) : 0;
+			const skipZ = dz !== 0 ? cz + (dz > 0 ? h : -h) : 0;
+			if (dx !== 0)
+				for (let z = cz - h; z <= cz + h; z++)
+					this.scanUndergroundColumn(skipX, z, cx, cy, cz, startY, endY, caveState, rules);
+			if (dz !== 0)
+				for (let x = cx - h; x <= cx + h; x++) {
 					if (dx !== 0 && x === skipX) continue;
-					this.processTargetChunkCoordinate(
-						x,
-						y,
-						z,
-						chunkX,
-						chunkY,
-						chunkZ,
-						lodRuleSet,
-					);
+					this.scanUndergroundColumn(x, skipZ, cx, cy, cz, startY, endY, caveState, rules);
 				}
-			}
-		}
+		};
+
+		slabs(r);
+		const e = UNDERGROUND_CULL_EXEMPT_RADIUS;
+		if (!caveState && e < r && (dx !== 0 || dz !== 0)) slabs(e);
 
 		if (dy !== 0) {
-			const y = dy > 0 ? maxY : minY;
-			for (let x = chunkX - r; x <= chunkX + r; x++) {
-				if (dx !== 0 && x === skipX) continue;
-				for (let z = chunkZ - r; z <= chunkZ + r; z++) {
-					if (dz !== 0 && z === skipZ) continue;
-					this.processTargetChunkCoordinate(
-						x,
-						y,
-						z,
-						chunkX,
-						chunkY,
-						chunkZ,
-						lodRuleSet,
-					);
-				}
-			}
+			const y = dy > 0 ? endY : startY;
+			for (let x = cx - r; x <= cx + r; x++)
+				for (let z = cz - r; z <= cz + r; z++)
+					this.scanUndergroundColumn(x, z, cx, cy, cz, y, y, caveState, rules);
+		}
+	}
+
+	// Dev-only parity verifier (A1). DEV_VERIFY_DELTAS=false in production.
+	private verifyBandDelta(cx: number, cy: number, cz: number, rules: ChunkLodRuleSet): void {
+		const w0 = this._desiredWrites;
+		const n0 = Chunk.chunkInstances.size + this.loadQueueRequestMap.size;
+		this.ensureUndergroundBand(cx, cy, cz, rules);
+		if (this._desiredWrites !== w0 || Chunk.chunkInstances.size + this.loadQueueRequestMap.size !== n0) {
+			console.error("[band-delta] full scan still found work at " + cx + "," + cy + "," + cz + " (writes +" + (this._desiredWrites - w0) + ")");
 		}
 	}
 
