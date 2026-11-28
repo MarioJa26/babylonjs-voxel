@@ -230,6 +230,8 @@ const processScheduler: ChunkProcessScheduler = new ChunkProcessScheduler({
 
 	unloadChunkBoundEntitiesForChunk: (chunk): Promise<void> =>
 		chunkEntityRegistry.unloadEntitiesForChunk(chunk),
+	hasChunkBoundEntities: (chunk): boolean =>
+		chunkEntityRegistry.hasChunkBoundEntities(chunk),
 
 	applyLoadedChunkFromSavedData,
 	applyHydratedChunkFromSavedData,

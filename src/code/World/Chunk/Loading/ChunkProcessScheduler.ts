@@ -51,6 +51,8 @@ export interface ChunkProcessSchedulerAdapter {
 	markPotentialOrphan(chunk: Chunk): void;
 
 	unloadChunkBoundEntitiesForChunk(chunk: Chunk): Promise<void>;
+	/** Fast path: when false, skip the await + withIoTimeout + markSuspend/markResume. */
+	hasChunkBoundEntities?(chunk: Chunk): boolean;
 
 	applyLoadedChunkFromSavedData(
 		state: InFlightProcessState,
@@ -532,6 +534,8 @@ export class ChunkProcessScheduler {
 								continue;
 							}
 
+						// B5 sync fast path: no bound entities -> no await/Promise/timer/suspend.
+						if (this.adapter.hasChunkBoundEntities?.(chunk) !== false) {
 							this.markSuspend();
 
 							try {
@@ -548,6 +552,7 @@ export class ChunkProcessScheduler {
 								this.markResume();
 								this.beginSlice(state);
 							}
+						}
 
 							if (!chunk.isLoaded || chunk.isBoatChunk) {
 								state.unloadBatchIndex++;

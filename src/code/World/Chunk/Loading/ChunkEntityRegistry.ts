@@ -124,6 +124,14 @@ export class ChunkEntityRegistry<TEntity> {
 		}
 	}
 
+	/** O(1)-ish check: does any bound entity belong to this chunk? */
+	public hasChunkBoundEntities(chunk: Chunk): boolean {
+		for (const entity of this.entities.values()) {
+			if (this.adapter.getChunkId(entity) === chunk.id) return true;
+		}
+		return false;
+	}
+
 	/**
 	 * Restore any persisted entities for a chunk.
 	 * Priority:
