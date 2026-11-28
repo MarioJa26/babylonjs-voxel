@@ -784,9 +784,10 @@ let state = this.inFlightProcessState;
 					}
 
 					case ProcessStage.ApplyLoadedChunks: {
+						let n = 0;
 						while (
 							state.applyLoadedIndex < state.validLoadBatch.length &&
-							this.hasBudget(state)
+							((++n & 3) !== 0 || this.hasBudget(state))
 						) {
 							const request = state.validLoadBatch[state.applyLoadedIndex++];
 
@@ -856,9 +857,10 @@ let state = this.inFlightProcessState;
 					}
 
 					case ProcessStage.ApplyHydration: {
+						let n = 0;
 						while (
 							state.hydrateIndex < state.hydrateChunks.length &&
-							this.hasBudget(state)
+							((++n & 3) !== 0 || this.hasBudget(state))
 						) {
 							const chunk = state.hydrateChunks[state.hydrateIndex++];
 
