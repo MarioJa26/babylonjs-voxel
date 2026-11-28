@@ -708,7 +708,11 @@ export class ChunkStreamingController {
 	private _cachedOutdoorLodRuleSet: ChunkLodRuleSet | null = null;
 
 	private _ruleSetGeneration = 0;
-	private _refreshCache = new Map<number, number>();
+	private _refreshArr: Int8Array | null = null;
+	private _refreshFallback = new Map<number, number>();
+	private _rH = 0;
+	private _rZ = 0;
+	private _rV = 0;
 
 	private _lastCaveState: boolean | null = null;
 	private _lastBandGen = -1;
@@ -782,11 +786,8 @@ export class ChunkStreamingController {
 
 	private nextRuleGeneration(): number {
 		this._ruleSetGeneration++;
-		// Swap instead of clear(): every old decision is genuinely invalid
-		// under the new rules, but a wholesale .clear() pays an O(n) deletion
-		// walk on the streaming hot path. Dropping the reference lets GC
-		// reclaim the old map off the critical path; semantics are identical.
-		this._refreshCache = new Map<number, number>();
+		// Invalidate cached decisions on rule-set generation change.
+		this.invalidateRefreshCache();
 		return this._ruleSetGeneration;
 	}
 
@@ -835,6 +836,7 @@ export class ChunkStreamingController {
 			this._lastRenderDistance = renderDistance;
 			this._lastVerticalRadius = verticalRadius;
 
+			this.ensureRefreshArray(this._cachedCaveLodRuleSet);
 			return this._cachedCaveLodRuleSet;
 		}
 
@@ -850,24 +852,85 @@ export class ChunkStreamingController {
 		this._lastRenderDistance = renderDistance;
 		this._lastVerticalRadius = verticalRadius;
 
+		this.ensureRefreshArray(this._cachedOutdoorLodRuleSet);
 		return this._cachedOutdoorLodRuleSet;
 	}
 
-	private getCachedDecisionLod(key: number, isDirty: boolean): number {
-		if (isDirty) return -1;
-
-		const cachedLod = this._refreshCache.get(key);
-		return cachedLod === undefined ? -1 : cachedLod;
+	// Rebuild/invalidate the refresh-decision cache. Direct-indexed Int8Array
+	// over (rx, rz, ry, chunkY<0, prevLod); fall back to a Map if too large.
+	private invalidateRefreshCache(): void {
+		if (this._refreshArr !== null) {
+			this._refreshArr.fill(-1);
+		} else {
+			this._refreshFallback.clear();
+		}
 	}
 
-	private setCachedDecisionLod(
-		key: number,
-		lod: number,
-		isDirty: boolean,
-	): void {
-		if (isDirty) return;
+	private ensureRefreshArray(lodRuleSet: ChunkLodRuleSet): void {
+		const rH = lodRuleSet.maxHorizontalRadius() + 2;
+		const rV = lodRuleSet.maxVerticalRadius() + 2;
+		const size = (2 * rH + 1) * (2 * rH + 1) * (2 * rV + 1) * 2 * 8;
+		if (this._refreshArr === null || this._refreshArr.length !== size || this._rH !== rH || this._rV !== rV) {
+			this.buildRefreshCache(lodRuleSet);
+		}
+	}
 
-		this._refreshCache.set(key, lod);
+	private buildRefreshCache(lodRuleSet: ChunkLodRuleSet): void {
+		const rH = lodRuleSet.maxHorizontalRadius() + 2;
+		const rZ = rH;
+		const rV = lodRuleSet.maxVerticalRadius() + 2;
+		const wX = 2 * rH + 1;
+		const wZ = 2 * rZ + 1;
+		const wY = 2 * rV + 1;
+		const size = wX * wZ * wY * 2 * 8;
+		this._rH = rH;
+		this._rZ = rZ;
+		this._rV = rV;
+		if (size > 0 && size <= 4_000_000) {
+			this._refreshArr = new Int8Array(size);
+			this._refreshArr.fill(-1);
+		} else {
+			this._refreshArr = null;
+			this._refreshFallback.clear();
+		}
+	}
+
+	private refreshIndex(rx: number, ry: number, rz: number, chunkY: number, prevLod: number): number {
+		const ax = rx + this._rH;
+		const az = rz + this._rZ;
+		const ay = ry + this._rV;
+		const wX = 2 * this._rH + 1;
+		const wZ = 2 * this._rZ + 1;
+		const wY = 2 * this._rV + 1;
+		if (ax < 0 || ax >= wX || az < 0 || az >= wZ || ay < 0 || ay >= wY) return -1;
+		const sign = chunkY < 0 ? 1 : 0;
+		const lod = prevLod & 7;
+		return ((((ay * wZ + az) * wX + ax) * 2 + sign) * 8 + lod);
+	}
+
+	private getCachedDecisionLod(rx: number, ry: number, rz: number, chunkY: number, prevLod: number, isDirty: boolean): number {
+		if (isDirty) return -1;
+		const arr = this._refreshArr;
+		if (arr !== null) {
+			const idx = this.refreshIndex(rx, ry, rz, chunkY, prevLod);
+			if (idx < 0 || idx >= arr.length) return -1;
+			const v = arr[idx];
+			return v === undefined ? -1 : v;
+		}
+		const cached = this._refreshFallback.get(packOffsetKey(rx, ry, rz, chunkY, prevLod));
+		return cached === undefined ? -1 : cached;
+	}
+
+	private setCachedDecisionLod(rx: number, ry: number, rz: number, chunkY: number, prevLod: number, lod: number, isDirty: boolean): void {
+		if (isDirty) return;
+		const arr = this._refreshArr;
+		if (arr !== null) {
+			const idx = this.refreshIndex(rx, ry, rz, chunkY, prevLod);
+			if (idx < 0 || idx >= arr.length) return;
+			arr[idx] = lod;
+			return;
+		}
+		this._refreshFallback.set(packOffsetKey(rx, ry, rz, chunkY, prevLod), lod);
 	}
 
 	public updateChunksAround(
@@ -913,9 +976,6 @@ export class ChunkStreamingController {
 		 * Bound long-lived refresh-cache growth while retaining its allocation.
 		 * 512 is a power of two, so use a mask instead of remainder.
 		 */
-		if ((revision & 511) === 0) {
-			this._refreshCache.clear();
-		}
 
 		const caveState = isInCave();
 
@@ -1014,17 +1074,9 @@ export class ChunkStreamingController {
 				 */
 				if (isDirty || (hDist <= nearZoneRadius && vDist <= nearZoneVertical)) {
 					const previousLod = chunk.lodLevel ?? desiredLod;
-					const cacheKey = packOffsetKey(
-						relX,
-						relY,
-						relZ,
-						chunkYValue,
-						previousLod,
-					);
-
 					desiredLod = isDirty
 						? -1
-						: this.getCachedDecisionLod(cacheKey, false);
+						: this.getCachedDecisionLod(relX, relY, relZ, chunkYValue, previousLod, false);
 
 					if (desiredLod < 0) {
 						desiredLod = resolveDesiredLod(
@@ -1045,7 +1097,7 @@ export class ChunkStreamingController {
 						}
 
 						if (!isDirty) {
-							this.setCachedDecisionLod(cacheKey, desiredLod, false);
+							this.setCachedDecisionLod(relX, relY, relZ, chunkYValue, previousLod, desiredLod, false);
 						}
 					}
 				} else {
@@ -1409,9 +1461,7 @@ export class ChunkStreamingController {
 			}
 
 			const chunkLod = chunk.lodLevel ?? 3;
-			const key = packOffsetKey(relX, relY, relZ, chunk.chunkY, chunkLod);
-
-			let decisionLod = this.getCachedDecisionLod(key, chunk.isDirty);
+			let decisionLod = this.getCachedDecisionLod(relX, relY, relZ, chunk.chunkY, chunkLod, chunk.isDirty);
 
 			if (decisionLod < 0) {
 				decisionLod = resolveDesiredLod(
@@ -1425,7 +1475,7 @@ export class ChunkStreamingController {
 					false,
 				);
 				if (decisionLod < 0) continue;
-				this.setCachedDecisionLod(key, decisionLod, chunk.isDirty);
+				this.setCachedDecisionLod(relX, relY, relZ, chunk.chunkY, chunkLod, decisionLod, chunk.isDirty);
 			}
 
 			if (
@@ -1765,8 +1815,7 @@ export class ChunkStreamingController {
 		const previousLod = chunk?.lodLevel ?? 3;
 		const isDirty = chunk?.isDirty === true;
 
-		const cacheKey = packOffsetKey(relX, relY, relZ, y, previousLod);
-		let desiredLod = this.getCachedDecisionLod(cacheKey, isDirty);
+		let desiredLod = this.getCachedDecisionLod(relX, relY, relZ, y, previousLod, isDirty);
 
 		if (desiredLod < 0) {
 			desiredLod = resolveDesiredLod(
@@ -1781,7 +1830,7 @@ export class ChunkStreamingController {
 			);
 			if (desiredLod < 0) return;
 
-			this.setCachedDecisionLod(cacheKey, desiredLod, isDirty);
+			this.setCachedDecisionLod(relX, relY, relZ, y, previousLod, desiredLod, isDirty);
 		}
 
 		this.applyTargetChunkDecision(x, y, z, chunk, previousLod, desiredLod);
@@ -2178,9 +2227,7 @@ export class ChunkStreamingController {
 					const existing = getChunkFast(x, y, z);
 					const previousLod = existing?.lodLevel ?? 3;
 					const isDirty = existing?.isDirty === true;
-					const cacheKey = packOffsetKey(relX, relY, relZ, y, previousLod);
-
-					let desiredLod = this.getCachedDecisionLod(cacheKey, isDirty);
+					let desiredLod = this.getCachedDecisionLod(relX, relY, relZ, y, previousLod, isDirty);
 
 					if (desiredLod < 0) {
 						desiredLod = resolveDesiredLod(
@@ -2195,7 +2242,7 @@ export class ChunkStreamingController {
 						);
 						if (desiredLod < 0) continue;
 
-						this.setCachedDecisionLod(cacheKey, desiredLod, isDirty);
+						this.setCachedDecisionLod(relX, relY, relZ, y, previousLod, desiredLod, isDirty);
 					}
 
 					if (
