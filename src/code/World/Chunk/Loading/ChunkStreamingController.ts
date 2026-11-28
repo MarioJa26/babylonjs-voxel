@@ -2664,6 +2664,9 @@ export class ChunkStreamingController {
 		) {
 			this.loadQueueRequestMap.delete(numericId);
 		}
+		if (import.meta.env?.DEV && this._freeRequests.includes(request)) {
+			throw new Error("double pool");
+		}
 		if (
 			this._freeRequests.length >=
 			ChunkStreamingController.FREE_REQUEST_POOL_MAX
