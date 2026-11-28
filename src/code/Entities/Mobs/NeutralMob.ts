@@ -27,7 +27,7 @@ const PANIC_RADIUS_SQ = PANIC_RADIUS * PANIC_RADIUS;
 
 /** Radians of walk-swing phase accumulated per meter of horizontal travel. */
 const WALK_STRIDE_FACTOR = 2.0;
-/** Phase decay rate (per second) when idle â€” legs ease back to rest. */
+/** Phase decay rate (per second) when idle — legs ease back to rest. */
 const WALK_PHASE_DECAY = 6.0;
 
 const BREATH_MAX = 5.0;
@@ -36,7 +36,7 @@ const DROWN_DAMAGE = 1;
 /**
  * Deepest voluntary step-down (blocks). Drops deeper than this would deal
  * fall damage (see FALL_DAMAGE_THRESHOLD in MobConfig), so grounded mobs
- * refuse to walk into them â€” the cliff guard stops and turns them instead.
+ * refuse to walk into them — the cliff guard stops and turns them instead.
  * Applies to wander drift and fleeing alike.
  */
 const MAX_SAFE_LEDGE_DROP = 3;
@@ -130,7 +130,7 @@ export abstract class NeutralMob extends BaseMob {
 	// PERF: Pathfinding searches are budgeted globally (1500 expansions per
 	// 40ms in Pathfinding.ts). When several mobs search on the same frame they
 	// exhaust the window together, fail together, and retry together 0.5s
-	// later â€” a synchronized spike. Cap the number of searches that may START
+	// later — a synchronized spike. Cap the number of searches that may START
 	// per tick; denied mobs simply re-attempt next frame as slots free up.
 	static #pathSlotsRemaining = 0;
 	private static readonly PATH_SLOTS_PER_TICK = 2;
@@ -484,7 +484,7 @@ export abstract class NeutralMob extends BaseMob {
 
 		/*
 		 * Cliff guard: a grounded mob on dry land never walks into a drop
-		 * deeper than MAX_SAFE_LEDGE_DROP â€” whether wandering, drifting, or
+		 * deeper than MAX_SAFE_LEDGE_DROP — whether wandering, drifting, or
 		 * fleeing. Blocked mobs stop and turn so wander repicks instead of
 		 * pushing at the edge; the flee timer keeps running so a panicked
 		 * mob paces the edge rather than leaping off it.
@@ -713,7 +713,7 @@ export abstract class NeutralMob extends BaseMob {
 			if (isCollidableBlock(r.blockId)) return dy > MAX_SAFE_LEDGE_DROP;
 		}
 
-		// No support in range â€” still safe if it's a splash-down into water.
+		// No support in range — still safe if it's a splash-down into water.
 		for (let dy = solidScanDepth + 1; dy <= LEDGE_WATER_SCAN_DEPTH; dy++) {
 			resolveBlockAtWorldCoordsInto(px, feetY - dy, pz, _ledgeScratch);
 			const r = _ledgeScratch;

@@ -100,7 +100,7 @@ export class PlayerHud {
 
 	/**
 	 * Short transient narration for world interactions that have no UI of their
-	 * own â€” currently the Maya temple glyph puzzle. Routed through the chat log
+	 * own — currently the Maya temple glyph puzzle. Routed through the chat log
 	 * because there is no generic HUD widget API to hang a toast on.
 	 */
 	public showTempleMessage(text: string): void {
@@ -156,7 +156,7 @@ export class PlayerHud {
 	#creativePalette: CreativePalette | null = null;
 	#playerPreview = new PlayerPreview(() => {
 		// Sample the voxel light at chest height (below the head) so the
-		// preview is lit like the spot the player is standing in â€” and never
+		// preview is lit like the spot the player is standing in — and never
 		// goes dark when the head clips a ceiling mid-jump.
 		const p = this.#player.position;
 		return getLightByWorldCoords(p.x, p.y + PLAYER_LIGHT_SAMPLE_Y_OFFSET, p.z);
@@ -212,7 +212,7 @@ export class PlayerHud {
 	// writes never invalidate layout, so hovering items can no longer force
 	// the engine's per-frame resize read into a synchronous layout flush.
 	// (Previously every mousemove wrote left/top and listeners were swapped
-	// per hover â€” 128 forced layouts in a 4.85s capture.)
+	// per hover — 128 forced layouts in a 4.85s capture.)
 	static #tooltipPendingX = 0;
 	static #tooltipPendingY = 0;
 	static #tooltipRafId: number | null = null;
@@ -478,8 +478,8 @@ export class PlayerHud {
 	 * Boss health bar, centred above the hotbar. Hidden until a Maya Guardian is
 	 * instantiated and nearby.
 	 *
-	 * There is no generic HUD widget API in this codebase â€” every panel is a
-	 * hand-rolled `document.createElement` tree appended to `document.body` â€” so
+	 * There is no generic HUD widget API in this codebase — every panel is a
+	 * hand-rolled `document.createElement` tree appended to `document.body` — so
 	 * this follows the same shape as `createStatsUI` and reuses the
 	 * `statPct` / `setBar` change-guarded helpers.
 	 */
@@ -557,7 +557,7 @@ export class PlayerHud {
 	}
 
 	/**
-	 * Create the bow draw progress indicator â€” a small bar centered just below
+	 * Create the bow draw progress indicator — a small bar centered just below
 	 * the crosshair. Hidden by default; shown while drawing.
 	 */
 	private initializeDrawIndicator(): void {
@@ -939,7 +939,7 @@ export class PlayerHud {
 	/**
 	 * Catch-all for inventory-system mutations (Q-drop, stack consumes) that
 	 * edit crate items in place without touching slot setters. Repairs
-	 * depleted/detached crate items, then pushes the diff (remote only â€”
+	 * depleted/detached crate items, then pushes the diff (remote only —
 	 * pushCrateDiff gates on remote/loading itself).
 	 */
 	#onInventorySystemChanged(): void {
@@ -952,7 +952,7 @@ export class PlayerHud {
 	 * Q-drop depletes the hovered item in place and its delete path only
 	 * knows the player grid, so a fully-dropped crate item is left behind as
 	 * a detached 0-stack ghost. Clear those (and re-attach renders that lost
-	 * their DOM parent) so the grid â€” and the next diff â€” reflect reality.
+	 * their DOM parent) so the grid — and the next diff — reflect reality.
 	 */
 	#repairCrateSlots(): void {
 		const grid = this.#woodCrateSlots;
@@ -964,7 +964,7 @@ export class PlayerHud {
 				if (item.stackSize <= 0) {
 					slot.clearItemSlots();
 				} else if (item.div.parentElement !== slot.divItemSlot) {
-					// Content unchanged â€” re-render only, no server write
+					// Content unchanged — re-render only, no server write
 					// (the diff against last-sent stays clean).
 					slot.item = item;
 				}
@@ -1251,7 +1251,7 @@ export class PlayerHud {
 			detail = "is not a crate";
 		}
 		this.hideWoodCrateUI();
-		net?.notifySystemMessage(`Crate ${detail} â€” closed`);
+		net?.notifySystemMessage(`Crate ${detail} — closed`);
 	}
 
 	#moveItemBetweenCrateAndInventory(slot: ItemSlot): boolean {
@@ -1274,7 +1274,7 @@ export class PlayerHud {
 
 		// First try to stack into existing stacks.
 		if (this.tryStackItemIntoRows(slot, item, targetRows)) {
-			// In-place stack merges bypass slot setters â€” push explicitly.
+			// In-place stack merges bypass slot setters — push explicitly.
 			this.#pushCrateDiff();
 			return true;
 		}

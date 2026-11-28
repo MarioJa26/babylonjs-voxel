@@ -81,7 +81,7 @@ const _ctxScratch: BlockMutationContext = {
 // packCoords getChunkFast on every boundary crossing.  A small ring of recent
 // (cx,cy,cz)->Chunk entries keeps the miss rate near zero after warmup.  On a
 // hit we also re-validate isLoaded so a disposed (stale) entry is refreshed
-// instead of being returned â€” strictly safer than the old single-entry cache,
+// instead of being returned — strictly safer than the old single-entry cache,
 // which could return a disposed chunk until the next miss.
 const _RESOLVE_SLOTS = 8;
 const _rcx = new Int32Array(_RESOLVE_SLOTS).fill(0x7fffffff);
@@ -125,7 +125,7 @@ function resolveCoords(
 				}
 				break;
 			}
-			// Stale/disposed entry â€” fall through and refresh this slot.
+			// Stale/disposed entry — fall through and refresh this slot.
 		}
 	}
 

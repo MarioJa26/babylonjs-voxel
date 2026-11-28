@@ -16,7 +16,7 @@ import { findStationRecipe, isLit, tickStation } from "./StationTypes";
  * Phase 3a is singleplayer-only: there is no server-side station simulation, so
  * this owns the authoritative state in the client and writes it to
  * localStorage. Phase 3b replaces the storage calls with the server store and
- * adds the `0x36`â€“`0x3a` messages, leaving this loop unchanged.
+ * adds the `0x36`–`0x3a` messages, leaving this loop unchanged.
  *
  * Only stations near the player are ticked. A world can hold thousands of them
  * and none of them should matter while the player is on the other side of it.

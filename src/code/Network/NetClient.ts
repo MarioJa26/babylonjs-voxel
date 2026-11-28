@@ -63,8 +63,8 @@ import {
  * Sentinel `lastSequence` meaning "no state received for this player yet".
  *
  * Must not be a real sequence value. `isSequenceNewer(0, 0)` is false, so
- * initialising to 0 would cause every player's first state batch â€” which
- * carries sequence 0 â€” to be discarded as stale.
+ * initialising to 0 would cause every player's first state batch — which
+ * carries sequence 0 — to be discarded as stale.
  */
 const NO_STATE_SEQUENCE = 0xffff;
 
@@ -98,7 +98,7 @@ export interface RemotePlayer {
 	 * Wall-clock arrival time of the most recent accepted state batch, ms.
 	 *
 	 * This runs in a Colyseus message task, OUTSIDE the frame loop, so it uses
-	 * `performance.now()` directly. The shared FrameClock is not valid here â€”
+	 * `performance.now()` directly. The shared FrameClock is not valid here —
 	 * its sample belongs to the last completed frame, which for a message task
 	 * may be arbitrarily stale.
 	 */
@@ -285,7 +285,7 @@ export class NetClient {
 	/**
 	 * Monotonic identity of the current room/connection.
 	 *
-	 * PERF/RATIONALE: async work started against one room can outlive it â€” an
+	 * PERF/RATIONALE: async work started against one room can outlive it — an
 	 * inflate, a cache write, a skin decode, a deferred GPU replacement. All of
 	 * those must answer "which room produced this operation?" before applying
 	 * their result, or a late completion from a room you already left will
@@ -300,7 +300,7 @@ export class NetClient {
 	 *   requests for the same chunk coordinates can be live at once, so
 	 *   coordinates alone are ambiguous.
 	 *
-	 * Keep the pending-object checks too â€” generation alone would let a stale
+	 * Keep the pending-object checks too — generation alone would let a stale
 	 * response for a re-requested coordinate resolve the new request.
 	 */
 	get connectionGeneration(): number {
@@ -528,7 +528,7 @@ export class NetClient {
 						break;
 
 					case MessageType.BlockEditBroadcast: {
-						// Reused scratch â€” safe: NetworkManager.applyRemoteBlockEdit copies fields synchronously (no retain). See NetworkManager:165.
+						// Reused scratch — safe: NetworkManager.applyRemoteBlockEdit copies fields synchronously (no retain). See NetworkManager:165.
 						const edit = decodeBlockEditBroadcastInto(
 							dec,
 							this.blockEditBroadcastScratch,
@@ -547,7 +547,7 @@ export class NetClient {
 					}
 
 					case MessageType.ChatMessage: {
-						// Reused scratch â€” safe: NetworkManager.onChatMessage copies name/message strings synchronously. Caller must not retain object.
+						// Reused scratch — safe: NetworkManager.onChatMessage copies name/message strings synchronously. Caller must not retain object.
 						const chat = dec.readChatMessageInto(this.chatMessageScratch);
 						callbacks.onChatMessage?.(chat);
 						break;
@@ -626,14 +626,14 @@ export class NetClient {
 					}
 
 					case MessageType.WorldConfig: {
-						// Reused scratch â€” safe: NetworkManager.onWorldConfig copies seed string synchronously (NetworkManager:186). Caller must copy if retaining.
+						// Reused scratch — safe: NetworkManager.onWorldConfig copies seed string synchronously (NetworkManager:186). Caller must copy if retaining.
 						const cfg = decodeWorldConfigInto(dec, this.worldConfigScratch);
 						callbacks.onWorldConfig?.(cfg);
 						break;
 					}
 
 					case MessageType.SpawnPosition: {
-						// Reused scratch â€” safe: NetworkManager.onSpawnPosition copies via setSpawnPosition/restoreSavedPosition (no retain). See NetClient:398.
+						// Reused scratch — safe: NetworkManager.onSpawnPosition copies via setSpawnPosition/restoreSavedPosition (no retain). See NetClient:398.
 						const pos = decodeSpawnPositionInto(dec, this.spawnPositionScratch);
 						callbacks.onSpawnPosition?.(pos);
 						break;
@@ -712,7 +712,7 @@ export class NetClient {
 						console.warn(
 							`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,
 						);
-						// Unknown payload length â€” stop to avoid desync.
+						// Unknown payload length — stop to avoid desync.
 						return;
 				}
 			}
@@ -855,7 +855,7 @@ export class NetClient {
 				targetZ: 0,
 				targetYaw: 0,
 				// "Nothing received yet", not a real sequence. The server's first
-				// batch carries sequence 0, and isSequenceNewer(0, 0) is false â€”
+				// batch carries sequence 0, and isSequenceNewer(0, 0) is false —
 				// initialising to 0 would silently drop every player's first
 				// state. 0xffff makes 0 compare as newer instead.
 				lastSequence: NO_STATE_SEQUENCE,
@@ -1246,7 +1246,7 @@ export class NetClient {
 	 * @deprecated Presentation smoothing belongs to the renderer, not to the
 	 *   transport. This now only primes `player.x/y/z/yaw` so that a caller
 	 *   which has not yet adopted `RemotePlayerInterpolationBuffer` still sees a
-	 *   moving position. New code should read render snapshots instead â€” see
+	 *   moving position. New code should read render snapshots instead — see
 	 *   Network/RemotePlayerInterpolation.ts for why the old in-place chase was
 	 *   both frame-rate dependent and jitter-prone.
 	 */

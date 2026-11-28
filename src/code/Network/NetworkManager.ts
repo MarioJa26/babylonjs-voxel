@@ -1,5 +1,5 @@
 ﻿/**
- * NetworkManager â€” high-level multiplayer coordinator.
+ * NetworkManager — high-level multiplayer coordinator.
  *
  * Integrates with the existing game:
  * - Sends local player position at fixed rate
@@ -239,7 +239,7 @@ export class NetworkManager {
 	private serverSeed: string | null = null;
 	private disposed = false;
 	private _canvas: HTMLCanvasElement | null = null;
-	// Canvas size cache â€” reading clientWidth/clientHeight forces layout, so
+	// Canvas size cache — reading clientWidth/clientHeight forces layout, so
 	// they are sampled once per resize instead of on every frame.
 	private _canvasWidth = 0;
 	private _canvasHeight = 0;
@@ -944,7 +944,7 @@ export class NetworkManager {
 
 		if (action !== BlockActionType.Break) return;
 
-		// The local chunk still holds the PRE-break block here â€” trust it over
+		// The local chunk still holds the PRE-break block here — trust it over
 		// the wire id for visuals. Relayed Break edits have been observed to
 		// carry the post-edit state (air = 0), which made every remote break
 		// emit particles for frame 0 (cobblestone) instead of the real block.
@@ -993,7 +993,7 @@ export class NetworkManager {
 		}
 
 		this.hud.addSystemMessage(
-			`Block edit rejected (${reasonText}) â€” reverted`,
+			`Block edit rejected (${reasonText}) — reverted`,
 		);
 	}
 

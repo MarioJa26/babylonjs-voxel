@@ -142,7 +142,7 @@ export type ChunkWorkerPoolDebugStats = {
 	lastDispatchWorkerIndices: number[];
 };
 
-// byteLength > 0 guards against the shared EMPTY_U8 sentinel buffer â€”
+// byteLength > 0 guards against the shared EMPTY_U8 sentinel buffer —
 // transferring it would detach a module global. The instanceof check
 // excludes SharedArrayBuffer-backed views (never produced by the mesh
 // worker, but the static type allows them).
@@ -153,7 +153,7 @@ function pushRecyclableBuffer(scratch: ArrayBuffer[], arr: Uint8Array): void {
 
 // PERF: single monomorphic shape for every dispatch context. The old union
 // was instantiated as four different literal shapes ({taskType,chunk,...},
-// {taskType}, {taskType,distantTask}, ...) â€” several live V8 hidden classes
+// {taskType}, {taskType,distantTask}, ...) — several live V8 hidden classes
 // for one logical type, plus one fresh object allocation per worker dispatch.
 // Contexts are now allocated once per worker and mutated in place; all fields
 // are always assigned on every dispatch so no stale values can leak between
@@ -177,7 +177,7 @@ export class ChunkWorkerPool {
 
 	private static readonly MAX_MESH_QUEUE = 512;
 
-	// T2-11: worker 0's terrainWorker is the dedicated light worker â€” the
+	// T2-11: worker 0's terrainWorker is the dedicated light worker — the
 	// only worker whose terrainWorker runs Light* tasks (initLightShared is
 	// called on it in the constructor and the HMR replacement path).  Terrain
 	// generation is excluded from this worker so light registration, reconcile
@@ -186,7 +186,7 @@ export class ChunkWorkerPool {
 
 	private workers: ChunkWorker[] = [];
 	private workerTaskContext: WorkerTaskContext[] = [];
-	/** Persistent per-worker context objects reused across dispatches â€”
+	/** Persistent per-worker context objects reused across dispatches —
 	 *  never nulled; workerTaskContext points at the active one or null. */
 	private persistentTaskCtx: WorkerTaskContextShape[] = [];
 
@@ -277,7 +277,7 @@ export class ChunkWorkerPool {
 	private idleWorkers = new IdleWorkerTracker();
 
 	// Mesh results + originating worker indices (parallel arrays over one
-	// consume index) â€” recycled buffers go back to the sender's voxel worker.
+	// consume index) — recycled buffers go back to the sender's voxel worker.
 	private meshResults = new MeshResultQueue();
 	// Scratch for recycle-message buffer collection (reused, never retained).
 	private readonly _recycleScratch: ArrayBuffer[] = [];
@@ -298,7 +298,7 @@ export class ChunkWorkerPool {
 	private static readonly MESH_DRAIN_BUDGET_MS = 5.5;
 	// PERF: Ingestion alone used to be allowed to consume the whole shared
 	// budget during bursts, squeezing the merged-group flush to its 0.5ms
-	// floor â€” group memcpys + GPU uploads then spilled across many frames
+	// floor — group memcpys + GPU uploads then spilled across many frames
 	// exactly when the CPU was busiest. Cap ingestion below the total so the
 	// flush always keeps a guaranteed slice.
 	private static readonly MESH_INGEST_BUDGET_MS = 3.5;
@@ -324,11 +324,11 @@ export class ChunkWorkerPool {
 	// ---------------------------------------------------------------------------
 
 	// ---------------------------------------------------------------------------
-	// Static scratch buffers â€” avoids per-call allocation on hot paths
+	// Static scratch buffers — avoids per-call allocation on hot paths
 	// ---------------------------------------------------------------------------
 	private static readonly _flushPendingScratch: Array<[Chunk, boolean]> = [];
 
-	// Pre-bound methods â€” avoids per-call .bind(this) allocation
+	// Pre-bound methods — avoids per-call .bind(this) allocation
 	private readonly _boundScheduleRemesh = this.scheduleRemesh.bind(this);
 	private readonly _boundScheduleHealRemesh =
 		this.scheduleDeferredNeighborHeal.bind(this);
@@ -415,7 +415,7 @@ export class ChunkWorkerPool {
 			this.distantTerrain.hasPending ||
 			// Far tiles were missing here, so a far-tile result landing as the
 			// only pending work never re-entered the immediate result-driven pump
-			// and had to wait for the next central tick â€” adding a full tick of
+			// and had to wait for the next central tick — adding a full tick of
 			// latency to every far-tile refill.
 			this.farTiles.hasPending
 		);
@@ -533,7 +533,7 @@ export class ChunkWorkerPool {
 	}
 
 	// -------------------------------------------------------------------------
-	// Idle-worker management â€” delegates to IdleWorkerTracker (see
+	// Idle-worker management — delegates to IdleWorkerTracker (see
 	// Runtime/IdleWorkerTracker for invariants). Kept as thin wrappers so
 	// existing call sites stay untouched in Step 2.
 	// -------------------------------------------------------------------------
@@ -617,7 +617,7 @@ export class ChunkWorkerPool {
 			context?.taskType === TaskType.Relight &&
 			context.chunk?.isLoaded
 		) {
-			// Relight's worker-side block grid was lost with the worker â€”
+			// Relight's worker-side block grid was lost with the worker —
 			// re-queue as a full remesh so it is rebuilt.
 			this.scheduleRemesh(context.chunk, true);
 		} else if (context?.taskType === TaskType.LodPrecompute && context.chunk) {
@@ -638,7 +638,7 @@ export class ChunkWorkerPool {
 
 		/*
 		 * A worker dying mid-task is the "cancelled worker task" anomaly. Every
-		 * branch above re-queues, so the chunk normally recovers on its own â€” but
+		 * branch above re-queues, so the chunk normally recovers on its own — but
 		 * those re-queues are best-effort: the task queue can be compacted or the
 		 * chunk disposed between the crash and the re-queue.
 		 *
@@ -868,7 +868,7 @@ export class ChunkWorkerPool {
 	}
 
 	private broadcastLightRegister(chunk: Chunk): void {
-		// Pass SABs directly â€” no OPFS worker-to-worker channel anymore.
+		// Pass SABs directly — no OPFS worker-to-worker channel anymore.
 		this.flushPendingUnregisters();
 		const snap = chunk.getLightStorageSnapshot();
 		this.getLightWorker().postLightRegisterChunk({
@@ -1004,7 +1004,7 @@ export class ChunkWorkerPool {
 
 	private invalidateNeighborMasks(chunk: Chunk): void {
 		// The chunk's own mask depends on its neighbors, and its neighbors'
-		// masks depend on it â€” delete all 27 entries defensively.
+		// masks depend on it — delete all 27 entries defensively.
 		neighborMaskCache.delete(chunk);
 		for (let i = 0; i < NEIGHBOR_OFFSETS_26.length; i++) {
 			const { dx, dy, dz } = NEIGHBOR_OFFSETS_26[i];
@@ -1044,8 +1044,8 @@ export class ChunkWorkerPool {
 	 * light array.
 	 */
 	private tryScheduleRelightOnly(chunk: Chunk): boolean {
-		// A released chunk's light_array is Chunk.EMPTY_LIGHT_ARRAY â€” a
-		// zero-length Uint8Array, which is still truthy â€” so a bare null
+		// A released chunk's light_array is Chunk.EMPTY_LIGHT_ARRAY — a
+		// zero-length Uint8Array, which is still truthy — so a bare null
 		// check never rejects it. hasVoxelData is the real precondition, and
 		// the length check keeps a genuinely empty array from reaching the
 		// worker (which would register a 0-byte light SAB).
@@ -1088,9 +1088,9 @@ export class ChunkWorkerPool {
 	// 1-2ms in separate event-loop ticks.
 	//
 	// PERF NOTE: this macrotask runs BETWEEN animation frames, so none of the
-	// work below appears in any onBeforeRender profiler section â€” it still
+	// work below appears in any onBeforeRender profiler section — it still
 	// spends the frame budget, and it is where the chunk-mesh `writeBuffer`
-	// uploads happen (processMeshQueueLoop â†’ flushDirtyMergedGroups â†’
+	// uploads happen (processMeshQueueLoop → flushDirtyMergedGroups →
 	// rebuildGroupData). Each branch is timed under a distinct off-frame
 	// section so the F5 report attributes the cost instead of it reading as
 	// unexplained dropped frames.
@@ -1126,7 +1126,7 @@ export class ChunkWorkerPool {
 		}
 		if (flags & ChunkWorkerPool.WORK_MESH) {
 			this.meshDrainScheduled = false;
-			// Includes the merged-group rebuild and its GPU uploads â€” the
+			// Includes the merged-group rebuild and its GPU uploads — the
 			// single largest off-frame cost in this file.
 			frameProfiler.measureOffFrame("poolMeshDrain", () =>
 				this.processMeshQueueLoop(),
@@ -1353,7 +1353,7 @@ export class ChunkWorkerPool {
 			// will post a LightDirty reply when done; processLightDirtyQueue
 			// schedules the remesh, and queuePostRemeshSave persists the
 			// chunk after the mesh is rebuilt with the post-BFS light data.
-			// Do NOT save here â€” the worker hasn't finished propagating yet,
+			// Do NOT save here — the worker hasn't finished propagating yet,
 			// so the save would capture only the initial top-down seeding.
 			this.postLightPropagateDeferred({
 				chunkId: chunk.id,
@@ -1382,7 +1382,7 @@ export class ChunkWorkerPool {
 	}
 
 	// -------------------------------------------------------------------------
-	// Mesh result drain loop â€” runs every rAF
+	// Mesh result drain loop — runs every rAF
 	// -------------------------------------------------------------------------
 
 	private scheduleMeshFlush(): void {
@@ -1403,7 +1403,7 @@ export class ChunkWorkerPool {
 			 * This loop used to be guarded by
 			 *   `((iterCount++ & 15) !== 0 || now - start < MESH_INGEST_BUDGET_MS)`
 			 * which is true on 15 of every 16 iterations WITHOUT ever reading
-			 * the clock â€” the 3.5ms budget was only enforced once per 16
+			 * the clock — the 3.5ms budget was only enforced once per 16
 			 * results. Each iteration calls createMeshFromData (vertex/index
 			 * buffer construction), so during a storm 16 results cost far more
 			 * than the whole shared budget, and the drain plus
@@ -1438,7 +1438,7 @@ export class ChunkWorkerPool {
 				const chunk = this.resolveChunkByMessageId(chunkId);
 
 				if (!chunk) {
-					// Dropped: buffers unreferenced â€” recycle them.
+					// Dropped: buffers unreferenced — recycle them.
 					this.debugStats.meshUnknownChunkDroppedTotal++;
 					this._summaryDropped++;
 					this.recycleMeshBuffers(workerIdx, data);
@@ -1532,7 +1532,7 @@ export class ChunkWorkerPool {
 			this.meshResults.compactIfNeeded();
 
 			// Whatever is left of this drain's own 5.5 ms is offered to the upload
-			// flush, capped by what the frame-wide pool still has â€” otherwise a
+			// flush, capped by what the frame-wide pool still has — otherwise a
 			// drain that ran long would hand the flush a fresh budget and the
 			// pair would overshoot the frame anyway.
 			//
@@ -1565,7 +1565,7 @@ export class ChunkWorkerPool {
 	}
 
 	// -------------------------------------------------------------------------
-	// Mesh result queue enqueue â€” shared by the terrain-worker and mesh-worker
+	// Mesh result queue enqueue — shared by the terrain-worker and mesh-worker
 	// message handlers.
 	//
 	// Backpressure fix: when the queue is at MAX_MESH_QUEUE, we overwrite the
@@ -1573,7 +1573,7 @@ export class ChunkWorkerPool {
 	// NOT advance the consume index. The previous version incremented the
 	// read index after writing into it, which made the entry just written
 	// look "already consumed" to the drain loop (which starts reading from
-	// the consume index) â€” so under backpressure the *newest* mesh
+	// the consume index) — so under backpressure the *newest* mesh
 	// result was the one silently dropped, and since chunk.remeshQueued had
 	// already been cleared before dispatch, that chunk's mesh could go
 	// missing with no retry. Leaving the read index alone means the slot we
@@ -1586,7 +1586,7 @@ export class ChunkWorkerPool {
 			pending >= ChunkWorkerPool.MAX_MESH_QUEUE &&
 			this.meshResults.hasPending
 		) {
-			// Backpressure discard: the oldest unread result is being replaced â€”
+			// Backpressure discard: the oldest unread result is being replaced —
 			// its buffers are unreferenced, so recycle them. Its owner must not
 			// silently miss the update, though: remeshQueued was already cleared
 			// at dispatch, so without intervention nothing would ever re-schedule
@@ -1687,14 +1687,14 @@ export class ChunkWorkerPool {
 		 * the same execution resources instead of adding throughput.
 		 *
 		 * One physical core is reserved for the main thread (render, mesh
-		 * assembly, occlusion culling, game logic) â€” the most
+		 * assembly, occlusion culling, game logic) — the most
 		 * latency-sensitive thread in the client.
 		 *
 		 * Each ChunkWorker costs ONE thread, not two: its terrain worker is
 		 * created lazily (see Worker/chunkWorker.ts) because in multiplayer the
 		 * server is authoritative and local terrain generation never dispatches,
 		 * so that thread would otherwise sit idle for the whole session. This
-		 * matters directly for multiplayer throughput â€” a chunk only becomes
+		 * matters directly for multiplayer throughput — a chunk only becomes
 		 * visible once the CLIENT has meshed it, so mesh thread count, not
 		 * worker-pair count, is what governs how fast chunks appear.
 		 *
@@ -1740,7 +1740,7 @@ export class ChunkWorkerPool {
 		if (!chunk.hasVoxelData) {
 			if (this.tryApplyCachedLODMesh(chunk, true)) {
 				// Cached mesh stands in: the chunk is clean. Drop any queued
-				// state â€” a heap entry pushed before the voxel data was
+				// state — a heap entry pushed before the voxel data was
 				// released would otherwise dispatch later as an illegal
 				// beginRemesh from Clean.
 				this.remeshStaging.delete(chunk);
@@ -1764,7 +1764,7 @@ export class ChunkWorkerPool {
 			this.remeshStaging.delete(chunk);
 			this.remeshHeap.remove(chunk);
 			this.clearChunkMeshIfPresent(chunk);
-			// Nothing is queued anymore â€” release the flag so a later content
+			// Nothing is queued anymore — release the flag so a later content
 			// change can enqueue a fresh build instead of hitting the
 			// remeshQueued early-return forever.
 			chunk.remeshQueued = false;
@@ -1774,7 +1774,7 @@ export class ChunkWorkerPool {
 		if (inflight) {
 			// Route through the owner: markDirty owns the isDirty write and
 			// latches the rerun exactly when a build is in flight
-			// (Building â†’ Superseded). The queued/in-flight build still
+			// (Building → Superseded). The queued/in-flight build still
 			// applies when it lands; the latch re-runs it after.
 			ChunkLifecycle.markDirty(chunk);
 			return;
@@ -1959,9 +1959,9 @@ export class ChunkWorkerPool {
 		meshData: FullMeshMessage,
 		workerIndex: number,
 	): void {
-		// PERF: resolve the chunk ONCE â€” the in-flight key clear, baseline
+		// PERF: resolve the chunk ONCE — the in-flight key clear, baseline
 		// record and rerun check all need the same object, and each
-		// BigInt-keyed map lookup hashes the full 3Ã—21-bit id.
+		// BigInt-keyed map lookup hashes the full 3×21-bit id.
 		const resolvedChunk = this.resolveChunkByMessageId(meshData.chunkId);
 		if (resolvedChunk) {
 			this.remeshFlight.clear(resolvedChunk, meshData.lod);
@@ -1971,7 +1971,7 @@ export class ChunkWorkerPool {
 
 		if (resolvedChunk?.rerunRemeshAfterInflight) {
 			// Route through the owner: rerunAfterInflight clears the latch and
-			// re-queues (Superseded â†’ Queued); the pool call below refreshes
+			// re-queues (Superseded → Queued); the pool call below refreshes
 			// the pending entry without advancing the revision (same as the
 			// legacy manual clear + scheduleRemesh(false)).
 			ChunkLifecycle.rerunAfterInflight(resolvedChunk);
@@ -2139,7 +2139,7 @@ export class ChunkWorkerPool {
 			let failed = false;
 			const data = event.data as MeshWorkerResponse & { type?: string };
 
-			// Off-frame task â€” see makeTerrainMessageHandler.
+			// Off-frame task — see makeTerrainMessageHandler.
 			const startedAt = performance.now();
 			try {
 				failed = this.handleMeshMessageBody(workerIndex, data);
@@ -2238,7 +2238,7 @@ export class ChunkWorkerPool {
 	 * parked for retry, or awaiting a server response).
 	 *
 	 * This is the `isGenerating` leg of the ChunkLifecycle host. It must cover
-	 * the whole worker-execution window â€” not just queue membership â€” because
+	 * the whole worker-execution window — not just queue membership — because
 	 * the scheduler recycles the controller's in-flight marks while generation
 	 * is still running, and the owner derives `Loading` from this query when a
 	 * generation result completes. A chunk that answers true here is NOT an
@@ -2305,7 +2305,7 @@ export class ChunkWorkerPool {
 		}
 		// Multiplayer: the server owns terrain. Until the connection (and thus
 		// the remote provider) is live, hold the request instead of generating
-		// it locally â€” local gen here is pure waste that gets discarded anyway.
+		// it locally — local gen here is pure waste that gets discarded anyway.
 		if (this.remote.isExpectingProvider()) {
 			this.remote.deferChunkForRemote(chunk);
 			return;
@@ -2316,7 +2316,7 @@ export class ChunkWorkerPool {
 	/**
 	 * Queue a chunk for LOCAL terrain generation even while remote mode is
 	 * active. Used as a fallback when the server confirms a chunk unchanged
-	 * at version 0 (untouched) and the client has no local copy â€” the
+	 * at version 0 (untouched) and the client has no local copy — the
 	 * deterministic generator produces identical terrain to the server's
 	 * for untouched chunks (the seed is synced on join).
 	 */
@@ -2497,7 +2497,7 @@ export class ChunkWorkerPool {
 			// MUST be checked before isCompletelyEmptyChunk below, because that
 			// predicate is true for a released chunk (isUniform &&
 			// uniformBlockId === 0) and would route it into
-			// clearChunkMeshIfPresent â€” replacing a valid mesh with a hole.
+			// clearChunkMeshIfPresent — replacing a valid mesh with a hole.
 			// Delegate to scheduleRemesh's hasVoxelData branch so the flags
 			// heal through the single owner (cached mesh standing in, or
 			// Dirty + queues dropped) instead of leaving a Queued flag with
@@ -2559,7 +2559,7 @@ export class ChunkWorkerPool {
 				this.remeshStaging.delete(chunk);
 				this.remeshHeap.deletePriority(chunk);
 				if (chunk.isDirty) {
-					// Dirty still needs a mesh â€” heal back through the owner
+					// Dirty still needs a mesh — heal back through the owner
 					// instead of dispatching directly, so the flags and the
 					// pending entry stay consistent (bumpRevision=false: no
 					// new content change, just a flag/heap desync).
@@ -2631,7 +2631,7 @@ export class ChunkWorkerPool {
 	// Shared body for the Remesh / LodPrecompute / Relight dispatch arms:
 	// context + in-flight key + post + record + stats, in the same order.
 	// `kind` selects the post method (0 = full remesh, 1 = LOD remesh,
-	// 2 = relight) with explicit branches â€” no per-dispatch closure alloc,
+	// 2 = relight) with explicit branches — no per-dispatch closure alloc,
 	// no megamorphic call. Callers still bump `dispatchedThisTick`.
 	private dispatchRemeshLikeTask(
 		workerIndex: number,
@@ -2643,7 +2643,7 @@ export class ChunkWorkerPool {
 		const worker = this.workers[workerIndex];
 		this.setWorkerTaskContext(workerIndex, taskType, taskChunk, lod);
 		if (kind === 0) {
-			// Route through the owner: Queued â†’ Building. No flag writes (the
+			// Route through the owner: Queued → Building. No flag writes (the
 			// worker now owns the build); the host's isRemeshInFlight query
 			// distinguishes the states from here on. Must run BEFORE the
 			// in-flight key is added so the transition reads Queued, not
@@ -2874,7 +2874,7 @@ export class ChunkWorkerPool {
 	// Releases every strong reference the pool holds to the disposed chunk
 	// so the chunk (and its voxel/light/palette SharedArrayBuffers) can be
 	// reclaimed by the GC. Persistent chunks (boat chunks) are intentionally
-	// skipped â€” they live as long as the boat does.
+	// skipped — they live as long as the boat does.
 	// -------------------------------------------------------------------------
 	public onChunkDisposed(chunk: Chunk): void {
 		if (chunk.isBoatChunk) return;

@@ -37,7 +37,7 @@ const CHUNK_SHIFT = 5;
 const CHUNK_MASK = Chunk.SIZE - 1;
 
 // PERF: distinct scratches for the target cell and the cell above it. These
-// must not share an object â€” the check rejects a mob whose head cell is solid,
+// must not share an object — the check rejects a mob whose head cell is solid,
 // which is only meaningful if the two results came from different voxels.
 const _waterTarget: ResolvedBlock = {
 	blockId: 0,
@@ -344,7 +344,7 @@ export abstract class AquaticMob extends BaseMob {
 		const waterState = this.#sampleWaterState(pos);
 
 		const velocity = this.bodyVelocity;
-		// Don't freeze on NotReady â€” treat as dry so mobs keep falling
+		// Don't freeze on NotReady — treat as dry so mobs keep falling
 		// when the block under them is mined and the chunk below is still
 		// streaming. Otherwise they hover 1 block above the hole.
 		const inWater = waterState === WaterSampleResult.InWater;
@@ -393,7 +393,7 @@ export abstract class AquaticMob extends BaseMob {
 				const cx = Math.floor(pos.x);
 				const cy = Math.floor(pos.y - this.halfHeight - 0.05);
 				const cz = Math.floor(pos.z);
-				// PERF: single voxel fetch â€” reuse result for both checks.
+				// PERF: single voxel fetch — reuse result for both checks.
 				const belowCollidable = isCollidableBlock(
 					getBlockByWorldCoords(cx, cy, cz),
 				);
@@ -427,7 +427,7 @@ export abstract class AquaticMob extends BaseMob {
 				this.fallStartY = startY;
 			}
 		} else {
-			// Water breaks the fall â€” reset tracking
+			// Water breaks the fall — reset tracking
 			this.fallStartY = Number.NaN;
 		}
 

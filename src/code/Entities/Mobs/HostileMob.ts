@@ -369,7 +369,7 @@ export abstract class HostileMob extends BaseMob {
 			}
 		}
 
-		// Vertical: undead wade â€” float toward the surface, never drown.
+		// Vertical: undead wade — float toward the surface, never drown.
 		if (inWater) {
 			velocity.y += WATER_GRAVITY * dt;
 			const targetCenterY =
@@ -404,7 +404,7 @@ export abstract class HostileMob extends BaseMob {
 		let moveZ = velocity.z * dt;
 
 		// Cliff guard: never walk into drops deeper than MAX_SAFE_LEDGE_DROP,
-		// chasing or wandering alike â€” the mob stops and turns instead.
+		// chasing or wandering alike — the mob stops and turns instead.
 		if (
 			!inWater &&
 			wasGrounded &&

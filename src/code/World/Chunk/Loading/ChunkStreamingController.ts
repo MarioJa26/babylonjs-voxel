@@ -58,7 +58,7 @@ function clampLodForY(chunkY: number, lod: number): number {
  * Shared LOD decision for processTarget / initial-shell / loaded-refresh.
  * Returns -1 when the coordinate must be skipped (matches the
  * getCachedDecisionLod miss sentinel). `enforceCreation` gates on
- * `allowsChunkCreation` â€” true for load paths, false for loaded-refresh
+ * `allowsChunkCreation` — true for load paths, false for loaded-refresh
  * (the chunk already exists, creation is moot). The clamp is identity for
  * y >= 0 (maxLodForChunkY), so all three call sites share one shape.
  */
@@ -90,7 +90,7 @@ function resolveDesiredLod(
 /**
  * Engine perf: streaming loops only. Branchless-abs + Chebyshev helpers for
  * the relX/relY/relZ distance boilerplate (7 sites). Trivially inlineable,
- * zero allocation â€” same ops as the inline ternaries.
+ * zero allocation — same ops as the inline ternaries.
  */
 function absI(n: number): number {
 	return n < 0 ? -n : n;
@@ -154,7 +154,7 @@ function undergroundDesired(
 	// solid band from the seabed chunk up to y=-1 (slopes included) is judged
 	// by the surface vertical window instead of the cave cap. Rock below the
 	// seabed chunk keeps the culls above. (Burial can never fire inside the
-	// band â€” its boundary sits 1+ chunks below the seabed by construction.)
+	// band — its boundary sits 1+ chunks below the seabed by construction.)
 	let verticalCap = undergroundVerticalRange(lodRuleSet);
 	if (isOceanFloorBandChunk(chunkX, chunkY, chunkZ)) {
 		const surfaceWindow = lodRuleSet.verticalRadiusFor(0);
@@ -203,7 +203,7 @@ const _orphanSweepResolved: Chunk[] = [];
 
 // PERF: relative-offset key for the refresh decision cache.
 // Multiplicative fields stay float-exact (< 2^53) while widening the ranges:
-// rx/rz hold Â±2047 (render radii beyond that are unrealistic), ry Â±127, and
+// rx/rz hold ±2047 (render radii beyond that are unrealistic), ry ±127, and
 // prevLod 0..7 (DISTANT_LOD_LEVEL = 6). The absolute-y sign bit exists
 // because decisions are not purely player-relative: y < 0 routes through
 // clampLodForY's LOD-1 cap, so a cached surface-band LOD must never be
@@ -241,7 +241,7 @@ export interface ChunkStreamingControllerAdapter {
 	/**
 	 * Whether the chunk sits in the scheduler's unprocessed unload batch.
 	 * The scheduler dequeues unload entries into its batch (removing them
-	 * from the set), but they are still Unloading â€” without this the owner
+	 * from the set), but they are still Unloading — without this the owner
 	 * would derive Loaded at dispose time and reject completeUnload.
 	 */
 	isInUnloadBatch?(chunk: Chunk): boolean;
@@ -265,7 +265,7 @@ const columnProfileCache = new Map<number, ColumnProfile>();
 let columnProfileSeed = -1;
 
 // Collision-free column key for signed 32-bit chunk coordinates: 26 bits per
-// axis (aliases only beyond Â±33.5M chunks â€” far outside any playable range,
+// axis (aliases only beyond ±33.5M chunks — far outside any playable range,
 // unlike the old 16-bit XOR-style packing). The stride is 1 << 26, but the
 // combine must stay multiplicative: `<<` coerces through signed 32-bit and
 // the composite key exceeds 2^31 (see packLodRevision note below).
@@ -287,7 +287,7 @@ let frameCacheActive = false;
  * of the cheap distance comparisons across the entire resident set.
  *
  * A chunk leaving the render distance but whose blob is still cached ends at
- * `Persisted`, not `Absent` â€” recovery is then a local cache read rather than a
+ * `Persisted`, not `Absent` — recovery is then a local cache read rather than a
  * network round trip. Buried chunks always end at `Persisted`, since burial is
  * not a distance decision and digging back down should still hit the cache.
  */
@@ -360,7 +360,7 @@ function columnProfile(x: number, z: number): ColumnProfile {
 /**
  * True when the coordinate lies fully below the heightmap surface and is far
  * enough from the player that its (necessarily sealed) interior cannot be
- * seen: DistantHorizons-style surface-only culling. Applies at ALL Y â€”
+ * seen: DistantHorizons-style surface-only culling. Applies at ALL Y —
  * mountain interiors live in positive chunkY, deep caves below y=0.
  */
 function buriedChunkCulled(
@@ -381,7 +381,7 @@ function buriedChunkCulled(
 export class ChunkStreamingController {
 	private static readonly DESIRED_STATE_REVISION_RETENTION = 8;
 	/** Full-band refresh scan runs every Nth player-chunk-move (near window
-	 *  scans every move â€” see enqueueLoadedChunksForRefresh). */
+	 *  scans every move — see enqueueLoadedChunksForRefresh). */
 	private static readonly OUTER_SCAN_INTERVAL = 4;
 
 	/**
@@ -409,7 +409,7 @@ export class ChunkStreamingController {
 	 */
 	private static readonly ORPHAN_SWEEP_MAX_PER_PASS = 128;
 
-	/** Minimum ms between orphan sweeps â€” the sweep is a safety net, not a hot path. */
+	/** Minimum ms between orphan sweeps — the sweep is a safety net, not a hot path. */
 	private static readonly ORPHAN_SWEEP_INTERVAL_MS = 250;
 
 	private streamRevision = 0;
@@ -479,7 +479,7 @@ export class ChunkStreamingController {
 	 * In-flight requests are retained in `_inFlightRequests` (populated by
 	 * `moveLoadToInFlight`, consumed by `moveInFlightToLoad`/`clearInFlight`/
 	 * `dropFromLoadPath`) so `abandonLoad(requeue)` restores the SAME request
-	 * object â€” preserving its revision/desiredLod/priority â€” instead of
+	 * object — preserving its revision/desiredLod/priority — instead of
 	 * allocating a fresh one the scheduler would treat as a duplicate.
 	 */
 	private readonly _lifecycleHost: ChunkLifecycleHost = {
@@ -533,7 +533,7 @@ export class ChunkStreamingController {
 			if (request) request.cancelled = true;
 		},
 		enqueueLoad: (view, request) => {
-			if (!request) return; // no payload â†’ nothing to enqueue (defensive)
+			if (!request) return; // no payload → nothing to enqueue (defensive)
 			const chunk = view as Chunk;
 			const desiredLod = clampLodForY(chunk.chunkY, request.desiredLod);
 			const revision = request.revision;
@@ -627,7 +627,7 @@ export class ChunkStreamingController {
 					this.loadQueueRequestMap.set(numericId, retained);
 					this.adapter.getLoadQueue().push(retained);
 				}
-				// Back on loadQueue with a live request â€” not an orphan.
+				// Back on loadQueue with a live request — not an orphan.
 				this._orphanCandidates.delete(chunk);
 			} else {
 				// No retained request (recycled/stale): stay visible to the
@@ -669,7 +669,7 @@ export class ChunkStreamingController {
 	 *
 	 * PERF/RATIONALE: the sweep used to walk every entry in
 	 * `Chunk.chunkInstances`, which holds both loaded and unloaded chunks and
-	 * grows with world residency â€” tens of thousands under a large render
+	 * grows with world residency — tens of thousands under a large render
 	 * distance, all re-examined 4x/second. Orphans are rare by construction, so
 	 * the scan was O(residency) to find O(anomalies).
 	 *
@@ -698,7 +698,7 @@ export class ChunkStreamingController {
 	}
 
 	/**
-	 * Clear the orphan flag â€” the chunk's request is accounted for again
+	 * Clear the orphan flag — the chunk's request is accounted for again
 	 * (queued, in flight, or deliberately given up).
 	 */
 	public clearPotentialOrphan(chunk: Chunk): void {
@@ -708,7 +708,7 @@ export class ChunkStreamingController {
 	/**
 	 * Is this chunk currently registered as an orphan candidate?
 	 *
-	 * Diagnostics only â€” the sweep reads the set directly. Exists so
+	 * Diagnostics only — the sweep reads the set directly. Exists so
 	 * `validateChunksAround` can prove the registry is complete, which is the
 	 * whole safety argument for narrowing the sweep.
 	 */
@@ -720,7 +720,7 @@ export class ChunkStreamingController {
 	 * Size of the orphan candidate set.
 	 *
 	 * A count that grows without bound means requests are being lost faster than
-	 * the sweep can rescue them â€” the "chunk loading stopped" symptom, visible
+	 * the sweep can rescue them — the "chunk loading stopped" symptom, visible
 	 * here before it shows up as a stalled world.
 	 */
 	public getOrphanCandidateCount(): number {
@@ -790,7 +790,7 @@ export class ChunkStreamingController {
 			currentRevision -
 				ChunkStreamingController.DESIRED_STATE_REVISION_RETENTION,
 		);
-		// Delete buckets older than oldestKept â€“ O(k) where k = chunks inserted at that revision
+		// Delete buckets older than oldestKept – O(k) where k = chunks inserted at that revision
 		for (const [rev, bucket] of this.desiredStateBuckets) {
 			if (rev < oldestKept) {
 				for (const id of bucket) {
@@ -1520,12 +1520,12 @@ export class ChunkStreamingController {
 		// BUGFIX: the refresh window must span EVERY chunk-creating band, not
 		// just LOD0-2. It previously capped at lod2Radius+2, so chunks pushed
 		// beyond it (by walking/sprinting/boating away) kept their near-band
-		// LOD forever â€” full-detail lod0/1 meshes rendering inside the far
+		// LOD forever — full-detail lod0/1 meshes rendering inside the far
 		// lod3-5 rings until unload. Chunks are collected below out to
 		// unloadScanRadius (operationalRadius+9), so the only limiter needed
 		// here is the rule set's outermost radius (+ hysteresis margin).
 		// PERF: on non-full passes only the near window (LOD0-2 + margin) is
-		// scanned â€” outer bands are covered by the periodic full scan.
+		// scanned — outer bands are covered by the periodic full scan.
 		const maxH = lodRuleSet.maxHorizontalRadius() + 2;
 		const maxV = lodRuleSet.maxVerticalRadius() + 2;
 		const nearH = lodRuleSet.horizontalRadiusFor(2) + 2;
@@ -1632,7 +1632,7 @@ export class ChunkStreamingController {
 		let processed = 0;
 
 		// PERF: this drain runs every frame and, for each queued chunk, may take
-		// a synchronous main-thread path â€” most expensively
+		// a synchronous main-thread path — most expensively
 		// tryApplyCachedLodTransitionMesh -> createMeshFromData, which rekeys
 		// the chunk's merged group and dirties it. A pure count cap therefore
 		// allowed one frame to pay for up to maxChunks full mesh applications
@@ -1700,8 +1700,8 @@ export class ChunkStreamingController {
 	/**
 	 * Re-queue chunks that want to be loaded but have no outstanding request.
 	 *
-	 * STALLFIX. `updateChunksAround` â€” the only thing that decides what *should*
-	 * exist â€” runs exclusively when the player's chunk coordinate changes
+	 * STALLFIX. `updateChunksAround` — the only thing that decides what *should*
+	 * exist — runs exclusively when the player's chunk coordinate changes
 	 * (PlayerLoopController.updateChunksAroundPlayer). Within a run it only
 	 * revisits:
 	 *   - entries already in `loadQueue`          (reconcile)
@@ -1719,7 +1719,7 @@ export class ChunkStreamingController {
 	 *
 	 * The second rescued shape is the mirror image: loaded, near LOD, but with
 	 * no voxel data (a hydration request that never landed). Those are normally
-	 * re-detected by enqueueLoadedChunksForRefresh â€” but that only runs inside
+	 * re-detected by enqueueLoadedChunksForRefresh — but that only runs inside
 	 * updateChunksAround, so while the player stands still they are never
 	 * re-examined either.
 	 *
@@ -1730,7 +1730,7 @@ export class ChunkStreamingController {
 	 * SCOPE: only chunks in `_orphanCandidates` are examined. See that field for
 	 * why, and {@link markPotentialOrphan} for where candidates come from. A
 	 * candidate that turns out to be healthy, or that no longer wants loading,
-	 * is REMOVED as it is inspected â€” so the set is a work list, not a
+	 * is REMOVED as it is inspected — so the set is a work list, not a
 	 * permanent record, and it self-prunes every pass.
 	 */
 	public sweepOrphanedChunks(): number {
@@ -1745,7 +1745,7 @@ export class ChunkStreamingController {
 
 		const candidates = this._orphanCandidates;
 
-		// Nothing was lost since the last pass â€” by far the common case, and now
+		// Nothing was lost since the last pass — by far the common case, and now
 		// a single size check instead of a walk of the whole chunk registry.
 		if (candidates.size === 0) {
 			this._lastOrphanSweepRescued = 0;
@@ -1807,14 +1807,14 @@ export class ChunkStreamingController {
 			}
 
 			// The scheduler already dequeued this chunk's request and is awaiting
-			// its storage read â€” re-queueing now would load it twice per pass.
+			// its storage read — re-queueing now would load it twice per pass.
 			if (this._loadRequestsInFlight.has(chunk.numericId)) {
 				resolved.push(chunk);
 				continue;
 			}
 
 			if (!chunk.isLoaded) {
-				// Already handed to a terrain worker â€” leave it alone, otherwise
+				// Already handed to a terrain worker — leave it alone, otherwise
 				// the chunk becomes both a storage load and a generation task.
 				if (pool.isTerrainTaskQueued(chunk)) {
 					resolved.push(chunk);
@@ -1833,7 +1833,7 @@ export class ChunkStreamingController {
 				continue;
 			}
 
-			// Loaded, has voxels, wants nothing more â€” healthy.
+			// Loaded, has voxels, wants nothing more — healthy.
 			resolved.push(chunk);
 			inspected++;
 		}
@@ -1912,7 +1912,7 @@ export class ChunkStreamingController {
 		}
 
 		// Surface-only cull: fully-buried coordinates beyond the exempt core
-		// are invisible from outside at any Y â€” never create or refresh them.
+		// are invisible from outside at any Y — never create or refresh them.
 		const caveNow = frameCacheActive ? frameInCaveCache : isInCave();
 		if (
 			hDist > UNDERGROUND_CULL_EXEMPT_RADIUS &&
@@ -1982,7 +1982,7 @@ export class ChunkStreamingController {
 				// STALLFIX: this branch used to be the only queueing path that
 				// skipped trackDesiredState, so its request carried the current
 				// streamRevision while desiredStates still held an older (or
-				// pruned) one â€” and PrepareLoadBatch drops every request whose
+				// pruned) one — and PrepareLoadBatch drops every request whose
 				// revision disagrees. The chunk (loaded at near LOD, never
 				// hydrated) was therefore re-queued and silently discarded on
 				// every single frame, forever. Tracking now happens inside
@@ -2497,7 +2497,7 @@ export class ChunkStreamingController {
 					noteChunkEvicted(chunk, fullyBuriedAndCullable);
 					// Route through the owner: requestUnload drops any pending
 					// load request (map + queue + in-flight) and enqueues the
-					// unload. Never-loaded (Absent) chunks no-op here â€” there is
+					// unload. Never-loaded (Absent) chunks no-op here — there is
 					// nothing to unload, matching the legacy add-then-skip.
 					ChunkLifecycle.requestUnload(chunk);
 				}
@@ -2554,10 +2554,10 @@ export class ChunkStreamingController {
 	): void {
 		// Route through the ChunkLifecycle owner: it owns the "already holds the
 		// requested data" guard and delegates the enqueue to the host (this
-		// controller's `enqueueLoad`). The enqueue logic â€” desired-state
+		// controller's `enqueueLoad`). The enqueue logic — desired-state
 		// tracking, request create/update, loadQueue push, unload de-queue,
-		// orphan clear, and `isTerrainScheduled = true` â€” lives in `enqueueLoad`
-		// so the invariant "isTerrainScheduled âŸº queued" is established in one
+		// orphan clear, and `isTerrainScheduled = true` — lives in `enqueueLoad`
+		// so the invariant "isTerrainScheduled ⟺ queued" is established in one
 		// place.
 		ChunkLifecycle.requestLoad(chunk, {
 			desiredLod,
@@ -2593,7 +2593,7 @@ export class ChunkStreamingController {
 				this._loadRequestsInFlight.delete(request.chunk.numericId);
 				// Mirror rule: back on loadQueue means no longer in flight.
 				this._inFlightRequests.delete(request.chunk.numericId);
-				// Back on loadQueue with a live request â€” not an orphan.
+				// Back on loadQueue with a live request — not an orphan.
 				this._orphanCandidates.delete(request.chunk);
 			}
 		}
@@ -2602,7 +2602,7 @@ export class ChunkStreamingController {
 	/**
 	 * Terminal cleanup for a batch that is being dropped without being recycled
 	 * (scheduler recovery failed). A still-Loading chunk with a retained
-	 * request is requeued through the owner (Loading â†’ Scheduled, same object
+	 * request is requeued through the owner (Loading → Scheduled, same object
 	 * restored); anything else falls back to clearing the in-flight marks so
 	 * the orphan sweep can rescue those chunks, and evicts any stale
 	 * request-map entry so a later ensureChunkQueuedForLoad allocates a fresh
@@ -2699,8 +2699,8 @@ export class ChunkStreamingController {
 	 *
 	 * Separate from the unload QUEUE decision on purpose: a chunk queued for
 	 * unload is still recoverable, so its record must survive. Forgetting it
-	 * here â€” once the chunk object is actually gone and no cached blob remains
-	 * to rebuild from â€” is what keeps the residency map bounded across a long
+	 * here — once the chunk object is actually gone and no cached blob remains
+	 * to rebuild from — is what keeps the residency map bounded across a long
 	 * session.
 	 */
 	public forgetResidency(chunkX: number, chunkY: number, chunkZ: number): void {

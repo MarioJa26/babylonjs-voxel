@@ -29,9 +29,9 @@ const BLOCKED_REPICK_TICKS = 3;
 /** Fraction of intended per-axis travel that counts as "moved". */
 const BLOCKED_MOVE_FRACTION = 0.3;
 
-/** Radians of flap phase accumulated per meter flown (shader Ã—3). */
+/** Radians of flap phase accumulated per meter flown (shader ×3). */
 const FLAP_STRIDE_FACTOR = 2.0;
-/** Phase decay rate (per second) when still â€” wings ease back to rest. */
+/** Phase decay rate (per second) when still — wings ease back to rest. */
 const FLAP_PHASE_DECAY = 6.0;
 
 /** True when the world clock is in its night phase (mirrors SpawnCoordinator). */
@@ -124,7 +124,7 @@ export abstract class FlyingMob extends BaseMob {
 		const dt = deltaMs * 0.001;
 		if (dt <= 0 || isUiOpen()) return;
 
-		// PERF: night flag hoisted out of the per-bird tick â€” was
+		// PERF: night flag hoisted out of the per-bird tick — was
 		// Map1.environment + division per bird per frame.
 		const night = isNightNow();
 
@@ -247,7 +247,7 @@ export abstract class FlyingMob extends BaseMob {
 			velocity.y *= perchDamp;
 			velocity.z *= perchDamp;
 		} else {
-			// Route following: arrive â†’ notify â†’ idle â†’ repick.
+			// Route following: arrive → notify → idle → repick.
 			if (this.#hasWaypoint) {
 				const dx = this.#waypoint.x - pos.x;
 				const dy = this.#waypoint.y - pos.y;
@@ -313,7 +313,7 @@ export abstract class FlyingMob extends BaseMob {
 		// Move per axis through the voxel collider so terrain slides
 		// instead of tunneling. Track blocked horizontal axes to climb or
 		// abandon the route.
-		// PERF: unrolled axes â€” the old `for (const axis of [X,Y,Z])`
+		// PERF: unrolled axes — the old `for (const axis of [X,Y,Z])`
 		// allocated a 3-element array per bird per tick.
 		let blockedAxes = 0;
 		{

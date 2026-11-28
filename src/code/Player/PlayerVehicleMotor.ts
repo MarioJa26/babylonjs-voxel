@@ -86,7 +86,7 @@ const _playerVoxelScratch: ResolvedBlock = {
 	unloaded: false,
 };
 
-// PERF: scratch pair for #isClimbableWall. These two MUST be separate objects â€”
+// PERF: scratch pair for #isClimbableWall. These two MUST be separate objects —
 // the method compares the cell above the contact against the cell below it.
 const _climbAbove: { blockId: number; blockState: number } = {
 	blockId: 0,
@@ -144,9 +144,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	#characterController!: SimpleCharacterController;
 	#characterOrientation = Quaternion.Identity();
 	#characterGravity: Vec3 = vec3(0, -18, 0);
-	// PERF: Cache gravity magnitude â€” avoids repeated sqrt in jump/fly paths.
+	// PERF: Cache gravity magnitude — avoids repeated sqrt in jump/fly paths.
 	#characterGravityLen = 18;
-	// PERF: Pre-computed gravity up vector â€” avoids 12 divisions per physics step.
+	// PERF: Pre-computed gravity up vector — avoids 12 divisions per physics step.
 	readonly #upX = -this.#characterGravity.x / this.#characterGravityLen;
 	#previousSneaking = false;
 	readonly #tmpHalfExtents: Vec3 = vec3(0, 0, 0);
@@ -155,7 +155,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	#movementLocked = false;
 	#lockedPosition: Vec3 | null = null;
 	// Set when a saved position was restored from local storage (or the
-	// server's SpawnPosition) â€” tells the loading gate not to teleport the
+	// server's SpawnPosition) — tells the loading gate not to teleport the
 	// player over it.
 	#savedPositionRestored = false;
 	readonly #zeroVelocity: Vec3 = vec3(0, 0, 0);
@@ -168,7 +168,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	#lastBoatSupportMs = 0;
 	private readonly boatSupportGraceMs = 150;
 
-	// Scratch vectors â€” one set for the whole class, labelled by owner method.
+	// Scratch vectors — one set for the whole class, labelled by owner method.
 	#tmp0: Vec3 = vec3(0, 0, 0); // flushToWorld, applyBoatMotion world point
 	#tmp1: Vec3 = vec3(0, 0, 0); // applyBoatMotion candidate
 	#tmp2: Vec3 = vec3(0, 0, 0); // updateSupportBoat probe / attemptStepUp fwd
@@ -198,7 +198,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	// Last AIRBORNE `isJumpHeld` rising edge (performance.now ms). A short
 	// grace window lets a press slightly before wall contact still latch.
 	// Grounded presses are ignored on purpose: a single ground jump steered
-	// into a wall must NOT latch â€” only a second press while airborne latches.
+	// into a wall must NOT latch — only a second press while airborne latches.
 	private lastJumpPressMs = Number.NEGATIVE_INFINITY;
 	#isClimbing = false;
 	/** Y where the current fall started; NaN when grounded, swimming, flying or climbing. */
@@ -266,7 +266,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 	private readonly stepUpCooldownMs: number; // stepUpCooldown * 1000
 	private readonly jumpImpulse: number; // gravity.length * jumpHeight
-	// PERF: Foot-probe offsets baked once â€” never rebuilt per frame.
+	// PERF: Foot-probe offsets baked once — never rebuilt per frame.
 	// updateSupportBoat and checkGrounded both iterate these.
 	private readonly _groundProbeOffsets: ReadonlyArray<
 		readonly [number, number]
@@ -829,7 +829,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 					? stepSize * Math.sign(remaining)
 					: remaining;
 
-			// PERF: #tmp4 is already a scratch â€” just write into it directly.
+			// PERF: #tmp4 is already a scratch — just write into it directly.
 			copyVec3(this.#tmp4, pos);
 			if (axis === Axis.X) this.#tmp4.x += step;
 			else if (axis === Axis.Y) this.#tmp4.y += step;
@@ -847,7 +847,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	}
 
 	// PERF: bound once per motor. The onStep callback used to be a fresh
-	// closure per axis attempt â€” up to 2 per physics substep while grounded
+	// closure per axis attempt — up to 2 per physics substep while grounded
 	// and moving. #stepUpVel carries the active velocity object (boat-local or
 	// world) into the single reusable callback.
 	#stepUpVel: Vec3 | null = null;
@@ -856,7 +856,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.lastStepUpTime = this.now;
 
 		// Audible step onto the ledge, using the stepped-onto material.
-		// Skipped while riding or flying â€” boats and flight run through the
+		// Skipped while riding or flying — boats and flight run through the
 		// same axis mover but shouldn't make walking sounds.
 		if (this.isMounted || this.isFlying) return;
 
@@ -920,7 +920,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	#checkGrounded(pos: Vec3, collider: VoxelAabbCollider): boolean {
 		// Probe a thin slab *just below the feet* using the interior footprint
 		// (narrower than the body). This detects a real floor without mistaking a
-		// wall the player is pressed against for ground â€” which previously let the
+		// wall the player is pressed against for ground — which previously let the
 		// player re-jump off a wall every frame.
 		const footY = pos.y - this.colliderHalfHeight;
 		const p = this.#tmpProbe;
@@ -980,14 +980,14 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	/**
 	 * Decide whether the block at the exact contacted voxel `v` is a climbable
 	 * wall. A lone 1-tall block resting on a surface (air above, solid below) is
-	 * just a step â€” not climbable. A wall with a block above it, or a
+	 * just a step — not climbable. A wall with a block above it, or a
 	 * free-floating block with no solid block directly beneath it, is climbable.
 	 */
 	#isClimbableWall(v: { x: number; y: number; z: number }): boolean {
 		let aboveCollidable: boolean;
 		let belowCollidable: boolean;
 		if (this.isOnBoat()) {
-			// `v` came from the boat collider, so it is in boat-LOCAL space â€” query
+			// `v` came from the boat collider, so it is in boat-LOCAL space — query
 			// the boat chunk's local blocks, not world coordinates.
 			const chunk = this.#collisionBoat!.boatChunk!;
 			const above = chunk.getBlockLocal(v.x, v.y + 1, v.z) & 0x3ff;
@@ -997,7 +997,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		} else {
 			// Two DISTINCT cells. These used to share one scratch result, so
 			// aboveCollidable and belowCollidable were always identical and the
-			// `above || !below` return below was unconditionally true â€” every
+			// `above || !below` return below was unconditionally true — every
 			// contacted block counted as a climbable wall.
 			getBlockAndStateByWorldCoordsInto(v.x, v.y + 1, v.z, _climbAbove);
 			aboveCollidable = isCollidableBlock(_climbAbove.blockId);
@@ -1011,7 +1011,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	 * True if there is a solid block within `dist` blocks directly below the
 	 * player's feet. Used to suppress climbing entirely when the player is
 	 * effectively next to a step / the base of a wall (ground within 1 block
-	 * under the feet) â€” so you drop the last stretch freely instead of sticking.
+	 * under the feet) — so you drop the last stretch freely instead of sticking.
 	 */
 	#hasGroundBelowFeet(
 		pos: Vec3,
@@ -1033,7 +1033,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		// Lite port: the classic code read `boat.boatMesh.getBoundingInfo()
 		// .boundingBox` + `getWorldMatrix()` (unavailable in Lite). The boat
 		// already exposes `worldToBoatChunkLocalPoint` which transforms a world
-		// point into boat-local space (yaw + position) â€” the same space its
+		// point into boat-local space (yaw + position) — the same space its
 		// `collisionHalfExtents` describe. So we test the player against the
 		// boat's AABB directly without any mesh world-matrix lookup.
 		const local = boat.worldToBoatChunkLocalPoint(
@@ -1078,7 +1078,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		// Jump-press edge, hoisted above the climbing state so entry can be
 		// gated on it. Runs on every substep (including water) so a stale
 		// held state can't leak a false edge when leaving water. Only
-		// AIRBORNE presses arm the latch â€” a grounded press (the initial
+		// AIRBORNE presses arm the latch — a grounded press (the initial
 		// ground jump) is ignored so a single jump can't latch.
 		const jumpPressed = this.isJumpHeld && !this.prevJumpHeld;
 		this.prevJumpHeld = this.isJumpHeld;
@@ -1094,7 +1094,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		}
 
 		// Suppress climbing entirely when solid ground is within 1 block under the
-		// feet (a step / the base of a wall) â€” both ascent and descent. Driven by
+		// feet (a step / the base of a wall) — both ascent and descent. Driven by
 		// the player's own support, not the wall block, so descent releases and
 		// you drop the last stretch freely.
 		const nearGroundBelow =
@@ -1111,7 +1111,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		// free.
 		// NOTE: quick double-tap Space in non-Survival toggles fly in
 		// WalkingControls (which clears wantJump), so that press never reaches
-		// this latch â€” quick = fly, slower second press = climb.
+		// this latch — quick = fly, slower second press = climb.
 		let latchedThisStep = false;
 		if (this.isClimbing) {
 			if (!this.#wallContact || this.voxelIsGrounded || nearGroundBelow)
@@ -1203,7 +1203,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 				const canJump = this.#playerStats.consumeStamina(this.jumpStaminaCost);
 				//Jump with 0 stamina in Creative
 				if (this.#playerStats.gamemode === Gamemodes.Creative || canJump) {
-					// PERF: Use cached jumpImpulse â€” avoids gravity.length() sqrt.
+					// PERF: Use cached jumpImpulse — avoids gravity.length() sqrt.
 					activeVel.y = Math.max(this.jumpImpulse, activeVel.y);
 					this.voxelIsGrounded = false;
 				}
@@ -1318,7 +1318,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 				this.#boatSupportLocal,
 			);
 			// Walking on deck integrates into #boatLocalVel (boat space), so
-			// mirror it into world-space `velocity` â€” the walk anim reads
+			// mirror it into world-space `velocity` — the walk anim reads
 			// that and would otherwise stay stale/frozen on boats. This is
 			// the per-substep equivalent of the exit conversion in
 			// #syncBoatMode, and only reflects walking relative to the deck
@@ -1452,7 +1452,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			// Driving a boat always shows the standing pose: the rider is
 			// carried by the vehicle, so locomotion velocity stays zero here
 			// by design. (Walking on a boat deck goes through boat-space
-			// physics instead â€” see integrateVoxelMovementStep.)
+			// physics instead — see integrateVoxelMovementStep.)
 			setVec3(this.voxelVelocity, 0, 0, 0);
 			this.#fallStartY = Number.NaN;
 			this.#isClimbing = false;
