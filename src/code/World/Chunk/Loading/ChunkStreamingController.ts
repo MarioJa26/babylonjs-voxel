@@ -1671,6 +1671,7 @@ export class ChunkStreamingController {
 	 * permanent record, and it self-prunes every pass.
 	 */
 	public sweepOrphanedChunks(): number {
+		ensureColumnProfileSeed();
 		const nowMs = performance.now();
 		if (
 			nowMs - this._lastOrphanSweepMs <
@@ -1834,6 +1835,7 @@ export class ChunkStreamingController {
 		lodRuleSet: ChunkLodRuleSet,
 		profile?: ColumnProfile,
 	): void {
+		ensureColumnProfileSeed();
 		const relX = x - playerChunkX;
 		const relY = y - playerChunkY;
 		const relZ = z - playerChunkZ;
