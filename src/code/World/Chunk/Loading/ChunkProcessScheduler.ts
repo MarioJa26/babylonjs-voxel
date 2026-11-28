@@ -608,6 +608,13 @@ let state = this.inFlightProcessState;
 
 						for (let i = 0, length = state.loadBatch.length; i < length; i++) {
 							const request = state.loadBatch[i];
+
+							// Tombstoned request (dropFromLoadPath): skip. It is
+							// recycled once via recycleQueuedRequests below.
+							if (request.cancelled === true) {
+								continue;
+							}
+
 							const chunk = request.chunk;
 
 							// STALLFIX: a nulled chunk here used to be a guaranteed

@@ -180,6 +180,8 @@ export type QueuedChunkRequest = {
 	revision: number;
 	includeVoxelData: boolean;
 	priority: number;
+	/** Tombstone: dropped from the load path; reconcile/PrepareLoadBatch skip + pool it. */
+	cancelled?: boolean;
 };
 
 function compareQueuedChunkRequestPriority(
@@ -522,11 +524,10 @@ export class ChunkStreamingController {
 			// Same no-pool rule as clearInFlight: the scheduler's batch still
 			// references this object and recycles it on its own path.
 			this._inFlightRequests.delete(chunk.numericId);
-			if (request) {
-				const loadQueue = this.adapter.getLoadQueue();
-				const idx = loadQueue.indexOf(request);
-				if (idx !== -1) loadQueue.splice(idx, 1);
-			}
+			// Tombstone instead of indexOf + splice (O(queue) per evicted chunk).
+			// The reconcile loop + PrepareLoadBatch skip + drop + pool cancelled
+			// requests. requestMap entry removed immediately. Never pools here.
+			if (request) request.cancelled = true;
 		},
 		enqueueLoad: (view, request) => {
 			if (!request) return; // no payload â†’ nothing to enqueue (defensive)
@@ -554,6 +555,7 @@ export class ChunkStreamingController {
 				req.revision = revision;
 				req.includeVoxelData = includeVoxelData;
 				req.priority = Number.POSITIVE_INFINITY;
+				req.cancelled = false;
 			} else {
 				const pooled = this._freeRequests.pop();
 				if (pooled !== undefined) {
@@ -562,6 +564,7 @@ export class ChunkStreamingController {
 					pooled.revision = revision;
 					pooled.includeVoxelData = includeVoxelData;
 					pooled.priority = chunk.lodLevel << 4;
+					pooled.cancelled = false;
 					req = pooled;
 				} else {
 					req = {
@@ -570,6 +573,7 @@ export class ChunkStreamingController {
 						revision,
 						includeVoxelData,
 						priority: chunk.lodLevel << 4,
+						cancelled: false,
 					};
 				}
 				loadQueue.push(req);
@@ -598,6 +602,7 @@ export class ChunkStreamingController {
 				// treating it as a duplicate. Guarded against double-queue:
 				// a newer request may already exist for this chunk.
 				if (!this.loadQueueRequestMap.has(numericId)) {
+					retained.cancelled = false;
 					this.loadQueueRequestMap.set(numericId, retained);
 					this.adapter.getLoadQueue().push(retained);
 				}
@@ -963,6 +968,13 @@ export class ChunkStreamingController {
 				readIndex++
 			) {
 				const request = loadQueue[readIndex];
+
+				// Tombstoned (dropFromLoadPath): drop + pool, no processing.
+				if (request.cancelled === true) {
+					this.poolCulledRequest(request);
+					continue;
+				}
+
 				const chunk = request.chunk;
 
 				const chunkXValue = chunk.chunkX;
@@ -2333,6 +2345,11 @@ public onLoadRequestsRecovered(
 	 * are never referenced by _inFlightRequests. Respects FREE_REQUEST_POOL_MAX.
 	 */
 	private poolCulledRequest(request: QueuedChunkRequest): void {
+		// keep requestMap in sync for cancelled + culled removals
+		const numericId = request.chunk ? request.chunk.numericId : -1;
+		if (numericId !== -1 && this.loadQueueRequestMap.get(numericId) === request) {
+			this.loadQueueRequestMap.delete(numericId);
+		}
 		if (this._freeRequests.length >= ChunkStreamingController.FREE_REQUEST_POOL_MAX) {
 			return;
 		}
