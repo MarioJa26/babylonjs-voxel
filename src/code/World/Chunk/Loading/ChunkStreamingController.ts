@@ -416,6 +416,11 @@ export class ChunkStreamingController {
 
 	private streamRevision = 0;
 
+	// Player chunk coords captured at start of updateChunksAround (for enqueueLoad priority).
+	private _pcx = 0;
+	private _pcy = 0;
+	private _pcz = 0;
+
 	/** Chunk-space movement direction of the last update (for ahead bonus). */
 	private lastMoveDx = 0;
 	private lastMoveDz = 0;
@@ -554,7 +559,7 @@ export class ChunkStreamingController {
 				req.desiredLod = desiredLod;
 				req.revision = revision;
 				req.includeVoxelData = includeVoxelData;
-				req.priority = Number.POSITIVE_INFINITY;
+				req.priority = this.computePriority(chunk, desiredLod, this._pcx, this._pcy, this._pcz);
 				req.cancelled = false;
 			} else {
 				const pooled = this._freeRequests.pop();
@@ -563,7 +568,7 @@ export class ChunkStreamingController {
 					pooled.desiredLod = desiredLod;
 					pooled.revision = revision;
 					pooled.includeVoxelData = includeVoxelData;
-					pooled.priority = chunk.lodLevel << 4;
+					pooled.priority = this.computePriority(chunk, desiredLod, this._pcx, this._pcy, this._pcz);
 					pooled.cancelled = false;
 					req = pooled;
 				} else {
@@ -572,7 +577,7 @@ export class ChunkStreamingController {
 						desiredLod,
 						revision,
 						includeVoxelData,
-						priority: chunk.lodLevel << 4,
+						priority: this.computePriority(chunk, desiredLod, this._pcx, this._pcy, this._pcz),
 						cancelled: false,
 					};
 				}
@@ -881,6 +886,11 @@ export class ChunkStreamingController {
 		playerWorldZ?: number,
 	): void {
 		const revision = ++this.streamRevision;
+
+		// Store player chunk coordinates for enqueueLoad priority computation.
+		this._pcx = chunkX;
+		this._pcy = chunkY;
+		this._pcz = chunkZ;
 
 		// ---------------------------------------------------------------------
 		// Movement direction
