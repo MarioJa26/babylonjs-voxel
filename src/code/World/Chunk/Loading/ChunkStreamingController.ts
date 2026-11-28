@@ -248,7 +248,7 @@ export interface ChunkStreamingControllerAdapter {
 // caches (column top + burial boundary) with copy-pasted lookup/eviction
 // code; they derive from the same heightfield, so one entry serves every
 // consumer (sky guard, burial cull, unload symmetry).
-interface ColumnProfile {
+export interface ColumnProfile {
 	// Exclusive top: first chunk fully above the surface (water-aware).
 	topY: number;
 	// Largest chunkY whose entire volume lies below the true surface; a
@@ -271,10 +271,6 @@ function packColumnKey(x: number, z: number): number {
 	return (x & 0x3ffffff) * COLUMN_KEY_AXIS_STRIDE + (z & 0x3ffffff);
 }
 
-// Per-frame memoization for column profiles â€” avoids repeated Map lookups +
-// noise evals when many Y-levels share the same (x,z) column in one
-// updateChunksAround tick (e.g. processMovementRings scans a vertical slab).
-const frameProfileCache = new Map<number, ColumnProfile>();
 let frameInCaveCache = false;
 let frameCacheActive = false;
 
@@ -317,59 +313,31 @@ const BURIED_SAFETY_MARGIN = Chunk.SIZE / 2 + SURFACE_DENSITY_INFLUENCE_RANGE;
  */
 const CAMERA_FORWARD_BONUS = 512;
 
-function columnProfile(x: number, z: number): ColumnProfile {
-	const key = packColumnKey(x, z);
-	if (frameCacheActive) {
-		const fc = frameProfileCache.get(key);
-		if (fc !== undefined) return fc;
-	}
-
-	/*
-	 * The profile embeds the world's structure heights, which depend on the
-	 * world seed. A new seed (new world, or an edited seed) invalidates every
-	 * cached profile, so drop them rather than serving stale bounds.
-	 */
+function ensureColumnProfileSeed(): void {
 	const seed = getTerrainSeedAsInt();
 	if (seed !== columnProfileSeed) {
 		columnProfileSeed = seed;
 		columnProfileCache.clear();
-		frameProfileCache.clear();
 	}
+}
 
+function columnProfile(x: number, z: number): ColumnProfile {
+	const key = packColumnKey(x, z);
 	const cached = columnProfileCache.get(key);
-	if (cached !== undefined) {
-		if (frameCacheActive) frameProfileCache.set(key, cached);
-		return cached;
-	}
+	if (cached !== undefined) return cached;
+
+	const seed = getTerrainSeedAsInt();
 
 	// The center sample doubles as columnMinHeight's mid sample (fhc-cached),
 	// so this costs one sampling pass per column, not two.
-	const centerH = getFinalTerrainHeight(
-		x * Chunk.SIZE + 16,
-		z * Chunk.SIZE + 16,
-	);
+	const centerH = getFinalTerrainHeight(x * Chunk.SIZE + 16, z * Chunk.SIZE + 16);
 	const minH = columnMinHeight(x, z);
 
-	/*
-	 * STRUCTURE-AWARE SKY BOUND.
-	 *
-	 * The sky guard below (and in processTargetChunkCoordinate) treats
-	 * `topY` as "the first chunk fully above the surface" — but the surface
-	 * is not only terrain. A tower is a solid cylinder 60-80 blocks of stone
-	 * standing on the ground, so its upper chunks live ABOVE the terrain
-	 * top. With the terrain height as the bound, the movement path never
-	 * created those chunks again and the LOD refresh never re-evaluated
-	 * them, so the tower was truncated and its LOD froze once the player
-	 * moved — while the initial shell (which has no such bound) showed it
-	 * correctly.
-	 *
-	 * Ask the features how high they reach in this column and use the
-	 * higher of the two bounds.
-	 */
+	// STRUCTURE-AWARE SKY BOUND. A tower is a solid cylinder standing on the
+	// ground; its upper chunks live ABOVE the terrain top. Ask the features
+	// how high they reach and use the higher of the two bounds.
 	const structureTop =
-		seed === 0
-			? -1
-			: structureColumnTopY(x * Chunk.SIZE + 16, z * Chunk.SIZE + 16, seed);
+		seed === 0 ? -1 : structureColumnTopY(x * Chunk.SIZE + 16, z * Chunk.SIZE + 16, seed);
 	const surfaceTop = structureTop > centerH ? structureTop : centerH;
 
 	const profile: ColumnProfile = {
@@ -377,14 +345,8 @@ function columnProfile(x: number, z: number): ColumnProfile {
 		buriedTopY: Math.floor((minH - BURIED_SAFETY_MARGIN) / Chunk.SIZE),
 	};
 	columnProfileCache.set(key, profile);
-	if (frameCacheActive) frameProfileCache.set(key, profile);
 
 	if (columnProfileCache.size > COLUMN_PROFILE_CACHE_MAX) {
-		// FIFO-evict the oldest quarter instead of a wholesale clear(): a full
-		// reset turned steady-state hit-rates into a cold-start spike exactly
-		// while chunks were streaming in (every subsequent column paid a
-		// terrain-height noise evaluation until the cache warmed again).
-		// Heights are deterministic, so evicted entries just recompute.
 		let toEvict = COLUMN_PROFILE_CACHE_MAX >> 2;
 		for (const k of columnProfileCache.keys()) {
 			columnProfileCache.delete(k);
@@ -945,7 +907,7 @@ export class ChunkStreamingController {
 
 		const caveState = isInCave();
 
-		frameProfileCache.clear();
+		ensureColumnProfileSeed();
 		frameInCaveCache = caveState;
 		frameCacheActive = true;
 
@@ -1391,9 +1353,9 @@ export class ChunkStreamingController {
 
 		// Per-frame memoization for height queries (independent from
 		// updateChunksAround's frame cache so each phase is self-contained).
+		ensureColumnProfileSeed();
 		const wasActive = frameCacheActive;
 		if (!wasActive) {
-			frameProfileCache.clear();
 			frameCacheActive = true;
 		}
 		frameInCaveCache = caveState;
@@ -1663,6 +1625,7 @@ export class ChunkStreamingController {
 		playerChunkY: number,
 		playerChunkZ: number,
 		lodRuleSet: ChunkLodRuleSet,
+		profile?: ColumnProfile,
 	): void {
 		const relX = x - playerChunkX;
 		const relY = y - playerChunkY;
@@ -1673,13 +1636,19 @@ export class ChunkStreamingController {
 		// ALLOCATION GUARD (profile: 45% of heap churn via `new Chunk` for empty
 		// sky cells): skip columns provably above terrain. Reuses per-frame
 		// columnTop cache so the height probe is free after first Y in column.
-		if (y >= 0 && y > columnProfile(x, z).topY + 1) {
+		const p = profile ?? columnProfile(x, z);
+		if (y >= 0 && y > p.topY + 1) {
 			return;
 		}
 
 		// Surface-only cull: fully-buried coordinates beyond the exempt core
 		// are invisible from outside at any Y â€” never create or refresh them.
-		if (buriedChunkCulled(x, y, z, hDist)) {
+		const caveNow = frameCacheActive ? frameInCaveCache : isInCave();
+		if (
+			hDist > UNDERGROUND_CULL_EXEMPT_RADIUS &&
+			!caveNow &&
+			y < p.buriedTopY
+		) {
 			return;
 		}
 
@@ -1869,18 +1838,15 @@ export class ChunkStreamingController {
 				const relZ = z - chunkZ;
 				const hDist = chebyH(relX, relZ);
 
+				const profile = columnProfile(x, z);
 				let columnStartY = startY;
 
 				// Outside caves, coordinates below buriedTopY are guaranteed to
-				// be rejected by buriedChunkCulled(). Jump directly to the first
-				// potentially visible chunk instead of testing every buried Y.
+				// be rejected. Jump directly to the first potentially visible chunk.
 				if (!caveState && hDist > cullRadius) {
-					const buriedTopY = columnProfile(x, z).buriedTopY;
-
-					if (columnStartY < buriedTopY) {
-						columnStartY = buriedTopY;
+					if (columnStartY < profile.buriedTopY) {
+						columnStartY = profile.buriedTopY;
 					}
-
 					// The whole scanned part of this column is fully buried.
 					if (columnStartY > endY) {
 						continue;
@@ -1896,6 +1862,7 @@ export class ChunkStreamingController {
 						chunkY,
 						chunkZ,
 						lodRuleSet,
+						profile,
 					);
 				}
 			}
@@ -2647,6 +2614,7 @@ public onLoadRequestsRecovered(
 				playerChunkY,
 				playerChunkZ,
 				lodRuleSet,
+				profile,
 			);
 		}
 	}
