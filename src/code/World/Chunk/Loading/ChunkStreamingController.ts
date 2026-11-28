@@ -718,6 +718,8 @@ export class ChunkStreamingController {
 	private _refreshCache = new Map<number, number>();
 
 	private _lastCaveState: boolean | null = null;
+	private _lastBandGen = -1;
+	private _lastBandCave = false;
 	private _lastRenderDistance = 0;
 	private _lastVerticalRadius = 0;
 
@@ -1205,7 +1207,25 @@ export class ChunkStreamingController {
 				this.processInitialShell(chunkX, chunkY, chunkZ, lodRuleSet);
 			}
 
-			this.ensureUndergroundBand(chunkX, chunkY, chunkZ, lodRuleSet);
+			const fullBand =
+				!canUseDelta ||
+				lodRuleSet.revision !== this._lastBandGen ||
+				caveState !== this._lastBandCave;
+			if (fullBand) {
+				this.ensureUndergroundBand(chunkX, chunkY, chunkZ, lodRuleSet);
+			} else {
+				this.ensureUndergroundBandDelta(
+					chunkX - prevChunkX!,
+					chunkY - prevChunkY!,
+					chunkZ - prevChunkZ!,
+					chunkX,
+					chunkY,
+					chunkZ,
+					lodRuleSet,
+				);
+			}
+			this._lastBandGen = lodRuleSet.revision;
+			this._lastBandCave = caveState;
 
 			// -----------------------------------------------------------------
 			// Collect loaded chunks for refresh and unloading
@@ -1895,6 +1915,68 @@ export class ChunkStreamingController {
 						lodRuleSet,
 						profile,
 					);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Incremental variant of ensureUndergroundBand for single-cell moves.
+	 * Scans only the leading X slab, Z slab and Y layer of the band (same slab
+	 * structure as processMovementRings with r=bandH, Y range
+	 * undergroundVerticalRange). Only called when canUseDelta && rule-set
+	 * generation + cave state unchanged; full scan otherwise.
+	 */
+	private ensureUndergroundBandDelta(
+		dx: number,
+		dy: number,
+		dz: number,
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		lodRuleSet: ChunkLodRuleSet,
+	): void {
+		const bandH = lodRuleSet.horizontalRadiusFor(UNDERGROUND_SKIP_LOD - 1);
+		const verticalRange = undergroundVerticalRange(lodRuleSet);
+
+		const endY = Math.min(-1, chunkY + verticalRange);
+		if (endY < SETTING_PARAMS.MIN_CHUNK_Y) return;
+		const startY = Math.max(SETTING_PARAMS.MIN_CHUNK_Y, chunkY - verticalRange);
+		if (startY > endY) return;
+
+		const minY = startY;
+		const maxY = endY;
+		const r = bandH;
+
+		const skipX = dx !== 0 ? (dx > 0 ? chunkX + r : chunkX - r) : 0;
+		const skipZ = dz !== 0 ? (dz > 0 ? chunkZ + r : chunkZ - r) : 0;
+
+		if (dx !== 0) {
+			const x = skipX;
+			for (let y = minY; y <= maxY; y++) {
+				for (let z = chunkZ - r; z <= chunkZ + r; z++) {
+					this.processTargetChunkCoordinate(x, y, z, chunkX, chunkY, chunkZ, lodRuleSet);
+				}
+			}
+		}
+
+		if (dz !== 0) {
+			const z = skipZ;
+			for (let y = minY; y <= maxY; y++) {
+				for (let x = chunkX - r; x <= chunkX + r; x++) {
+					if (dx !== 0 && x === skipX) continue;
+					this.processTargetChunkCoordinate(x, y, z, chunkX, chunkY, chunkZ, lodRuleSet);
+				}
+			}
+		}
+
+		if (dy !== 0) {
+			const y = dy > 0 ? maxY : minY;
+			for (let x = chunkX - r; x <= chunkX + r; x++) {
+				if (dx !== 0 && x === skipX) continue;
+				for (let z = chunkZ - r; z <= chunkZ + r; z++) {
+					if (dz !== 0 && z === skipZ) continue;
+					this.processTargetChunkCoordinate(x, y, z, chunkX, chunkY, chunkZ, lodRuleSet);
 				}
 			}
 		}
