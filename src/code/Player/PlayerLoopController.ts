@@ -32,7 +32,9 @@ import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
 import {
 	ChunkPipelineStage,
 	getChunkLatencyPercentiles,
-	getChunkPipelineStats,
+	getChunkInFlight,
+	getChunkLatencyPercentilesInto,
+	getChunkStageCountsInto,
 } from "../World/Chunk/Loading/ChunkPipeline";
 import { setChunkPriorityContext } from "../World/Chunk/Loading/ChunkPriority";
 import {
@@ -194,6 +196,8 @@ const MOB_TYPE_NAMES: Record<number, string> = {
 const PROFILER_REPORT_INTERVAL_MS = 1250;
 
 const _updPct = { p50: 0, p99: 0, max: 0 };
+const _stageCounts = new Int32Array(8);
+const _latency = { p50: 0, p90: 0, p99: 0, max: 0 };
 
 export class PlayerLoopController {
 	// ---- chunk-loading position tracking ----
@@ -1472,9 +1476,11 @@ export class PlayerLoopController {
 		 * not.
 		 */
 		const pipeline = getPipelineStats();
-		const latency = getChunkLatencyPercentiles();
+		getChunkLatencyPercentilesInto(_latency);
+		const latency = _latency;
 		_updPct.p50 = 0; _updPct.p99 = 0; _updPct.max = 0; getUpdateChunksPercentiles(_updPct);
-		const stageCounts = getChunkPipelineStats().counts;
+		getChunkStageCountsInto(_stageCounts);
+		const stageCounts = _stageCounts;
 		// Aggregate frame budget. Every chunk-pipeline subsystem draws from this
 		// one pool, so a low number here with a long frame means the cost is
 		// somewhere else; a zero number with a long frame means the pool is the
@@ -1498,7 +1504,7 @@ export class PlayerLoopController {
 				`mesh:${stageCounts[ChunkPipelineStage.Meshing]} ` +
 				`gpu:${stageCounts[ChunkPipelineStage.Renderable]} ` +
 				`store:${stageCounts[ChunkPipelineStage.Persisted]} ` +
-				`live:${getChunkPipelineStats().inFlight} ` +
+				`live:${getChunkInFlight()} ` +
 				`drop:${pipeline.chunksAbandoned}` +
 					` upd p50:${_updPct.p50.toFixed(2)} p99:${_updPct.p99.toFixed(2)} max:${_updPct.max.toFixed(2)}`,
 			"workers",

@@ -313,6 +313,27 @@ export function getChunkPipelineStats(): ChunkPipelineStats {
 	};
 }
 
+/** Non-allocating stage-count copy. */
+export function getChunkStageCountsInto(out: Int32Array | number[]): void {
+	for (let i = 0; i < STAGE_COUNT; i++) out[i] = counts[i];
+}
+
+export function getChunkInFlight(): number {
+	return inFlight;
+}
+
+export function getChunkLatencyPercentilesInto(out: ChunkLatencyPercentiles): void {
+	const count = latencyCount;
+	if (count === 0) { out.p50 = 0; out.p90 = 0; out.p99 = 0; out.max = 0; return; }
+	copyLatencyRingTo(percentileScratch);
+	percentileScratch.subarray(0, count).sort();
+	const last = count - 1;
+	out.p50 = percentileScratch[Math.min(last, Math.floor(count * 0.5))];
+	out.p90 = percentileScratch[Math.min(last, Math.floor(count * 0.9))];
+	out.p99 = percentileScratch[Math.min(last, Math.floor(count * 0.99))];
+	out.max = percentileScratch[last];
+}
+
 export function resetChunkPipelineStats(): void {
 	counts.fill(0);
 
