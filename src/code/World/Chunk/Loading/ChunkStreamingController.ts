@@ -2216,45 +2216,23 @@ export class ChunkStreamingController {
 	}
 
 	public onLoadRequestsDequeued(
-		requests: ReadonlyArray<QueuedChunkRequest>,
+		_requests: ReadonlyArray<QueuedChunkRequest>,
 	): void {
-		for (let i = 0; i < requests.length; i++) {
-			const chunk = requests[i].chunk;
-			if (!chunk) continue;
-
-			/*
-			 * Route the Scheduled â†’ Loading transition through the owner when the
-			 * chunk is in the expected state: the owner validates the transition
-			 * and performs the identical bookkeeping via the host (including
-			 * retaining the request for a later abandon + requeue). For a stale or
-			 * recycled request whose chunk is no longer Scheduled (the owner would
-			 * no-op), fall back to the direct bookkeeping so the request tracking
-			 * is still cleaned up. Both branches retain the request and do the
-			 * same in-flight registration, so behavior is unchanged â€” this only
-			 * moves the healthy path behind the owner's transition guard.
-			 */
-			if (
-				deriveResidencyState(chunk, this._lifecycleHost) ===
-				ResidencyState.Scheduled
-			) {
-				ChunkLifecycle.dispatchLoad(chunk);
-			} else {
-				this._inFlightRequests.set(chunk.numericId, requests[i]);
-				this.loadQueueRequestMap.delete(chunk.numericId);
-				this._loadRequestsInFlight.add(chunk.numericId);
-				// The request is being serviced, so it is not an orphan.
-				this._orphanCandidates.delete(chunk);
-			}
-		}
+		// No-op kept for the adapter interface.
+		// PrepareLoadBatch already calls ChunkLifecycle.dispatchLoad for every
+		// request in validLoadBatch, and only requests whose dispatchLoad
+		// returned ResidencyState.Loading reach validLoadBatch. Re-deriving
+		// residency here (which queries the worker pool) and re-applying the
+		// same bookkeeping was redundant; nothing is left to do.
 	}
 
 	/**
 	 * Mirror of onLoadRequestsDequeued for requests that the scheduler pushed
-	 * back into `loadQueue` after a failed pass. Without this they would be
+	 * back into loadQueue after a failed pass. Without this they would be
 	 * invisible to ensureChunkQueuedForLoad, which would then allocate a second
 	 * request object for a chunk that already has one queued.
 	 */
-	public onLoadRequestsRecovered(
+public onLoadRequestsRecovered(
 		requests: ReadonlyArray<QueuedChunkRequest>,
 	): void {
 		for (let i = 0; i < requests.length; i++) {
