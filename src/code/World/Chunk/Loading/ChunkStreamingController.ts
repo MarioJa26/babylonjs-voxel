@@ -381,6 +381,10 @@ function buriedChunkCulled(
 	return chunkY < columnProfile(chunkX, chunkZ).buriedTopY;
 }
 
+const SORT_IDX_BITS = 18;
+const SORT_IDX_MUL = 1 << SORT_IDX_BITS;
+const SORT_OFFSET = 1 << 24;
+
 export class ChunkStreamingController {
 	private static readonly DESIRED_STATE_REVISION_RETENTION = 8;
 	/** Full-band refresh scan runs every Nth player-chunk-move (near window
@@ -419,6 +423,8 @@ export class ChunkStreamingController {
 
 	// Player chunk coords captured at start of updateChunksAround (for enqueueLoad priority).
 	private _pcx = 0;
+	private _sortKeys = new Float64Array(SORT_IDX_MUL);
+	private _sortTmp: QueuedChunkRequest[] = [];
 	private _pcy = 0;
 	private _pcz = 0;
 
@@ -2645,18 +2651,28 @@ export class ChunkStreamingController {
 	}
 
 	private sortLoadQueue(): void {
-		const loadQueue = this.adapter.getLoadQueue();
-		if (loadQueue.length <= 64) return;
-		// Fast-path: skip sort if already sorted (common after 1-chunk move)
+		const q = this.adapter.getLoadQueue();
+		const n = q.length;
+		if (n <= 64) return;
 		let sorted = true;
-		for (let i = 1; i < loadQueue.length; i++) {
-			if (loadQueue[i].priority < loadQueue[i - 1].priority) {
-				sorted = false;
-				break;
-			}
-		}
+		for (let i = 1; i < n; i++) if (q[i].priority < q[i - 1].priority) { sorted = false; break; }
 		if (sorted) return;
-		loadQueue.sort(compareQueuedChunkRequestPriority);
+		if (n >= SORT_IDX_MUL) { q.sort(compareQueuedChunkRequestPriority); return; }
+
+		const keys = this._sortKeys.subarray(0, n);
+		for (let i = 0; i < n; i++) {
+			let pr = q[i].priority;
+			if (pr > 8_000_000) pr = 8_000_000;
+			else if (pr < -2_000_000) pr = -2_000_000;
+			keys[i] = (Math.floor(pr * 8) + SORT_OFFSET) * SORT_IDX_MUL + i;
+		}
+		keys.sort();
+
+		const tmp = this._sortTmp;
+		tmp.length = n;
+		for (let i = 0; i < n; i++) tmp[i] = q[i];
+		for (let i = 0; i < n; i++) q[i] = tmp[keys[i] % SORT_IDX_MUL];
+		tmp.length = 0;
 	}
 
 	private computePriority(chunk: Chunk, desiredLod: number, pcx: number, pcy: number, pcz: number): number {
