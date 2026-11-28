@@ -1,3 +1,4 @@
+import { getUpdateChunksPercentiles } from "@/code/Lib/StreamingMetrics";
 import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import { playFootstep } from "../Audio/SurfaceAudio";
 import { CustomBoat } from "../Entities/CustomBoat";
@@ -191,6 +192,8 @@ const MOB_TYPE_NAMES: Record<number, string> = {
 
 /** Matches DEBUG_HUD_INTERVAL_MS — see #lastProfilerReportMs. */
 const PROFILER_REPORT_INTERVAL_MS = 1250;
+
+const _updPct = { p50: 0, p99: 0, max: 0 };
 
 export class PlayerLoopController {
 	// ---- chunk-loading position tracking ----
@@ -1470,6 +1473,7 @@ export class PlayerLoopController {
 		 */
 		const pipeline = getPipelineStats();
 		const latency = getChunkLatencyPercentiles();
+		_updPct.p50 = 0; _updPct.p99 = 0; _updPct.max = 0; getUpdateChunksPercentiles(_updPct);
 		const stageCounts = getChunkPipelineStats().counts;
 		// Aggregate frame budget. Every chunk-pipeline subsystem draws from this
 		// one pool, so a low number here with a long frame means the cost is
@@ -1495,7 +1499,8 @@ export class PlayerLoopController {
 				`gpu:${stageCounts[ChunkPipelineStage.Renderable]} ` +
 				`store:${stageCounts[ChunkPipelineStage.Persisted]} ` +
 				`live:${getChunkPipelineStats().inFlight} ` +
-				`drop:${pipeline.chunksAbandoned}`,
+				`drop:${pipeline.chunksAbandoned}` +
+					` upd p50:${_updPct.p50.toFixed(2)} p99:${_updPct.p99.toFixed(2)} max:${_updPct.max.toFixed(2)}`,
 			"workers",
 		);
 		PlayerHud.updateDebugInfo(

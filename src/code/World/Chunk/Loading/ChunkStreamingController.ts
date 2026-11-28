@@ -12,6 +12,7 @@ import {
 	isOceanFloorBandChunk,
 } from "@/code/Generation/TerrainHeightMap";
 import { FRAME_WORK_BUDGET, FrameWorkKind } from "@/code/Lib/FrameWorkBudget";
+import { recordUpdateChunksMs } from "@/code/Lib/StreamingMetrics";
 import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
 import { FarTileManager } from "../../FarTiles/FarTileManager";
@@ -997,6 +998,7 @@ export class ChunkStreamingController {
 		playerWorldX?: number,
 		playerWorldZ?: number,
 	): void {
+		const t0 = performance.now();
 		const revision = ++this.streamRevision;
 
 		// Store player chunk coordinates for enqueueLoad priority computation.
@@ -1507,6 +1509,7 @@ export class ChunkStreamingController {
 			this.adapter.onQueueSnapshotChanged?.();
 		} finally {
 			frameCacheActive = false;
+			recordUpdateChunksMs(performance.now() - t0);
 		}
 	}
 
