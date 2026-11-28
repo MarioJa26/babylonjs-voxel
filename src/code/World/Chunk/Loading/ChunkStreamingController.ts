@@ -954,12 +954,9 @@ export class ChunkStreamingController {
 			const unloadQueueSet = this.adapter.getUnloadQueueSet();
 			const requestMap = this.loadQueueRequestMap;
 
-			/*
-			 * Rebuild the request map while compacting the queue. The queue remains
-			 * authoritative and discarded requests vanish without another pass.
-			 */
-			requestMap.clear();
-
+			// requestMap is maintained incrementally (enqueueLoad /
+			// moveLoadToInFlight / moveInFlightToLoad / dropFromLoadPath /
+			// poolCulledRequest); only compact the queue array here.
 			let writeIndex = 0;
 
 			for (
@@ -1093,11 +1090,20 @@ export class ChunkStreamingController {
 					revision,
 				);
 
-				requestMap.set(numericId, request);
 				loadQueue[writeIndex++] = request;
 			}
 
 			loadQueue.length = writeIndex;
+
+			// DEBUG (no-op in prod): requestMap must mirror loadQueue exactly.
+			if (requestMap.size !== loadQueue.length) {
+				// eslint-disable-next-line no-console
+				console.warn(
+					"[ChunkStreamingController] requestMap.size !== loadQueue.length",
+					requestMap.size,
+					loadQueue.length,
+				);
+			}
 
 			// -----------------------------------------------------------------
 			// Cancel unloads for chunks that became desirable again
