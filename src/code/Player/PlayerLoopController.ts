@@ -1037,18 +1037,22 @@ export class PlayerLoopController {
 		this.#loadLastCy = cy;
 		this.#loadLastCz = cz;
 
-		void updateChunksAround(
-			cx,
-			cy,
-			cz,
-			undefined,
-			undefined,
-			prevCx,
-			prevCy,
-			prevCz,
-			playerPos.x,
-			playerPos.z,
-		);
+		try {
+			updateChunksAround(
+				cx,
+				cy,
+				cz,
+				undefined,
+				undefined,
+				prevCx,
+				prevCy,
+				prevCz,
+				playerPos.x,
+				playerPos.z,
+			);
+		} catch (error) {
+			console.error("updateChunksAround failed:", error);
+		}
 	}
 
 	/**

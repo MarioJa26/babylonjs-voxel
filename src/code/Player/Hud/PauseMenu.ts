@@ -620,15 +620,17 @@ export class PauseMenu {
 
 			const position = this.player.position;
 
-			void updateChunksAround(
-				worldToChunkCoord(position.x),
-				worldToChunkCoord(position.y),
-				worldToChunkCoord(position.z),
-				SETTING_PARAMS.RENDER_DISTANCE,
-				SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
-			).catch((error: unknown) => {
+			try {
+				updateChunksAround(
+					worldToChunkCoord(position.x),
+					worldToChunkCoord(position.y),
+					worldToChunkCoord(position.z),
+					SETTING_PARAMS.RENDER_DISTANCE,
+					SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
+				);
+			} catch (error) {
 				console.error("Chunk render-distance update failed", error);
-			});
+			}
 		});
 	}
 

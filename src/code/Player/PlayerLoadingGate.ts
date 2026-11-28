@@ -243,37 +243,38 @@ export class PlayerLoadingGate {
 	): void {
 		this.streamUpdatePending = true;
 
-		void updateChunksAround(
-			chunkX,
-			chunkY,
-			chunkZ,
-			SETTING_PARAMS.RENDER_DISTANCE,
-			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
-			undefined,
-			undefined,
-			undefined,
-			worldX,
-			worldZ,
-		)
-			.catch((error: unknown) => {
-				console.error(PREFIX, "updateChunksAround failed:", error);
-			})
-			.finally(() => {
-				this.streamUpdatePending = false;
+		// updateChunksAround is synchronous; replicate .catch().finally().
+		try {
+			updateChunksAround(
+				chunkX,
+				chunkY,
+				chunkZ,
+				SETTING_PARAMS.RENDER_DISTANCE,
+				SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
+				undefined,
+				undefined,
+				undefined,
+				worldX,
+				worldZ,
+			);
+		} catch (error) {
+			console.error(PREFIX, "updateChunksAround failed:", error);
+		} finally {
+			this.streamUpdatePending = false;
 
-				if (!this.isActive || !this.queuedStreamUpdate) {
-					return;
-				}
+			if (!this.isActive || !this.queuedStreamUpdate) {
+				return;
+			}
 
-				this.queuedStreamUpdate = false;
+			this.queuedStreamUpdate = false;
 
-				this.startStreamingUpdate(
-					this.queuedChunkX,
-					this.queuedChunkY,
-					this.queuedChunkZ,
-					this.queuedWorldX,
-					this.queuedWorldZ,
-				);
-			});
+			this.startStreamingUpdate(
+				this.queuedChunkX,
+				this.queuedChunkY,
+				this.queuedChunkZ,
+				this.queuedWorldX,
+				this.queuedWorldZ,
+			);
+		}
 	}
 }

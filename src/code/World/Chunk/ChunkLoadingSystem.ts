@@ -758,7 +758,7 @@ function scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
 	scheduleNeighbor(chunk.getNeighbor(0, 0, 1));
 }
 
-export async function updateChunksAround(
+export function updateChunksAround(
 	chunkX: number,
 	chunkY: number,
 	chunkZ: number,
@@ -769,10 +769,11 @@ export async function updateChunksAround(
 	prevChunkZ?: number,
 	playerWorldX?: number,
 	playerWorldZ?: number,
-): Promise<void> {
+): void {
 	ensureChunkLoadedHook();
 
-	await streamingController.updateChunksAround(
+	// ChunkStreamingController.updateChunksAround is synchronous; no promise.
+	streamingController.updateChunksAround(
 		chunkX,
 		chunkY,
 		chunkZ,

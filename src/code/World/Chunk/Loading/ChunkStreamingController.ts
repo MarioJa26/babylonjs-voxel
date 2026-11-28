@@ -863,7 +863,7 @@ export class ChunkStreamingController {
 		this._refreshCache.set(key, lod);
 	}
 
-	public async updateChunksAround(
+	public updateChunksAround(
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
@@ -874,7 +874,7 @@ export class ChunkStreamingController {
 		prevChunkZ?: number,
 		playerWorldX?: number,
 		playerWorldZ?: number,
-	): Promise<void> {
+	): void {
 		const revision = ++this.streamRevision;
 
 		// ---------------------------------------------------------------------
@@ -984,6 +984,7 @@ export class ChunkStreamingController {
 					(!isUnderground && vDist > operationalVerticalRadius)
 				) {
 					chunk.isTerrainScheduled = false;
+					this.poolCulledRequest(request);
 					continue;
 				}
 
@@ -1023,6 +1024,7 @@ export class ChunkStreamingController {
 
 						if (desiredLod < 0) {
 							chunk.isTerrainScheduled = false;
+							this.poolCulledRequest(request);
 							continue;
 						}
 
@@ -1053,6 +1055,7 @@ export class ChunkStreamingController {
 
 					if (undesired) {
 						chunk.isTerrainScheduled = false;
+						this.poolCulledRequest(request);
 						continue;
 					}
 
@@ -2321,6 +2324,19 @@ public onLoadRequestsRecovered(
 	 */
 	public forgetResidency(chunkX: number, chunkY: number, chunkZ: number): void {
 		forgetChunkResidency(packCoords(chunkX, chunkY, chunkZ));
+	}
+
+	/**
+	 * Return a culled (not in-flight) load request to the free pool.
+	 *
+	 * These requests come straight out of loadQueue in the reconcile loop; they
+	 * are never referenced by _inFlightRequests. Respects FREE_REQUEST_POOL_MAX.
+	 */
+	private poolCulledRequest(request: QueuedChunkRequest): void {
+		if (this._freeRequests.length >= ChunkStreamingController.FREE_REQUEST_POOL_MAX) {
+			return;
+		}
+		this._freeRequests.push(request);
 	}
 
 	private sortLoadQueue(): void {
