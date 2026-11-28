@@ -196,6 +196,8 @@ function compareQueuedChunkRequestPriority(
 const _queryScratch: Chunk[] = [];
 // Separate scratch for the unload scan (trailing-slab vs full).
 const _unloadScratch: Chunk[] = [];
+// Scratch for verifyUnloadSlab (A2).
+const _verifyScratch: Chunk[] = [];
 
 // Scratch list for sweepOrphanedChunks: candidates that were inspected and found
 // healthy (or no longer wanting loading) and so should leave the candidate set.
@@ -1424,57 +1426,18 @@ export class ChunkStreamingController {
 					unloadScratch,
 				);
 			} else {
-				// Trailing-edge slab(s) opposite movement direction, thickness
-				// unloadBuffer + 1. `queryCollect` over that box catches chunks
-				// newly leaving range; full scan is the safety net.
 				const dx = canUseDelta ? chunkX - prevChunkX! : 0;
 				const dy = canUseDelta ? chunkY - prevChunkY! : 0;
 				const dz = canUseDelta ? chunkZ - prevChunkZ! : 0;
-				const removeRadius =
-					operationalRadius + SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
-				const vRemove =
-					operationalVerticalRadius +
-					SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
-				const slab = SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER + 1;
-
-				let minX = chunkX - removeRadius,
-					maxX = chunkX + removeRadius;
-				let minZ = chunkZ - removeRadius,
-					maxZ = chunkZ + removeRadius;
-				let minY = chunkY - vRemove,
-					maxY = chunkY + vRemove;
-
-				if (dx > 0) {
-					minX = chunkX - removeRadius - slab;
-					maxX = chunkX - removeRadius + slab;
-				} else if (dx < 0) {
-					minX = chunkX + removeRadius - slab;
-					maxX = chunkX + removeRadius + slab;
-				}
-				if (dz > 0) {
-					minZ = chunkZ - removeRadius - slab;
-					maxZ = chunkZ - removeRadius + slab;
-				} else if (dz < 0) {
-					minZ = chunkZ + removeRadius - slab;
-					maxZ = chunkZ + removeRadius + slab;
-				}
-				if (dy > 0) {
-					minY = chunkY - vRemove - slab;
-					maxY = chunkY - vRemove + slab;
-				} else if (dy < 0) {
-					minY = chunkY + vRemove - slab;
-					maxY = chunkY + vRemove + slab;
-				}
-
-				Chunk.loadedChunkIndex.queryCollectBox(
-					minX,
-					maxX,
-					minY,
-					maxY,
-					minZ,
-					maxZ,
-					unloadScratch,
-				);
+				const buf = SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
+				const R0 = operationalRadius + buf;
+				const V0 = operationalVerticalRadius + buf;
+				const R1 = lodRuleSet.horizontalRadiusFor(UNDERGROUND_SKIP_LOD - 1);
+				const V1 = undergroundVerticalRange(lodRuleSet);
+				unloadScratch.length = 0;
+				this.collectTrailing(chunkX, chunkY, chunkZ, dx, dy, dz, R0, V0, false, unloadScratch);
+				this.collectTrailing(chunkX, chunkY, chunkZ, dx, dy, dz, R1, V1, false, unloadScratch);
+				this.collectTrailing(chunkX, chunkY, chunkZ, dx, dy, dz, UNDERGROUND_CULL_EXEMPT_RADIUS, V0, true, unloadScratch);
 			}
 
 			this._scanCave = caveState;
@@ -2368,6 +2331,39 @@ export class ChunkStreamingController {
 				}
 			}
 		}
+	}
+
+	/** Collect chunks that just crossed the (R horizontal, V vertical) boundary on the trailing side. */
+	private collectTrailing(
+		cx: number, cy: number, cz: number,
+		dx: number, dy: number, dz: number,
+		R: number, V: number, horizontalOnly: boolean, out: Chunk[],
+	): void {
+		const idx = Chunk.loadedChunkIndex;
+		const m = 1;
+		if (dx !== 0) {
+			const x = dx > 0 ? cx - R - 1 : cx + R + 1;
+			idx.queryCollectBox(x - m, x + m, cy - V - m, cy + V + m, cz - R - m, cz + R + m, out);
+		}
+		if (dz !== 0) {
+			const z = dz > 0 ? cz - R - 1 : cz + R + 1;
+			idx.queryCollectBox(cx - R - m, cx + R + m, cy - V - m, cy + V + m, z - m, z + m, out);
+		}
+		if (dy !== 0 && !horizontalOnly) {
+			const y = dy > 0 ? cy - V - 1 : cy + V + 1;
+			idx.queryCollectBox(cx - R - m, cx + R + m, y - m, y + m, cz - R - m, cz + R + m, out);
+		}
+	}
+
+	// Dev-only parity verifier (A2).
+	private verifyUnloadSlab(cx: number, cy: number, cz: number, R: number, V: number, rules: ChunkLodRuleSet): void {
+		const set = this.adapter.getUnloadQueueSet();
+		const before = set.size;
+		_verifyScratch.length = 0;
+		const buf = SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
+		Chunk.loadedChunkIndex.queryCollect(cx, cy, cz, R + buf + 8, V + buf + 8, _verifyScratch);
+		this.queueUnloading(cx, cy, cz, R, V, rules, _verifyScratch);
+		if (set.size !== before) console.error("[unload-slab] full scan evicted " + (set.size - before) + " the slab missed");
 	}
 
 	public queueUnloading(
