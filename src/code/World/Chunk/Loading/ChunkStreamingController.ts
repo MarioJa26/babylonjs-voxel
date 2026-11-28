@@ -444,10 +444,10 @@ export class ChunkStreamingController {
 
 	// Packed as desiredLod + revision * 8.
 	// Keyed by chunk.numericId, because number keys avoid BigInt box churn.
-	private desiredStates = new Map<number, number>();
-	// Bucketed by revision to avoid O(n) prune iteration (previously 3.8 MB Set churn).
-	private desiredStateBuckets = new Map<number, Set<number>>();
-	private readonly _freeDesiredSets: Set<number>[] = [];
+	private _desired = new Float64Array(1 << 16);
+	private _desiredCount = 0;
+	private readonly _desiredMax = 1 << 24;
+	private _desiredFallback = new Map<number, number>();
 
 	private loadQueueRequestMap = new Map<number, QueuedChunkRequest>();
 	private readonly _freeRequests: QueuedChunkRequest[] = [];
@@ -767,58 +767,37 @@ export class ChunkStreamingController {
 		setChunkLifecycleHost(this._lifecycleHost);
 	}
 
-	public getDesiredState(numericId: number): number | undefined {
-		return this.desiredStates.get(numericId);
+	public getDesiredState(id: number): number | undefined {
+		let packed: number;
+		if (id < this._desired.length) {
+			const v = this._desired[id];
+			if (v === 0) { const m = this._desiredFallback.get(id); if (m === undefined) return undefined; packed = m; }
+			else packed = v - 1;
+		} else {
+			const m = this._desiredFallback.get(id);
+			if (m === undefined) return undefined;
+			packed = m;
+		}
+		if (unpackRevision(packed) < this.streamRevision - 2 * ChunkStreamingController.DESIRED_STATE_REVISION_RETENTION) return undefined;
+		return packed;
 	}
 
 	/** Size of the desired-state map; a runaway value means pruning has stalled. */
-	public getDesiredStateCount(): number {
-		return this.desiredStates.size;
-	}
+	public getDesiredStateCount(): number { return this._desiredCount; }
 
-	private trackDesiredState(
-		numericId: number,
-		packed: number,
-		revision: number,
-	): void {
+	private trackDesiredState(numericId: number, packed: number, revision: number): void {
 		this._desiredWrites++;
-		this.desiredStates.set(numericId, packed);
-		let bucket = this.desiredStateBuckets.get(revision);
-		if (!bucket) {
-			const pooled = this._freeDesiredSets.pop();
-			if (pooled !== undefined) {
-				pooled.clear();
-				bucket = pooled;
-			} else {
-				bucket = new Set<number>();
-			}
-			this.desiredStateBuckets.set(revision, bucket);
+		if (numericId >= this._desiredMax) { this._desiredFallback.set(numericId, packed); this._desiredCount++; return; }
+		if (numericId >= this._desired.length) {
+			const next = new Float64Array(Math.min(this._desiredMax, Math.max(numericId + 1, this._desired.length * 2)));
+			next.set(this._desired);
+			this._desired = next;
 		}
-		bucket.add(numericId);
+		if (numericId < this._desired.length && this._desired[numericId] === 0 && !this._desiredFallback.has(numericId)) this._desiredCount++;
+		this._desired[numericId] = packed + 1;
 	}
 
-	private pruneDesiredStates(currentRevision: number): void {
-		const oldestKept = Math.max(
-			0,
-			currentRevision -
-				ChunkStreamingController.DESIRED_STATE_REVISION_RETENTION,
-		);
-		// Delete buckets older than oldestKept – O(k) where k = chunks inserted at that revision
-		for (const [rev, bucket] of this.desiredStateBuckets) {
-			if (rev < oldestKept) {
-				for (const id of bucket) {
-					// Only delete if still mapping to that old revision (may have been overwritten)
-					const cur = this.desiredStates.get(id);
-					if (cur !== undefined && unpackRevision(cur) === rev) {
-						this.desiredStates.delete(id);
-					}
-				}
-				this.desiredStateBuckets.delete(rev);
-				bucket.clear();
-				this._freeDesiredSets.push(bucket);
-			}
-		}
-	}
+	private pruneDesiredStates(_currentRevision: number): void { /* lazy prune via getDesiredState */ }
 
 	private nextRuleGeneration(): number {
 		this._ruleSetGeneration++;
@@ -1441,7 +1420,7 @@ export class ChunkStreamingController {
 			}
 
 			if (
-				this.desiredStates.size !== 0 &&
+				this._desiredCount !== 0 &&
 				revision % ChunkStreamingController.DESIRED_STATE_REVISION_RETENTION ===
 					0
 			) {
@@ -1833,7 +1812,7 @@ export class ChunkStreamingController {
 	 * is still available so the new request is valid on the first attempt.
 	 */
 	private rescueChunkLoad(chunk: Chunk, revision: number): void {
-		const desired = this.desiredStates.get(chunk.numericId);
+		const desired = this.getDesiredState(chunk.numericId);
 		const desiredLod = desired !== undefined ? desired & 0b111 : chunk.lodLevel;
 
 		this.ensureChunkQueuedForLoad(chunk, desiredLod, revision, desiredLod <= 1);
