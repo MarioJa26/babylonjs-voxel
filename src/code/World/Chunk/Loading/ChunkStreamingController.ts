@@ -898,7 +898,7 @@ export class ChunkStreamingController {
 	private ensureRefreshArray(lodRuleSet: ChunkLodRuleSet): void {
 		const rH = lodRuleSet.maxHorizontalRadius() + 2;
 		const rV = lodRuleSet.maxVerticalRadius() + 2;
-		const size = (2 * rH + 1) * (2 * rH + 1) * (2 * rV + 1) * 2 * 8;
+		const size = (2 * rH + 1) * (2 * rH + 1) * (2 * rV + 1) * 8;
 		if (
 			this._refreshArr === null ||
 			this._refreshArr.length !== size ||
@@ -911,14 +911,13 @@ export class ChunkStreamingController {
 
 	private buildRefreshCache(lodRuleSet: ChunkLodRuleSet): void {
 		const rH = lodRuleSet.maxHorizontalRadius() + 2;
-		const rZ = rH;
 		const rV = lodRuleSet.maxVerticalRadius() + 2;
 		const wX = 2 * rH + 1;
-		const wZ = 2 * rZ + 1;
+		const wZ = 2 * rH + 1;
 		const wY = 2 * rV + 1;
-		const size = wX * wZ * wY * 2 * 8;
+		const size = wX * wZ * wY * 8;
 		this._rH = rH;
-		this._rZ = rZ;
+		this._rZ = this._rH;
 		this._rV = rV;
 		if (size > 0 && size <= 4_000_000) {
 			this._refreshArr = new Int8Array(size);
@@ -929,63 +928,30 @@ export class ChunkStreamingController {
 		}
 	}
 
-	private refreshIndex(
-		rx: number,
-		ry: number,
-		rz: number,
-		chunkY: number,
-		prevLod: number,
-	): number {
-		const ax = rx + this._rH;
-		const az = rz + this._rZ;
-		const ay = ry + this._rV;
-		const wX = 2 * this._rH + 1;
-		const wZ = 2 * this._rZ + 1;
-		const wY = 2 * this._rV + 1;
-		if (ax < 0 || ax >= wX || az < 0 || az >= wZ || ay < 0 || ay >= wY)
-			return -1;
-		const sign = chunkY < 0 ? 1 : 0;
-		const lod = prevLod & 7;
-		return (((ay * wZ + az) * wX + ax) * 2 + sign) * 8 + lod;
+	private refreshIndex(rx: number, ry: number, rz: number, prevLod: number): number {
+		const ax = rx + this._rH, az = rz + this._rH, ay = ry + this._rV;
+		const wX = 2 * this._rH + 1, wY = 2 * this._rV + 1;
+		if (ax < 0 || ax >= wX || az < 0 || az >= wX || ay < 0 || ay >= wY) return -1;
+		return ((ay * wX + az) * wX + ax) * 8 + (prevLod & 7);
 	}
 
-	private getCachedDecisionLod(
-		rx: number,
-		ry: number,
-		rz: number,
-		chunkY: number,
-		prevLod: number,
-		isDirty: boolean,
-	): number {
-		if (isDirty) return -1;
+	private getCachedDecisionLod(rx: number, ry: number, rz: number, chunkY: number, prevLod: number, isDirty: boolean): number {
+		if (isDirty || chunkY < 0) return -1;
 		const arr = this._refreshArr;
 		if (arr !== null) {
-			const idx = this.refreshIndex(rx, ry, rz, chunkY, prevLod);
-			if (idx < 0 || idx >= arr.length) return -1;
-			const v = arr[idx];
-			return v === undefined ? -1 : v;
+			const i = this.refreshIndex(rx, ry, rz, prevLod);
+			return i < 0 ? -1 : arr[i];
 		}
-		const cached = this._refreshFallback.get(
-			packOffsetKey(rx, ry, rz, chunkY, prevLod),
-		);
-		return cached === undefined ? -1 : cached;
+		const v = this._refreshFallback.get(packOffsetKey(rx, ry, rz, chunkY, prevLod));
+		return v === undefined ? -1 : v;
 	}
 
-	private setCachedDecisionLod(
-		rx: number,
-		ry: number,
-		rz: number,
-		chunkY: number,
-		prevLod: number,
-		lod: number,
-		isDirty: boolean,
-	): void {
-		if (isDirty) return;
+	private setCachedDecisionLod(rx: number, ry: number, rz: number, chunkY: number, prevLod: number, lod: number, isDirty: boolean): void {
+		if (isDirty || chunkY < 0) return;
 		const arr = this._refreshArr;
 		if (arr !== null) {
-			const idx = this.refreshIndex(rx, ry, rz, chunkY, prevLod);
-			if (idx < 0 || idx >= arr.length) return;
-			arr[idx] = lod;
+			const i = this.refreshIndex(rx, ry, rz, prevLod);
+			if (i >= 0) arr[i] = lod;
 			return;
 		}
 		this._refreshFallback.set(packOffsetKey(rx, ry, rz, chunkY, prevLod), lod);
