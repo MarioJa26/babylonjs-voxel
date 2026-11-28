@@ -2501,15 +2501,22 @@ export class ChunkStreamingController {
 		});
 	}
 
-	public onLoadRequestsDequeued(
-		_requests: ReadonlyArray<QueuedChunkRequest>,
-	): void {
-		// No-op kept for the adapter interface.
-		// PrepareLoadBatch already calls ChunkLifecycle.dispatchLoad for every
-		// request in validLoadBatch, and only requests whose dispatchLoad
-		// returned ResidencyState.Loading reach validLoadBatch. Re-deriving
-		// residency here (which queries the worker pool) and re-applying the
-		// same bookkeeping was redundant; nothing is left to do.
+	public onLoadRequestsDequeued(requests: ReadonlyArray<QueuedChunkRequest>): void {
+		// O(1) repair: dispatchLoad is idempotent; if it did not do the
+		// bookkeeping (chunk already deriving Loading) move the request to
+		// in-flight here so it is not left in loadQueueRequestMap.
+		for (let i = 0; i < requests.length; i++) {
+			const req = requests[i];
+			const chunk = req.chunk;
+			if (!chunk) continue;
+			const id = chunk.numericId;
+			if (this.loadQueueRequestMap.get(id) === req) {
+				this._inFlightRequests.set(id, req);
+				this.loadQueueRequestMap.delete(id);
+				this._loadRequestsInFlight.add(id);
+				this._orphanCandidates.delete(chunk);
+			}
+		}
 	}
 
 	/**
